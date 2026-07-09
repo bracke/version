@@ -1,0 +1,55 @@
+[GENERATED OBJECT FILE]
+b__smoke_test.o
+[PROJECT FILES]
+/home/bent/Projekte/Ada/version/tools/tools.gpr
+20260628082703 509922ed857a9411c12b084a325de383
+/home/bent/Projekte/Ada/i18n/config/i18n_config.gpr
+20260622153431 76cda67c4a09bf1b87c27ea57b58db76
+/home/bent/Projekte/Ada/i18n/i18n.gpr
+20260515164510 d2bfdba728f264034cc4efba20380c3c
+/home/bent/Projekte/Ada/HttpClient/httpclient.gpr
+20260607165639 6b5eee4ae704cd27f0c9c9ed57d620d4
+/home/bent/Projekte/Ada/zlib/config/zlib_config.gpr
+20260625163150 2e4a14d54221357f8b44dfcbce7d7c9e
+/home/bent/Projekte/Ada/zlib/zlib.gpr
+20260515162008 b0dd055fde2f099576e31d192b7a75ad
+/home/bent/Projekte/Ada/cryptolib/config/cryptolib_config.gpr
+20260614182813 c2b06bbbaea15946d85ea5fb6ac41a33
+/home/bent/Projekte/Ada/cryptolib/cryptolib.gpr
+20260613171710 4800d0669749e3283485a8721c72886a
+/home/bent/Projekte/Ada/sshlib/config/ssh_lib_config.gpr
+20260627105843 908c9c0e30cd178fc64bbf88ac2a5c0f
+/home/bent/Projekte/Ada/sshlib/SSH_Lib.gpr
+20260625044336 23f194edf4847239247b68dfb8f5a175
+/home/bent/Projekte/Ada/versionlib/config/versionlib_config.gpr
+20260628103517 99a8933182b6032a9f2f7fcf954a3d9c
+/home/bent/Projekte/Ada/versionlib/versionlib.gpr
+20260627224602 a75ff346f1a09696ff6aac48034af03c
+/home/bent/Projekte/Ada/project_tools/project_tools.gpr
+20260608162800 1d0b1261dacd33218b7b755d9dd54b50
+/home/bent/Projekte/Ada/version/config/version_config.gpr
+20260628081110 3805c85f0ab352b0ac71f57e0ab3027c
+/home/bent/Projekte/Ada/version/version.gpr
+20260627224909 aa7d468dcbb2ff9673f92d344b968f5c
+[BOUND OBJECT FILES]
+/home/bent/Projekte/Ada/version/tools/obj/tool_support.o
+/home/bent/Projekte/Ada/version/tools/obj/smoke_test.o
+[GENERATED SOURCE FILES]
+b__smoke_test.ads
+b__smoke_test.adb
+b__smoke_test.ali
+[RESULTING OPTIONS]
+-L/home/bent/Projekte/Ada/version/tools/obj/
+-L/home/bent/Projekte/Ada/version/tools/obj/
+-L/home/bent/Projekte/Ada/version/obj/development/
+-L/home/bent/Projekte/Ada/project_tools/lib/
+-L/home/bent/Projekte/Ada/versionlib/lib/
+-L/home/bent/Projekte/Ada/ssh_lib_build/lib/
+-L/home/bent/Projekte/Ada/cryptolib/lib/
+-L/home/bent/Projekte/Ada/zlib/lib/
+-L/home/bent/Projekte/Ada/HttpClient/lib/
+-L/home/bent/Projekte/Ada/i18n/lib/
+-L/home/bent/.local/share/alire/toolchains/gnat_native_15.2.1_4640d4b3/lib/gcc/x86_64-pc-linux-gnu/15.2.0/adalib/
+-static
+/home/bent/.local/share/alire/toolchains/gnat_native_15.2.1_4640d4b3/lib/gcc/x86_64-pc-linux-gnu/15.2.0/adalib/libgnat.a
+-ldl

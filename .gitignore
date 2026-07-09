@@ -1,0 +1,11 @@
+CLAUDE.local.md
+
+# Build outputs
+/obj/
+/bin/
+/alire/
+/config/
+
+# Stray GNAT artifacts (e.g. from a raw gprbuild that targets the crate root)
+*.ali
+*.o

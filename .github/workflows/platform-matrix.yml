@@ -1,0 +1,64 @@
+name: platform-matrix
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  posix:
+    name: POSIX platform confirmation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Alire
+        uses: alire-project/setup-alire@v2
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y git tar
+      - name: Build tool binaries
+        run: alr exec -- gprbuild -P tools/tools.gpr
+      - name: Run POSIX platform gate
+        env:
+          VERSION_PLATFORM_CI_EVIDENCE_DIR: .release/platform-ci-evidence
+        run: tools/bin/check_platform_ci_matrix posix
+      - name: Upload POSIX platform evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: platform-posix-evidence
+          path: .release/platform-ci-evidence/platform-posix.txt
+
+  windows:
+    name: Windows platform confirmation
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Alire
+        uses: alire-project/setup-alire@v2
+      - name: Build tool binaries
+        shell: bash
+        run: alr exec -- gprbuild -P tools/tools.gpr
+      - name: Run Windows platform gate
+        shell: bash
+        env:
+          VERSION_PLATFORM_CI_EVIDENCE_DIR: .release/platform-ci-evidence
+        run: ./tools/bin/check_platform_ci_matrix.exe windows
+      - name: Upload Windows platform evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: platform-windows-evidence
+          path: .release/platform-ci-evidence/platform-windows.txt
+
+  verify-platform-evidence:
+    name: Verify platform evidence
+    runs-on: ubuntu-latest
+    needs: [posix, windows]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download platform evidence
+        uses: actions/download-artifact@v4
+        with:
+          path: .release/platform-ci-evidence
+      - name: Build tool binaries
+        run: alr exec -- gprbuild -P tools/tools.gpr
+      - name: Verify POSIX and Windows evidence match the source tree
+        run: tools/bin/check_platform_ci_evidence .release/platform-ci-evidence

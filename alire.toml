@@ -1,0 +1,32 @@
+name = "version"
+description = "An easy to use version control system that is compatible with Git"
+version = "0.1.0-dev"
+
+authors = ["Bent Bracke"]
+maintainers = ["Bent Bracke <bent@bracke.dk>"]
+maintainers-logins = ["bracke"]
+licenses = "MIT OR Apache-2.0 WITH LLVM-exception"
+website = "https://github.com/bracke/version"
+tags = ["version", "vcs", "git"]
+
+executables = ["version"]
+
+[[depends-on]]
+versionlib = "~0.1.0-dev"
+
+[[depends-on]]
+gnat_native = "=15.2.1"
+
+# Shared release/test tooling helpers used by tools/ (build-time only; the
+# version executable itself does not depend on it).
+[[depends-on]]
+project_tools = "~0.1.0"
+
+# Local development overrides. The path pins make `alr build` use the sibling
+# checkouts; they are dev-only and must NOT appear in the published manifest.
+# versionlib is published as its own crate; see docs/RELEASE_CHECKLIST.md.
+[[pins]]
+versionlib = { path = "../versionlib" }
+
+[[pins]]
+project_tools = { path = "../project_tools" }

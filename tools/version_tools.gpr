@@ -1,0 +1,41 @@
+with "../version.gpr";
+
+project Version_Tools is
+   for Source_Dirs use (".");
+   for Object_Dir use "obj";
+   for Exec_Dir use "bin";
+
+   for Main use
+     ("zlib_inflate_file.adb",
+      "zlib_deflate_stored_file.adb",
+      "check_release_ready.adb",
+      "check_documentation_coherence.adb",
+      "check_version_metadata.adb",
+      "check_release_consistency.adb",
+      "check_release_consistency_selftest.adb",
+      "check_test_scope_completeness.adb",
+      "check_ref_write_policy.adb",
+      "check_ref_write_policy_selftest.adb",
+      "check_ref_transaction_selftest.adb",
+      "check_release_package.adb",
+      "check_release_package_selftest.adb",
+      "check_examples.adb",
+      "check_platform_ci_matrix.adb",
+      "check_platform_ci_evidence.adb",
+      "check_platform_ci_evidence_selftest.adb",
+      "summarize_release_evidence.adb",
+      "smoke_test.adb",
+      "bench_status.adb",
+      "bench_log.adb",
+      "bench_archive.adb",
+      "bench_object_lookup.adb");
+
+   package Compiler is
+      for Default_Switches ("Ada") use
+        ("-gnat2022", "-gnata", "-Wall", "-Wextra");
+   end Compiler;
+
+   package Linker is
+      for Default_Switches ("Ada") use ("-lssl", "-lcrypto");
+   end Linker;
+end Version_Tools;

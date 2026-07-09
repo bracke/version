@@ -1,0 +1,28 @@
+with "config/version_config.gpr";
+with "versionlib.gpr";
+
+project Version is
+
+   for Source_Dirs use ("src", "config/");
+   for Object_Dir use "obj/" & Version_Config.Build_Profile;
+   for Create_Missing_Dirs use "True";
+   for Exec_Dir use "bin";
+   for Main use ("main.adb");
+
+   package Compiler is
+      for Default_Switches ("Ada") use Version_Config.Ada_Compiler_Switches & ("-gnat2022","-gnatyM120","-gnatX", "-gnata");
+   end Compiler;
+
+   package Binder is
+      for Switches ("Ada") use ("-Es"); --  Symbolic traceback
+   end Binder;
+
+   package Linker is
+      for Default_Switches ("Ada") use ("-lssl", "-lcrypto");
+   end Linker;
+
+   package Install is
+      for Artifacts (".") use ("share");
+   end Install;
+
+end Version;

@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "statusMessage": "Ada style check",
+            "command": "jq -r '.tool_input.file_path // .tool_response.filePath // empty' | { read -r f; case \"$f\" in *.adb|*.ads) ;; *) exit 0;; esac; [ -f \"$f\" ] || exit 0; GCC=$(ls -d \"$HOME\"/.local/share/alire/toolchains/gnat_native_*/bin/gcc 2>/dev/null | sort -V | tail -1); GCC=${GCC:-gcc}; out=$(\"$GCC\" -c -gnats -gnat2022 -gnatX -gnaty3abcefhiklnprStux -gnatyM120 \"$f\" 2>&1); if [ -n \"$out\" ]; then jq -n --arg ctx \"Ada style check on $f:\n$out\" '{hookSpecificOutput:{hookEventName:\"PostToolUse\",additionalContext:$ctx}}'; fi; } 2>/dev/null || true"
+          }
+        ]
+      }
+    ]
+  }
+}
