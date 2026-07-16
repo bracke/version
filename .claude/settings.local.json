@@ -130,7 +130,13 @@
       "Bash(cp -f /home/bent/Projekte/Ada/version/tests/src/version-test_support.adb /tmp/claude-1000/-home-bent-Projekte-Ada-version/44542b25-d5be-4b0b-a77c-37b964d9a351/scratchpad/proj/tests/src/version-test_support.adb)",
       "Bash(rm -rf /tmp/claude-1000/-home-bent-Projekte-Ada-version/44542b25-d5be-4b0b-a77c-37b964d9a351/scratchpad/r2)",
       "Bash(./bin/repro caserename *)",
-      "Bash(/tmp/claude-1000/-home-bent-Projekte-Ada-version/44542b25-d5be-4b0b-a77c-37b964d9a351/scratchpad/proj/tests/bin/tests)"
+      "Bash(/tmp/claude-1000/-home-bent-Projekte-Ada-version/44542b25-d5be-4b0b-a77c-37b964d9a351/scratchpad/proj/tests/bin/tests)",
+      "Bash(grep -n \"elsif Command = \\\\\"replace\\\\\"\\\\|elsif Command = \\\\\"diff-files\\\\\"\\\\|Unknown command\\\\|else$\" src/version-cli.adb)",
+      "Bash(python3 /tmp/bmodel.py)",
+      "Bash(cd *)",
+      "Bash(python3 fuzz_status.py 250)",
+      "Bash(EDITOR=true ./bin/tests)",
+      "Bash(wait)"
     ]
   }
 }
