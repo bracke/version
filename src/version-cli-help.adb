@@ -103,13 +103,13 @@ package body Version.CLI.Help is
          "  stash             Save, list, apply, pop, or drop uncommitted work");
       Append_Line
         (Text,
-         "  sparse            Set, list, status, or disable sparse checkout patterns");
+         "  sparse-checkout   Set, add, list, reapply, or disable sparse checkout patterns");
       Append_Line
         (Text,
          "  worktree          Add, list, inspect, or remove linked worktrees");
       Append_Line
         (Text,
-         "  submodule         Initialize, update, or inspect submodules");
+         "  submodule         Initialize, update, inspect, sync, foreach, or deinit submodules");
       Append_Line
         (Text, "  archive           Export a revision tree as TAR or ZIP");
       Append_Line (Text);
@@ -329,6 +329,8 @@ package body Version.CLI.Help is
          Append_Line (Text, "Usage:");
          Append_Line (Text, "  version fetch REMOTE");
          Append_Line (Text, "  version fetch --depth N REMOTE");
+         Append_Line (Text, "  version fetch --deepen N REMOTE");
+         Append_Line (Text, "  version fetch --unshallow REMOTE");
          Append_Line (Text);
          Append_Line (Text, "Fetch objects and refs from a remote.");
          Append_Line
@@ -366,6 +368,11 @@ package body Version.CLI.Help is
          Append_Line (Text, "  version submodule init");
          Append_Line (Text, "  version submodule update [--recursive]");
          Append_Line (Text, "  version submodule status");
+         Append_Line
+           (Text, "  version submodule foreach [--recursive] COMMAND");
+         Append_Line (Text, "  version submodule sync [--recursive]");
+         Append_Line
+           (Text, "  version submodule deinit [--force] [--all|PATH...]");
          Append_Line (Text);
          Append_Line
            (Text,
@@ -381,13 +388,15 @@ package body Version.CLI.Help is
          Append_Line
            (Text,
             "Manage linked worktrees with shared objects and refs but isolated HEAD and index.");
-      elsif Name = "sparse" then
+      elsif Name = "sparse" or else Name = "sparse-checkout" then
          Append_Line (Text, "Usage:");
-         Append_Line (Text, "  version sparse init");
-         Append_Line (Text, "  version sparse set PATH...");
-         Append_Line (Text, "  version sparse list");
-         Append_Line (Text, "  version sparse status");
-         Append_Line (Text, "  version sparse disable");
+         Append_Line (Text, "  version sparse-checkout set [--cone|--no-cone] DIR...");
+         Append_Line (Text, "  version sparse-checkout add [--cone|--no-cone] DIR...");
+         Append_Line (Text, "  version sparse-checkout list");
+         Append_Line (Text, "  version sparse-checkout status");
+         Append_Line (Text, "  version sparse-checkout reapply");
+         Append_Line (Text, "  version sparse-checkout init [--cone|--no-cone]");
+         Append_Line (Text, "  version sparse-checkout disable");
          Append_Line (Text);
          Append_Line (Text, "Manage cone-style sparse checkout patterns.");
       elsif Name = "doctor" then
@@ -525,6 +534,7 @@ package body Version.CLI.Help is
         or else Name = "revert"
         or else Name = "stash"
         or else Name = "sparse"
+        or else Name = "sparse-checkout"
         or else Name = "worktree"
         or else Name = "submodule"
         or else Name = "archive"
@@ -542,6 +552,7 @@ package body Version.CLI.Help is
         or else Name = "prune"
         or else Name = "gc"
         or else Name = "pack-refs"
+        or else Name = "lfs"
         or else Name = "history";
    end Known_Command;
 
@@ -558,7 +569,8 @@ package body Version.CLI.Help is
          "    COMPREPLY=( $(compgen -W ""--quiet --help -h --version init " &
          "clone verify repack prune gc pack-refs config stage remove save " &
          "status check-ignore diff log show restore checkout branch merge rebase cherry-pick " &
-         "revert stash sparse worktree submodule archive tag remote fetch " &
+         "revert stash sparse sparse-checkout worktree submodule archive " &
+         "tag remote fetch " &
          "push doctor completion man history"" -- ""$cur"") )");
       Append_Line (Text, "    return");
       Append_Line (Text, "  fi");
@@ -636,7 +648,9 @@ package body Version.CLI.Help is
       Append_Line (Text, "version push [--no-verify] --tags [REMOTE]");
       Append_Line (Text, "version push [--no-verify] --delete REMOTE REF");
       Append_Line (Text, "version push [--no-verify] REMOTE SRC:DST");
-      Append_Line (Text, "version fetch [--depth N] REMOTE");
+      Append_Line
+        (Text,
+         "version fetch [--depth N|--deepen N|--unshallow] REMOTE [REF]");
       Append_Line (Text, "version clone [--depth N] SOURCE TARGET");
       Append_Line (Text, "version merge [OPTIONS] [TARGET...]");
       Append_Line (Text, "version merge --continue [--verify|--no-verify]");
@@ -1162,6 +1176,31 @@ package body Version.CLI.Help is
          Line ("  version history");
          Line;
          Line ("Deprecated alias for 'version log'.");
+      elsif Name = "lfs" then
+         Line ("Usage:");
+         Line ("  version lfs track [PATTERN...]");
+         Line ("  version lfs untrack PATTERN...");
+         Line ("  version lfs ls-files [-l] [REF]");
+         Line ("  version lfs status");
+         Line ("  version lfs pointer --file=PATH");
+         Line ("  version lfs env");
+         Line ("  version lfs fetch [--all] [REMOTE [REF...]]");
+         Line ("  version lfs pull [REMOTE]");
+         Line ("  version lfs checkout [PATH...]");
+         Line ("  version lfs push REMOTE [REF]");
+         Line ("  version lfs fsck");
+         Line ("  version lfs prune [--dry-run]");
+         Line ("  version lfs migrate (import|export) --include=PATTERN");
+         Line ("  version lfs migrate info [--everything]");
+         Line ("  version lfs lock PATH");
+         Line ("  version lfs unlock PATH");
+         Line ("  version lfs unlock --id ID");
+         Line ("  version lfs locks [--path PATH] [--id ID] [--verify]");
+         Line;
+         Line ("Manage Git LFS: track patterns, inspect pointer files,");
+         Line ("fetch/checkout/push media, and lock files on the LFS server.");
+         Line
+           ("Use --force with unlock to release a lock owned by someone else.");
       else
          Line ("Usage:");
          Line ("  version help COMMAND");

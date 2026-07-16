@@ -1,19 +1,34 @@
 with Ada.Characters.Handling;
 with Ada.Directories;
+with Ada.Environment_Variables;
+with Ada.Calendar;
 with Ada.IO_Exceptions;
 with Ada.Strings;
+with Ada.Containers.Indefinite_Hashed_Maps;
+with Ada.Strings.Hash;
 with Ada.Strings.Fixed;
 with Ada.Strings.Unbounded;
 with Ada.Text_IO;
 with Ada.Containers; use Ada.Containers;
+with Ada.Containers.Indefinite_Ordered_Maps;
+with Ada.Containers.Ordered_Maps;
+with Ada.Containers.Indefinite_Ordered_Sets;
+with Ada.Containers.Vectors;
 with Interfaces.C;
 with System;
+
+with GNAT.OS_Lib;
 
 with Version.Archive; use Version.Archive;
 with Version.Availability;
 with Version.Files;
 with Version.CLI.Help;
+with Version.Multi_Pack_Index;
 with Version.Objects; use Version.Objects;
+with Version.Pack;
+with Version.Pack_Write;
+with Version.Reachability;
+with Version.LFS;
 with Version.Repository;
 with Version.Staging;
 with Version.Path_Safety;
@@ -26,7 +41,12 @@ with Version.Credential;
 with Version.Ref_Format;
 with Version.Refs;
 with Version.Verify;
+with Version.Attributes;
+with Version.Mailbox;
+with Version.Mailmap;
+with Version.Upload_Pack;
 with Version.Status;
+with Version.Subtree;
 with Version.Write;
 with Version.Restore;
 with Version.Branch;
@@ -35,8 +55,10 @@ with Version.Merge_State;
 with Version.Remove;
 with Version.Tags;
 with Version.Remotes;
+with Version.Dumb_Http;
 with Version.Fetch;
 with Version.Clone;
+with Version.Commit_Graph;
 with Version.Config;
 with Version.Push;
 with Version.Init;
@@ -47,7 +69,13 @@ with Version.Reflog;
 with Version.Move;
 with Version.Clean;
 with Version.Bundle;
+with Version.Hooks;
+with Version.Trailers;
+with Version.Stripspace;
+with Version.Ref_Names;
+with Version.Fmt_Merge_Msg;
 with Version.Apply;
+with Ada.Streams.Stream_IO;
 with Version.Format_Patch;
 with Version.Rebase_State;
 with Version.Am;
@@ -60,6 +88,9 @@ with Version.Hash;
 with Version.Describe;
 with Version.Notes;
 with Version.Blame;
+with Version.Bisect;
+with Version.Show_Branch;
+with Version.Console;
 with Version.Tracking;
 with Version.Diff;
 with Version.Doctor; use Version.Doctor;
@@ -94,6 +125,10 @@ package body Version.CLI is
 
    Command_Failure_Exit : constant Ada.Command_Line.Exit_Status :=
      Ada.Command_Line.Exit_Status (1);
+
+   --  git's die(): "fatal: <message>" on stderr, exit 128.
+   Fatal_Exit : constant Ada.Command_Line.Exit_Status :=
+     Ada.Command_Line.Exit_Status (128);
 
    function Usage_Exit_Status return Ada.Command_Line.Exit_Status is
    begin
@@ -701,6 +736,41 @@ package body Version.CLI is
       return Version.Objects.Commit_Tree_Id (Obj);
    end Commit_Tree_Id;
 
+   package Path_Sets is new Ada.Containers.Indefinite_Ordered_Sets (String);
+
+   --  Materialize each cached LFS-pointer file in the index into the working
+   --  tree (git lfs checkout / the checkout half of pull). With a non-empty
+   --  Filter, only the listed paths are written.
+   procedure LFS_Checkout
+     (Repo   : Version.Repository.Repository_Handle;
+      Filter : Path_Sets.Set := Path_Sets.Empty_Set)
+   is
+      LF   : constant Character := Character'Val (10);
+      Root : constant String := Version.Repository.Root_Path (Repo);
+   begin
+      for E of Version.LFS.LFS_Entries_In_Index (Repo) loop
+         declare
+            Path : constant String := To_String (E.Path);
+         begin
+            if (Filter.Is_Empty or else Filter.Contains (Path))
+              and then E.Cached
+            then
+               declare
+                  Pointer : constant String :=
+                    "version https://git-lfs.github.com/spec/v1" & LF
+                    & "oid sha256:" & To_String (E.Oid) & LF
+                    & "size" & Natural'Image (E.Size) & LF;
+                  Media : constant String :=
+                    Version.LFS.Worktree_Content (Repo, Path, Pointer);
+               begin
+                  Version.Files.Write_Binary_File_Atomic
+                    (Version.Files.Join (Root, Path), Media);
+               end;
+            end if;
+         end;
+      end loop;
+   end LFS_Checkout;
+
    function Tree_Candidates
      (Commit_Id : Version.Objects.Hex_Object_Id)
       return Version.Path_Safety.Path_Vector
@@ -857,78 +927,26 @@ package body Version.CLI is
       end if;
    end Require_Clean_Working_Tree_Including_Sparse_Excluded;
 
-   function Sparse_Items_From_Args
-     (First_Index : Positive) return Version.Sparse.String_Vectors.Vector
-   is
-      Result : Version.Sparse.String_Vectors.Vector;
-   begin
-      if Count >= First_Index then
-         for I in First_Index .. Count loop
-            if Arg (I) /= "--" then
-               declare
-                  Parsed : constant Version.Pathspec.Pathspec_Item :=
-                    Version.Pathspec.Parse (Arg (I));
-                  pragma Unreferenced (Parsed);
-               begin
-                  Result.Append (Arg (I));
-               end;
-            end if;
-         end loop;
-      end if;
-
-      return Result;
-   end Sparse_Items_From_Args;
-
-   function Sparse_Patterns_From_Texts
-     (Items : Version.Sparse.String_Vectors.Vector)
-      return Version.Pathspec.Pathspec_Vectors.Vector
-   is
-      Result : Version.Pathspec.Pathspec_Vectors.Vector;
-   begin
-      if not Items.Is_Empty then
-         for I in Items.First_Index .. Items.Last_Index loop
-            Version.Pathspec.Append_Parse (Result, Items.Element (I));
-         end loop;
-      end if;
-
-      return Result;
-   end Sparse_Patterns_From_Texts;
-
-   procedure Preflight_Sparse_Restore
-     (Repo           : Version.Repository.Repository_Handle;
-      Sparse_Enabled : Boolean;
-      Items          : Version.Sparse.String_Vectors.Vector)
-   is
-      Commit_Id : constant String := Version.Refs.Current_Commit_Id (Repo);
-      Patterns  : constant Version.Pathspec.Pathspec_Vectors.Vector :=
-        Sparse_Patterns_From_Texts (Items);
-   begin
-      if Commit_Id'Length = 0 then
-         raise Ada.IO_Exceptions.Data_Error
-           with "cannot update sparse checkout on unborn branch";
-      end if;
-
-      Version.Restore.Preflight_Working_Tree_For_Commit
-        (Repo            => Repo,
-         Commit_Id       => Version.Objects.To_Object_Id (Commit_Id),
-         Sparse_Enabled  => Sparse_Enabled,
-         Sparse_Patterns => Patterns);
-   end Preflight_Sparse_Restore;
-
    procedure Print_Sparse_List is
-      Repo  : constant Version.Repository.Repository_Handle :=
+      Repo : constant Version.Repository.Repository_Handle :=
         Version.Repository.Open;
-      Items : Version.Sparse.String_Vectors.Vector;
    begin
-      if Version.Sparse.Enabled (Repo) then
-         Items := Version.Sparse.Pattern_Texts (Repo);
+      if not Version.Sparse.Enabled (Repo) then
+         raise Ada.IO_Exceptions.Data_Error with "this worktree is not sparse";
       end if;
 
-      if not Items.Is_Empty then
+      --  git's `sparse-checkout list` prints the recursive directory names in
+      --  cone mode, or the raw patterns otherwise.
+      declare
+         Items : constant Version.Sparse.String_Vectors.Vector :=
+           (if Version.Sparse.Cone_Mode (Repo)
+            then Version.Sparse.Cone_Recursive_Directories (Repo)
+            else Version.Sparse.Pattern_Texts (Repo));
+      begin
          for I in Items.First_Index .. Items.Last_Index loop
             Ada.Text_IO.Put_Line (Items.Element (I));
          end loop;
-      end if;
+      end;
    end Print_Sparse_List;
 
    procedure Print_Sparse_Status is
@@ -986,37 +1004,14 @@ package body Version.CLI is
       return Result;
    end Lower_ASCII;
 
-   function Archive_Format_From_Text
-     (Text : String) return Version.Archive.Archive_Format
-   is
-      Lower : constant String := Lower_ASCII (Text);
-   begin
-      if Lower = "tar" then
-         return Version.Archive.Tar_Format;
-      elsif Lower = "tar.gz" or else Lower = "tgz" then
-         return Version.Archive.Tar_Gz_Format;
-      elsif Lower = "zip" then
-         return Version.Archive.Zip_Format;
-      else
-         raise Ada.IO_Exceptions.Data_Error
-           with Unsupported_Archive_Format_Text (Text);
-      end if;
-   end Archive_Format_From_Text;
-
+   --  Container formats git never produces (no built-in nor tar-filter path).
    function Looks_Like_Unsupported_Archive_Output
      (Path : String) return Boolean
    is
       Lower : constant String := Lower_ASCII (Path);
    begin
       return
-        Ends_With (Lower, ".tar.xz")
-        or else Ends_With (Lower, ".txz")
-        or else Ends_With (Lower, ".xz")
-        or else Ends_With (Lower, ".tar.bz2")
-        or else Ends_With (Lower, ".tbz")
-        or else Ends_With (Lower, ".tbz2")
-        or else Ends_With (Lower, ".bz2")
-        or else Ends_With (Lower, ".zipx")
+        Ends_With (Lower, ".zipx")
         or else Ends_With (Lower, ".7z")
         or else Ends_With (Lower, ".rar");
    end Looks_Like_Unsupported_Archive_Output;
@@ -1032,6 +1027,7 @@ package body Version.CLI is
       After_Dash_Dash : Boolean := False;
       Output          : Unbounded_String;
       Prefix          : Unbounded_String;
+      Format_Text     : Unbounded_String;   --  explicit --format value
       Specs           : Version.Pathspec.Pathspec_Vectors.Vector;
       I               : Positive := 3;
 
@@ -1039,6 +1035,45 @@ package body Version.CLI is
       begin
          return Text'Length > 0 and then Text (Text'First) = '-';
       end Is_Option;
+
+      --  git tar filter: pipe In_Path through Command's shell to Out_Path.
+      procedure Run_Filter (Command, In_Path, Out_Path : String) is
+         Shell : constant String :=
+           Command & " < '" & In_Path & "' > '" & Out_Path & "'";
+         Args  : GNAT.OS_Lib.Argument_List :=
+           [1 => new String'("-c"), 2 => new String'(Shell)];
+         Ok    : Boolean;
+      begin
+         GNAT.OS_Lib.Spawn ("/bin/sh", Args, Ok);
+         GNAT.OS_Lib.Free (Args (1));
+         GNAT.OS_Lib.Free (Args (2));
+         if not Ok then
+            raise Ada.IO_Exceptions.Data_Error
+              with "archive filter command failed: " & Command;
+         end if;
+      end Run_Filter;
+
+      --  Infer the archive format name from an output filename's suffix.
+      function Format_Name_Of_Output (Path : String) return String is
+         Lower : constant String := Lower_ASCII (Path);
+      begin
+         if Ends_With (Lower, ".tar.gz") or else Ends_With (Lower, ".tgz") then
+            return "tar.gz";
+         elsif Ends_With (Lower, ".zip") then
+            return "zip";
+         elsif Ends_With (Lower, ".tar.xz") or else Ends_With (Lower, ".txz")
+         then
+            return "tar.xz";
+         elsif Ends_With (Lower, ".tar.bz2")
+           or else Ends_With (Lower, ".tbz2") or else Ends_With (Lower, ".tbz")
+         then
+            return "tar.bz2";
+         elsif Ends_With (Lower, ".tar") then
+            return "tar";
+         else
+            return "";
+         end if;
+      end Format_Name_Of_Output;
    begin
       if Count < 2 then
          Usage_Error ("missing archive revision", Usage);
@@ -1070,7 +1105,7 @@ package body Version.CLI is
                return;
             end if;
 
-            Format := Archive_Format_From_Text (Arg (I + 1));
+            Format_Text := To_Unbounded_String (Arg (I + 1));
             Format_Explicit := True;
             I := I + 2;
          elsif Arg (I) = "--prefix" then
@@ -1102,34 +1137,64 @@ package body Version.CLI is
       then
          raise Ada.IO_Exceptions.Data_Error
            with
-             Version.Archive.Unsupported_Output_Format_Text
-               (To_String (Output));
-      elsif Length (Output) > 0
-        and then not Format_Explicit
-        and then Ends_With (Lower_ASCII (To_String (Output)), ".zip")
-      then
-         Format := Version.Archive.Zip_Format;
-      elsif Length (Output) > 0
-        and then not Format_Explicit
-        and then (Ends_With (Lower_ASCII (To_String (Output)), ".tar.gz")
-                  or else Ends_With (Lower_ASCII (To_String (Output)), ".tgz"))
-      then
-         Format := Version.Archive.Tar_Gz_Format;
+             Version.Archive.Unsupported_Output_Format_Text (To_String (Output));
       end if;
 
-      if Length (Output) = 0 then
-         Output :=
-           To_Unbounded_String
-             ((case Format is
-               when Version.Archive.Zip_Format    => "archive.zip",
-               when Version.Archive.Tar_Gz_Format => "archive.tar.gz",
-               when Version.Archive.Tar_Format    => "archive.tar"));
-      end if;
-
+      --  Effective format name: the explicit --format, else inferred from the
+      --  output suffix.
       declare
+         Fmt : constant String :=
+           (if Format_Explicit then Lower_ASCII (To_String (Format_Text))
+            elsif Length (Output) > 0
+            then Format_Name_Of_Output (To_String (Output))
+            else "tar");
          Repo : constant Version.Repository.Repository_Handle :=
            Version.Repository.Open;
+         Filter_Key : constant String := "tar." & Fmt & ".command";
       begin
+         if Fmt = "tar" or else Fmt = "" then
+            Format := Version.Archive.Tar_Format;
+         elsif Fmt = "tar.gz" or else Fmt = "tgz" then
+            Format := Version.Archive.Tar_Gz_Format;
+         elsif Fmt = "zip" then
+            Format := Version.Archive.Zip_Format;
+         elsif Version.Config.Has_Key (Repo, Filter_Key) then
+            --  A configured tar filter (e.g. tar.tar.xz.command = "xz -c"):
+            --  build the tar, then pipe it through the filter command.
+            if Length (Output) = 0 then
+               Output := To_Unbounded_String ("archive." & Fmt);
+            end if;
+            declare
+               Command  : constant String :=
+                 Version.Config.Get_Value (Repo, Filter_Key);
+               Tar_Temp : constant String := To_String (Output) & ".tar.tmp";
+            begin
+               Version.Archive.Create
+                 (Repository => Repo,
+                  Revision   => Arg (2),
+                  Output     => Tar_Temp,
+                  Format     => Version.Archive.Tar_Format,
+                  Pathspecs  => Specs,
+                  Prefix     => To_String (Prefix));
+               Run_Filter (Command, Tar_Temp, To_String (Output));
+               Version.Files.Delete_File_If_Exists (Tar_Temp);
+            end;
+            Success_Line ("created archive " & To_String (Output));
+            return;
+         else
+            raise Ada.IO_Exceptions.Data_Error
+              with "Unknown archive format '" & Fmt & "'";
+         end if;
+
+         if Length (Output) = 0 then
+            Output :=
+              To_Unbounded_String
+                ((case Format is
+                  when Version.Archive.Zip_Format    => "archive.zip",
+                  when Version.Archive.Tar_Gz_Format => "archive.tar.gz",
+                  when Version.Archive.Tar_Format    => "archive.tar"));
+         end if;
+
          Version.Archive.Create
            (Repository => Repo,
             Revision   => Arg (2),
@@ -1156,6 +1221,383 @@ package body Version.CLI is
       Ada.Text_IO.Put_Line
         (Ada.Text_IO.Standard_Error, Error_Output_Text (Text));
    end Error_Line;
+
+   procedure Stderr_Line (Text : String) is
+   begin
+      if not Quiet_Mode then
+         Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, Text);
+      end if;
+   end Stderr_Line;
+
+   --  git's fetch summary ("From <url>" + per-ref update lines) is produced by
+   --  snapshotting the remote-tracking refs and tags before and after the
+   --  fetch and diffing them, then formatting each change the way git does.
+   package Fetch_Ref_Maps is new Ada.Containers.Indefinite_Ordered_Maps
+     (Key_Type => String, Element_Type => String);
+
+   function Snapshot_Fetch_Refs
+     (Repo : Version.Repository.Repository_Handle; Remote : String)
+      return Fetch_Ref_Maps.Map
+   is
+      Result : Fetch_Ref_Maps.Map;
+      Pats   : Version.Ref_Format.String_Vectors.Vector;
+   begin
+      Pats.Append ("refs/remotes/" & Remote & "/*");
+      Pats.Append ("refs/tags/*");
+      declare
+         Lines : constant Version.Ref_Format.String_Vectors.Vector :=
+           Version.Ref_Format.For_Each_Ref
+             (Repo, Pats, Format => "%(refname) %(objectname)");
+      begin
+         for I in Lines.First_Index .. Lines.Last_Index loop
+            declare
+               S  : constant String := Lines.Element (I);
+               Sp : constant Natural := Ada.Strings.Fixed.Index (S, " ");
+            begin
+               if Sp /= 0 then
+                  Result.Include
+                    (S (S'First .. Sp - 1), S (Sp + 1 .. S'Last));
+               end if;
+            end;
+         end loop;
+      end;
+      return Result;
+   exception
+      when others =>
+         return Fetch_Ref_Maps.Empty_Map;
+   end Snapshot_Fetch_Refs;
+
+   --  The remote URL as git prints it on the "From" line: the configured
+   --  fetch URL with a single trailing ".git" (and any trailing "/") removed.
+   function Remote_Display_URL
+     (Repo : Version.Repository.Repository_Handle; Remote : String)
+      return String
+   is
+      Raw : Unbounded_String;
+   begin
+      begin
+         Raw := To_Unbounded_String
+           (Version.Config.Get_Value (Repo, "remote." & Remote & ".url"));
+      exception
+         when others =>
+            Raw := To_Unbounded_String (Remote);
+      end;
+
+      declare
+         S    : constant String := To_String (Raw);
+         Last : Natural := S'Last;
+      begin
+         while Last >= S'First and then S (Last) = '/' loop
+            Last := Last - 1;
+         end loop;
+         if Last - S'First + 1 >= 4
+           and then S (Last - 3 .. Last) = ".git"
+         then
+            Last := Last - 4;
+            while Last >= S'First and then S (Last) = '/' loop
+               Last := Last - 1;
+            end loop;
+         end if;
+         return S (S'First .. Last);
+      end;
+   end Remote_Display_URL;
+
+   --  The remote's default branch from refs/remotes/<Remote>/HEAD (the symref
+   --  version and git write at clone time), or "" if absent/unreadable.
+   function Remote_Default_Branch
+     (Repo : Version.Repository.Repository_Handle; Remote : String)
+      return String
+   is
+      Path   : constant String :=
+        Version.Files.Join
+          (Version.Repository.Common_Git_Dir (Repo),
+           "refs/remotes/" & Remote & "/HEAD");
+      Prefix : constant String := "ref: refs/remotes/" & Remote & "/";
+   begin
+      if not Ada.Directories.Exists (Path) then
+         return "";
+      end if;
+      declare
+         Content : constant String := Version.Files.Read_Binary_File (Path);
+         Last    : Natural := Content'Last;
+      begin
+         while Last >= Content'First
+           and then Content (Last) in Character'Val (10) | Character'Val (13)
+         loop
+            Last := Last - 1;
+         end loop;
+         if Last - Content'First + 1 > Prefix'Length
+           and then Content
+                      (Content'First .. Content'First + Prefix'Length - 1)
+                    = Prefix
+         then
+            return Content (Content'First + Prefix'Length .. Last);
+         end if;
+         return "";
+      end;
+   exception
+      when others =>
+         return "";
+   end Remote_Default_Branch;
+
+   procedure Print_Fetch_Summary
+     (Repo         : Version.Repository.Repository_Handle;
+      Remote       : String;
+      Before       : Fetch_Ref_Maps.Map;
+      Print_From   : Boolean := True;
+      Include_Tags : Boolean := True)
+   is
+      After          : constant Fetch_Ref_Maps.Map :=
+        Snapshot_Fetch_Refs (Repo, Remote);
+      Tracked_Prefix : constant String := "refs/remotes/" & Remote & "/";
+      Tag_Prefix     : constant String := "refs/tags/";
+      LF             : constant String := "";  -- lines emitted individually
+
+      type Line_Rec is record
+         Code    : Character := ' ';
+         Summary : Unbounded_String;
+         From    : Unbounded_String;
+         To      : Unbounded_String;
+         Note    : Unbounded_String;
+      end record;
+      package Line_Vecs is new
+        Ada.Containers.Vectors (Natural, Line_Rec);
+      Heads : Line_Vecs.Vector;
+      Tags  : Line_Vecs.Vector;
+      pragma Unreferenced (LF);
+
+      function Abbrev (Id : String) return String is
+         L : constant Natural :=
+           Version.Revisions.Unique_Abbrev_Length
+             (Repo, Version.Objects.To_Object_Id (Id), 7);
+      begin
+         return Id (Id'First .. Id'First + L - 1);
+      end Abbrev;
+
+      function Is_FF (Old_Id, New_Id : String) return Boolean is
+      begin
+         return Version.History.Is_Ancestor
+           (Repo,
+            Base_Id    => Version.Objects.To_Object_Id (Old_Id),
+            Derived_Id => Version.Objects.To_Object_Id (New_Id));
+      exception
+         when others =>
+            return False;
+      end Is_FF;
+
+      Starts_With : Boolean;
+   begin
+      for C in After.Iterate loop
+         declare
+            Full  : constant String := Fetch_Ref_Maps.Key (C);
+            New_I : constant String := Fetch_Ref_Maps.Element (C);
+            Old_I : constant String :=
+              (if Before.Contains (Full) then Before.Element (Full) else "");
+            Rec   : Line_Rec;
+         begin
+            Starts_With :=
+              Full'Length >= Tag_Prefix'Length
+              and then Full (Full'First .. Full'First + Tag_Prefix'Length - 1)
+                       = Tag_Prefix;
+            if Old_I = New_I then
+               null;
+            elsif Starts_With then
+               declare
+                  Name : constant String :=
+                    Full (Full'First + Tag_Prefix'Length .. Full'Last);
+               begin
+                  Rec.From := To_Unbounded_String (Name);
+                  Rec.To := To_Unbounded_String (Name);
+                  if Old_I = "" then
+                     Rec.Code := '*';
+                     Rec.Summary := To_Unbounded_String ("[new tag]");
+                  else
+                     Rec.Code := 't';
+                     Rec.Summary := To_Unbounded_String ("[tag update]");
+                  end if;
+                  Tags.Append (Rec);
+               end;
+            elsif Full'Length >= Tracked_Prefix'Length
+              and then Full
+                         (Full'First
+                          .. Full'First + Tracked_Prefix'Length - 1)
+                       = Tracked_Prefix
+            then
+               declare
+                  Name : constant String :=
+                    Full (Full'First + Tracked_Prefix'Length .. Full'Last);
+               begin
+                  if Name = "HEAD" then
+                     --  refs/remotes/<remote>/HEAD is the default-branch symref,
+                     --  not a fetched ref update; git omits it from the summary.
+                     goto Continue_Ref;
+                  end if;
+                  Rec.From := To_Unbounded_String (Name);
+                  Rec.To := To_Unbounded_String (Remote & "/" & Name);
+                  if Old_I = "" then
+                     Rec.Code := '*';
+                     Rec.Summary := To_Unbounded_String ("[new branch]");
+                  elsif Is_FF (Old_I, New_I) then
+                     Rec.Code := ' ';
+                     Rec.Summary :=
+                       To_Unbounded_String
+                         (Abbrev (Old_I) & ".." & Abbrev (New_I));
+                  else
+                     Rec.Code := '+';
+                     Rec.Summary :=
+                       To_Unbounded_String
+                         (Abbrev (Old_I) & "..." & Abbrev (New_I));
+                     Rec.Note := To_Unbounded_String ("  (forced update)");
+                  end if;
+                  Heads.Append (Rec);
+               end;
+            end if;
+         end;
+         <<Continue_Ref>>
+         null;
+      end loop;
+
+      if Heads.Is_Empty and then Tags.Is_Empty then
+         return;
+      end if;
+
+      --  Order heads with the remote's default branch first (git advertises
+      --  HEAD's branch first). refs/remotes/<remote>/HEAD is authoritative;
+      --  fall back to the current branch then main/master for older clones
+      --  that predate the stored remote HEAD.
+      declare
+         Remote_Head : constant String := Remote_Default_Branch (Repo, Remote);
+
+         procedure Promote (Wanted : String) is
+         begin
+            if Wanted'Length = 0 then
+               return;
+            end if;
+            for I in Heads.First_Index .. Heads.Last_Index loop
+               if To_String (Heads.Element (I).From) = Wanted then
+                  declare
+                     R : constant Line_Rec := Heads.Element (I);
+                  begin
+                     Heads.Delete (I);
+                     Heads.Prepend (R);
+                  end;
+                  return;
+               end if;
+            end loop;
+         end Promote;
+      begin
+         if Remote_Head'Length > 0 then
+            Promote (Remote_Head);
+         else
+            Promote ("master");
+            Promote ("main");
+            Promote (Version.Refs.Current_Branch_Name (Repo));
+         end if;
+      end;
+
+      --  git left-justifies the remote name to max(10, longest name).
+      declare
+         Refcol : Natural := 10;
+
+         function Pad (S : String; W : Natural) return String is
+           (if S'Length >= W then S
+            else S & String'(1 .. W - S'Length => ' '));
+
+         procedure Emit (V : Line_Vecs.Vector) is
+         begin
+            for I in V.First_Index .. V.Last_Index loop
+               declare
+                  R : constant Line_Rec := V.Element (I);
+               begin
+                  Stderr_Line
+                    (" " & R.Code & " "
+                     & Pad (To_String (R.Summary), 17) & " "
+                     & Pad (To_String (R.From), Refcol) & " -> "
+                     & To_String (R.To) & To_String (R.Note));
+               end;
+            end loop;
+         end Emit;
+
+         URL : constant String := Remote_Display_URL (Repo, Remote);
+      begin
+         for V of Heads loop
+            Refcol := Natural'Max (Refcol, Length (V.From));
+         end loop;
+         for V of Tags loop
+            Refcol := Natural'Max (Refcol, Length (V.From));
+         end loop;
+
+         if Print_From then
+            Stderr_Line ("From " & URL);
+         end if;
+         Emit (Heads);
+         if Include_Tags then
+            Emit (Tags);
+         end if;
+      end;
+   end Print_Fetch_Summary;
+
+   --  git's summary for an explicit `fetch/pull <remote> <ref>`: the named ref
+   --  is fetched to FETCH_HEAD, shown unconditionally (even when up to date) as
+   --  " * branch <name>       -> FETCH_HEAD" (or "tag"). Also records
+   --  .git/FETCH_HEAD with the resolved id, as git does.
+   procedure Print_Fetch_Head_Summary
+     (Repo     : Version.Repository.Repository_Handle;
+      Remote   : String;
+      Ref_Name : String;
+      Before   : Fetch_Ref_Maps.Map)
+   is
+      URL     : constant String := Remote_Display_URL (Repo, Remote);
+      Is_Tag  : constant Boolean :=
+        Version.Refs.Ref_Exists (Repo, "refs/tags/" & Ref_Name);
+      Kind    : constant String := (if Is_Tag then "tag" else "branch");
+      Refcol  : constant Natural := Natural'Max (10, Ref_Name'Length);
+
+      function Pad (S : String; W : Natural) return String is
+        (if S'Length >= W then S
+         else S & String'(1 .. W - S'Length => ' '));
+   begin
+      --  Record FETCH_HEAD from the resolved ref (best effort).
+      begin
+         declare
+            Full : constant String :=
+              (if Is_Tag then "refs/tags/" & Ref_Name
+               else "refs/remotes/" & Remote & "/" & Ref_Name);
+            Id   : constant String :=
+              Version.Objects.To_String
+                (Version.Refs.Resolve_Ref (Repo, Full));
+            Raw_URL : Unbounded_String;
+         begin
+            begin
+               Raw_URL := To_Unbounded_String
+                 (Version.Config.Get_Value (Repo, "remote." & Remote & ".url"));
+            exception
+               when others =>
+                  Raw_URL := To_Unbounded_String (URL);
+            end;
+            Version.Files.Write_Binary_File_Atomic
+              (Path    =>
+                 Version.Files.Join
+                   (Version.Repository.Common_Git_Dir (Repo), "FETCH_HEAD"),
+               Content =>
+                 Id & Character'Val (9) & Character'Val (9)
+                 & Kind & " '" & Ref_Name & "' of "
+                 & To_String (Raw_URL) & Character'Val (10));
+         end;
+      exception
+         when others =>
+            null;
+      end;
+
+      Stderr_Line ("From " & URL);
+      Stderr_Line
+        (" * " & Pad (Kind, 17) & " " & Pad (Ref_Name, Refcol)
+         & " -> FETCH_HEAD");
+      --  git also reports the opportunistic remote-tracking updates (with no
+      --  second "From" line) after the FETCH_HEAD mapping.
+      Print_Fetch_Summary
+        (Repo, Remote, Before, Print_From => False, Include_Tags => False);
+   end Print_Fetch_Head_Summary;
 
    procedure Expected (Text : String) is
    begin
@@ -1315,22 +1757,4911 @@ package body Version.CLI is
    begin
       Sort_Branches (Branches);
 
-      if Branches.Is_Empty then
-         Ada.Text_IO.Put_Line ("No branches");
-      else
-         for I in Branches.First_Index .. Branches.Last_Index loop
+      --  git prints nothing when there are no branches (e.g. an unborn repo).
+      for I in Branches.First_Index .. Branches.Last_Index loop
+         declare
+            Name : constant String := To_String (Branches.Element (I));
+         begin
+            if Name = Current then
+               Ada.Text_IO.Put_Line ("* " & Name);
+            else
+               Ada.Text_IO.Put_Line ("  " & Name);
+            end if;
+         end;
+      end loop;
+   end Print_Branch_List;
+
+   --  `subtree merge`/`pull` is `merge --no-ff -Xsubtree=<prefix>`, and prints
+   --  what that merge prints.
+   procedure Merge_Subtree
+     (Prefix     : String;
+      Repository : String;
+      Ref        : String;
+      Squash     : Boolean;
+      Message    : String)
+   is
+      Repo : constant Version.Repository.Repository_Handle :=
+        Version.Repository.Open;
+
+      Already : Boolean;
+      Target  : constant Version.Objects.Hex_Object_Id :=
+        Version.Subtree.Merge_Target (Prefix, Repository, Ref, Squash, Already);
+
+      Before  : constant String := Version.Refs.Current_Commit_Id (Repo);
+      Options : Version.Branch.Merge_Options;
+   begin
+      if Already then
+         Stderr_Line
+           ("Subtree is already at commit "
+            & Version.Objects.To_String (Target) & ".");
+         return;
+      end if;
+
+      Options.Fast_Forward := Version.Branch.Fast_Forward_Disabled;
+      Options.Fast_Forward_Explicit := True;
+      Options.Subtree := True;
+      Options.Subtree_Prefix := To_Unbounded_String (Prefix);
+
+      if Message /= "" then
+         Options.Message := To_Unbounded_String (Message);
+      end if;
+
+      Version.Branch.Merge (Version.Objects.To_String (Target), Options);
+
+      declare
+         After : constant String := Version.Refs.Current_Commit_Id (Repo);
+      begin
+         if After = Before then
+            Success_Line ("Already up to date.");
+         else
+            Success_Line ("Merge made by the 'ort' strategy.");
+
             declare
-               Name : constant String := To_String (Branches.Element (I));
+               Block : constant String :=
+                 Version.Diff.Diff_Commits
+                   (Repo,
+                    Version.Objects.To_Object_Id (Before),
+                    Version.Objects.To_Object_Id (After),
+                    Version.Diff.Diff_Options'
+                      (Context_Lines => 3, Stat => True, Summary => True,
+                       others => <>));
+               Last : Natural := Block'Last;
             begin
-               if Name = Current then
-                  Ada.Text_IO.Put_Line ("* " & Name);
+               if Last >= Block'First
+                 and then Block (Last) = Character'Val (10)
+               then
+                  Last := Last - 1;
+               end if;
+
+               if Last >= Block'First then
+                  Success_Line (Block (Block'First .. Last));
+               end if;
+            end;
+         end if;
+      end;
+   end Merge_Subtree;
+
+   --  `show-index [--object-format=<fmt>]` -- the pack index on stdin, as
+   --  `<offset> <sha> (<crc32>)` in index (that is, object-id) order.
+   procedure Run_Show_Index_Command is
+      use type Interfaces.Unsigned_32;
+
+      function Read_Stdin_Bytes return String is
+         Buffer : aliased String (1 .. 65536);
+         Acc    : Unbounded_String;
+      begin
+         loop
+            declare
+               N : constant Interfaces.C.long :=
+                 Read (0, Buffer (Buffer'First)'Address,
+                       Interfaces.C.size_t (Buffer'Length));
+            begin
+               exit when N <= 0;
+               Append
+                 (Acc,
+                  Buffer (Buffer'First .. Buffer'First + Integer (N) - 1));
+            end;
+         end loop;
+
+         return To_String (Acc);
+      end Read_Stdin_Bytes;
+
+      Width : Positive := 20;
+      Data  : constant String := Read_Stdin_Bytes;
+
+      function U32 (At_Pos : Positive) return Interfaces.Unsigned_32 is
+        (Interfaces.Shift_Left
+           (Interfaces.Unsigned_32 (Character'Pos (Data (At_Pos))), 24)
+         or Interfaces.Shift_Left
+              (Interfaces.Unsigned_32 (Character'Pos (Data (At_Pos + 1))), 16)
+         or Interfaces.Shift_Left
+              (Interfaces.Unsigned_32 (Character'Pos (Data (At_Pos + 2))), 8)
+         or Interfaces.Unsigned_32 (Character'Pos (Data (At_Pos + 3))));
+
+      function Hex8 (V : Interfaces.Unsigned_32) return String is
+         Digits_Set : constant String := "0123456789abcdef";
+         Result     : String (1 .. 8);
+         Value      : Interfaces.Unsigned_32 := V;
+      begin
+         for I in reverse Result'Range loop
+            Result (I) :=
+              Digits_Set
+                (Natural (Value and 16#F#) + 1);
+            Value := Interfaces.Shift_Right (Value, 4);
+         end loop;
+
+         return Result;
+      end Hex8;
+
+      Count_N : Natural := 0;
+   begin
+      for I in 2 .. Count loop
+         declare
+            A : constant String := Arg (I);
+         begin
+            if A'Length > 16
+              and then A (A'First .. A'First + 15) = "--object-format="
+            then
+               if A (A'First + 16 .. A'Last) = "sha256" then
+                  Width := 32;
+               end if;
+            end if;
+         end;
+      end loop;
+
+      --  Only the v2 index carries a magic; a v1 one starts with its fanout.
+      if Data'Length < 8
+        or else Data (Data'First .. Data'First + 3)
+                /= Character'Val (255) & "tOc"
+      then
+         Error_Line ("unsupported or truncated pack index");
+         Set_Command_Failure;
+         return;
+      end if;
+
+      Count_N := Natural (U32 (Data'First + 8 + 255 * 4));
+
+      declare
+         Sha_Base : constant Positive := Data'First + 8 + 256 * 4;
+         Crc_Base : constant Positive := Sha_Base + Count_N * Width;
+         Off_Base : constant Positive := Crc_Base + Count_N * 4;
+      begin
+         for I in 0 .. Count_N - 1 loop
+            declare
+               Raw : constant String :=
+                 Data (Sha_Base + I * Width
+                       .. Sha_Base + I * Width + Width - 1);
+               Crc : constant Interfaces.Unsigned_32 := U32 (Crc_Base + I * 4);
+               Off : constant Interfaces.Unsigned_32 := U32 (Off_Base + I * 4);
+            begin
+               Version.Console.Put
+                 (Ada.Strings.Fixed.Trim
+                    (Interfaces.Unsigned_32'Image (Off), Ada.Strings.Both)
+                  & " " & Version.Objects.To_String
+                            (Version.Objects.To_Hex (Raw))
+                  & " (" & Hex8 (Crc) & ")" & ASCII.LF);
+            end;
+         end loop;
+      end;
+   end Run_Show_Index_Command;
+
+   --  `unpack-file <blob>` -- the blob's contents in a temporary file, whose
+   --  name is printed.
+   procedure Run_Unpack_File_Command is
+      Repo : constant Version.Repository.Repository_Handle :=
+        Version.Repository.Open;
+   begin
+      if Count < 2 then
+         Error_Line ("unpack-file needs a blob");
+         Set_Usage_Failure;
+         return;
+      end if;
+
+      declare
+         Id : constant Version.Objects.Hex_Object_Id :=
+           Version.Revisions.Resolve (Repo, Arg (2));
+
+         Content : constant String :=
+           Version.Objects.Content (Version.Objects.Read_Object (Repo, Id));
+
+         Hex : constant String := Version.Objects.To_String (Id);
+
+         --  git names it .merge_file_XXXXXX; the object's own id makes it just
+         --  as unique and keeps the command deterministic.
+         Path : constant String :=
+           ".merge_file_" & Hex (Hex'First .. Hex'First + 5);
+      begin
+         Version.Files.Write_Binary_File (Path, Content);
+         Success_Line (Path);
+      end;
+   exception
+      when E : Ada.IO_Exceptions.Data_Error | Ada.IO_Exceptions.Name_Error =>
+         Error_Line (Ada.Exceptions.Exception_Message (E));
+         Set_Command_Failure;
+   end Run_Unpack_File_Command;
+
+   --  `prune-packed [-n|--dry-run] [-q|--quiet]` -- drop the loose objects
+   --  that a pack already holds.
+   procedure Run_Prune_Packed_Command is
+      Repo : constant Version.Repository.Repository_Handle :=
+        Version.Repository.Open;
+
+      Dry : Boolean := False;
+
+      Objects_Dir : constant String :=
+        Version.Files.Join
+          (Version.Repository.Common_Git_Dir (Repo), "objects");
+   begin
+      for I in 2 .. Count loop
+         declare
+            A : constant String := Arg (I);
+         begin
+            if A = "-n" or else A = "--dry-run" then
+               Dry := True;
+            elsif A = "-q" or else A = "--quiet" then
+               null;
+            else
+               Error_Line ("unknown option: " & A);
+               Set_Usage_Failure;
+               return;
+            end if;
+         end;
+      end loop;
+
+      for Fanout in 0 .. 255 loop
+         declare
+            Hex_Digits : constant String := "0123456789abcdef";
+            Name : constant String :=
+              Hex_Digits (Fanout / 16 + 1) & Hex_Digits (Fanout mod 16 + 1);
+            Dir  : constant String := Version.Files.Join (Objects_Dir, Name);
+         begin
+            if Ada.Directories.Exists (Dir)
+              and then Ada.Directories.Kind (Dir) = Ada.Directories.Directory
+            then
+               declare
+                  Search : Ada.Directories.Search_Type;
+                  Item   : Ada.Directories.Directory_Entry_Type;
+                  Left   : Natural := 0;
+               begin
+                  Ada.Directories.Start_Search
+                    (Search, Dir, "",
+                     [Ada.Directories.Ordinary_File => True, others => False]);
+
+                  while Ada.Directories.More_Entries (Search) loop
+                     Ada.Directories.Get_Next_Entry (Search, Item);
+
+                     declare
+                        Simple : constant String :=
+                          Ada.Directories.Simple_Name (Item);
+                        Id     : constant String := Name & Simple;
+                     begin
+                        if Version.Objects.Is_Valid_Hex_Object_Id (Id)
+                          and then Version.Pack.Contains
+                                     (Repo,
+                                      Version.Objects.To_Object_Id (Id))
+                        then
+                           if not Dry then
+                              Ada.Directories.Delete_File
+                                (Version.Files.Join (Dir, Simple));
+                           else
+                              Left := Left + 1;
+                           end if;
+                        else
+                           Left := Left + 1;
+                        end if;
+                     end;
+                  end loop;
+
+                  Ada.Directories.End_Search (Search);
+
+                  if Left = 0 and then not Dry then
+                     Ada.Directories.Delete_Directory (Dir);
+                  end if;
+               end;
+            end if;
+         end;
+      end loop;
+   end Run_Prune_Packed_Command;
+
+   --  The per-path 3-way merge `merge-index` drives, and that `git`
+   --  implements as the git-merge-one-file shell script:
+   --    merge-one-file <orig blob> <our blob> <their blob> <path>
+   --                   <orig mode> <our mode> <their mode>
+   --  Blob ids and modes are empty for a file a side does not have.
+   --  Returns git's exit status.
+   function Merge_One_File
+     (Repo : Version.Repository.Repository_Handle;
+      O, A, B      : String;
+      Path         : String;
+      MO, MA, MB   : String)
+      return Integer
+   is
+      Index : Version.Staging.Index_Entry_Vectors.Vector :=
+        Version.Staging.Load (Repo);
+
+      procedure Drop_Path is
+         Kept : Version.Staging.Index_Entry_Vectors.Vector;
+      begin
+         for E of Index loop
+            if To_String (E.Path) /= Path then
+               Kept.Append (E);
+            end if;
+         end loop;
+
+         Index := Kept;
+      end Drop_Path;
+
+      procedure Stage_Zero (Id : String; Mode : String) is
+      begin
+         Drop_Path;
+         Index.Append
+           (Version.Staging.Index_Entry'
+              (Path  => To_Unbounded_String (Path),
+               Id    => Version.Objects.To_Object_Id (Id),
+               Mode  => To_Unbounded_String (Mode),
+               Stage => 0,
+               Skip_Worktree => False));
+      end Stage_Zero;
+
+      function Blob (Id : String) return String is
+        (if Id = "" then ""
+         else Version.Objects.Content
+                (Version.Objects.Read_Object
+                   (Repo, Version.Objects.To_Object_Id (Id))));
+
+      procedure Write_Worktree (Content : String; Mode : String) is
+      begin
+         Version.Files.Write_Binary_File (Path, Content);
+
+         if Mode = "100755" then
+            Version.Files.Set_Executable (Path, True);
+         end if;
+      end Write_Worktree;
+
+      function Short (Id : String) return String is
+        (if Id'Length >= 6 then Id (Id'First .. Id'First + 5) else Id);
+
+   begin
+      --  Deleted in both, or deleted in one and untouched in the other.
+      if O /= ""
+        and then ((A = "" and then B = "")
+                  or else (A = "" and then B = O)
+                  or else (A = O and then B = ""))
+      then
+         if (MA = "" and then MO /= MB)
+           or else (MB = "" and then MO /= MA)
+         then
+            Stderr_Line
+              ("ERROR: File " & Path & " deleted on one branch but had its");
+            Stderr_Line ("ERROR: permissions changed on the other.");
+            return 1;
+         end if;
+
+         if A /= "" then
+            Success_Line ("Removing " & Path);
+         end if;
+
+         if Ada.Directories.Exists (Path) then
+            Ada.Directories.Delete_File (Path);
+         end if;
+
+         Drop_Path;
+         Version.Staging.Write (Repo, Index);
+         return 0;
+      end if;
+
+      --  Added by us alone: nothing to do but mark it merged.
+      if O = "" and then A /= "" and then B = "" then
+         Stage_Zero (A, MA);
+         Version.Staging.Write (Repo, Index);
+         return 0;
+      end if;
+
+      --  Added by them alone.
+      if O = "" and then A = "" and then B /= "" then
+         Success_Line ("Adding " & Path);
+
+         if Ada.Directories.Exists (Path) then
+            Stderr_Line
+              ("ERROR: untracked " & Path & " is overwritten by the merge.");
+            return 1;
+         end if;
+
+         Stage_Zero (B, MB);
+         Version.Staging.Write (Repo, Index);
+         Write_Worktree (Blob (B), MB);
+         return 0;
+      end if;
+
+      --  Added by both, identically.
+      if O = "" and then A /= "" and then A = B then
+         if MA /= MB then
+            Stderr_Line
+              ("ERROR: File " & Path & " added identically in both branches,");
+            Stderr_Line
+              ("ERROR: but permissions conflict " & MA & "->" & MB & ".");
+            return 1;
+         end if;
+
+         Success_Line ("Adding " & Path);
+         Stage_Zero (A, MA);
+         Version.Staging.Write (Repo, Index);
+         Write_Worktree (Blob (A), MA);
+         return 0;
+      end if;
+
+      --  Changed on both sides, differently.
+      if A /= "" and then B /= "" and then A /= B then
+         if MA = "120000" or else MB = "120000" then
+            Stderr_Line
+              ("ERROR: " & Path & ": Not merging symbolic link changes.");
+            return 1;
+         end if;
+
+         if MA = "160000" or else MB = "160000" then
+            Stderr_Line
+              ("ERROR: " & Path
+               & ": Not merging conflicting submodule changes.");
+            return 1;
+         end if;
+
+         declare
+            Opts      : Version.Merge.Merge_File_Options;
+            Merged    : Unbounded_String;
+            Conflicts : Natural;
+            Status    : Integer := 0;
+            Message   : Unbounded_String;
+         begin
+            --  git merges the three *unpacked* files, so the conflict markers
+            --  carry those temporary files' names as labels.
+            Opts.Ours_Label := To_Unbounded_String (".merge_file_" & Short (A));
+            Opts.Base_Label :=
+              To_Unbounded_String
+                (".merge_file_" & (if O = "" then "empty" else Short (O)));
+            Opts.Theirs_Label :=
+              To_Unbounded_String (".merge_file_" & Short (B));
+
+            if O = "" then
+               Success_Line ("Added " & Path & " in both, but differently.");
+            else
+               Success_Line ("Auto-merging " & Path);
+            end if;
+
+            Version.Merge.Merge_File
+              (Ours_Text   => Blob (A),
+               Base_Text   => Blob (O),
+               Theirs_Text => Blob (B),
+               Options     => Opts,
+               Merged      => Merged,
+               Conflicts   => Conflicts);
+
+            Write_Worktree (To_String (Merged), MA);
+
+            if Conflicts > 0 or else O = "" then
+               Message := To_Unbounded_String ("content conflict");
+               Status := 1;
+            end if;
+
+            if MA /= MB then
+               if Message /= "" then
+                  Append (Message, ", ");
+               end if;
+
+               Append
+                 (Message,
+                  "permissions conflict: " & MO & "->" & MA & "," & MB);
+               Status := 1;
+            end if;
+
+            if Status /= 0 then
+               Stderr_Line
+                 ("ERROR: " & To_String (Message) & " in " & Path);
+               return 1;
+            end if;
+
+            --  Clean: the merged file becomes the merged index entry.
+            Stage_Zero
+              (Version.Objects.To_String
+                 (Version.Write.Write_Blob (Repo, To_String (Merged))),
+               MA);
+            Version.Staging.Write (Repo, Index);
+            return 0;
+         end;
+      end if;
+
+      Stderr_Line
+        ("ERROR: " & Path & ": Not handling case " & O & " -> " & A & " -> "
+         & B);
+      return 1;
+   end Merge_One_File;
+
+   procedure Run_Merge_One_File_Command is
+      Repo : constant Version.Repository.Repository_Handle :=
+        Version.Repository.Open;
+   begin
+      if Count /= 8 then
+         Error_Line
+           ("usage: version merge-one-file <orig blob> <our blob> "
+            & "<their blob> <path> <orig mode> <our mode> <their mode>");
+         Set_Usage_Failure;
+         return;
+      end if;
+
+      if Merge_One_File
+           (Repo, Arg (2), Arg (3), Arg (4), Arg (5), Arg (6), Arg (7),
+            Arg (8)) /= 0
+      then
+         Set_Command_Failure;
+      end if;
+   end Run_Merge_One_File_Command;
+
+   --  `merge-index [-o] [-q] <merge-program> (-a | [--] <file>...)`
+   procedure Run_Merge_Index_Command is
+      Repo : constant Version.Repository.Repository_Handle :=
+        Version.Repository.Open;
+
+      Keep_Going : Boolean := False;
+      Quiet      : Boolean := False;
+      All_Paths  : Boolean := False;
+      Program    : Unbounded_String;
+      Wanted     : Version.Trailers.String_Vectors.Vector;
+      Failed     : Boolean := False;
+      I          : Positive := 2;
+   begin
+      while I <= Count loop
+         declare
+            A : constant String := Arg (I);
+         begin
+            if Program = "" and then A = "-o" then
+               Keep_Going := True;
+            elsif Program = "" and then A = "-q" then
+               Quiet := True;
+            elsif Program = "" then
+               Program := To_Unbounded_String (A);
+            elsif A = "-a" then
+               All_Paths := True;
+            elsif A = "--" then
+               null;
+            else
+               Wanted.Append (A);
+            end if;
+         end;
+
+         I := I + 1;
+      end loop;
+
+      if Program = "" then
+         Error_Line ("usage: version merge-index <merge-program> (-a | file...)");
+         Set_Usage_Failure;
+         return;
+      end if;
+
+      declare
+         --  git's merge-index looks the program up in its exec path; the one
+         --  it is invariably given is merge-one-file, which version has built
+         --  in.  Any other program is spawned with git's seven arguments.
+         Name : constant String := To_String (Program);
+         Builtin : constant Boolean :=
+           Name = "git-merge-one-file" or else Name = "merge-one-file"
+           or else Name = "version-merge-one-file";
+
+         Index : constant Version.Staging.Index_Entry_Vectors.Vector :=
+           Version.Staging.Load (Repo);
+
+         Paths : Version.Trailers.String_Vectors.Vector;
+      begin
+         --  The unmerged paths, in index order, without duplicates.
+         for E of Index loop
+            if E.Stage /= 0 then
+               declare
+                  Path : constant String := To_String (E.Path);
+               begin
+                  if not Paths.Contains (Path)
+                    and then (All_Paths or else Wanted.Contains (Path))
+                  then
+                     Paths.Append (Path);
+                  end if;
+               end;
+            end if;
+         end loop;
+
+         for Path of Paths loop
+            declare
+               O, A, B    : Unbounded_String;
+               MO, MA, MB : Unbounded_String;
+               Status     : Integer := 0;
+            begin
+               for E of Version.Staging.Load (Repo) loop
+                  if To_String (E.Path) = Path then
+                     case E.Stage is
+                        when 1 =>
+                           O := To_Unbounded_String
+                                  (Version.Objects.To_String (E.Id));
+                           MO := E.Mode;
+                        when 2 =>
+                           A := To_Unbounded_String
+                                  (Version.Objects.To_String (E.Id));
+                           MA := E.Mode;
+                        when 3 =>
+                           B := To_Unbounded_String
+                                  (Version.Objects.To_String (E.Id));
+                           MB := E.Mode;
+                        when others =>
+                           null;
+                     end case;
+                  end if;
+               end loop;
+
+               if Builtin then
+                  Status :=
+                    Merge_One_File
+                      (Repo, To_String (O), To_String (A), To_String (B), Path,
+                       To_String (MO), To_String (MA), To_String (MB));
                else
-                  Ada.Text_IO.Put_Line ("  " & Name);
+                  declare
+                     Args : GNAT.OS_Lib.Argument_List (1 .. 2);
+                  begin
+                     Args (1) := new String'("-c");
+                     Args (2) :=
+                       new String'
+                         (Name & " " & To_String (O) & " " & To_String (A)
+                          & " " & To_String (B) & " " & Path & " "
+                          & To_String (MO) & " " & To_String (MA) & " "
+                          & To_String (MB));
+                     Status :=
+                       GNAT.OS_Lib.Spawn
+                         (Program_Name => "/bin/sh", Args => Args);
+                     GNAT.OS_Lib.Free (Args (1));
+                     GNAT.OS_Lib.Free (Args (2));
+                  end;
+               end if;
+
+               if Status /= 0 then
+                  Failed := True;
+
+                  if not Keep_Going then
+                     if not Quiet then
+                        Stderr_Line ("fatal: merge program failed");
+                     end if;
+
+                     Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                     return;
+                  end if;
                end if;
             end;
          end loop;
+
+         if Failed then
+            Set_Command_Failure;
+         end if;
+      end;
+   end Run_Merge_Index_Command;
+
+   --  The pack trio: `index-pack`, `unpack-objects` and `pack-objects`.
+   --  A pack is named after its trailing checksum, which is what all three
+   --  print.
+
+   function Read_All_Stdin return String is
+      Buffer : aliased String (1 .. 65536);
+      Acc    : Unbounded_String;
+   begin
+      loop
+         declare
+            N : constant Interfaces.C.long :=
+              Read (0, Buffer (Buffer'First)'Address,
+                    Interfaces.C.size_t (Buffer'Length));
+         begin
+            exit when N <= 0;
+            Append (Acc, Buffer (Buffer'First .. Buffer'First + Integer (N) - 1));
+         end;
+      end loop;
+
+      return To_String (Acc);
+   end Read_All_Stdin;
+
+   --  The object ids a pack index lists, in index order.
+   function Pack_Index_Ids (Idx_Path : String)
+     return Version.Objects.Object_Id_Vectors.Vector
+   is
+      use type Interfaces.Unsigned_32;
+
+      Data : constant String := Version.Files.Read_Binary_File (Idx_Path);
+
+      function U32 (At_Pos : Positive) return Interfaces.Unsigned_32 is
+        (Interfaces.Shift_Left
+           (Interfaces.Unsigned_32 (Character'Pos (Data (At_Pos))), 24)
+         or Interfaces.Shift_Left
+              (Interfaces.Unsigned_32 (Character'Pos (Data (At_Pos + 1))), 16)
+         or Interfaces.Shift_Left
+              (Interfaces.Unsigned_32 (Character'Pos (Data (At_Pos + 2))), 8)
+         or Interfaces.Unsigned_32 (Character'Pos (Data (At_Pos + 3))));
+
+      Result : Version.Objects.Object_Id_Vectors.Vector;
+   begin
+      if Data'Length < 8
+        or else Data (Data'First .. Data'First + 3)
+                /= Character'Val (255) & "tOc"
+      then
+         return Result;
       end if;
-   end Print_Branch_List;
+
+      declare
+         Width : constant Positive := 20;
+         N     : constant Natural :=
+           Natural (U32 (Data'First + 8 + 255 * 4));
+         Base  : constant Positive := Data'First + 8 + 256 * 4;
+      begin
+         for I in 0 .. N - 1 loop
+            Result.Append
+              (Version.Objects.To_Hex
+                 (Data (Base + I * Width .. Base + I * Width + Width - 1)));
+         end loop;
+      end;
+
+      return Result;
+   end Pack_Index_Ids;
+
+   --  A pack ends with the hash of everything before it; that hash names it.
+   function Pack_Checksum (Pack_Path : String) return String is
+      Data : constant String := Version.Files.Read_Binary_File (Pack_Path);
+   begin
+      if Data'Length < 20 then
+         return "";
+      end if;
+
+      return Version.Objects.To_String
+        (Version.Objects.To_Hex (Data (Data'Last - 19 .. Data'Last)));
+   end Pack_Checksum;
+
+   procedure Run_Index_Pack_Command is
+      Repo : constant Version.Repository.Repository_Handle :=
+        Version.Repository.Open;
+
+      From_Stdin : Boolean := False;
+      Pack_Arg   : Unbounded_String;
+      Idx_Out    : Unbounded_String;
+
+      Pack_Dir : constant String :=
+        Version.Files.Join
+          (Version.Files.Join
+             (Version.Repository.Common_Git_Dir (Repo), "objects"),
+           "pack");
+
+      I : Positive := 2;
+   begin
+      while I <= Count loop
+         declare
+            A : constant String := Arg (I);
+         begin
+            if A = "--stdin" then
+               From_Stdin := True;
+            elsif A = "-v" or else A = "--verify" or else A = "--keep"
+              or else A = "--fix-thin" or else A = "-q"
+            then
+               null;
+            elsif A = "-o" and then I < Count then
+               Idx_Out := To_Unbounded_String (Arg (I + 1));
+               I := I + 1;
+            elsif A'Length > 0 and then A (A'First) = '-' then
+               null;
+            else
+               Pack_Arg := To_Unbounded_String (A);
+            end if;
+         end;
+
+         I := I + 1;
+      end loop;
+
+      if not From_Stdin and then Pack_Arg = "" then
+         Error_Line ("index-pack needs a pack file or --stdin");
+         Set_Usage_Failure;
+         return;
+      end if;
+
+      declare
+         Pack_Path : Unbounded_String := Pack_Arg;
+      begin
+         if From_Stdin then
+            declare
+               Temp : constant String :=
+                 Version.Files.Join (Pack_Dir, "tmp_idx_pack.pack");
+               Data : constant String := Read_All_Stdin;
+            begin
+               Version.Files.Create_Directory_If_Missing (Pack_Dir);
+               Version.Files.Write_Binary_File (Temp, Data);
+
+               declare
+                  Sum : constant String := Pack_Checksum (Temp);
+                  Final : constant String :=
+                    Version.Files.Join (Pack_Dir, "pack-" & Sum & ".pack");
+               begin
+                  Ada.Directories.Rename (Temp, Final);
+                  Pack_Path := To_Unbounded_String (Final);
+               end;
+            end;
+         end if;
+
+         Version.Pack.Index_Pack
+           (Repo, To_String (Pack_Path), Canonicalize => From_Stdin);
+
+         if Idx_Out /= "" then
+            declare
+               Path : constant String := To_String (Pack_Path);
+               Made : constant String :=
+                 Path (Path'First .. Path'Last - 5) & ".idx";
+            begin
+               if Made /= To_String (Idx_Out) then
+                  Ada.Directories.Copy_File (Made, To_String (Idx_Out));
+               end if;
+            end;
+         end if;
+
+         Success_Line (Pack_Checksum (To_String (Pack_Path)));
+      end;
+   exception
+      when E : Ada.IO_Exceptions.Data_Error | Ada.IO_Exceptions.Name_Error
+         | Ada.IO_Exceptions.Use_Error =>
+         Error_Line (Ada.Exceptions.Exception_Message (E));
+         Set_Command_Failure;
+   end Run_Index_Pack_Command;
+
+   --  `unpack-objects [-q] [-n]` -- a pack on stdin, exploded into loose
+   --  objects.
+   procedure Run_Unpack_Objects_Command is
+      Repo : constant Version.Repository.Repository_Handle :=
+        Version.Repository.Open;
+
+      Dry : Boolean := False;
+
+      Pack_Dir : constant String :=
+        Version.Files.Join
+          (Version.Files.Join
+             (Version.Repository.Common_Git_Dir (Repo), "objects"),
+           "pack");
+   begin
+      for I in 2 .. Count loop
+         if Arg (I) = "-n" or else Arg (I) = "--dry-run" then
+            Dry := True;
+         end if;
+      end loop;
+
+      declare
+         Data : constant String := Read_All_Stdin;
+         Temp : constant String :=
+           Version.Files.Join (Pack_Dir, "tmp_unpack.pack");
+         Idx  : constant String :=
+           Version.Files.Join (Pack_Dir, "tmp_unpack.idx");
+      begin
+         if Data'Length = 0 then
+            return;
+         end if;
+
+         Version.Files.Create_Directory_If_Missing (Pack_Dir);
+         Version.Files.Write_Binary_File (Temp, Data);
+
+         begin
+            --  Index it where the object reader can see it, read every object
+            --  out, and write each one loose.
+            Version.Pack.Index_Pack (Repo, Temp, Canonicalize => False);
+
+            declare
+               Ids : constant Version.Objects.Object_Id_Vectors.Vector :=
+                 Pack_Index_Ids (Idx);
+            begin
+               for Id of Ids loop
+                  declare
+                     Obj : constant Version.Objects.Git_Object :=
+                       Version.Objects.Read_Object (Repo, Id);
+
+                     Kind : constant String :=
+                       (case Version.Objects.Kind (Obj) is
+                          when Version.Objects.Blob_Object   => "blob",
+                          when Version.Objects.Tree_Object   => "tree",
+                          when Version.Objects.Commit_Object => "commit",
+                          when Version.Objects.Tag_Object    => "tag",
+                          when others                        => "");
+
+                     Written : Version.Objects.Hex_Object_Id;
+                  begin
+                     if not Dry and then Kind /= "" then
+                        Written :=
+                          Version.Write.Write_Object
+                            (Repo, Kind, Version.Objects.Content (Obj));
+                        pragma Unreferenced (Written);
+                     end if;
+                  end;
+               end loop;
+            end;
+         exception
+            when others =>
+               if Ada.Directories.Exists (Temp) then
+                  Ada.Directories.Delete_File (Temp);
+               end if;
+
+               if Ada.Directories.Exists (Idx) then
+                  Ada.Directories.Delete_File (Idx);
+               end if;
+
+               raise;
+         end;
+
+         if Ada.Directories.Exists (Temp) then
+            Ada.Directories.Delete_File (Temp);
+         end if;
+
+         if Ada.Directories.Exists (Idx) then
+            Ada.Directories.Delete_File (Idx);
+         end if;
+      end;
+   exception
+      when E : Ada.IO_Exceptions.Data_Error | Ada.IO_Exceptions.Name_Error
+         | Ada.IO_Exceptions.Use_Error =>
+         Error_Line (Ada.Exceptions.Exception_Message (E));
+         Set_Command_Failure;
+   end Run_Unpack_Objects_Command;
+
+   --  `pack-objects [--stdout] [--revs] [<base-name>]` -- object ids on
+   --  stdin, a pack out.  version writes undeltified packs, so the bytes (and
+   --  therefore the pack's name) are its own; the pack itself is a valid one
+   --  that git reads.
+   procedure Run_Pack_Objects_Command is
+      Repo : constant Version.Repository.Repository_Handle :=
+        Version.Repository.Open;
+
+      To_Stdout : Boolean := False;
+      Base_Name : Unbounded_String;
+
+      Ids : Version.Objects.Object_Id_Vectors.Vector;
+   begin
+      for I in 2 .. Count loop
+         declare
+            A : constant String := Arg (I);
+         begin
+            if A = "--stdout" then
+               To_Stdout := True;
+            elsif A'Length > 0 and then A (A'First) = '-' then
+               null;   --  --non-empty, --delta-base-offset, -q, ... : accepted
+            else
+               Base_Name := To_Unbounded_String (A);
+            end if;
+         end;
+      end loop;
+
+      --  git reads "<oid>[ <path>]" lines and ignores everything but the id.
+      declare
+         Text : constant String := Read_All_Stdin;
+         Pos  : Natural := Text'First;
+      begin
+         while Pos <= Text'Last loop
+            declare
+               Stop : Natural :=
+                 Ada.Strings.Fixed.Index (Text, "" & ASCII.LF, Pos);
+               Line : constant String :=
+                 Text (Pos .. (if Stop = 0 then Text'Last else Stop - 1));
+               Space : constant Natural :=
+                 Ada.Strings.Fixed.Index (Line, " ");
+               Id : constant String :=
+                 (if Space = 0 then Line else Line (Line'First .. Space - 1));
+            begin
+               if Stop = 0 then
+                  Stop := Text'Last;
+               end if;
+
+               Pos := Stop + 1;
+
+               if Version.Objects.Is_Valid_Hex_Object_Id (Id) then
+                  Ids.Append (Version.Objects.To_Object_Id (Id));
+               end if;
+            end;
+         end loop;
+      end;
+
+      declare
+         Temp_Dir : constant String :=
+           Version.Files.Join
+             (Version.Repository.Common_Git_Dir (Repo), "objects");
+         Temp_Pack : constant String :=
+           Version.Files.Join (Temp_Dir, "tmp_pack_objects.pack");
+         Temp_Idx  : constant String :=
+           Version.Files.Join (Temp_Dir, "tmp_pack_objects.idx");
+      begin
+         Version.Pack_Write.Write_Pack (Repo, Ids, Temp_Pack, Temp_Idx);
+
+         declare
+            Sum : constant String := Pack_Checksum (Temp_Pack);
+         begin
+            if To_Stdout then
+               Version.Console.Put
+                 (Version.Files.Read_Binary_File (Temp_Pack));
+               Ada.Directories.Delete_File (Temp_Pack);
+               Ada.Directories.Delete_File (Temp_Idx);
+               return;
+            end if;
+
+            if Base_Name = "" then
+               Error_Line ("pack-objects needs a base name or --stdout");
+               Ada.Directories.Delete_File (Temp_Pack);
+               Ada.Directories.Delete_File (Temp_Idx);
+               Set_Usage_Failure;
+               return;
+            end if;
+
+            Ada.Directories.Rename
+              (Temp_Pack, To_String (Base_Name) & "-" & Sum & ".pack");
+            Ada.Directories.Rename
+              (Temp_Idx, To_String (Base_Name) & "-" & Sum & ".idx");
+            Success_Line (Sum);
+         end;
+      end;
+   exception
+      when E : Ada.IO_Exceptions.Data_Error | Ada.IO_Exceptions.Name_Error
+         | Ada.IO_Exceptions.Use_Error =>
+         Error_Line (Ada.Exceptions.Exception_Message (E));
+         Set_Command_Failure;
+   end Run_Pack_Objects_Command;
+
+   package Mark_Maps is new Ada.Containers.Indefinite_Hashed_Maps
+     (Key_Type        => String,
+      Element_Type    => Natural,
+      Hash            => Ada.Strings.Hash,
+      Equivalent_Keys => "=");
+
+   --  fast-import's marks point the other way: ":<n>" -> the object it named.
+   package Mark_Id_Maps is new Ada.Containers.Indefinite_Hashed_Maps
+     (Key_Type        => String,
+      Element_Type    => String,
+      Hash            => Ada.Strings.Hash,
+      Equivalent_Keys => "=");
+
+   --  `fast-export [--all] [<ref>...]` -- the history as a fast-import stream.
+   procedure Run_Fast_Export_Command is
+      Repo : constant Version.Repository.Repository_Handle :=
+        Version.Repository.Open;
+
+      Marks     : Mark_Maps.Map;
+      Next_Mark : Natural := 0;
+
+      Refs : Version.Trailers.String_Vectors.Vector;
+
+      function New_Mark (Id : String) return Natural is
+      begin
+         Next_Mark := Next_Mark + 1;
+         Marks.Include (Id, Next_Mark);
+         return Next_Mark;
+      end New_Mark;
+
+      function Mark_Image (N : Natural) return String is
+        (Ada.Strings.Fixed.Trim (Natural'Image (N), Ada.Strings.Both));
+
+      procedure Put (Text : String) is
+      begin
+         Version.Console.Put (Text);
+      end Put;
+
+      --  `data <n>` then exactly n bytes.
+      procedure Put_Data (Content : String) is
+      begin
+         Put ("data "
+              & Ada.Strings.Fixed.Trim
+                  (Natural'Image (Content'Length), Ada.Strings.Both)
+              & ASCII.LF);
+         Put (Content);
+      end Put_Data;
+
+      function Header_Line
+        (Commit : Version.Objects.Hex_Object_Id;
+         Key    : String)
+         return String
+      is
+         Data : constant String :=
+           Version.Objects.Content
+             (Version.Objects.Read_Object (Repo, Commit));
+         Pos  : Natural := Data'First;
+      begin
+         while Pos <= Data'Last loop
+            declare
+               Stop : constant Natural :=
+                 Ada.Strings.Fixed.Index (Data, "" & ASCII.LF, Pos);
+               Line : constant String :=
+                 Data (Pos .. (if Stop = 0 then Data'Last else Stop - 1));
+            begin
+               exit when Line'Length = 0;
+
+               if Line'Length > Key'Length
+                 and then Line (Line'First .. Line'First + Key'Length - 1)
+                          = Key
+               then
+                  return Line (Line'First + Key'Length .. Line'Last);
+               end if;
+
+               exit when Stop = 0;
+               Pos := Stop + 1;
+            end;
+         end loop;
+
+         return "";
+      end Header_Line;
+
+      function Commit_Message (Commit : Version.Objects.Hex_Object_Id)
+        return String
+      is
+         Data  : constant String :=
+           Version.Objects.Content
+             (Version.Objects.Read_Object (Repo, Commit));
+         Blank : constant Natural :=
+           Ada.Strings.Fixed.Index (Data, ASCII.LF & ASCII.LF);
+      begin
+         return (if Blank = 0 then "" else Data (Blank + 2 .. Data'Last));
+      end Commit_Message;
+
+      function Tree_Items (Commit : Version.Objects.Hex_Object_Id)
+        return Version.Objects.Tree_Entry_Vectors.Vector
+      is (Version.Objects.Flatten_Tree
+            (Repo,
+             Version.Objects.Commit_Tree_Id
+               (Version.Objects.Read_Object (Repo, Commit))));
+
+      --  Emit a blob the first time a commit needs it.
+      procedure Ensure_Blob (Id : Version.Objects.Hex_Object_Id) is
+         Hex : constant String := Version.Objects.To_String (Id);
+      begin
+         if Marks.Contains (Hex) then
+            return;
+         end if;
+
+         Put ("blob" & ASCII.LF);
+         Put ("mark :" & Mark_Image (New_Mark (Hex)) & ASCII.LF);
+         Put_Data
+           (Version.Objects.Content (Version.Objects.Read_Object (Repo, Id)));
+         Put ("" & ASCII.LF);
+      end Ensure_Blob;
+
+      Exported : Version.Trailers.String_Vectors.Vector;
+   begin
+      for I in 2 .. Count loop
+         declare
+            A : constant String := Arg (I);
+         begin
+            if A = "--all" then
+               for Name of Version.Refs.List_Branches (Repo) loop
+                  Refs.Append ("refs/heads/" & To_String (Name));
+               end loop;
+
+               for Name of Version.Tags.List_Tags loop
+                  Refs.Append ("refs/tags/" & To_String (Name));
+               end loop;
+            elsif A'Length > 0 and then A (A'First) = '-' then
+               null;
+            else
+               Refs.Append (A);
+            end if;
+         end;
+      end loop;
+
+      if Refs.Is_Empty then
+         return;
+      end if;
+
+      for Ref of Refs loop
+         declare
+            Is_Tag : constant Boolean :=
+              Ref'Length > 10
+              and then Ref (Ref'First .. Ref'First + 9) = "refs/tags/";
+
+            Tip : constant Version.Objects.Hex_Object_Id :=
+              Version.Revisions.Resolve_Commit (Repo, Ref);
+
+            --  The commits this ref brings that no earlier ref did, oldest
+            --  first.
+            Order   : Version.Trailers.String_Vectors.Vector;
+            Pending : Version.Trailers.String_Vectors.Vector;
+            Seen    : Version.Trailers.String_Vectors.Vector;
+         begin
+            Pending.Append (Version.Objects.To_String (Tip));
+
+            while not Pending.Is_Empty loop
+               declare
+                  C : constant String := Pending.Last_Element;
+               begin
+                  Pending.Delete_Last;
+
+                  if not Seen.Contains (C)
+                    and then not Exported.Contains (C)
+                  then
+                     Seen.Append (C);
+
+                     for P of Version.History.Parent_Commits
+                                (Repo, Version.Objects.To_Object_Id (C))
+                     loop
+                        Pending.Append (Version.Objects.To_String (P));
+                     end loop;
+                  end if;
+               end;
+            end loop;
+
+            --  Parents before children.
+            declare
+               Remaining : Version.Trailers.String_Vectors.Vector := Seen;
+            begin
+               while not Remaining.Is_Empty loop
+                  declare
+                     Progress : Boolean := False;
+                     Kept     : Version.Trailers.String_Vectors.Vector;
+                  begin
+                     for C of Remaining loop
+                        declare
+                           Ready : Boolean := True;
+                        begin
+                           for P of Version.History.Parent_Commits
+                                      (Repo, Version.Objects.To_Object_Id (C))
+                           loop
+                              declare
+                                 Hex : constant String :=
+                                   Version.Objects.To_String (P);
+                              begin
+                                 if Remaining.Contains (Hex)
+                                   and then not Order.Contains (Hex)
+                                 then
+                                    Ready := False;
+                                 end if;
+                              end;
+                           end loop;
+
+                           if Ready then
+                              Order.Append (C);
+                              Progress := True;
+                           else
+                              Kept.Append (C);
+                           end if;
+                        end;
+                     end loop;
+
+                     exit when not Progress;
+                     Remaining := Kept;
+                  end;
+               end loop;
+            end;
+
+            if Is_Tag then
+               declare
+                  Obj : constant Version.Objects.Git_Object :=
+                    Version.Objects.Read_Object
+                      (Repo, Version.Revisions.Resolve (Repo, Ref));
+                  Name : constant String :=
+                    Ref (Ref'First + 10 .. Ref'Last);
+               begin
+                  if Version.Objects.Kind (Obj) = Version.Objects.Tag_Object
+                    and then Marks.Contains (Version.Objects.To_String (Tip))
+                  then
+                     declare
+                        Data : constant String :=
+                          Version.Objects.Content (Obj);
+                        Blank : constant Natural :=
+                          Ada.Strings.Fixed.Index
+                            (Data, ASCII.LF & ASCII.LF);
+                        Tagger : Unbounded_String;
+                        Pos    : Natural := Data'First;
+                     begin
+                        while Pos <= Data'Last loop
+                           declare
+                              Stop : constant Natural :=
+                                Ada.Strings.Fixed.Index
+                                  (Data, "" & ASCII.LF, Pos);
+                              Line : constant String :=
+                                Data (Pos .. (if Stop = 0 then Data'Last
+                                              else Stop - 1));
+                           begin
+                              exit when Line'Length = 0 or else Stop = 0;
+
+                              if Line'Length > 7
+                                and then Line (Line'First .. Line'First + 6)
+                                         = "tagger "
+                              then
+                                 Tagger :=
+                                   To_Unbounded_String
+                                     (Line (Line'First + 7 .. Line'Last));
+                              end if;
+
+                              Pos := Stop + 1;
+                           end;
+                        end loop;
+
+                        Put ("tag " & Name & ASCII.LF);
+                        Put ("from :"
+                             & Mark_Image
+                                 (Marks.Element
+                                    (Version.Objects.To_String (Tip)))
+                             & ASCII.LF);
+
+                        if Tagger /= "" then
+                           Put ("tagger " & To_String (Tagger) & ASCII.LF);
+                        end if;
+
+                        Put_Data
+                          ((if Blank = 0 then ""
+                            else Data (Blank + 2 .. Data'Last)));
+                        Put ("" & ASCII.LF);
+                     end;
+                  end if;
+               end;
+            elsif Order.Is_Empty then
+               --  Nothing new: the ref just points at something we have.
+               if Marks.Contains (Version.Objects.To_String (Tip)) then
+                  Put ("reset " & Ref & ASCII.LF);
+                  Put ("from :"
+                       & Mark_Image
+                           (Marks.Element (Version.Objects.To_String (Tip)))
+                       & ASCII.LF);
+                  Put ("" & ASCII.LF);
+               end if;
+            else
+               declare
+                  First : Boolean := True;
+               begin
+                  for C of Order loop
+                     declare
+                        Id : constant Version.Objects.Hex_Object_Id :=
+                          Version.Objects.To_Object_Id (C);
+
+                        Parents : constant
+                          Version.History.Commit_Id_Vectors.Vector :=
+                            Version.History.Parent_Commits (Repo, Id);
+
+                        Items : constant
+                          Version.Objects.Tree_Entry_Vectors.Vector :=
+                            Tree_Items (Id);
+
+                        Parent_Items : constant
+                          Version.Objects.Tree_Entry_Vectors.Vector :=
+                            (if Parents.Is_Empty
+                             then Version.Objects.Tree_Entry_Vectors
+                                    .Empty_Vector
+                             else Tree_Items (Parents.First_Element));
+                     begin
+                        --  Blobs first: a commit may only refer to marks that
+                        --  already exist.
+                        for E of Items loop
+                           if E.Kind = Version.Objects.Tree_Blob then
+                              declare
+                                 Same : Boolean := False;
+                              begin
+                                 for P of Parent_Items loop
+                                    if P.Path = E.Path
+                                      and then Version.Objects.To_String (P.Id)
+                                               = Version.Objects.To_String
+                                                   (E.Id)
+                                      and then P.Mode = E.Mode
+                                    then
+                                       Same := True;
+                                    end if;
+                                 end loop;
+
+                                 if not Same then
+                                    Ensure_Blob (E.Id);
+                                 end if;
+                              end;
+                           end if;
+                        end loop;
+
+                        --  git only resets the ref when the commit it starts
+                        --  with has no parent to hang from.
+                        if First then
+                           if Parents.Is_Empty then
+                              Put ("reset " & Ref & ASCII.LF);
+                           end if;
+
+                           First := False;
+                        end if;
+
+                        Put ("commit " & Ref & ASCII.LF);
+                        Put ("mark :" & Mark_Image (New_Mark (C)) & ASCII.LF);
+                        Put ("author " & Header_Line (Id, "author ")
+                             & ASCII.LF);
+                        Put ("committer " & Header_Line (Id, "committer ")
+                             & ASCII.LF);
+                        Put_Data (Commit_Message (Id));
+
+                        if not Parents.Is_Empty then
+                           declare
+                              P0 : constant String :=
+                                Version.Objects.To_String
+                                  (Parents.First_Element);
+                           begin
+                              if Marks.Contains (P0) then
+                                 Put ("from :" & Mark_Image (Marks.Element (P0))
+                                      & ASCII.LF);
+                              end if;
+                           end;
+
+                           for K in Parents.First_Index + 1
+                                    .. Parents.Last_Index
+                           loop
+                              declare
+                                 PK : constant String :=
+                                   Version.Objects.To_String
+                                     (Parents.Element (K));
+                              begin
+                                 if Marks.Contains (PK) then
+                                    Put ("merge :"
+                                         & Mark_Image (Marks.Element (PK))
+                                         & ASCII.LF);
+                                 end if;
+                              end;
+                           end loop;
+                        end if;
+
+                        --  What changed against the first parent, in path
+                        --  order: git interleaves the M and D lines.
+                        declare
+                           Changes : Version.Trailers.String_Vectors.Vector;
+                        begin
+                           for E of Items loop
+                              if E.Kind = Version.Objects.Tree_Blob then
+                                 declare
+                                    Same : Boolean := False;
+                                 begin
+                                    for P of Parent_Items loop
+                                       if P.Path = E.Path
+                                         and then Version.Objects.To_String
+                                                    (P.Id)
+                                                  = Version.Objects.To_String
+                                                      (E.Id)
+                                         and then P.Mode = E.Mode
+                                       then
+                                          Same := True;
+                                       end if;
+                                    end loop;
+
+                                    if not Same then
+                                       Changes.Append
+                                         (To_String (E.Path) & ASCII.NUL
+                                          & "M " & To_String (E.Mode) & " :"
+                                          & Mark_Image
+                                              (Marks.Element
+                                                 (Version.Objects.To_String
+                                                    (E.Id)))
+                                          & " " & To_String (E.Path));
+                                    end if;
+                                 end;
+                              end if;
+                           end loop;
+
+                           for P of Parent_Items loop
+                              if P.Kind = Version.Objects.Tree_Blob then
+                                 declare
+                                    Gone : Boolean := True;
+                                 begin
+                                    for E of Items loop
+                                       if E.Path = P.Path then
+                                          Gone := False;
+                                       end if;
+                                    end loop;
+
+                                    if Gone then
+                                       Changes.Append
+                                         (To_String (P.Path) & ASCII.NUL
+                                          & "D " & To_String (P.Path));
+                                    end if;
+                                 end;
+                              end if;
+                           end loop;
+
+                           --  Plain insertion sort: a commit's change list is
+                           --  short.
+                           for I in Changes.First_Index + 1
+                                    .. Changes.Last_Index
+                           loop
+                              declare
+                                 Item : constant String := Changes.Element (I);
+                                 J    : Integer := I - 1;
+                              begin
+                                 while J >= Changes.First_Index
+                                   and then Changes.Element (J) > Item
+                                 loop
+                                    Changes.Replace_Element
+                                      (J + 1, Changes.Element (J));
+                                    J := J - 1;
+                                 end loop;
+
+                                 Changes.Replace_Element (J + 1, Item);
+                              end;
+                           end loop;
+
+                           for Item of Changes loop
+                              declare
+                                 NUL : constant Natural :=
+                                   Ada.Strings.Fixed.Index
+                                     (Item, "" & ASCII.NUL);
+                              begin
+                                 Put (Item (NUL + 1 .. Item'Last) & ASCII.LF);
+                              end;
+                           end loop;
+                        end;
+
+                        Put ("" & ASCII.LF);
+                        Exported.Append (C);
+                     end;
+                  end loop;
+               end;
+            end if;
+         end;
+      end loop;
+   exception
+      when E : Ada.IO_Exceptions.Data_Error | Ada.IO_Exceptions.Name_Error =>
+         Error_Line (Ada.Exceptions.Exception_Message (E));
+         Set_Command_Failure;
+   end Run_Fast_Export_Command;
+
+   --  Point a ref at an object, whatever it held before.
+   procedure Write_Ref_To
+     (Repo : Version.Repository.Repository_Handle;
+      Name : String;
+      Id   : Version.Objects.Hex_Object_Id)
+   is
+      Tx : Version.Ref_Transaction.Transaction;
+   begin
+      Version.Ref_Transaction.Start (Tx, Repo);
+      Version.Ref_Transaction.Add_Update
+        (Item => Tx, Ref_Name => Name, New_Id => Id);
+      Version.Ref_Transaction.Commit (Tx);
+   exception
+      when others =>
+         Version.Ref_Transaction.Cancel (Tx);
+         raise;
+   end Write_Ref_To;
+
+   --  `fast-import` -- build history from a fast-import stream on stdin.
+   --  Understands the commands git's own `fast-export` emits: blob/mark/data,
+   --  commit (author/committer/data/from/merge, then M and D changes), reset,
+   --  and tag.
+   procedure Run_Fast_Import_Command is
+      Repo : constant Version.Repository.Repository_Handle :=
+        Version.Repository.Open;
+
+      Text : constant String := Read_All_Stdin;
+      Pos  : Natural := Text'First;
+
+      Marks : Mark_Id_Maps.Map;   --  ":<n>" -> object id
+
+      --  The tree each ref is at, as a path -> (mode, id) list we mutate.
+      Files : Version.Staging.Index_Entry_Vectors.Vector;
+
+      function At_End return Boolean is (Pos > Text'Last);
+
+      function Next_Line return String is
+         Stop : constant Natural :=
+           Ada.Strings.Fixed.Index (Text, "" & ASCII.LF, Pos);
+         Line : constant String :=
+           Text (Pos .. (if Stop = 0 then Text'Last else Stop - 1));
+      begin
+         Pos := (if Stop = 0 then Text'Last + 1 else Stop + 1);
+         return Line;
+      end Next_Line;
+
+      function Peek_Line return String is
+         Stop : constant Natural :=
+           Ada.Strings.Fixed.Index (Text, "" & ASCII.LF, Pos);
+      begin
+         if At_End then
+            return "";
+         end if;
+
+         return Text (Pos .. (if Stop = 0 then Text'Last else Stop - 1));
+      end Peek_Line;
+
+      --  "data <n>" followed by exactly n bytes.
+      function Read_Data (Header : String) return String is
+         Count_Text : constant String :=
+           Header (Header'First + 5 .. Header'Last);
+         N : constant Natural := Natural'Value (Count_Text);
+         Content : constant String := Text (Pos .. Pos + N - 1);
+      begin
+         Pos := Pos + N;
+
+         --  An optional newline after the payload.
+         if not At_End and then Text (Pos) = ASCII.LF then
+            Pos := Pos + 1;
+         end if;
+
+         return Content;
+      end Read_Data;
+
+      function Resolve_Mark (Token : String) return String is
+      begin
+         if Token'Length > 1 and then Token (Token'First) = ':' then
+            if Marks.Contains (Token) then
+               return Marks.Element (Token);
+            end if;
+
+            return "";
+         end if;
+
+         return Token;
+      end Resolve_Mark;
+
+      procedure Set_File (Path : String; Mode : String; Id : String) is
+         Kept : Version.Staging.Index_Entry_Vectors.Vector;
+      begin
+         for E of Files loop
+            if To_String (E.Path) /= Path then
+               Kept.Append (E);
+            end if;
+         end loop;
+
+         Kept.Append
+           (Version.Staging.Index_Entry'
+              (Path  => To_Unbounded_String (Path),
+               Id    => Version.Objects.To_Object_Id (Id),
+               Mode  => To_Unbounded_String (Mode),
+               Stage => 0,
+               Skip_Worktree => False));
+         Files := Kept;
+      end Set_File;
+
+      procedure Drop_File (Path : String) is
+         Kept : Version.Staging.Index_Entry_Vectors.Vector;
+      begin
+         for E of Files loop
+            --  `D <dir>` drops everything under it.
+            if To_String (E.Path) /= Path
+              and then not (To_String (E.Path)'Length > Path'Length
+                            and then To_String (E.Path)
+                                       (1 .. Path'Length + 1)
+                                     = Path & "/")
+            then
+               Kept.Append (E);
+            end if;
+         end loop;
+
+         Files := Kept;
+      end Drop_File;
+
+      procedure Load_Files (Commit : String) is
+      begin
+         Files.Clear;
+
+         if Commit = "" then
+            return;
+         end if;
+
+         for E of Version.Objects.Flatten_Tree
+                    (Repo,
+                     Version.Objects.Commit_Tree_Id
+                       (Version.Objects.Read_Object
+                          (Repo, Version.Objects.To_Object_Id (Commit))))
+         loop
+            if E.Kind = Version.Objects.Tree_Blob then
+               Files.Append
+                 (Version.Staging.Index_Entry'
+                    (Path  => E.Path,
+                     Id    => E.Id,
+                     Mode  => E.Mode,
+                     Stage => 0,
+                     Skip_Worktree => False));
+            end if;
+         end loop;
+      end Load_Files;
+
+   begin
+      while not At_End loop
+         declare
+            Line : constant String := Next_Line;
+         begin
+            if Line'Length = 0 then
+               null;
+
+            elsif Line = "blob" then
+               declare
+                  Mark : Unbounded_String;
+               begin
+                  if Peek_Line'Length > 5
+                    and then Peek_Line (Peek_Line'First
+                                        .. Peek_Line'First + 4) = "mark "
+                  then
+                     declare
+                        M : constant String := Next_Line;
+                     begin
+                        Mark :=
+                          To_Unbounded_String (M (M'First + 5 .. M'Last));
+                     end;
+                  end if;
+
+                  declare
+                     Header : constant String := Next_Line;
+                     Blob   : constant Version.Objects.Hex_Object_Id :=
+                       Version.Write.Write_Blob (Repo, Read_Data (Header));
+                  begin
+                     if Mark /= "" then
+                        Marks.Include
+                          (To_String (Mark),
+                           Version.Objects.To_String (Blob));
+                     end if;
+                  end;
+               end;
+
+            elsif Line'Length > 7
+              and then Line (Line'First .. Line'First + 6) = "commit "
+            then
+               declare
+                  Ref : constant String := Line (Line'First + 7 .. Line'Last);
+
+                  Mark      : Unbounded_String;
+                  Author    : Unbounded_String;
+                  Committer : Unbounded_String;
+                  Message   : Unbounded_String;
+                  Parents   : Version.Objects.Object_Id_Vectors.Vector;
+                  Started   : Boolean := False;
+               begin
+                  loop
+                     exit when At_End;
+
+                     declare
+                        Next : constant String := Peek_Line;
+                     begin
+                        if Next'Length > 5
+                          and then Next (Next'First .. Next'First + 4)
+                                   = "mark "
+                        then
+                           Mark :=
+                             To_Unbounded_String
+                               (Next (Next'First + 5 .. Next'Last));
+                           Pos := Pos + Next'Length + 1;
+                        elsif Next'Length > 7
+                          and then Next (Next'First .. Next'First + 6)
+                                   = "author "
+                        then
+                           Author :=
+                             To_Unbounded_String
+                               (Next (Next'First + 7 .. Next'Last));
+                           Pos := Pos + Next'Length + 1;
+                        elsif Next'Length > 10
+                          and then Next (Next'First .. Next'First + 9)
+                                   = "committer "
+                        then
+                           Committer :=
+                             To_Unbounded_String
+                               (Next (Next'First + 10 .. Next'Last));
+                           Pos := Pos + Next'Length + 1;
+                        elsif Next'Length > 5
+                          and then Next (Next'First .. Next'First + 4)
+                                   = "data "
+                        then
+                           Pos := Pos + Next'Length + 1;
+                           Message := To_Unbounded_String (Read_Data (Next));
+                        elsif Next'Length > 5
+                          and then Next (Next'First .. Next'First + 4)
+                                   = "from "
+                        then
+                           Pos := Pos + Next'Length + 1;
+
+                           declare
+                              Id : constant String :=
+                                Resolve_Mark
+                                  (Next (Next'First + 5 .. Next'Last));
+                           begin
+                              if Id /= "" then
+                                 Parents.Append
+                                   (Version.Objects.To_Object_Id (Id));
+                                 Load_Files (Id);
+                                 Started := True;
+                              end if;
+                           end;
+                        elsif Next'Length > 6
+                          and then Next (Next'First .. Next'First + 5)
+                                   = "merge "
+                        then
+                           Pos := Pos + Next'Length + 1;
+
+                           declare
+                              Id : constant String :=
+                                Resolve_Mark
+                                  (Next (Next'First + 6 .. Next'Last));
+                           begin
+                              if Id /= "" then
+                                 Parents.Append
+                                   (Version.Objects.To_Object_Id (Id));
+                              end if;
+                           end;
+                        else
+                           exit;
+                        end if;
+                     end;
+                  end loop;
+
+                  if not Started then
+                     Files.Clear;
+                  end if;
+
+                  --  The file changes, until the blank line.
+                  loop
+                     exit when At_End;
+                     exit when Peek_Line'Length = 0;
+
+                     declare
+                        Change : constant String := Next_Line;
+                     begin
+                        if Change'Length > 2
+                          and then Change (Change'First .. Change'First + 1)
+                                   = "M "
+                        then
+                           declare
+                              Rest  : constant String :=
+                                Change (Change'First + 2 .. Change'Last);
+                              S1    : constant Natural :=
+                                Ada.Strings.Fixed.Index (Rest, " ");
+                              Mode  : constant String :=
+                                Rest (Rest'First .. S1 - 1);
+                              Rest2 : constant String :=
+                                Rest (S1 + 1 .. Rest'Last);
+                              S2    : constant Natural :=
+                                Ada.Strings.Fixed.Index (Rest2, " ");
+                              Ref_T : constant String :=
+                                Rest2 (Rest2'First .. S2 - 1);
+                              Path  : constant String :=
+                                Rest2 (S2 + 1 .. Rest2'Last);
+                           begin
+                              Set_File (Path, Mode, Resolve_Mark (Ref_T));
+                           end;
+                        elsif Change'Length > 2
+                          and then Change (Change'First .. Change'First + 1)
+                                   = "D "
+                        then
+                           Drop_File
+                             (Change (Change'First + 2 .. Change'Last));
+                        end if;
+                     end;
+                  end loop;
+
+                  declare
+                     Tree : constant Version.Objects.Hex_Object_Id :=
+                       Version.Write.Write_Tree_From_Index (Repo, Files);
+
+                     --  Write_Commit_Raw terminates the message itself; the
+                     --  stream's payload already ends in a newline.
+                     Body_Text : constant String :=
+                       (if Length (Message) > 0
+                          and then Element (Message, Length (Message))
+                                   = ASCII.LF
+                        then Slice (Message, 1, Length (Message) - 1)
+                        else To_String (Message));
+
+                     New_Commit : constant Version.Objects.Hex_Object_Id :=
+                       Version.Write.Write_Commit_Raw
+                         (Repo, Tree, Parents,
+                          To_String (Author), To_String (Committer),
+                          Body_Text);
+                  begin
+                     if Mark /= "" then
+                        Marks.Include
+                          (To_String (Mark),
+                           Version.Objects.To_String (New_Commit));
+                     end if;
+
+                     Write_Ref_To (Repo, Ref, New_Commit);
+                  end;
+               end;
+
+            elsif Line'Length > 6
+              and then Line (Line'First .. Line'First + 5) = "reset "
+            then
+               declare
+                  Ref : constant String := Line (Line'First + 6 .. Line'Last);
+               begin
+                  if not At_End and then Peek_Line'Length > 5
+                    and then Peek_Line (Peek_Line'First
+                                        .. Peek_Line'First + 4) = "from "
+                  then
+                     declare
+                        From : constant String := Next_Line;
+                        Id   : constant String :=
+                          Resolve_Mark (From (From'First + 5 .. From'Last));
+                     begin
+                        if Id /= "" then
+                           Write_Ref_To
+                             (Repo, Ref, Version.Objects.To_Object_Id (Id));
+                        end if;
+                     end;
+                  end if;
+               end;
+
+            elsif Line'Length > 4
+              and then Line (Line'First .. Line'First + 3) = "tag "
+            then
+               declare
+                  Name   : constant String := Line (Line'First + 4 .. Line'Last);
+                  Target : Unbounded_String;
+                  Tagger : Unbounded_String;
+                  Message : Unbounded_String;
+               begin
+                  loop
+                     exit when At_End;
+
+                     declare
+                        Next : constant String := Peek_Line;
+                     begin
+                        if Next'Length > 5
+                          and then Next (Next'First .. Next'First + 4)
+                                   = "from "
+                        then
+                           Pos := Pos + Next'Length + 1;
+                           Target :=
+                             To_Unbounded_String
+                               (Resolve_Mark
+                                  (Next (Next'First + 5 .. Next'Last)));
+                        elsif Next'Length > 7
+                          and then Next (Next'First .. Next'First + 6)
+                                   = "tagger "
+                        then
+                           Pos := Pos + Next'Length + 1;
+                           Tagger :=
+                             To_Unbounded_String
+                               (Next (Next'First + 7 .. Next'Last));
+                        elsif Next'Length > 5
+                          and then Next (Next'First .. Next'First + 4)
+                                   = "data "
+                        then
+                           Pos := Pos + Next'Length + 1;
+                           Message := To_Unbounded_String (Read_Data (Next));
+                        else
+                           exit;
+                        end if;
+                     end;
+                  end loop;
+
+                  if Target /= "" then
+                     --  Built by hand: the stream's tagger line has to survive
+                     --  verbatim, which Write_Tag (which stamps the current
+                     --  identity) would not do.
+                     declare
+                        Content : constant String :=
+                          "object " & To_String (Target) & ASCII.LF
+                          & "type commit" & ASCII.LF
+                          & "tag " & Name & ASCII.LF
+                          & (if Tagger = "" then ""
+                             else "tagger " & To_String (Tagger) & ASCII.LF)
+                          & ASCII.LF
+                          & To_String (Message);
+
+                        Tag_Id : constant Version.Objects.Hex_Object_Id :=
+                          Version.Write.Write_Object (Repo, "tag", Content);
+                     begin
+                        Write_Ref_To (Repo, "refs/tags/" & Name, Tag_Id);
+                     end;
+                  end if;
+               end;
+            end if;
+         end;
+      end loop;
+   exception
+      when E : Ada.IO_Exceptions.Data_Error | Ada.IO_Exceptions.Name_Error
+         | Ada.IO_Exceptions.Use_Error | Constraint_Error =>
+         Error_Line (Ada.Exceptions.Exception_Message (E));
+         Set_Command_Failure;
+   end Run_Fast_Import_Command;
+
+   --  `send-pack [--force] <repository> <refspec>...` -- push, and report as
+   --  push does.
+   procedure Run_Send_Pack_Command is
+      Repo : constant Version.Repository.Repository_Handle :=
+        Version.Repository.Open;
+
+      Force    : Boolean := False;
+      Source   : Unbounded_String;
+      Refspecs : Version.Trailers.String_Vectors.Vector;
+   begin
+      for I in 2 .. Count loop
+         declare
+            A : constant String := Arg (I);
+         begin
+            if A = "--force" or else A = "-f" then
+               Force := True;
+            elsif A'Length > 0 and then A (A'First) = '-' then
+               null;
+            elsif Source = "" then
+               Source := To_Unbounded_String (A);
+            else
+               Refspecs.Append (A);
+            end if;
+         end;
+      end loop;
+
+      if Source = "" or else Refspecs.Is_Empty then
+         Error_Line ("usage: version send-pack <repository> <refspec>...");
+         Set_Usage_Failure;
+         return;
+      end if;
+
+      Success_Line ("To " & To_String (Source));
+
+      for Spec of Refspecs loop
+         declare
+            Plus  : constant Boolean :=
+              Spec'Length > 0 and then Spec (Spec'First) = '+';
+            Body_Text : constant String :=
+              (if Plus then Spec (Spec'First + 1 .. Spec'Last) else Spec);
+            Colon : constant Natural :=
+              Ada.Strings.Fixed.Index (Body_Text, ":");
+            Src   : constant String :=
+              (if Colon = 0 then Body_Text
+               else Body_Text (Body_Text'First .. Colon - 1));
+            Dst   : constant String :=
+              (if Colon = 0 then Body_Text
+               else Body_Text (Colon + 1 .. Body_Text'Last));
+
+            Full_Dst : constant String :=
+              (if Dst'Length > 5
+                 and then Dst (Dst'First .. Dst'First + 4) = "refs/"
+               then Dst else "refs/heads/" & Dst);
+
+            Short_Src : constant String :=
+              (if Src'Length > 11
+                 and then Src (Src'First .. Src'First + 10) = "refs/heads/"
+               then Src (Src'First + 11 .. Src'Last) else Src);
+            Short_Dst : constant String :=
+              (if Full_Dst'Length > 11
+                 and then Full_Dst (Full_Dst'First .. Full_Dst'First + 10)
+                          = "refs/heads/"
+               then Full_Dst (Full_Dst'First + 11 .. Full_Dst'Last)
+               else Full_Dst);
+
+            --  What the remote has now decides the summary git prints.
+            Before : Unbounded_String;
+         begin
+            for R of Version.Fetch.List_Remote_Refs (To_String (Source)) loop
+               if To_String (R.Name) = Full_Dst then
+                  Before :=
+                    To_Unbounded_String (Version.Objects.To_String (R.Id));
+               end if;
+            end loop;
+
+            Version.Push.Push_Refspec_To
+              (Repository => To_String (Source),
+               Source     => Src,
+               Dest_Ref   => Full_Dst,
+               Force      => Force or else Plus);
+
+            declare
+               After : constant Version.Objects.Hex_Object_Id :=
+                 Version.Revisions.Resolve_Commit (Repo, Src);
+
+               function Abbrev (Hex : String) return String is
+                 (if Hex'Length >= 7 then Hex (Hex'First .. Hex'First + 6)
+                  else Hex);
+
+               Summary : constant String :=
+                 (if Before = "" then "[new branch]"
+                  else Abbrev (To_String (Before)) & ".."
+                       & Abbrev (Version.Objects.To_String (After)));
+
+               Code : constant Character :=
+                 (if Before = "" then '*' else ' ');
+
+               Pad : constant Natural :=
+                 (if Summary'Length >= 18 then 1 else 18 - Summary'Length);
+            begin
+               Success_Line
+                 (" " & Code & " " & Summary & [1 .. Pad => ' ']
+                  & Short_Src & " -> " & Short_Dst);
+            end;
+         end;
+      end loop;
+   exception
+      when E : Ada.IO_Exceptions.Data_Error | Ada.IO_Exceptions.Name_Error
+         | Ada.IO_Exceptions.Use_Error =>
+         Error_Line (Ada.Exceptions.Exception_Message (E));
+         Set_Command_Failure;
+   end Run_Send_Pack_Command;
+
+   --  `filter-branch [-f] [--index-filter <cmd>] [--tree-filter <cmd>]
+   --                  [--msg-filter <cmd>] [--subdirectory-filter <dir>]
+   --                  [--prune-empty] [--] [<rev>...]`
+   --  Rewrite history, commit by commit, oldest first.  The original ref is
+   --  kept under refs/original/.
+   procedure Run_Filter_Branch_Command is
+      Repo : constant Version.Repository.Repository_Handle :=
+        Version.Repository.Open;
+
+      Force        : Boolean := False;
+      Prune_Empty  : Boolean := False;
+      Index_Filter : Unbounded_String;
+      Tree_Filter  : Unbounded_String;
+      Msg_Filter   : Unbounded_String;
+      Sub_Dir      : Unbounded_String;
+      Revs         : Version.Trailers.String_Vectors.Vector;
+
+      I : Positive := 2;
+
+      Git_Dir : constant String := Version.Repository.Common_Git_Dir (Repo);
+
+      Temp_Index : constant String :=
+        Version.Files.Join (Git_Dir, "filter-branch-index");
+
+      --  git runs a filter in an EMPTY working tree with GIT_DIR,
+      --  GIT_WORK_TREE and GIT_INDEX_FILE pointing at the temporaries -- which
+      --  is what lets `git rm --cached` inside an index filter work at all
+      --  (in the real working tree it refuses, seeing content that differs
+      --  from both the file and HEAD).
+      Work_Dir : constant String :=
+        Version.Files.Join (Git_Dir, "filter-branch-work");
+
+      function Run (Command : String) return Integer is
+         Args   : GNAT.OS_Lib.Argument_List (1 .. 2);
+         Status : Integer;
+      begin
+         Version.Files.Create_Directory_If_Missing (Work_Dir);
+
+         Args (1) := new String'("-c");
+         Args (2) :=
+           new String'
+             ("cd '" & Work_Dir & "' && GIT_WORK_TREE=. GIT_DIR='"
+              & Ada.Directories.Full_Name (Git_Dir) & "' " & Command);
+         Status :=
+           GNAT.OS_Lib.Spawn (Program_Name => "/bin/sh", Args => Args);
+         GNAT.OS_Lib.Free (Args (1));
+         GNAT.OS_Lib.Free (Args (2));
+         return Status;
+      end Run;
+
+      Map : Mark_Id_Maps.Map;   --  old commit -> new commit
+   begin
+      while I <= Count loop
+         declare
+            A : constant String := Arg (I);
+         begin
+            if A = "-f" or else A = "--force" then
+               Force := True;
+            elsif A = "--prune-empty" then
+               Prune_Empty := True;
+            elsif A = "--index-filter" and then I < Count then
+               Index_Filter := To_Unbounded_String (Arg (I + 1));
+               I := I + 1;
+            elsif A = "--tree-filter" and then I < Count then
+               Tree_Filter := To_Unbounded_String (Arg (I + 1));
+               I := I + 1;
+            elsif A = "--msg-filter" and then I < Count then
+               Msg_Filter := To_Unbounded_String (Arg (I + 1));
+               I := I + 1;
+            elsif A = "--subdirectory-filter" and then I < Count then
+               Sub_Dir := To_Unbounded_String (Arg (I + 1));
+               I := I + 1;
+            elsif A = "--" then
+               null;
+            elsif A'Length > 0 and then A (A'First) = '-' then
+               Error_Line ("unsupported filter-branch option: " & A);
+               Set_Usage_Failure;
+               return;
+            else
+               Revs.Append (A);
+            end if;
+         end;
+
+         I := I + 1;
+      end loop;
+
+      if Revs.Is_Empty then
+         Revs.Append ("HEAD");
+      end if;
+
+      declare
+         Ref_Name : constant String :=
+           (if Revs.First_Element = "HEAD"
+              or else Revs.First_Element = "--all"
+            then (declare
+                    Branch : constant String :=
+                      Version.Refs.Current_Branch_Name (Repo);
+                  begin
+                    "refs/heads/" & Branch)
+            elsif Revs.First_Element'Length > 5
+              and then Revs.First_Element
+                         (Revs.First_Element'First
+                          .. Revs.First_Element'First + 4) = "refs/"
+            then Revs.First_Element
+            else "refs/heads/" & Revs.First_Element);
+
+         Backup : constant String := "refs/original/" & Ref_Name;
+
+         Tip : constant Version.Objects.Hex_Object_Id :=
+           Version.Revisions.Resolve_Commit (Repo, Ref_Name);
+
+         Backup_Path : constant String :=
+           Version.Files.Join (Git_Dir, Backup);
+      begin
+         if Ada.Directories.Exists (Backup_Path) and then not Force then
+            Error_Line
+              ("Cannot create a new backup." & ASCII.LF
+               & "A previous backup already exists in " & Backup & ASCII.LF
+               & "Force overwriting the backup with -f");
+            Set_Command_Failure;
+            return;
+         end if;
+
+         --  Oldest first.
+         declare
+            Order   : Version.Trailers.String_Vectors.Vector;
+            Pending : Version.Trailers.String_Vectors.Vector;
+            Seen    : Version.Trailers.String_Vectors.Vector;
+            Total   : Natural := 0;
+            Done    : Natural := 0;
+         begin
+            Pending.Append (Version.Objects.To_String (Tip));
+
+            while not Pending.Is_Empty loop
+               declare
+                  C : constant String := Pending.Last_Element;
+               begin
+                  Pending.Delete_Last;
+
+                  if not Seen.Contains (C) then
+                     Seen.Append (C);
+
+                     for P of Version.History.Parent_Commits
+                                (Repo, Version.Objects.To_Object_Id (C))
+                     loop
+                        Pending.Append (Version.Objects.To_String (P));
+                     end loop;
+                  end if;
+               end;
+            end loop;
+
+            declare
+               Remaining : Version.Trailers.String_Vectors.Vector := Seen;
+            begin
+               while not Remaining.Is_Empty loop
+                  declare
+                     Kept     : Version.Trailers.String_Vectors.Vector;
+                     Progress : Boolean := False;
+                  begin
+                     for C of Remaining loop
+                        declare
+                           Ready : Boolean := True;
+                        begin
+                           for P of Version.History.Parent_Commits
+                                      (Repo, Version.Objects.To_Object_Id (C))
+                           loop
+                              if Seen.Contains
+                                   (Version.Objects.To_String (P))
+                                and then not Order.Contains
+                                               (Version.Objects.To_String (P))
+                              then
+                                 Ready := False;
+                              end if;
+                           end loop;
+
+                           if Ready then
+                              Order.Append (C);
+                              Progress := True;
+                           else
+                              Kept.Append (C);
+                           end if;
+                        end;
+                     end loop;
+
+                     exit when not Progress;
+                     Remaining := Kept;
+                  end;
+               end loop;
+            end;
+
+            Total := Natural (Order.Length);
+
+            for C of Order loop
+               Done := Done + 1;
+
+               declare
+                  Id : constant Version.Objects.Hex_Object_Id :=
+                    Version.Objects.To_Object_Id (C);
+
+                  Old_Tree : constant Version.Objects.Hex_Object_Id :=
+                    Version.Objects.Commit_Tree_Id
+                      (Version.Objects.Read_Object (Repo, Id));
+
+                  Author, Committer : Unbounded_String;
+                  Message : Unbounded_String;
+
+                  New_Tree : Version.Objects.Hex_Object_Id := Old_Tree;
+               begin
+                  Stderr_Line
+                    ("Rewrite " & C & " ("
+                     & Ada.Strings.Fixed.Trim
+                         (Natural'Image (Done), Ada.Strings.Both)
+                     & "/"
+                     & Ada.Strings.Fixed.Trim
+                         (Natural'Image (Total), Ada.Strings.Both)
+                     & ")");
+
+                  --  Pull the commit apart.
+                  declare
+                     Data : constant String :=
+                       Version.Objects.Content
+                         (Version.Objects.Read_Object (Repo, Id));
+                     Pos  : Natural := Data'First;
+                  begin
+                     while Pos <= Data'Last loop
+                        declare
+                           Stop : constant Natural :=
+                             Ada.Strings.Fixed.Index
+                               (Data, "" & ASCII.LF, Pos);
+                           Line : constant String :=
+                             Data (Pos .. (if Stop = 0 then Data'Last
+                                           else Stop - 1));
+                        begin
+                           if Line'Length = 0 then
+                              Message :=
+                                To_Unbounded_String
+                                  (Data (Stop + 1 .. Data'Last));
+                              exit;
+                           end if;
+
+                           if Line'Length > 7
+                             and then Line (Line'First .. Line'First + 6)
+                                      = "author "
+                           then
+                              Author :=
+                                To_Unbounded_String
+                                  (Line (Line'First + 7 .. Line'Last));
+                           elsif Line'Length > 10
+                             and then Line (Line'First .. Line'First + 9)
+                                      = "committer "
+                           then
+                              Committer :=
+                                To_Unbounded_String
+                                  (Line (Line'First + 10 .. Line'Last));
+                           end if;
+
+                           exit when Stop = 0;
+                           Pos := Stop + 1;
+                        end;
+                     end loop;
+                  end;
+
+                  --  `--subdirectory-filter`: the subdirectory becomes the
+                  --  root.
+                  if Sub_Dir /= "" then
+                     declare
+                        Found : Boolean := False;
+                     begin
+                        for E of Version.Objects.Tree_Entries
+                                   (Repo, Old_Tree)
+                        loop
+                           if To_String (E.Path) = To_String (Sub_Dir)
+                             and then E.Kind = Version.Objects.Tree_Directory
+                           then
+                              New_Tree := E.Id;
+                              Found := True;
+                           end if;
+                        end loop;
+
+                        if not Found then
+                           goto Next_Commit;
+                        end if;
+                     end;
+                  end if;
+
+                  --  `--index-filter`: hand the filter an index holding this
+                  --  commit's tree, through GIT_INDEX_FILE, and take back
+                  --  whatever it leaves there.
+                  if Index_Filter /= "" then
+                     declare
+                        Entries : Version.Staging.Index_Entry_Vectors.Vector;
+                        Status  : Integer;
+                     begin
+                        for E of Version.Objects.Flatten_Tree (Repo, New_Tree)
+                        loop
+                           if E.Kind = Version.Objects.Tree_Blob then
+                              Entries.Append
+                                (Version.Staging.Index_Entry'
+                                   (Path  => E.Path,
+                                    Id    => E.Id,
+                                    Mode  => E.Mode,
+                                    Stage => 0,
+                                    Skip_Worktree => False));
+                           end if;
+                        end loop;
+
+                        if Ada.Directories.Exists (Temp_Index) then
+                           Ada.Directories.Delete_File (Temp_Index);
+                        end if;
+
+                        Ada.Environment_Variables.Set
+                          ("GIT_INDEX_FILE", Temp_Index);
+                        Version.Staging.Write (Repo, Entries);
+
+                        Status := Run (To_String (Index_Filter));
+
+                        if Status /= 0 then
+                           Ada.Environment_Variables.Clear ("GIT_INDEX_FILE");
+                           Error_Line
+                             ("index filter failed: "
+                              & To_String (Index_Filter));
+                           Set_Command_Failure;
+                           return;
+                        end if;
+
+                        New_Tree :=
+                          Version.Write.Write_Tree_From_Index
+                            (Repo, Version.Staging.Load (Repo));
+                        Ada.Environment_Variables.Clear ("GIT_INDEX_FILE");
+                     end;
+                  end if;
+
+                  --  `--tree-filter`: check the tree out, let the command
+                  --  loose on it, and take the tree back from what is left.
+                  if Tree_Filter /= "" then
+                     declare
+                        Status : Integer;
+
+                        Entries :
+                          Version.Staging.Index_Entry_Vectors.Vector;
+
+                        procedure Collect (Dir : String; Prefix : String) is
+                           Search : Ada.Directories.Search_Type;
+                           Item   : Ada.Directories.Directory_Entry_Type;
+                        begin
+                           Ada.Directories.Start_Search
+                             (Search, Dir, "",
+                              [Ada.Directories.Ordinary_File => True,
+                               Ada.Directories.Directory     => True,
+                               Ada.Directories.Special_File  => False]);
+
+                           while Ada.Directories.More_Entries (Search) loop
+                              Ada.Directories.Get_Next_Entry (Search, Item);
+
+                              declare
+                                 Simple : constant String :=
+                                   Ada.Directories.Simple_Name (Item);
+                                 Full   : constant String :=
+                                   Version.Files.Join (Dir, Simple);
+                              begin
+                                 if Simple /= "." and then Simple /= ".."
+                                   and then Simple /= ".git"
+                                 then
+                                    if Ada.Directories.Kind (Item)
+                                       = Ada.Directories.Directory
+                                    then
+                                       Collect (Full, Prefix & Simple & "/");
+                                    else
+                                       Entries.Append
+                                         (Version.Staging.Index_Entry'
+                                            (Path  =>
+                                               To_Unbounded_String
+                                                 (Prefix & Simple),
+                                             Id    =>
+                                               Version.Write.Write_Blob
+                                                 (Repo,
+                                                  Version.Files
+                                                    .Read_Binary_File (Full)),
+                                             Mode  =>
+                                               To_Unbounded_String
+                                                 (if GNAT.OS_Lib
+                                                       .Is_Executable_File
+                                                         (Version.Files
+                                                            .To_Native_Path
+                                                              (Full))
+                                                  then "100755"
+                                                  else "100644"),
+                                             Stage => 0,
+                                             Skip_Worktree => False));
+                                    end if;
+                                 end if;
+                              end;
+                           end loop;
+
+                           Ada.Directories.End_Search (Search);
+                        end Collect;
+                     begin
+                        if Ada.Directories.Exists (Work_Dir) then
+                           Ada.Directories.Delete_Tree (Work_Dir);
+                        end if;
+
+                        Version.Files.Create_Directory_If_Missing (Work_Dir);
+
+                        for E of Version.Objects.Flatten_Tree (Repo, New_Tree)
+                        loop
+                           if E.Kind = Version.Objects.Tree_Blob then
+                              declare
+                                 Target : constant String :=
+                                   Version.Files.Join
+                                     (Work_Dir, To_String (E.Path));
+                              begin
+                                 Version.Files.Create_Directory_If_Missing
+                                   (Ada.Directories.Containing_Directory
+                                      (Target));
+                                 Version.Files.Write_Binary_File
+                                   (Target,
+                                    Version.Objects.Content
+                                      (Version.Objects.Read_Object
+                                         (Repo, E.Id)));
+
+                                 if To_String (E.Mode) = "100755" then
+                                    Version.Files.Set_Executable
+                                      (Target, True);
+                                 end if;
+                              end;
+                           end if;
+                        end loop;
+
+                        Status := Run (To_String (Tree_Filter));
+
+                        if Status /= 0 then
+                           Error_Line
+                             ("tree filter failed: " & To_String (Tree_Filter));
+                           Set_Command_Failure;
+                           return;
+                        end if;
+
+                        Collect (Work_Dir, "");
+                        New_Tree :=
+                          Version.Write.Write_Tree_From_Index (Repo, Entries);
+                     end;
+                  end if;
+
+                  --  `--msg-filter`: the message goes through the command.
+                  if Msg_Filter /= "" then
+                     declare
+                        In_Path  : constant String :=
+                          Version.Files.Join (Git_Dir, "filter-branch-msg");
+                        Out_Path : constant String :=
+                          Version.Files.Join (Git_Dir, "filter-branch-msg2");
+                        Status   : Integer;
+                     begin
+                        Version.Files.Write_Binary_File
+                          (In_Path, To_String (Message));
+
+                        Status :=
+                          Run (To_String (Msg_Filter) & " < " & In_Path
+                               & " > " & Out_Path);
+
+                        if Status = 0 then
+                           Message :=
+                             To_Unbounded_String
+                               (Version.Files.Read_Binary_File (Out_Path));
+                        end if;
+
+                        if Ada.Directories.Exists (In_Path) then
+                           Ada.Directories.Delete_File (In_Path);
+                        end if;
+
+                        if Ada.Directories.Exists (Out_Path) then
+                           Ada.Directories.Delete_File (Out_Path);
+                        end if;
+                     end;
+                  end if;
+
+                  declare
+                     Parents : Version.Objects.Object_Id_Vectors.Vector;
+                     Empty   : Boolean := False;
+                  begin
+                     for P of Version.History.Parent_Commits (Repo, Id) loop
+                        declare
+                           Hex : constant String :=
+                             Version.Objects.To_String (P);
+                        begin
+                           if Map.Contains (Hex) then
+                              Parents.Append
+                                (Version.Objects.To_Object_Id
+                                   (Map.Element (Hex)));
+                           end if;
+                        end;
+                     end loop;
+
+                     --  `--prune-empty` drops a commit that changed nothing.
+                     if Prune_Empty and then Natural (Parents.Length) = 1 then
+                        declare
+                           Parent_Tree :
+                             constant Version.Objects.Hex_Object_Id :=
+                               Version.Objects.Commit_Tree_Id
+                                 (Version.Objects.Read_Object
+                                    (Repo, Parents.First_Element));
+                        begin
+                           if Version.Objects.To_String (Parent_Tree)
+                              = Version.Objects.To_String (New_Tree)
+                           then
+                              Map.Include
+                                (C,
+                                 Version.Objects.To_String
+                                   (Parents.First_Element));
+                              Empty := True;
+                           end if;
+                        end;
+                     end if;
+
+                     if not Empty then
+                        declare
+                           Body_Text : constant String := To_String (Message);
+                           Chomped   : constant String :=
+                             (if Body_Text'Length > 0
+                                and then Body_Text (Body_Text'Last) = ASCII.LF
+                              then Body_Text
+                                     (Body_Text'First .. Body_Text'Last - 1)
+                              else Body_Text);
+
+                           New_Commit : constant
+                             Version.Objects.Hex_Object_Id :=
+                               Version.Write.Write_Commit_Raw
+                                 (Repo, New_Tree, Parents,
+                                  To_String (Author), To_String (Committer),
+                                  Chomped);
+                        begin
+                           Map.Include
+                             (C, Version.Objects.To_String (New_Commit));
+                        end;
+                     end if;
+                  end;
+               end;
+
+               <<Next_Commit>>
+               null;
+            end loop;
+
+            --  Keep the old tip, then move the ref.
+            if Map.Contains (Version.Objects.To_String (Tip)) then
+               Write_Ref_To (Repo, Backup, Tip);
+               Write_Ref_To
+                 (Repo, Ref_Name,
+                  Version.Objects.To_Object_Id
+                    (Map.Element (Version.Objects.To_String (Tip))));
+
+               Stderr_Line ("Ref '" & Ref_Name & "' was rewritten");
+            end if;
+         end;
+      end;
+   exception
+      when E : Ada.IO_Exceptions.Data_Error | Ada.IO_Exceptions.Name_Error
+         | Ada.IO_Exceptions.Use_Error =>
+         Error_Line (Ada.Exceptions.Exception_Message (E));
+         Set_Command_Failure;
+   end Run_Filter_Branch_Command;
+
+   --  `repo info [--all|-z|<key>...]` and `repo structure` -- what the
+   --  repository is made of.  (git calls this command experimental.)
+   procedure Run_Repo_Command is
+      Repo : constant Version.Repository.Repository_Handle :=
+        Version.Repository.Open;
+
+      Sub : constant String := (if Count >= 2 then Arg (2) else "");
+
+      --  A bare repository has no working tree: its git dir is the root.
+      function Bare_Value return String is
+        (if Version.Config.Has_Key (Repo, "core.bare")
+           and then Version.Config.Get_Value (Repo, "core.bare") = "true"
+         then "true" else "false");
+
+      function Shallow_Value return String is
+        (if Ada.Directories.Exists
+              (Version.Files.Join
+                 (Version.Repository.Common_Git_Dir (Repo), "shallow"))
+         then "true" else "false");
+
+      function Format_Value return String is
+        (case Version.Repository.Algorithm (Repo) is
+           when Version.Hash.Sha1   => "sha1",
+           when Version.Hash.Sha256 => "sha256");
+
+      function Value_Of (Key : String) return String is
+        (if Key = "layout.bare" then Bare_Value
+         elsif Key = "layout.shallow" then Shallow_Value
+         elsif Key = "object.format" then Format_Value
+         elsif Key = "references.format" then "files"
+         else "");
+
+      All_Keys : constant array (1 .. 4) of access constant String :=
+        [new String'("layout.bare"),
+         new String'("layout.shallow"),
+         new String'("object.format"),
+         new String'("references.format")];
+   begin
+      if Sub = "info" then
+         declare
+            Use_NUL : Boolean := False;
+            Want    : Version.Trailers.String_Vectors.Vector;
+            Show_All : Boolean := False;
+         begin
+            for I in 3 .. Count loop
+               declare
+                  A : constant String := Arg (I);
+               begin
+                  if A = "--all" then
+                     Show_All := True;
+                  elsif A = "-z" or else A = "--format=nul" then
+                     Use_NUL := True;
+                  elsif A = "--format=lines" then
+                     Use_NUL := False;
+                  elsif A'Length > 0 and then A (A'First) /= '-' then
+                     Want.Append (A);
+                  end if;
+               end;
+            end loop;
+
+            if Show_All then
+               Want.Clear;
+
+               for K of All_Keys loop
+                  Want.Append (K.all);
+               end loop;
+            end if;
+
+            for Key of Want loop
+               declare
+                  Value : constant String := Value_Of (Key);
+               begin
+                  if Value = "" then
+                     Error_Line ("key '" & Key & "' not found");
+                     Set_Command_Failure;
+                     return;
+                  end if;
+
+                  --  With -z, key and value are separated by a newline and
+                  --  the record by a NUL.
+                  if Use_NUL then
+                     Version.Console.Put
+                       (Key & ASCII.LF & Value & ASCII.NUL);
+                  else
+                     Success_Line (Key & "=" & Value);
+                  end if;
+               end;
+            end loop;
+         end;
+
+      elsif Sub = "structure" then
+         --  The table git prints; version reports the same counts.
+         declare
+            Branches : constant Natural :=
+              Natural (Version.Refs.List_Branches (Repo).Length);
+            Tags     : constant Natural :=
+              Natural (Version.Tags.List_Tags.Length);
+            Remotes  : constant Natural :=
+              Natural (Version.Remotes.List_Remotes.Length);
+
+            function Cell (Text : String; Width : Positive) return String is
+               Pad : constant Integer := Width - Text'Length;
+               Left : constant Natural := Natural'Max (0, Pad / 2);
+               Right : constant Natural := Natural'Max (0, Pad - Left);
+            begin
+               return [1 .. Left => ' '] & Text & [1 .. Right => ' '];
+            end Cell;
+
+            function Row (Label : String; Value : String) return String is
+              ("| " & Label & [1 .. Natural'Max (0, 25 - Label'Length) => ' ']
+               & " |" & Cell (Value, 7) & "|");
+
+            function Img (V : Natural) return String is
+              (Ada.Strings.Fixed.Trim (Natural'Image (V), Ada.Strings.Both));
+         begin
+            Success_Line ("| Repository structure      | Value |");
+            Success_Line ("| ------------------------- | ----- |");
+            Success_Line (Row ("* References", ""));
+            Success_Line (Row ("  * Count", Img (Branches + Tags)));
+            Success_Line (Row ("    * Branches", Img (Branches)));
+            Success_Line (Row ("    * Tags", Img (Tags)));
+            Success_Line (Row ("    * Remotes", Img (Remotes)));
+            Success_Line (Row ("    * Others", "0"));
+         end;
+
+      else
+         Error_Line ("usage: version repo (info|structure)");
+         Set_Usage_Failure;
+      end if;
+   end Run_Repo_Command;
+
+   --  `http-fetch [-a] [-v] [-w <name>] <commit> <url>` -- the dumb protocol:
+   --  walk everything reachable from <commit> over ordinary GETs.
+   procedure Run_Http_Fetch_Command is
+      Repo : constant Version.Repository.Repository_Handle :=
+        Version.Repository.Open;
+
+      Verbose : Boolean := False;
+      Write_To : Unbounded_String;
+      Operands : Version.Trailers.String_Vectors.Vector;
+
+      I : Positive := 2;
+   begin
+      while I <= Count loop
+         declare
+            A : constant String := Arg (I);
+         begin
+            if A = "-v" then
+               Verbose := True;
+            elsif A = "-w" and then I < Count then
+               Write_To := To_Unbounded_String (Arg (I + 1));
+               I := I + 1;
+            elsif A'Length > 0 and then A (A'First) = '-' then
+               null;   --  -a, -c, -t, --recover: accepted
+            else
+               Operands.Append (A);
+            end if;
+         end;
+
+         I := I + 1;
+      end loop;
+
+      if Natural (Operands.Length) /= 2 then
+         Error_Line ("usage: version http-fetch [-a] [-w <name>] <commit> <url>");
+         Set_Usage_Failure;
+         return;
+      end if;
+
+      declare
+         Commit : constant Version.Objects.Hex_Object_Id :=
+           Version.Objects.To_Object_Id (Operands.Element (1));
+      begin
+         Version.Dumb_Http.Fetch
+           (Repo      => Repo,
+            Base_Url  => Operands.Element (2),
+            Commit_Id => Commit,
+            Verbose   => Verbose);
+
+         --  `-w <name>` writes the id into $GIT_DIR/refs/<name>, exactly as
+         --  git does -- name and all, so "heads/main" is the usual spelling.
+         if Write_To /= "" then
+            declare
+               Path : constant String :=
+                 Version.Files.Join
+                   (Version.Files.Join
+                      (Version.Repository.Common_Git_Dir (Repo), "refs"),
+                    To_String (Write_To));
+            begin
+               Version.Files.Create_Directory_If_Missing
+                 (Ada.Directories.Containing_Directory (Path));
+               Version.Files.Write_Binary_File
+                 (Path,
+                  Version.Objects.To_String (Commit) & ASCII.LF);
+            end;
+         end if;
+      end;
+   exception
+      when E : Ada.IO_Exceptions.Data_Error | Ada.IO_Exceptions.Name_Error
+         | Ada.IO_Exceptions.Use_Error =>
+         Error_Line (Ada.Exceptions.Exception_Message (E));
+         Set_Command_Failure;
+   end Run_Http_Fetch_Command;
+
+   --  `multi-pack-index write|verify`
+   procedure Run_Multi_Pack_Index_Command is
+      Repo : constant Version.Repository.Repository_Handle :=
+        Version.Repository.Open;
+
+      Sub : Unbounded_String;
+   begin
+      for I in 2 .. Count loop
+         declare
+            A : constant String := Arg (I);
+         begin
+            if A'Length > 0 and then A (A'First) /= '-' then
+               Sub := To_Unbounded_String (A);
+            end if;
+         end;
+      end loop;
+
+      if Sub = "write" then
+         Version.Multi_Pack_Index.Write (Repo);
+
+      elsif Sub = "verify" then
+         declare
+            Diagnostic : String (1 .. 200);
+            Last       : Natural;
+         begin
+            if not Version.Multi_Pack_Index.Verify (Repo, Diagnostic, Last)
+            then
+               Error_Line (Diagnostic (1 .. Last));
+               Set_Command_Failure;
+            end if;
+         end;
+
+      else
+         Error_Line ("usage: version multi-pack-index (write|verify)");
+         Set_Usage_Failure;
+      end if;
+   exception
+      when E : Ada.IO_Exceptions.Data_Error | Ada.IO_Exceptions.Name_Error =>
+         Error_Line (Ada.Exceptions.Exception_Message (E));
+         Set_Command_Failure;
+   end Run_Multi_Pack_Index_Command;
+
+   --  `commit-graph write [--reachable] | verify`
+   procedure Run_Commit_Graph_Command is
+      Repo : constant Version.Repository.Repository_Handle :=
+        Version.Repository.Open;
+
+      Sub : constant String := (if Count >= 2 then Arg (2) else "");
+   begin
+      if Sub = "write" then
+         Version.Commit_Graph.Write (Repo);
+
+      elsif Sub = "verify" then
+         declare
+            Diagnostic : String (1 .. 200);
+            Last       : Natural;
+         begin
+            if not Version.Commit_Graph.Verify (Repo, Diagnostic, Last) then
+               Error_Line (Diagnostic (1 .. Last));
+               Set_Command_Failure;
+            end if;
+         end;
+
+      else
+         Error_Line ("usage: version commit-graph (write|verify)");
+         Set_Usage_Failure;
+      end if;
+   exception
+      when E : Ada.IO_Exceptions.Data_Error | Ada.IO_Exceptions.Name_Error =>
+         Error_Line (Ada.Exceptions.Exception_Message (E));
+         Set_Command_Failure;
+   end Run_Commit_Graph_Command;
+
+   --  `backfill [--min-batch-size=<n>]` -- download the blobs a partial clone
+   --  left behind, so the repository is complete again.
+   procedure Run_Backfill_Command is
+      Repo : constant Version.Repository.Repository_Handle :=
+        Version.Repository.Open;
+
+      --  The remote that promised the missing objects.
+      function Promisor_Remote return String is
+      begin
+         for Item of Version.Config.Read_All (Repo) loop
+            declare
+               Section : constant String := To_String (Item.Section);
+            begin
+               if To_String (Item.Key) = "promisor"
+                 and then To_String (Item.Value) = "true"
+                 and then Section'Length > 9
+                 and then Section (Section'First .. Section'First + 7)
+                          = "remote """
+               then
+                  return Section (Section'First + 8 .. Section'Last - 1);
+               end if;
+            end;
+         end loop;
+
+         return "";
+      end Promisor_Remote;
+
+      Remote : constant String := Promisor_Remote;
+   begin
+      if Remote = "" then
+         --  Nothing was promised: nothing to backfill.
+         return;
+      end if;
+
+      declare
+         Wanted : Version.Trailers.String_Vectors.Vector;
+
+         procedure Note (Id : Version.Objects.Hex_Object_Id) is
+            Hex : constant String := Version.Objects.To_String (Id);
+         begin
+            if not Wanted.Contains (Hex) then
+               Wanted.Append (Hex);
+            end if;
+         end Note;
+
+         Names : Version.Trailers.String_Vectors.Vector;
+      begin
+         for B of Version.Refs.List_Branches (Repo) loop
+            Names.Append ("refs/heads/" & To_String (B));
+         end loop;
+
+         for T of Version.Tags.List_Tags loop
+            Names.Append ("refs/tags/" & To_String (T));
+         end loop;
+
+         --  Every blob every reachable tree names.
+         for Name of Names loop
+            declare
+               Tip : constant Version.Objects.Hex_Object_Id :=
+                 Version.Revisions.Resolve_Commit (Repo, Name);
+
+               Pending : Version.Trailers.String_Vectors.Vector;
+               Seen    : Version.Trailers.String_Vectors.Vector;
+            begin
+               Pending.Append (Version.Objects.To_String (Tip));
+
+               while not Pending.Is_Empty loop
+                  declare
+                     C : constant String := Pending.Last_Element;
+                  begin
+                     Pending.Delete_Last;
+
+                     if not Seen.Contains (C) then
+                        Seen.Append (C);
+
+                        declare
+                           Id : constant Version.Objects.Hex_Object_Id :=
+                             Version.Objects.To_Object_Id (C);
+                        begin
+                           for E of Version.Objects.Flatten_Tree
+                                      (Repo,
+                                       Version.Objects.Commit_Tree_Id
+                                         (Version.Objects.Read_Object
+                                            (Repo, Id)))
+                           loop
+                              if E.Kind = Version.Objects.Tree_Blob then
+                                 Note (E.Id);
+                              end if;
+                           end loop;
+
+                           for P of Version.History.Parent_Commits (Repo, Id)
+                           loop
+                              Pending.Append (Version.Objects.To_String (P));
+                           end loop;
+                        end;
+                     end if;
+                  end;
+               end loop;
+            end;
+         end loop;
+
+         for Hex of Wanted loop
+            declare
+               Id : constant Version.Objects.Hex_Object_Id :=
+                 Version.Objects.To_Object_Id (Hex);
+
+               Have : Boolean := True;
+            begin
+               declare
+                  Obj : constant Version.Objects.Git_Object :=
+                    Version.Objects.Read_Object (Repo, Id);
+                  pragma Unreferenced (Obj);
+               begin
+                  null;
+               exception
+                  when others =>
+                     Have := False;
+               end;
+
+               if not Have then
+                  Version.Fetch.Fetch_Object (Repo, Remote, Id);
+               end if;
+            end;
+         end loop;
+      end;
+   exception
+      when E : Ada.IO_Exceptions.Data_Error | Ada.IO_Exceptions.Name_Error =>
+         Error_Line (Ada.Exceptions.Exception_Message (E));
+         Set_Command_Failure;
+   end Run_Backfill_Command;
+
+   --  `last-modified [<rev>] [-- <path>...]` -- for every path in the tree, the
+   --  last commit that changed it, as "<oid> TAB <path>".
+   procedure Run_Last_Modified_Command is
+      Repo : constant Version.Repository.Repository_Handle :=
+        Version.Repository.Open;
+
+      Rev   : Unbounded_String := To_Unbounded_String ("HEAD");
+      Paths : Version.Trailers.String_Vectors.Vector;
+      Seen_Sep : Boolean := False;
+   begin
+      for I in 2 .. Count loop
+         declare
+            A : constant String := Arg (I);
+         begin
+            if A = "--" then
+               Seen_Sep := True;
+            elsif Seen_Sep then
+               Paths.Append (A);
+            elsif A'Length > 0 and then A (A'First) = '-' then
+               null;
+            else
+               Rev := To_Unbounded_String (A);
+            end if;
+         end;
+      end loop;
+
+      declare
+         Tip : constant Version.Objects.Hex_Object_Id :=
+           Version.Revisions.Resolve_Commit (Repo, To_String (Rev));
+
+         --  git reports one line per entry of the tree -- a directory counts
+         --  as one entry, not as its contents.
+         function Items (Commit : Version.Objects.Hex_Object_Id)
+           return Version.Objects.Tree_Entry_Vectors.Vector
+         is (Version.Objects.Tree_Entries
+               (Repo,
+                Version.Objects.Commit_Tree_Id
+                  (Version.Objects.Read_Object (Repo, Commit))));
+
+         --  Walk the history newest first, reporting each path the moment the
+         --  commit that last touched it turns up -- which is the order git
+         --  prints them in.
+         Pending : Version.Objects.Tree_Entry_Vectors.Vector;
+         Current : Version.Objects.Hex_Object_Id := Tip;
+      begin
+         for E of Items (Tip) loop
+            declare
+               Path : constant String := To_String (E.Path);
+               Take : Boolean := Paths.Is_Empty;
+            begin
+               for P of Paths loop
+                  if Path = P then
+                     Take := True;
+                  end if;
+               end loop;
+
+               if Take then
+                  Pending.Append (E);
+               end if;
+            end;
+         end loop;
+
+         loop
+            exit when Pending.Is_Empty;
+
+            declare
+               Parents : constant Version.History.Commit_Id_Vectors.Vector :=
+                 Version.History.Parent_Commits (Repo, Current);
+
+               Parent_Items :
+                 constant Version.Objects.Tree_Entry_Vectors.Vector :=
+                   (if Parents.Is_Empty
+                    then Version.Objects.Tree_Entry_Vectors.Empty_Vector
+                    else Items (Parents.First_Element));
+
+               Kept : Version.Objects.Tree_Entry_Vectors.Vector;
+            begin
+               --  In reverse: git emits a commit's paths back to front.
+               for I in reverse Pending.First_Index .. Pending.Last_Index loop
+                  declare
+                     E    : constant Version.Objects.Tree_Entry :=
+                       Pending.Element (I);
+                     Path : constant String := To_String (E.Path);
+                     Same : Boolean := False;
+                  begin
+                     for P of Parent_Items loop
+                        if To_String (P.Path) = Path
+                          and then Version.Objects.To_String (P.Id)
+                                   = Version.Objects.To_String (E.Id)
+                        then
+                           Same := True;
+                        end if;
+                     end loop;
+
+                     if Same then
+                        Kept.Append (E);
+                     else
+                        Success_Line
+                          (Version.Objects.To_String (Current) & ASCII.HT
+                           & Path);
+                     end if;
+                  end;
+               end loop;
+
+               exit when Parents.Is_Empty;
+
+               --  Kept came out reversed; put it back the way it was.
+               Pending.Clear;
+
+               for I in reverse Kept.First_Index .. Kept.Last_Index loop
+                  Pending.Append (Kept.Element (I));
+               end loop;
+
+               Current := Parents.First_Element;
+            end;
+         end loop;
+      end;
+   exception
+      when E : Ada.IO_Exceptions.Data_Error | Ada.IO_Exceptions.Name_Error =>
+         Error_Line (Ada.Exceptions.Exception_Message (E));
+         Set_Command_Failure;
+   end Run_Last_Modified_Command;
+
+   --  `refs list|verify|migrate` -- the ref store.
+   procedure Run_Refs_Command is
+      Repo : constant Version.Repository.Repository_Handle :=
+        Version.Repository.Open;
+
+      Sub : constant String := (if Count >= 2 then Arg (2) else "");
+   begin
+      if Sub = "list" then
+         declare
+            Names : Version.Trailers.String_Vectors.Vector;
+         begin
+            for B of Version.Refs.List_Branches (Repo) loop
+               Names.Append ("refs/heads/" & To_String (B));
+            end loop;
+
+            for T of Version.Tags.List_Tags loop
+               Names.Append ("refs/tags/" & To_String (T));
+            end loop;
+
+            for Name of Names loop
+               declare
+                  Id : constant Version.Objects.Hex_Object_Id :=
+                    Version.Refs.Resolve_Ref (Repo, Name);
+
+                  Kind : constant String :=
+                    (case Version.Objects.Kind
+                            (Version.Objects.Read_Object (Repo, Id)) is
+                       when Version.Objects.Commit_Object => "commit",
+                       when Version.Objects.Tag_Object    => "tag",
+                       when Version.Objects.Tree_Object   => "tree",
+                       when Version.Objects.Blob_Object   => "blob",
+                       when others                        => "unknown");
+               begin
+                  Success_Line
+                    (Version.Objects.To_String (Id) & " " & Kind & ASCII.HT
+                     & Name);
+               end;
+            end loop;
+         end;
+
+      elsif Sub = "verify" then
+         --  Every ref must name an object that is actually there.
+         declare
+            Bad : Boolean := False;
+         begin
+            for B of Version.Refs.List_Branches (Repo) loop
+               declare
+                  Name : constant String := "refs/heads/" & To_String (B);
+               begin
+                  declare
+                     Id : constant Version.Objects.Hex_Object_Id :=
+                       Version.Refs.Resolve_Ref (Repo, Name);
+                     Obj : constant Version.Objects.Git_Object :=
+                       Version.Objects.Read_Object (Repo, Id);
+                     pragma Unreferenced (Obj);
+                  begin
+                     null;
+                  end;
+               exception
+                  when others =>
+                     Error_Line (Name & ": unable to resolve");
+                     Bad := True;
+               end;
+            end loop;
+
+            if Bad then
+               Set_Command_Failure;
+            end if;
+         end;
+
+      elsif Sub = "migrate" then
+         --  version stores refs as loose files plus packed-refs; there is no
+         --  other backend to migrate to.
+         Error_Line ("refs migrate: only the files backend is supported");
+         Set_Command_Failure;
+
+      else
+         Error_Line ("usage: version refs (list|verify|migrate)");
+         Set_Usage_Failure;
+      end if;
+   end Run_Refs_Command;
+
+   --  `diff-pairs -z` -- raw diff records on stdin, patches out.
+   procedure Run_Diff_Pairs_Command is
+      Repo : constant Version.Repository.Repository_Handle :=
+        Version.Repository.Open;
+
+      Use_NUL : Boolean := False;
+   begin
+      for I in 2 .. Count loop
+         if Arg (I) = "-z" then
+            Use_NUL := True;
+         end if;
+      end loop;
+
+      if not Use_NUL then
+         Error_Line ("working without -z is not supported");
+         Set_Usage_Failure;
+         return;
+      end if;
+
+      declare
+         Text : constant String := Read_All_Stdin;
+         Pos  : Natural := Text'First;
+
+         function Next_Field return String is
+            Stop : constant Natural :=
+              Ada.Strings.Fixed.Index (Text, "" & ASCII.NUL, Pos);
+            Item : constant String :=
+              Text (Pos .. (if Stop = 0 then Text'Last else Stop - 1));
+         begin
+            Pos := (if Stop = 0 then Text'Last + 1 else Stop + 1);
+            return Item;
+         end Next_Field;
+
+         Opts : Version.Diff.Diff_Options;
+      begin
+         Opts.Context_Lines := 3;
+
+         --  Each record is ":<m1> <m2> <s1> <s2> <status>" NUL "<path>" [NUL
+         --  "<path2>" for a rename or copy].
+         while Pos <= Text'Last loop
+            declare
+               Head : constant String := Next_Field;
+            begin
+               exit when Head'Length = 0;
+
+               if Head (Head'First) = ':' then
+                  declare
+                     Fields : constant String :=
+                       Head (Head'First + 1 .. Head'Last);
+
+                     function Field (N : Positive) return String is
+                        Start : Natural := Fields'First;
+                        Stop  : Natural;
+                     begin
+                        for K in 1 .. N - 1 loop
+                           Start := Ada.Strings.Fixed.Index
+                                      (Fields, " ", Start) + 1;
+                        end loop;
+
+                        Stop := Ada.Strings.Fixed.Index (Fields, " ", Start);
+
+                        return Fields (Start ..
+                                       (if Stop = 0 then Fields'Last
+                                        else Stop - 1));
+                     end Field;
+
+                     Old_Mode : constant String := Field (1);
+                     New_Mode : constant String := Field (2);
+                     Old_Id   : constant String := Field (3);
+                     New_Id   : constant String := Field (4);
+                     Status   : constant String := Field (5);
+
+                     Path : constant String := Next_Field;
+
+                     Path2 : constant String :=
+                       (if Status'Length > 0
+                          and then Status (Status'First) in 'R' | 'C'
+                        then Next_Field else "");
+
+                     Zero : constant String := [1 .. 40 => '0'];
+
+                     function Blob_Text (Id : String) return String is
+                       (if Id = Zero then ""
+                        else Version.Objects.Content
+                               (Version.Objects.Read_Object
+                                  (Repo, Version.Objects.To_Object_Id (Id))));
+                  begin
+                     Version.Console.Put
+                       (Version.Diff.Unified_Blob_Diff
+                          (Path        => (if Path2 = "" then Path else Path2),
+                           Old_Text    => Blob_Text (Old_Id),
+                           New_Text    => Blob_Text (New_Id),
+                           Old_Present => Old_Id /= Zero,
+                           New_Present => New_Id /= Zero,
+                           Old_Id      =>
+                             Version.Objects.To_Object_Id (Old_Id),
+                           New_Id      =>
+                             Version.Objects.To_Object_Id (New_Id),
+                           Old_Mode    => Old_Mode,
+                           New_Mode    => New_Mode,
+                           Context     => 3));
+                  end;
+               end if;
+            end;
+         end loop;
+      end;
+   exception
+      when E : Ada.IO_Exceptions.Data_Error | Ada.IO_Exceptions.Name_Error =>
+         Error_Line (Ada.Exceptions.Exception_Message (E));
+         Set_Command_Failure;
+   end Run_Diff_Pairs_Command;
+
+   --  `fetch-pack [--all] <repository> [<ref>...]` -- fetch the objects the
+   --  named refs need, without touching any local ref, and print what came
+   --  back as "<oid> <ref>".
+   procedure Run_Fetch_Pack_Command is
+      All_Refs : Boolean := False;
+      Source   : Unbounded_String;
+      Wanted   : Version.Trailers.String_Vectors.Vector;
+   begin
+      for I in 2 .. Count loop
+         declare
+            A : constant String := Arg (I);
+         begin
+            if A = "--all" then
+               All_Refs := True;
+            elsif A'Length > 0 and then A (A'First) = '-' then
+               null;
+            elsif Source = "" then
+               Source := To_Unbounded_String (A);
+            else
+               Wanted.Append (A);
+            end if;
+         end;
+      end loop;
+
+      if Source = "" then
+         Error_Line ("fetch-pack needs a repository");
+         Set_Usage_Failure;
+         return;
+      end if;
+
+      declare
+         Available : constant
+           Version.Upload_Pack.Advertised_Ref_Vectors.Vector :=
+             Version.Fetch.List_Remote_Refs (To_String (Source));
+
+         Matched : Boolean := False;
+      begin
+         --  Reject an unknown ref before fetching anything, as git does.
+         if not All_Refs then
+            for W of Wanted loop
+               declare
+                  Found : Boolean := False;
+               begin
+                  for R of Available loop
+                     if To_String (R.Name) = W
+                       or else To_String (R.Name) = "refs/heads/" & W
+                     then
+                        Found := True;
+                     end if;
+                  end loop;
+
+                  if not Found then
+                     Error_Line ("no such remote ref " & W);
+                     Set_Command_Failure;
+                     return;
+                  end if;
+               end;
+            end loop;
+         end if;
+
+         Version.Fetch.Fetch_Objects_From (To_String (Source));
+
+         for R of Available loop
+            declare
+               Name : constant String := To_String (R.Name);
+               Take : Boolean := All_Refs;
+            begin
+               if not Take then
+                  for W of Wanted loop
+                     if Name = W or else Name = "refs/heads/" & W then
+                        Take := True;
+                     end if;
+                  end loop;
+               end if;
+
+               if Take
+                 and then not (Name'Length > 3
+                               and then Name (Name'Last - 2 .. Name'Last)
+                                        = "^{}")
+                 and then Name /= "HEAD"
+               then
+                  Success_Line
+                    (Version.Objects.To_String (R.Id) & " " & Name);
+                  Matched := True;
+               end if;
+            end;
+         end loop;
+
+         if not Matched and then not All_Refs then
+            Set_Command_Failure;
+         end if;
+      end;
+   exception
+      when E : Ada.IO_Exceptions.Data_Error | Ada.IO_Exceptions.Name_Error
+         | Ada.IO_Exceptions.Use_Error =>
+         Error_Line (Ada.Exceptions.Exception_Message (E));
+         Set_Command_Failure;
+   end Run_Fetch_Pack_Command;
+
+   --  `mailsplit [-o<dir>] [-b] [<mbox>...]` -- one file per message, numbered
+   --  from 1; the count goes to stdout.
+   procedure Run_Mailsplit_Command is
+      Out_Dir : Unbounded_String := To_Unbounded_String (".");
+      Inputs  : Version.Trailers.String_Vectors.Vector;
+      Text    : Unbounded_String;
+      Written : Natural := 0;
+   begin
+      for I in 2 .. Count loop
+         declare
+            A : constant String := Arg (I);
+         begin
+            if A'Length > 2 and then A (A'First .. A'First + 1) = "-o" then
+               Out_Dir := To_Unbounded_String (A (A'First + 2 .. A'Last));
+            elsif A = "-b" or else A = "-f" or else A = "-d" then
+               null;
+            elsif A'Length > 0 and then A (A'First) = '-' then
+               null;
+            else
+               Inputs.Append (A);
+            end if;
+         end;
+      end loop;
+
+      if Inputs.Is_Empty then
+         Text := To_Unbounded_String (Read_All_Stdin);
+      else
+         for Path of Inputs loop
+            Append (Text, Version.Files.Read_Binary_File (Path));
+         end loop;
+      end if;
+
+      Version.Files.Create_Directory_If_Missing (To_String (Out_Dir));
+
+      for Mail of Version.Mailbox.Split (To_String (Text)) loop
+         Written := Written + 1;
+
+         declare
+            N    : constant String :=
+              Ada.Strings.Fixed.Trim (Natural'Image (Written),
+                                      Ada.Strings.Both);
+            Name : constant String :=
+              [1 .. 4 - N'Length => '0'] & N;
+         begin
+            Version.Files.Write_Binary_File
+              (Version.Files.Join (To_String (Out_Dir), Name), Mail);
+         end;
+      end loop;
+
+      Success_Line
+        (Ada.Strings.Fixed.Trim (Natural'Image (Written), Ada.Strings.Both));
+   exception
+      when E : Ada.IO_Exceptions.Name_Error | Ada.IO_Exceptions.Use_Error =>
+         Error_Line (Ada.Exceptions.Exception_Message (E));
+         Set_Command_Failure;
+   end Run_Mailsplit_Command;
+
+   --  `mailinfo <msg> <patch>` -- a mail on stdin; its authorship goes to
+   --  stdout, its commit message to <msg>, and the patch to <patch>.
+   procedure Run_Mailinfo_Command is
+      Files : Version.Trailers.String_Vectors.Vector;
+   begin
+      for I in 2 .. Count loop
+         declare
+            A : constant String := Arg (I);
+         begin
+            if A'Length > 0 and then A (A'First) = '-' then
+               null;   --  -k, -u, --encoding=..., --scissors: accepted
+            else
+               Files.Append (A);
+            end if;
+         end;
+      end loop;
+
+      if Natural (Files.Length) /= 2 then
+         Error_Line ("usage: version mailinfo <msg> <patch> < mail");
+         Set_Usage_Failure;
+         return;
+      end if;
+
+      declare
+         Mail : constant Version.Mailbox.Message :=
+           Version.Mailbox.Parse (Read_All_Stdin);
+      begin
+         Success_Line ("Author: " & To_String (Mail.Author_Name));
+         Success_Line ("Email: " & To_String (Mail.Author_Email));
+         Success_Line ("Subject: " & To_String (Mail.Subject));
+         Success_Line ("Date: " & To_String (Mail.Date));
+         Success_Line ("");
+
+         --  Verbatim: the body already carries its own newlines.
+         Version.Files.Write_Binary_File
+           (Files.Element (1), To_String (Mail.Body_Text));
+         Version.Files.Write_Binary_File
+           (Files.Element (2), To_String (Mail.Patch));
+      end;
+   exception
+      when E : Ada.IO_Exceptions.Name_Error | Ada.IO_Exceptions.Use_Error =>
+         Error_Line (Ada.Exceptions.Exception_Message (E));
+         Set_Command_Failure;
+   end Run_Mailinfo_Command;
+
+   --  The merge-strategy backends git keeps as separate commands:
+   --    merge-<strategy> <base>... -- <head> <remote>...
+   --  They merge into the index and working tree and do *not* commit; git's
+   --  `merge -s <strategy>` drives them.  version implements the strategies
+   --  natively, so these are the same machinery under git's plumbing names.
+   type Strategy_Backend is
+     (Backend_Ours,
+      Backend_Recursive,
+      Backend_Recursive_Ours,
+      Backend_Recursive_Theirs,
+      Backend_Subtree,
+      Backend_Resolve,
+      Backend_Octopus);
+
+   procedure Run_Merge_Backend (Backend : Strategy_Backend) is
+      Repo : constant Version.Repository.Repository_Handle :=
+        Version.Repository.Open;
+
+      Bases   : Version.Trailers.String_Vectors.Vector;
+      Head    : Unbounded_String;
+      Remotes : Version.Trailers.String_Vectors.Vector;
+      Sep     : Boolean := False;
+
+      function Tree_Of (Commit : Version.Objects.Hex_Object_Id)
+        return Version.Objects.Tree_Entry_Vectors.Vector
+      is (Version.Objects.Flatten_Tree
+            (Repo,
+             Version.Objects.Commit_Tree_Id
+               (Version.Objects.Read_Object (Repo, Commit))));
+   begin
+      for I in 2 .. Count loop
+         declare
+            A : constant String := Arg (I);
+         begin
+            if A = "--" then
+               Sep := True;
+            elsif not Sep then
+               Bases.Append (A);
+            elsif Head = "" then
+               Head := To_Unbounded_String (A);
+            else
+               Remotes.Append (A);
+            end if;
+         end;
+      end loop;
+
+      --  `merge-ours` keeps our tree whatever the other side did.
+      if Backend = Backend_Ours then
+         return;
+      end if;
+
+      if Head = "" or else Remotes.Is_Empty then
+         Ada.Command_Line.Set_Exit_Status (Ada.Command_Line.Exit_Status (2));
+         return;
+      end if;
+
+      --  Only octopus takes more than one remote; only it rejects fewer.
+      if Backend = Backend_Octopus then
+         if Natural (Remotes.Length) < 2 then
+            Ada.Command_Line.Set_Exit_Status
+              (Ada.Command_Line.Exit_Status (2));
+            return;
+         end if;
+      elsif Natural (Remotes.Length) > 1 then
+         Ada.Command_Line.Set_Exit_Status (Ada.Command_Line.Exit_Status (2));
+         return;
+      end if;
+
+      if Bases.Is_Empty and then Backend = Backend_Resolve then
+         --  A baseless merge is not resolve's business.
+         Ada.Command_Line.Set_Exit_Status (Ada.Command_Line.Exit_Status (2));
+         return;
+      end if;
+
+      declare
+         Head_Id : constant Version.Objects.Hex_Object_Id :=
+           Version.Revisions.Resolve_Commit (Repo, To_String (Head));
+
+         Remote_Id : constant Version.Objects.Hex_Object_Id :=
+           Version.Revisions.Resolve_Commit (Repo, Remotes.First_Element);
+
+         Base_Id : constant Version.Objects.Hex_Object_Id :=
+           (if Bases.Is_Empty
+            then Version.History.Merge_Base (Repo, Head_Id, Remote_Id)
+            else Version.Revisions.Resolve_Commit (Repo, Bases.First_Element));
+
+         Raw_Base    : constant Version.Objects.Tree_Entry_Vectors.Vector :=
+           (if Version.Objects.Id_Length (Base_Id) > 0 then Tree_Of (Base_Id)
+            else Version.Objects.Tree_Entry_Vectors.Empty_Vector);
+         Ours_Items  : constant Version.Objects.Tree_Entry_Vectors.Vector :=
+           Tree_Of (Head_Id);
+         Raw_Theirs  : constant Version.Objects.Tree_Entry_Vectors.Vector :=
+           Tree_Of (Remote_Id);
+
+         --  `merge-subtree` is recursive with the other side's tree shifted
+         --  under the prefix it lives at in ours.
+         Base_Items   : constant Version.Objects.Tree_Entry_Vectors.Vector :=
+           (if Backend = Backend_Subtree
+            then Version.Branch.Shift_Subtree_Items
+                   (Raw_Base, Ours_Items, Raw_Theirs)
+            else Raw_Base);
+         Theirs_Items : constant Version.Objects.Tree_Entry_Vectors.Vector :=
+           (if Backend = Backend_Subtree
+            then Version.Branch.Shift_Subtree_Items
+                   (Raw_Theirs, Ours_Items, Raw_Theirs)
+            else Raw_Theirs);
+
+         function Entry_Of
+           (Items : Version.Objects.Tree_Entry_Vectors.Vector;
+            Path  : String;
+            Found : out Boolean)
+            return Version.Objects.Tree_Entry
+         is
+         begin
+            for E of Items loop
+               if To_String (E.Path) = Path then
+                  Found := True;
+                  return E;
+               end if;
+            end loop;
+
+            Found := False;
+            return Version.Objects.Tree_Entry'
+              (Path => To_Unbounded_String (Path),
+               Id   => Version.Objects.Zero_Object_Id,
+               Kind => Version.Objects.Tree_Blob,
+               Mode => Null_Unbounded_String);
+         end Entry_Of;
+
+         --  The paths both sides changed, differently: exactly the ones a
+         --  content merge has to look at.
+         Needs_Merge : Version.Trailers.String_Vectors.Vector;
+      begin
+         for E of Ours_Items loop
+            declare
+               Path : constant String := To_String (E.Path);
+               In_Base, In_Theirs : Boolean;
+               O : constant Version.Objects.Tree_Entry :=
+                 Entry_Of (Base_Items, Path, In_Base);
+               B : constant Version.Objects.Tree_Entry :=
+                 Entry_Of (Theirs_Items, Path, In_Theirs);
+            begin
+               if In_Theirs
+                 and then Version.Objects.To_String (E.Id)
+                          /= Version.Objects.To_String (B.Id)
+                 and then (not In_Base
+                           or else (Version.Objects.To_String (E.Id)
+                                    /= Version.Objects.To_String (O.Id)
+                                    and then Version.Objects.To_String (B.Id)
+                                             /= Version.Objects.To_String
+                                                  (O.Id)))
+               then
+                  Needs_Merge.Append (Path);
+               end if;
+            end;
+         end loop;
+
+         --  `merge-resolve` says what it is doing before it does it.
+         if Backend = Backend_Resolve and then not Needs_Merge.Is_Empty then
+            Success_Line ("Trying simple merge.");
+            Success_Line ("Simple merge failed, trying Automatic merge.");
+         elsif Backend = Backend_Resolve then
+            Success_Line ("Trying simple merge.");
+         end if;
+
+         declare
+            Merged    : Version.Staging.Index_Entry_Vectors.Vector;
+            Conflicts : Version.Merge.Conflict_Vectors.Vector;
+            Behavior  : Version.Merge.Merge_Behavior;
+         begin
+            Behavior.Update_Worktree := True;
+            Behavior.Base_Label :=
+              To_Unbounded_String
+                (Version.Merge.Base_Label_For (Repo, Base_Id));
+
+            --  git's `merge-recursive-ours`/`-theirs` do NOT favour a side:
+            --  cmd_merge_recursive only reads a `-subtree` suffix off argv[0],
+            --  so both behave as plain recursive.  (`-Xours` is what favours.)
+            --  Verified against git -- do not "fix" this into a favoured merge.
+            null;
+
+            Version.Merge.Merge_Trees
+              (Repo          => Repo,
+               Current_Name  => To_String (Head),
+               Target_Name   => Remotes.First_Element,
+               Base_Items    => Base_Items,
+               Current_Items => Ours_Items,
+               Target_Items  => Theirs_Items,
+               Merged_Index  => Merged,
+               Conflicts     => Conflicts,
+               Behavior      => Behavior);
+
+            Version.Staging.Write (Repo, Merged);
+
+            --  git names every path it had to merge the content of, then every
+            --  one where that failed.
+            for Path of Needs_Merge loop
+               Success_Line ("Auto-merging " & Path);
+            end loop;
+
+            for C of Conflicts loop
+               case C.Kind is
+                  when Version.Merge.Binary_Conflict =>
+                     Success_Line
+                       ("CONFLICT (binary): Merge conflict in "
+                        & To_String (C.Path));
+                  when others =>
+                     Success_Line
+                       ("CONFLICT (content): Merge conflict in "
+                        & To_String (C.Path));
+               end case;
+            end loop;
+
+            if not Conflicts.Is_Empty then
+               Set_Command_Failure;
+            end if;
+         end;
+      end;
+   exception
+      when E : Ada.IO_Exceptions.Data_Error | Ada.IO_Exceptions.Name_Error
+         | Ada.IO_Exceptions.Use_Error =>
+         Error_Line (Ada.Exceptions.Exception_Message (E));
+         Ada.Command_Line.Set_Exit_Status (Ada.Command_Line.Exit_Status (2));
+   end Run_Merge_Backend;
+
+   --  `merge-tree --write-tree [--name-only] [-z] [--merge-base=<c>] <b1> <b2>`
+   --  Merge two commits without a worktree or an index: print the merged
+   --  tree's id, and -- when the merge conflicted -- the stage 1/2/3 entries
+   --  of every conflicted path, a blank line, and the merge's messages.
+   procedure Run_Merge_Tree_Command is
+      Repo : constant Version.Repository.Repository_Handle :=
+        Version.Repository.Open;
+
+      Name_Only : Boolean := False;
+      Use_NUL   : Boolean := False;
+      Messages  : Boolean := True;
+      Base_Spec : Unbounded_String;
+      Operands  : Version.Trailers.String_Vectors.Vector;
+
+      Sep : Character;
+   begin
+      for I in 2 .. Count loop
+         declare
+            A : constant String := Arg (I);
+         begin
+            if A = "--write-tree" then
+               null;
+            elsif A = "--name-only" or else A = "--name-status" then
+               Name_Only := True;
+            elsif A = "-z" then
+               Use_NUL := True;
+            elsif A = "--messages" then
+               Messages := True;
+            elsif A = "--no-messages" then
+               Messages := False;
+            elsif A = "--allow-unrelated-histories" then
+               null;
+            elsif A'Length > 13
+              and then A (A'First .. A'First + 12) = "--merge-base="
+            then
+               Base_Spec := To_Unbounded_String (A (A'First + 13 .. A'Last));
+            elsif A'Length > 0 and then A (A'First) = '-' then
+               Error_Line ("unknown option: " & A);
+               Set_Usage_Failure;
+               return;
+            else
+               Operands.Append (A);
+            end if;
+         end;
+      end loop;
+
+      if Natural (Operands.Length) /= 2 then
+         Error_Line ("merge-tree takes two commits");
+         Set_Usage_Failure;
+         return;
+      end if;
+
+      Sep := (if Use_NUL then ASCII.NUL else ASCII.LF);
+
+      declare
+         Ours_Name   : constant String := Operands.Element (1);
+         Theirs_Name : constant String := Operands.Element (2);
+
+         Ours_Id : constant Version.Objects.Hex_Object_Id :=
+           Version.Revisions.Resolve_Commit (Repo, Ours_Name);
+         Theirs_Id : constant Version.Objects.Hex_Object_Id :=
+           Version.Revisions.Resolve_Commit (Repo, Theirs_Name);
+
+         Base_Id : constant Version.Objects.Hex_Object_Id :=
+           (if Base_Spec /= ""
+            then Version.Revisions.Resolve_Commit (Repo, To_String (Base_Spec))
+            else Version.History.Merge_Base (Repo, Ours_Id, Theirs_Id));
+
+         function Items (Commit : Version.Objects.Hex_Object_Id)
+           return Version.Objects.Tree_Entry_Vectors.Vector
+         is (Version.Objects.Flatten_Tree
+               (Repo,
+                Version.Objects.Commit_Tree_Id
+                  (Version.Objects.Read_Object (Repo, Commit))));
+
+         Base_Items   : constant Version.Objects.Tree_Entry_Vectors.Vector :=
+           (if Version.Objects.Id_Length (Base_Id) > 0 then Items (Base_Id)
+            else Version.Objects.Tree_Entry_Vectors.Empty_Vector);
+         Ours_Items   : constant Version.Objects.Tree_Entry_Vectors.Vector :=
+           Items (Ours_Id);
+         Theirs_Items : constant Version.Objects.Tree_Entry_Vectors.Vector :=
+           Items (Theirs_Id);
+
+         Merged    : Version.Staging.Index_Entry_Vectors.Vector;
+         Conflicts : Version.Merge.Conflict_Vectors.Vector;
+
+         Behavior : Version.Merge.Merge_Behavior;
+      begin
+         --  No worktree, no index: the conflicted content becomes a blob in
+         --  the tree we hand back, which is what `merge-tree` means by it.
+         Behavior.Update_Worktree := False;
+         Behavior.Materialize_Virtual_Conflicts := True;
+         Behavior.Base_Label :=
+           To_Unbounded_String
+             (Version.Merge.Base_Label_For (Repo, Base_Id));
+
+         Version.Merge.Merge_Trees
+           (Repo          => Repo,
+            Current_Name  => Ours_Name,
+            Target_Name   => Theirs_Name,
+            Base_Items    => Base_Items,
+            Current_Items => Ours_Items,
+            Target_Items  => Theirs_Items,
+            Merged_Index  => Merged,
+            Conflicts     => Conflicts,
+            Behavior      => Behavior);
+
+         declare
+            Stage_0 : Version.Staging.Index_Entry_Vectors.Vector;
+         begin
+            for E of Merged loop
+               if E.Stage = 0 then
+                  Stage_0.Append (E);
+               end if;
+            end loop;
+
+            Version.Console.Put
+              (Version.Objects.To_String
+                 (Version.Write.Write_Tree_From_Index (Repo, Stage_0))
+               & Sep);
+         end;
+
+         if Conflicts.Is_Empty then
+            return;
+         end if;
+
+         --  The conflicted paths, as the index would hold them.
+         for C of Conflicts loop
+            declare
+               Path : constant String := To_String (C.Path);
+
+               procedure Emit
+                 (Items : Version.Objects.Tree_Entry_Vectors.Vector;
+                  Stage : Natural)
+               is
+               begin
+                  for E of Items loop
+                     if To_String (E.Path) = Path then
+                        Version.Console.Put
+                          (To_String (E.Mode) & " "
+                           & Version.Objects.To_String (E.Id) & " "
+                           & Ada.Strings.Fixed.Trim
+                               (Natural'Image (Stage), Ada.Strings.Both)
+                           & ASCII.HT
+                           & Path & Sep);
+                     end if;
+                  end loop;
+               end Emit;
+            begin
+               if Name_Only then
+                  Version.Console.Put (Path & Sep);
+               else
+                  Emit (Base_Items, 1);
+                  Emit (Ours_Items, 2);
+                  Emit (Theirs_Items, 3);
+               end if;
+            end;
+         end loop;
+
+         if Messages then
+            Version.Console.Put ("" & ASCII.LF);
+
+            for C of Conflicts loop
+               declare
+                  Path : constant String := To_String (C.Path);
+               begin
+                  case C.Kind is
+                     when Version.Merge.Binary_Conflict =>
+                        Version.Console.Put
+                          ("CONFLICT (binary): Merge conflict in " & Path
+                           & ASCII.LF);
+                     when others =>
+                        Version.Console.Put
+                          ("Auto-merging " & Path & ASCII.LF);
+                        Version.Console.Put
+                          ("CONFLICT (content): Merge conflict in " & Path
+                           & ASCII.LF);
+                  end case;
+               end;
+            end loop;
+         end if;
+
+         Set_Command_Failure;
+      end;
+   exception
+      when E : Ada.IO_Exceptions.Data_Error | Ada.IO_Exceptions.Name_Error
+         | Ada.IO_Exceptions.Use_Error =>
+         Error_Line (Ada.Exceptions.Exception_Message (E));
+         Set_Command_Failure;
+   end Run_Merge_Tree_Command;
+
+   --  `ls-remote [--heads] [--tags] [-q] [--exit-code] [<repository>]`
+   procedure Run_Ls_Remote_Command is
+      Heads : Boolean := False;
+      Tags  : Boolean := False;
+      Exit_Code : Boolean := False;
+      Remote : Unbounded_String;
+      Patterns : Version.Trailers.String_Vectors.Vector;
+   begin
+      for I in 2 .. Count loop
+         declare
+            A : constant String := Arg (I);
+         begin
+            if A = "--heads" or else A = "-h" then
+               Heads := True;
+            elsif A = "--tags" or else A = "-t" then
+               Tags := True;
+            elsif A = "--exit-code" then
+               Exit_Code := True;
+            elsif A = "-q" or else A = "--quiet" then
+               null;
+            elsif A = "--refs" then
+               null;
+            elsif A'Length > 0 and then A (A'First) = '-' then
+               Error_Line ("unknown option: " & A);
+               Set_Usage_Failure;
+               return;
+            elsif Remote = "" then
+               Remote := To_Unbounded_String (A);
+            else
+               Patterns.Append (A);
+            end if;
+         end;
+      end loop;
+
+      if Remote = "" then
+         Remote := To_Unbounded_String ("origin");
+      end if;
+
+      declare
+         Refs : constant Version.Upload_Pack.Advertised_Ref_Vectors.Vector :=
+           Version.Fetch.List_Remote_Refs (To_String (Remote));
+         Shown : Natural := 0;
+
+         function Wanted (Name : String) return Boolean is
+            Is_Head : constant Boolean :=
+              Name'Length > 11
+              and then Name (Name'First .. Name'First + 10) = "refs/heads/";
+            Is_Tag  : constant Boolean :=
+              Name'Length > 10
+              and then Name (Name'First .. Name'First + 9) = "refs/tags/";
+         begin
+            if Heads and then not Tags then
+               return Is_Head;
+            elsif Tags and then not Heads then
+               return Is_Tag;
+            elsif Heads and then Tags then
+               return Is_Head or else Is_Tag;
+            else
+               return True;
+            end if;
+         end Wanted;
+
+         function Selected (Name : String) return Boolean is
+         begin
+            if Patterns.Is_Empty then
+               return True;
+            end if;
+
+            for P of Patterns loop
+               --  git matches a pattern against the tail of the ref name.
+               if Name = P
+                 or else (Name'Length > P'Length
+                          and then Name (Name'Last - P'Length .. Name'Last)
+                                   = "/" & P)
+               then
+                  return True;
+               end if;
+            end loop;
+
+            return False;
+         end Selected;
+
+      begin
+         for R of Refs loop
+            declare
+               Name : constant String := To_String (R.Name);
+               Bare : constant String :=
+                 (if Name'Length > 3
+                    and then Name (Name'Last - 2 .. Name'Last) = "^{}"
+                  then Name (Name'First .. Name'Last - 3) else Name);
+            begin
+               if Wanted (Name) and then Selected (Bare) then
+                  Success_Line
+                    (Version.Objects.To_String (R.Id) & ASCII.HT & Name);
+                  Shown := Shown + 1;
+               end if;
+            end;
+         end loop;
+
+         if Exit_Code and then Shown = 0 then
+            Ada.Command_Line.Set_Exit_Status (Ada.Command_Line.Exit_Status (2));
+         end if;
+      end;
+   exception
+      when E : Ada.IO_Exceptions.Data_Error | Ada.IO_Exceptions.Name_Error
+         | Ada.IO_Exceptions.Use_Error =>
+         Error_Line (Ada.Exceptions.Exception_Message (E));
+         Set_Command_Failure;
+   end Run_Ls_Remote_Command;
+
+   --  `check-attr [-a|--all] [--] <attr>... <pathname>...`
+   procedure Run_Check_Attr_Command is
+      Repo : constant Version.Repository.Repository_Handle :=
+        Version.Repository.Open;
+
+      All_Attrs : Boolean := False;
+      Names     : Version.Trailers.String_Vectors.Vector;
+      Paths     : Version.Trailers.String_Vectors.Vector;
+      Seen_Sep  : Boolean := False;
+   begin
+      for I in 2 .. Count loop
+         declare
+            A : constant String := Arg (I);
+         begin
+            if not Seen_Sep and then (A = "-a" or else A = "--all") then
+               All_Attrs := True;
+            elsif not Seen_Sep and then A = "--" then
+               Seen_Sep := True;
+            elsif not Seen_Sep and then A'Length > 0 and then A (A'First) = '-'
+            then
+               Error_Line ("unknown option: " & A);
+               Set_Usage_Failure;
+               return;
+            elsif not All_Attrs and then not Seen_Sep and then Paths.Is_Empty
+              and then Names.Is_Empty
+            then
+               Names.Append (A);
+            elsif not All_Attrs and then not Seen_Sep then
+               --  Without `--`, git reads attribute names until the first one
+               --  that names an existing file.
+               if Ada.Directories.Exists (A) then
+                  Paths.Append (A);
+               else
+                  Names.Append (A);
+               end if;
+            else
+               Paths.Append (A);
+            end if;
+         end;
+      end loop;
+
+      if Paths.Is_Empty then
+         Error_Line ("no pathname given");
+         Set_Usage_Failure;
+         return;
+      end if;
+
+      for P of Paths loop
+         if All_Attrs then
+            for Item of Version.Attributes.All_For_Path (Repo, P) loop
+               Success_Line
+                 (P & ": " & To_String (Item.Name) & ": "
+                  & Version.Attributes.State_Image (Item.Result));
+            end loop;
+         else
+            for N of Names loop
+               Success_Line
+                 (P & ": " & N & ": "
+                  & Version.Attributes.State_Image
+                      (Version.Attributes.Lookup (Repo, P, N)));
+            end loop;
+         end if;
+      end loop;
+   end Run_Check_Attr_Command;
+
+   --  `check-mailmap <contact>...` -- the canonical identity for each.
+   procedure Run_Check_Mailmap_Command is
+      Repo : constant Version.Repository.Repository_Handle :=
+        Version.Repository.Open;
+      Map  : constant Version.Mailmap.Entries := Version.Mailmap.Load (Repo);
+      Any  : Boolean := False;
+   begin
+      for I in 2 .. Count loop
+         declare
+            Contact : constant String := Arg (I);
+            LT : constant Natural := Ada.Strings.Fixed.Index (Contact, "<");
+            GT : constant Natural := Ada.Strings.Fixed.Index (Contact, ">");
+         begin
+            if LT = 0 or else GT < LT then
+               Error_Line ("unable to parse contact: " & Contact);
+               Set_Command_Failure;
+               return;
+            end if;
+
+            declare
+               Name  : constant String :=
+                 Ada.Strings.Fixed.Trim
+                   (Contact (Contact'First .. LT - 1), Ada.Strings.Both);
+               Email : constant String := Contact (LT + 1 .. GT - 1);
+               Out_Name, Out_Email : Unbounded_String;
+            begin
+               Version.Mailmap.Apply (Map, Name, Email, Out_Name, Out_Email);
+               Success_Line
+                 ((if Out_Name = "" then ""
+                   else To_String (Out_Name) & " ")
+                  & "<" & To_String (Out_Email) & ">");
+               Any := True;
+            end;
+         end;
+      end loop;
+
+      if not Any then
+         Error_Line ("no contacts specified");
+         Set_Usage_Failure;
+      end if;
+   end Run_Check_Mailmap_Command;
+
+   --  `for-each-repo --config=<key> [--] <command>...` -- run a version
+   --  command in each repository the configuration lists.
+   procedure Run_For_Each_Repo_Command is
+      Repo : constant Version.Repository.Repository_Handle :=
+        Version.Repository.Open;
+
+      Key      : Unbounded_String;
+      Argv     : Version.Trailers.String_Vectors.Vector;
+      Seen_Sep : Boolean := False;
+      Old_Dir  : constant String := Ada.Directories.Current_Directory;
+   begin
+      for I in 2 .. Count loop
+         declare
+            A : constant String := Arg (I);
+         begin
+            if not Seen_Sep and then A'Length > 9
+              and then A (A'First .. A'First + 8) = "--config="
+            then
+               Key := To_Unbounded_String (A (A'First + 9 .. A'Last));
+            elsif not Seen_Sep and then A = "--" then
+               Seen_Sep := True;
+            else
+               Seen_Sep := True;
+               Argv.Append (A);
+            end if;
+         end;
+      end loop;
+
+      if Key = "" then
+         Error_Line ("missing --config=<config>");
+         Set_Usage_Failure;
+         return;
+      end if;
+
+      if Argv.Is_Empty then
+         return;
+      end if;
+
+      declare
+         Command : Unbounded_String;
+      begin
+         for A of Argv loop
+            if Command /= "" then
+               Append (Command, " ");
+            end if;
+
+            Append (Command, A);
+         end loop;
+
+         --  Every value of the multi-valued key names a repository.
+         for Item of Version.Config.Read_All (Repo) loop
+            declare
+               Full : constant String :=
+                 To_String (Item.Section) & "." & To_String (Item.Key);
+            begin
+               if Full = To_String (Key) then
+                  declare
+                     Args   : GNAT.OS_Lib.Argument_List (1 .. 2);
+                     Status : Integer;
+                  begin
+                     Ada.Directories.Set_Directory (To_String (Item.Value));
+                     Args (1) := new String'("-c");
+                     Args (2) :=
+                       new String'
+                         (Ada.Command_Line.Command_Name & " "
+                          & To_String (Command));
+                     Status :=
+                       GNAT.OS_Lib.Spawn
+                         (Program_Name => "/bin/sh", Args => Args);
+                     GNAT.OS_Lib.Free (Args (1));
+                     GNAT.OS_Lib.Free (Args (2));
+                     Ada.Directories.Set_Directory (Old_Dir);
+
+                     if Status /= 0 then
+                        Ada.Command_Line.Set_Exit_Status
+                          (Ada.Command_Line.Exit_Status (Status));
+                     end if;
+                  exception
+                     when others =>
+                        Ada.Directories.Set_Directory (Old_Dir);
+                        raise;
+                  end;
+               end if;
+            end;
+         end loop;
+      end;
+   end Run_For_Each_Repo_Command;
+
+   --  `subtree add|merge|pull|push|split --prefix=<dir> ...`
+   procedure Run_Subtree_Command is
+      Sub    : constant String := (if Count >= 2 then Arg (2) else "");
+      Prefix : Unbounded_String;
+      Msg    : Unbounded_String;
+      Branch : Unbounded_String;
+      Onto   : Unbounded_String;
+      Squash : Boolean := False;
+      Rejoin : Boolean := False;
+      Ignore_Joins : Boolean := False;
+      Operands : Version.Trailers.String_Vectors.Vector;
+      Bad      : Boolean := False;
+
+      function Op (I : Positive) return String is
+        (if Natural (Operands.Length) >= I then Operands.Element (I) else "");
+
+      Ops : Natural;
+
+      procedure Fatal (Text : String) is
+      begin
+         Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, "fatal: " & Text);
+         Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+      end Fatal;
+   begin
+      if Sub = "" then
+         Fatal ("you must provide a subtree command");
+         return;
+      end if;
+
+      for I in 3 .. Count loop
+         declare
+            A : constant String := Arg (I);
+         begin
+            if A'Length > 9 and then A (A'First .. A'First + 8) = "--prefix=" then
+               Prefix := To_Unbounded_String (A (A'First + 9 .. A'Last));
+            elsif A = "-P" or else A = "--prefix" then
+               Bad := True;   --  handled below via the following operand
+            elsif A = "-q" or else A = "--quiet" then
+               Quiet_Mode := True;
+            elsif A = "--squash" then
+               Squash := True;
+            elsif A = "--rejoin" then
+               Rejoin := True;
+            elsif A = "--ignore-joins" then
+               Ignore_Joins := True;
+            elsif A'Length > 7 and then A (A'First .. A'First + 6) = "--onto=" then
+               Onto := To_Unbounded_String (A (A'First + 7 .. A'Last));
+            elsif A'Length > 10 and then A (A'First .. A'First + 9) = "--message=" then
+               Msg := To_Unbounded_String (A (A'First + 10 .. A'Last));
+            elsif A'Length > 9 and then A (A'First .. A'First + 8) = "--branch=" then
+               Branch := To_Unbounded_String (A (A'First + 9 .. A'Last));
+            elsif (A = "-m" or else A = "--message") and then I < Count then
+               Msg := To_Unbounded_String (Arg (I + 1));
+            elsif (A = "-b" or else A = "--branch") and then I < Count then
+               Branch := To_Unbounded_String (Arg (I + 1));
+            elsif I > 3
+              and then (Arg (I - 1) = "-m" or else Arg (I - 1) = "--message"
+                        or else Arg (I - 1) = "-b"
+                        or else Arg (I - 1) = "--branch"
+                        or else Arg (I - 1) = "-P"
+                        or else Arg (I - 1) = "--prefix")
+            then
+               if Arg (I - 1) = "-P" or else Arg (I - 1) = "--prefix" then
+                  Prefix := To_Unbounded_String (A);
+                  Bad := False;
+               end if;
+            elsif A'Length > 0 and then A (A'First) = '-' then
+               Fatal ("unexpected option: " & A);
+               return;
+            else
+               Operands.Append (A);
+            end if;
+         end;
+      end loop;
+
+      if Bad or else Prefix = "" then
+         Fatal ("you must provide the --prefix option.");
+         return;
+      end if;
+
+      Ops := Natural (Operands.Length);
+
+      begin
+         if Sub = "add" then
+            if Ops = 1 then
+               Version.Subtree.Add
+                 (To_String (Prefix), "", Op (1), Squash, To_String (Msg));
+            elsif Ops = 2 then
+               Success_Line ("git fetch " & Op (1) & " " & Op (2));
+               Version.Subtree.Add
+                 (To_String (Prefix), Op (1), Op (2), Squash, To_String (Msg));
+            else
+               Error_Line
+                 ("Provide either a commit or a repository and commit.");
+               return;
+            end if;
+
+            Stderr_Line ("Added dir '" & To_String (Prefix) & "'");
+
+         elsif Sub = "merge" or else Sub = "pull" then
+            if (Sub = "merge" and then Ops /= 1)
+              or else (Sub = "pull" and then Ops /= 2)
+            then
+               Error_Line
+                 (if Sub = "pull" then "you must provide <repository> <ref>"
+                  else "you must provide exactly one revision, and optionally "
+                       & "a repository.");
+               return;
+            end if;
+
+            Merge_Subtree
+              (Prefix     => To_String (Prefix),
+               Repository => (if Sub = "pull" then Op (1) else ""),
+               Ref        => (if Sub = "pull" then Op (2) else Op (1)),
+               Squash     => Squash,
+               Message    => To_String (Msg));
+
+         elsif Sub = "split" then
+            declare
+               Repo : constant Version.Repository.Repository_Handle :=
+                 Version.Repository.Open;
+               Updated : Boolean;
+               Result  : constant Version.Objects.Hex_Object_Id :=
+                 Version.Subtree.Split
+                   (Repo   => Repo,
+                    Prefix => To_String (Prefix),
+                    Rev    => (if Ops >= 1 then Op (1) else "HEAD"),
+                    Branch => To_String (Branch),
+                    Onto   => To_String (Onto),
+                    Rejoin => Rejoin,
+                    Ignore_Joins => Ignore_Joins,
+                    Updated => Updated);
+            begin
+               if Branch /= "" then
+                  Stderr_Line
+                    ((if Updated then "Updated" else "Created") & " branch '"
+                     & To_String (Branch) & "'");
+               end if;
+
+               Success_Line (Version.Objects.To_String (Result));
+            end;
+
+         elsif Sub = "push" then
+            if Ops /= 2 then
+               Fatal ("you must provide <repository> <refspec>");
+               return;
+            end if;
+
+            declare
+               Spec : constant String :=
+                 (if Op (2)'Length > 0 and then Op (2) (Op (2)'First) = '+'
+                  then Op (2) (Op (2)'First + 1 .. Op (2)'Last) else Op (2));
+               Colon : constant Natural :=
+                 Ada.Strings.Fixed.Index (Spec, ":");
+               Local : constant String :=
+                 (if Colon = 0 then "HEAD" else Spec (Spec'First .. Colon - 1));
+               Remote_Ref : constant String :=
+                 (if Colon = 0 then Spec else Spec (Colon + 1 .. Spec'Last));
+            begin
+               Success_Line
+                 ("git push using:  " & Op (1) & " " & Spec);
+               Version.Subtree.Push
+                 (Prefix     => To_String (Prefix),
+                  Repository => Op (1),
+                  Local_Rev  => Local,
+                  Remote_Ref => Remote_Ref,
+                  Force      => Op (2)'Length > 0
+                                and then Op (2) (Op (2)'First) = '+');
+            end;
+
+         else
+            Fatal ("unknown command '" & Sub & "'");
+         end if;
+      exception
+         when E : Ada.IO_Exceptions.Use_Error
+            | Ada.IO_Exceptions.Data_Error
+            | Ada.IO_Exceptions.Name_Error =>
+            Fatal (Ada.Exceptions.Exception_Message (E));
+      end;
+   end Run_Subtree_Command;
+
+   procedure Run_Bisect_Command is
+      use Version.Bisect;
+      Repo : constant Version.Repository.Repository_Handle :=
+        Version.Repository.Open;
+
+      function Img (V : Natural) return String is
+         S : constant String := Natural'Image (V);
+      begin
+         return S (S'First + 1 .. S'Last);
+      end Img;
+
+      function Short (Hex : String) return String is
+        (if Hex'Length >= 7 then Hex (Hex'First .. Hex'First + 6) else Hex);
+
+      function Subject (Id : Version.Objects.Hex_Object_Id) return String is
+        (Version.Objects.Commit_Message_First_Line
+           (Version.Objects.Read_Object (Repo, Id)));
+
+      function Rev (S : String) return Version.Objects.Hex_Object_Id is
+        (Version.Revisions.Resolve_Commit (Repo, S));
+
+      Sub : constant String := (if Count >= 2 then Arg (2) else "");
+
+      procedure Emit_Continue (B : Version.Bisect.Bisection) is
+         Hex : constant String := Version.Objects.To_String (B.Rev);
+      begin
+         Success_Line
+           ("Bisecting: " & Img (B.Left)
+            & (if B.Left = 1 then " revision" else " revisions")
+            & " left to test after this (roughly " & Img (B.Steps)
+            & (if B.Steps = 1 then " step)" else " steps)"));
+         Success_Line ("[" & Hex & "] " & Subject (B.Rev));
+         Version.Checkout.Checkout_Commit (B.Rev);
+      end Emit_Continue;
+
+      procedure Emit_Found (B : Version.Bisect.Bisection) is
+         Hex  : constant String := Version.Objects.To_String (B.Rev);
+         Opts : constant Version.Diff.Diff_Options :=
+           (Stat => True, others => <>);
+      begin
+         Append_Log
+           (Repo, "# first bad commit: [" & Hex & "] " & Subject (B.Rev));
+         Success_Line (Hex & " is the first bad commit");
+         Version.Console.Put (Version.Show.Show_Commit (Repo, B.Rev, Opts));
+      end Emit_Found;
+
+      --  Recompute the bisection and render / act on the result.
+      procedure Advance is
+         B : constant Version.Bisect.Bisection := Compute (Repo);
+      begin
+         case B.Kind is
+            when Need_Both | Need_Good | Need_Bad =>
+               declare
+                  T : constant String := Status_Text (Repo, B.Kind);
+               begin
+                  Append_Log (Repo, "# status: " & T);
+                  Success_Line ("status: " & T);
+               end;
+            when Continue =>
+               Emit_Continue (B);
+            when Found =>
+               Emit_Found (B);
+            when Only_Skipped =>
+               Error_Line
+                 ("There are only 'skip'ped commits left to test.");
+               Set_Command_Failure;
+         end case;
+      end Advance;
+
+      --  Record marks (comment + command lines) for a good/bad/skip verb.
+      --  Head_Only: `bisect run`'s trailing words are the command, not
+      --  revisions -- it always marks the commit currently checked out.
+      procedure Mark_Revs
+        (Is_Bad, Is_Skip : Boolean;
+         Verb            : String;
+         Head_Only       : Boolean := False)
+      is
+         Any : Boolean := False;
+      begin
+         for I in 3 .. (if Head_Only then 2 else Count) loop
+            declare
+               Id  : constant Version.Objects.Hex_Object_Id := Rev (Arg (I));
+               Hex : constant String := Version.Objects.To_String (Id);
+            begin
+               Append_Log
+                 (Repo, "# " & Verb & ": [" & Hex & "] " & Subject (Id));
+               if Is_Skip then
+                  Mark_Skip (Repo, Id);
+               elsif Is_Bad then
+                  Mark_Bad (Repo, Id);
+               else
+                  Mark_Good (Repo, Id);
+               end if;
+               Append_Log (Repo, "git bisect " & Verb & " " & Hex);
+               Any := True;
+            end;
+         end loop;
+         if not Any then
+            --  Default operand is the currently checked-out commit (HEAD).
+            declare
+               Id  : constant Version.Objects.Hex_Object_Id := Rev ("HEAD");
+               Hex : constant String := Version.Objects.To_String (Id);
+            begin
+               Append_Log
+                 (Repo, "# " & Verb & ": [" & Hex & "] " & Subject (Id));
+               if Is_Skip then
+                  Mark_Skip (Repo, Id);
+               elsif Is_Bad then
+                  Mark_Bad (Repo, Id);
+               else
+                  Mark_Good (Repo, Id);
+               end if;
+               Append_Log (Repo, "git bisect " & Verb & " " & Hex);
+            end;
+         end if;
+         Advance;
+      end Mark_Revs;
+
+      --  Return HEAD to the start branch/commit and drop all session state.
+      procedure Do_Reset (Target : String) is
+      begin
+         if not In_Progress (Repo) then
+            return;
+         end if;
+         declare
+            Start_R      : constant String := Version.Bisect.Start_Ref (Repo);
+            Dest         : constant String :=
+              (if Target /= "" then Target else Start_R);
+            Was_Detached : constant Boolean := Version.Refs.Is_Detached (Repo);
+            Cur_Branch   : constant String :=
+              (if Was_Detached then ""
+               else Version.Refs.Current_Branch_Name (Repo));
+         begin
+            if Was_Detached then
+               declare
+                  P : constant Version.Objects.Hex_Object_Id :=
+                    Version.Refs.Detached_Commit_Id (Repo);
+               begin
+                  Success_Line
+                    ("Previous HEAD position was "
+                     & Short (Version.Objects.To_String (P)) & " "
+                     & Subject (P));
+               end;
+            end if;
+            if Target = "" and then Version.Branch.Branch_Exists (Dest) then
+               if not Was_Detached and then Cur_Branch = Dest then
+                  Success_Line ("Already on '" & Dest & "'");
+               else
+                  Version.Branch.Switch_Branch (Dest);
+                  Success_Line ("Switched to branch '" & Dest & "'");
+               end if;
+            else
+               declare
+                  Id : constant Version.Objects.Hex_Object_Id := Rev (Dest);
+               begin
+                  Version.Checkout.Checkout_Commit (Id);
+                  Success_Line
+                    ("HEAD is now at "
+                     & Short (Version.Objects.To_String (Id)) & " "
+                     & Subject (Id));
+               end;
+            end if;
+         end;
+         Version.Bisect.Clear (Repo);
+      end Do_Reset;
+
+      procedure Do_Start is
+         Term_Bad  : Unbounded_String := To_Unbounded_String ("bad");
+         Term_Good : Unbounded_String := To_Unbounded_String ("good");
+         Revs      : Version.Trailers.String_Vectors.Vector;
+         I         : Positive := 3;
+         Bad       : Boolean := False;
+      begin
+         if In_Progress (Repo) then
+            Do_Reset (Target => "");
+         end if;
+         while I <= Count and then not Bad loop
+            declare
+               A : constant String := Arg (I);
+            begin
+               if (A = "--term-old" or else A = "--term-good")
+                 and then I < Count
+               then
+                  Term_Good := To_Unbounded_String (Arg (I + 1));
+                  I := I + 2;
+               elsif (A = "--term-new" or else A = "--term-bad")
+                 and then I < Count
+               then
+                  Term_Bad := To_Unbounded_String (Arg (I + 1));
+                  I := I + 2;
+               elsif A = "--no-checkout" or else A = "--first-parent" then
+                  I := I + 1;
+               elsif A = "--" then
+                  exit;
+               elsif A'Length > 0 and then A (A'First) = '-' then
+                  Usage_Error
+                    ("unknown bisect start option: " & A,
+                     "version bisect start [--term-old <t> --term-new <t>]"
+                     & " [<bad> [<good>...]]");
+                  Bad := True;
+               else
+                  Revs.Append (A);
+                  I := I + 1;
+               end if;
+            end;
+         end loop;
+         if Bad then
+            return;
+         end if;
+         declare
+            Start_R : constant String :=
+              (if Version.Refs.Is_Detached (Repo)
+               then Version.Objects.To_String
+                      (Version.Refs.Detached_Commit_Id (Repo))
+               else Version.Refs.Current_Branch_Name (Repo));
+         begin
+            Version.Bisect.Start
+              (Repo, Start_R, To_String (Term_Bad), To_String (Term_Good));
+         end;
+         --  Log comment lines for each rev (first = bad, rest = good).
+         for Idx in Revs.First_Index .. Revs.Last_Index loop
+            declare
+               Id   : constant Version.Objects.Hex_Object_Id :=
+                 Rev (Revs (Idx));
+               Hex  : constant String := Version.Objects.To_String (Id);
+               Verb : constant String :=
+                 (if Idx = Revs.First_Index
+                  then To_String (Term_Bad) else To_String (Term_Good));
+            begin
+               Append_Log
+                 (Repo, "# " & Verb & ": [" & Hex & "] " & Subject (Id));
+               if Idx = Revs.First_Index then
+                  Mark_Bad (Repo, Id);
+               else
+                  Mark_Good (Repo, Id);
+               end if;
+            end;
+         end loop;
+         declare
+            Line : Unbounded_String := To_Unbounded_String ("git bisect start");
+         begin
+            for J in 3 .. Count loop
+               Append (Line, " '" & Arg (J) & "'");
+            end loop;
+            Append_Log (Repo, To_String (Line));
+         end;
+         Advance;
+      end Do_Start;
+
+      procedure Do_Terms is
+         T : constant Version.Bisect.Terms := Current_Terms (Repo);
+      begin
+         if Count >= 3
+           and then (Arg (3) = "--term-good" or else Arg (3) = "--term-old")
+         then
+            Success_Line (To_String (T.Good));
+         elsif Count >= 3
+           and then (Arg (3) = "--term-bad" or else Arg (3) = "--term-new")
+         then
+            Success_Line (To_String (T.Bad));
+         else
+            Success_Line
+              ("Your current terms are " & To_String (T.Good)
+               & " for the old state");
+            Success_Line
+              ("and " & To_String (T.Bad) & " for the new state.");
+         end if;
+      end Do_Terms;
+
+      --  Handle a good/bad/new/old/<custom-term> mark verb.
+      procedure Do_Mark is
+         T    : constant Version.Bisect.Terms := Current_Terms (Repo);
+         Word : constant String := Sub;
+      begin
+         if not In_Progress (Repo) then
+            Stderr_Line ("You need to start by ""git bisect start""");
+            Stderr_Line ("");
+            Set_Command_Failure;
+            return;
+         end if;
+         if Word = To_String (T.Bad) then
+            Mark_Revs (Is_Bad => True, Is_Skip => False, Verb => Word);
+         elsif Word = To_String (T.Good) then
+            Mark_Revs (Is_Bad => False, Is_Skip => False, Verb => Word);
+         elsif (Word = "new" or else Word = "old")
+           and then To_String (T.Bad) = "bad"
+           and then To_String (T.Good) = "good"
+           and then not Has_Bad (Repo)
+           and then Good_Count (Repo) = 0
+         then
+            Version.Bisect.Set_Terms (Repo, "new", "old");
+            Mark_Revs (Is_Bad => Word = "new", Is_Skip => False, Verb => Word);
+         else
+            Usage_Error
+              ("unknown bisect subcommand: " & Word,
+               "version bisect (start|good|bad|new|old|skip|reset|log|terms)");
+         end if;
+      end Do_Mark;
+
+      --  git's `bisect run <cmd>`: test each commit the bisection picks by
+      --  running <cmd>.  Its exit status is the verdict -- 0 good, 125 skip,
+      --  1..127 bad, 128 and above abort the run.
+      procedure Do_Run is
+         Found_It : Boolean := False;
+
+         function Command_Text return String is
+            Buf : Unbounded_String;
+         begin
+            for I in 3 .. Count loop
+               if I > 3 then
+                  Append (Buf, " ");
+               end if;
+               Append (Buf, Arg (I));
+            end loop;
+            return To_String (Buf);
+         end Command_Text;
+
+         Cmd : constant String := Command_Text;
+      begin
+         if Count < 3 then
+            Usage_Error
+              ("bisect run requires a command",
+               "version bisect run <command> [<arg>...]");
+            return;
+         end if;
+
+         if not In_Progress (Repo) then
+            Stderr_Line ("You need to start by ""git bisect start""");
+            Stderr_Line ("");
+            Set_Command_Failure;
+            return;
+         end if;
+
+         loop
+            declare
+               B : constant Version.Bisect.Bisection := Compute (Repo);
+            begin
+               if B.Kind = Found then
+                  Found_It := True;
+                  exit;
+               elsif B.Kind /= Continue then
+                  Error_Line ("bisect run cannot proceed: not enough marks");
+                  Set_Command_Failure;
+                  return;
+               end if;
+            end;
+
+            Success_Line ("running '" & Cmd & "'");
+
+            declare
+               Args   : GNAT.OS_Lib.Argument_List (1 .. 2);
+               Status : Integer;
+            begin
+               Args (1) := new String'("-c");
+               Args (2) := new String'(Cmd);
+               Status :=
+                 GNAT.OS_Lib.Spawn
+                   (Program_Name => "/bin/sh", Args => Args);
+               GNAT.OS_Lib.Free (Args (1));
+               GNAT.OS_Lib.Free (Args (2));
+
+               if Status >= 128 then
+                  Error_Line
+                    ("bisect run failed: exit code " & Img (Status)
+                     & " from '" & Cmd & "' is < 0 or >= 128");
+                  Set_Command_Failure;
+                  return;
+               elsif Status = 125 then
+                  Mark_Revs (Is_Bad => False, Is_Skip => True,
+                             Verb => "skip", Head_Only => True);
+               elsif Status = 0 then
+                  Mark_Revs (Is_Bad => False, Is_Skip => False,
+                             Verb => "good", Head_Only => True);
+               else
+                  Mark_Revs (Is_Bad => True, Is_Skip => False,
+                             Verb => "bad", Head_Only => True);
+               end if;
+            end;
+
+            --  Mark_Revs advanced the bisection; stop once it converged.
+            declare
+               B : constant Version.Bisect.Bisection := Compute (Repo);
+            begin
+               if B.Kind = Found then
+                  Found_It := True;
+                  exit;
+               end if;
+            end;
+         end loop;
+
+         if Found_It then
+            Success_Line ("bisect found first bad commit");
+         end if;
+      end Do_Run;
+
+   begin
+      if Sub = "" or else Sub = "start" then
+         Do_Start;
+      elsif Sub = "run" then
+         Do_Run;
+      elsif Sub = "reset" then
+         Do_Reset (Target => (if Count >= 3 then Arg (3) else ""));
+      elsif Sub = "log" then
+         if not In_Progress (Repo) then
+            Error_Line ("We are not bisecting.");
+            Set_Command_Failure;
+         else
+            Version.Console.Put (Version.Bisect.Read_Log (Repo));
+         end if;
+      elsif Sub = "terms" then
+         Do_Terms;
+      elsif Sub = "skip" then
+         if not In_Progress (Repo) then
+            Stderr_Line ("You need to start by ""git bisect start""");
+            Stderr_Line ("");
+            Set_Command_Failure;
+         else
+            Mark_Revs (Is_Bad => False, Is_Skip => True, Verb => "skip");
+         end if;
+      else
+         Do_Mark;
+      end if;
+   end Run_Bisect_Command;
 
    procedure Run is
    begin
@@ -1445,6 +6776,7 @@ package body Version.CLI is
                  & "[--ignored[=MODE]] [--] [PATHSPEC...]";
                Mode         : Natural := 0;
                Include_Ignored : Boolean := False;
+               All_Untracked   : Boolean := False;
                Ignored_Mode : Version.Status.Ignored_Display_Mode :=
                  Version.Status.Ignored_Traditional;
                Has_Separator : Boolean := False;
@@ -1464,14 +6796,18 @@ package body Version.CLI is
                            return;
                         end if;
                         Mode := 1;
-                     elsif not Has_Separator and then Arg (I) = "--short" then
+                     elsif not Has_Separator
+                       and then (Arg (I) = "--short" or else Arg (I) = "-s")
+                     then
                         if Mode /= 0 then
                            Usage_Error
                              ("duplicate status mode option: " & Arg (I), Usage);
                            return;
                         end if;
                         Mode := 2;
-                     elsif not Has_Separator and then Arg (I) = "--branch" then
+                     elsif not Has_Separator
+                       and then (Arg (I) = "--branch" or else Arg (I) = "-b")
+                     then
                         if Mode /= 0 then
                            Usage_Error
                              ("duplicate status mode option: " & Arg (I), Usage);
@@ -1505,6 +6841,18 @@ package body Version.CLI is
                            end if;
                         end;
                      elsif not Has_Separator
+                       and then (Arg (I) = "-uall"
+                                 or else Arg (I) = "--untracked-files=all")
+                     then
+                        All_Untracked := True;
+                     elsif not Has_Separator
+                       and then (Arg (I) = "-unormal"
+                                 or else Arg (I) = "-u"
+                                 or else Arg (I) = "--untracked-files"
+                                 or else Arg (I) = "--untracked-files=normal")
+                     then
+                        All_Untracked := False;
+                     elsif not Has_Separator
                        and then Arg (I)'Length > 0
                        and then Arg (I) (Arg (I)'First) = '-'
                      then
@@ -1523,35 +6871,41 @@ package body Version.CLI is
                   if Mode = 1 then
                      Version.Status.Print_Porcelain_Status
                        (Include_Ignored => Include_Ignored,
-                        Ignored_Mode    => Ignored_Mode);
+                        Ignored_Mode    => Ignored_Mode,
+                        All_Untracked   => All_Untracked);
                   elsif Mode = 2 then
                      Version.Status.Print_Short_Status
                        (Include_Ignored => Include_Ignored,
-                        Ignored_Mode    => Ignored_Mode);
+                        Ignored_Mode    => Ignored_Mode,
+                        All_Untracked   => All_Untracked);
                   elsif Mode = 3 then
                      Version.Status.Print_Branch_Status
                        (Include_Ignored => Include_Ignored,
-                        Ignored_Mode    => Ignored_Mode);
+                        Ignored_Mode    => Ignored_Mode,
+                        All_Untracked   => All_Untracked);
                   elsif Include_Ignored then
                      Version.Status.Print_Ignored_Status (Ignored_Mode);
                   else
-                     Version.Status.Print_Status;
+                     Version.Status.Print_Status (All_Untracked);
                   end if;
                elsif Mode = 1 then
                   Version.Status.Print_Porcelain_Status
                     (Pathspecs_From_Args (Path_First),
                      Include_Ignored => Include_Ignored,
-                     Ignored_Mode    => Ignored_Mode);
+                     Ignored_Mode    => Ignored_Mode,
+                        All_Untracked   => All_Untracked);
                elsif Mode = 2 then
                   Version.Status.Print_Short_Status
                     (Pathspecs_From_Args (Path_First),
                      Include_Ignored => Include_Ignored,
-                     Ignored_Mode    => Ignored_Mode);
+                     Ignored_Mode    => Ignored_Mode,
+                        All_Untracked   => All_Untracked);
                elsif Mode = 3 then
                   Version.Status.Print_Branch_Status
                     (Pathspecs_From_Args (Path_First),
                      Include_Ignored => Include_Ignored,
-                     Ignored_Mode    => Ignored_Mode);
+                     Ignored_Mode    => Ignored_Mode,
+                        All_Untracked   => All_Untracked);
                elsif Include_Ignored then
                   Version.Status.Print_Ignored_Status
                     (Pathspecs_From_Args (Path_First), Ignored_Mode);
@@ -1676,62 +7030,159 @@ package body Version.CLI is
          elsif Command = "diff" then
             declare
                Usage        : constant String :=
-                 "version diff [--staged|--cached] [--] [PATHSPEC...] | version diff REV1 REV2";
-               Path_First   : Positive := 2;
+                 "version diff [--stat|--name-only|--name-status]"
+                 & " [--staged|--cached] [--] [PATHSPEC...]"
+                 & " | version diff [--stat|--name-only|--name-status] REV1 REV2";
+               Path_First    : Positive := 2;
                Has_Separator : Boolean := False;
+
+               --  Pull the position-independent --stat flag out of the
+               --  argument stream, leaving a filtered 2-based view (LArg (1)
+               --  stands in for the command) so the rest of the parser is
+               --  unchanged.
+               NArgs  : constant Natural := Count;
+               LArgs  : array (1 .. Integer'Max (NArgs, 1)) of Unbounded_String;
+               LCount : Natural := 1;
+               Stat   : Boolean := False;
+               Name_Only   : Boolean := False;
+               Name_Status : Boolean := False;
+               Opts   : Version.Diff.Diff_Options;
+               Context : Natural := 3;
+
+               function LArg (Index : Positive) return String is
+                 (To_String (LArgs (Index)));
+
+               function LHas_Path (First : Positive) return Boolean is
+               begin
+                  if LCount < First then
+                     return False;
+                  end if;
+                  for I in First .. LCount loop
+                     if LArg (I) /= "--" then
+                        return True;
+                     end if;
+                  end loop;
+                  return False;
+               end LHas_Path;
+
+               function LPathspecs (First : Positive)
+                 return Version.Pathspec.Pathspec_Vectors.Vector
+               is
+                  Result : Version.Pathspec.Pathspec_Vectors.Vector;
+               begin
+                  if LCount >= First then
+                     for I in First .. LCount loop
+                        if LArg (I) /= "--" then
+                           Version.Pathspec.Append_Parse (Result, LArg (I));
+                        end if;
+                     end loop;
+                  end if;
+                  return Result;
+               end LPathspecs;
             begin
-               if Count = 1 then
-                  Ada.Text_IO.Put
-                    (Version.Diff.Diff_Working_Tree (Version.Repository.Open));
-               elsif Arg (2) = "--staged" or else Arg (2) = "--cached" then
+               LArgs (1) := To_Unbounded_String (Command);
+               for I in 2 .. Count loop
+                  if Arg (I) = "--stat" then
+                     Stat := True;
+                  elsif Arg (I) = "--name-only" then
+                     Name_Only := True;
+                  elsif Arg (I) = "--name-status" then
+                     Name_Status := True;
+                  elsif Arg (I)'Length > 2
+                    and then Arg (I) (Arg (I)'First .. Arg (I)'First + 1) = "-U"
+                  then
+                     begin
+                        Context := Natural'Value
+                          (Arg (I) (Arg (I)'First + 2 .. Arg (I)'Last));
+                     exception
+                        when others =>
+                           Usage_Error
+                             ("invalid context length: " & Arg (I), Usage);
+                           return;
+                     end;
+                  elsif Arg (I)'Length > 10
+                    and then Arg (I) (Arg (I)'First .. Arg (I)'First + 9)
+                             = "--unified="
+                  then
+                     begin
+                        Context := Natural'Value
+                          (Arg (I) (Arg (I)'First + 10 .. Arg (I)'Last));
+                     exception
+                        when others =>
+                           Usage_Error
+                             ("invalid context length: " & Arg (I), Usage);
+                           return;
+                     end;
+                  else
+                     LCount := LCount + 1;
+                     LArgs (LCount) := To_Unbounded_String (Arg (I));
+                  end if;
+               end loop;
+               Opts := (Stat => Stat,
+                        Name_Only => Name_Only,
+                        Name_Status => Name_Status,
+                        Context_Lines => Context,
+                        others => <>);
+
+               if LCount = 1 then
+                  Version.Console.Put
+                    (Version.Diff.Diff_Working_Tree
+                       (Version.Repository.Open, Opts));
+               elsif LArg (2) = "--staged" or else LArg (2) = "--cached" then
                   Path_First := 3;
-                  if Count >= Path_First then
-                     for I in Path_First .. Count loop
-                        if Arg (I) = "--" then
+                  if LCount >= Path_First then
+                     for I in Path_First .. LCount loop
+                        if LArg (I) = "--" then
                            if Has_Separator then
                               Usage_Error ("duplicate option: --", Usage);
                               return;
                            end if;
                            Has_Separator := True;
                         elsif not Has_Separator
-                          and then Arg (I)'Length > 0
-                          and then Arg (I) (Arg (I)'First) = '-'
+                          and then LArg (I)'Length > 0
+                          and then LArg (I) (LArg (I)'First) = '-'
                         then
-                           Usage_Error ("unknown diff option: " & Arg (I), Usage);
+                           Usage_Error
+                             ("unknown diff option: " & LArg (I), Usage);
                            return;
                         end if;
                      end loop;
                   end if;
 
-                  if Has_Separator and then not Has_Path_Argument (Path_First) then
+                  if Has_Separator and then not LHas_Path (Path_First) then
                      Usage_Error ("missing diff pathspec", Usage);
                      return;
-                  elsif Count < Path_First or else not Has_Path_Argument (Path_First) then
-                     Ada.Text_IO.Put
-                       (Version.Diff.Diff_Staged (Version.Repository.Open));
-                  else
-                     Ada.Text_IO.Put
+                  elsif LCount < Path_First or else not LHas_Path (Path_First)
+                  then
+                     Version.Console.Put
                        (Version.Diff.Diff_Staged
-                          (Version.Repository.Open, Pathspecs_From_Args (Path_First)));
+                          (Version.Repository.Open, Opts));
+                  else
+                     Version.Console.Put
+                       (Version.Diff.Diff_Staged
+                          (Version.Repository.Open,
+                           LPathspecs (Path_First), Opts));
                   end if;
-               elsif Arg (2) = "--" then
+               elsif LArg (2) = "--" then
                   Has_Separator := True;
                   Path_First := 3;
-                  if not Has_Path_Argument (Path_First) then
+                  if not LHas_Path (Path_First) then
                      Usage_Error ("missing diff pathspec", Usage);
                      return;
                   end if;
-                  Ada.Text_IO.Put
+                  Version.Console.Put
                     (Version.Diff.Diff_Working_Tree
-                       (Version.Repository.Open, Pathspecs_From_Args (Path_First)));
-               elsif Arg (2)'Length > 0 and then Arg (2) (Arg (2)'First) = '-' then
-                  Usage_Error ("unknown diff option: " & Arg (2), Usage);
+                       (Version.Repository.Open,
+                        LPathspecs (Path_First), Opts));
+               elsif LArg (2)'Length > 0 and then LArg (2) (LArg (2)'First) = '-'
+               then
+                  Usage_Error ("unknown diff option: " & LArg (2), Usage);
                   return;
-               elsif Count = 2 then
-                  Ada.Text_IO.Put
+               elsif LCount = 2 then
+                  Version.Console.Put
                     (Version.Diff.Diff_Working_Tree
-                       (Version.Repository.Open, Pathspecs_From_Args (2)));
-               elsif Count = 3 then
+                       (Version.Repository.Open, LPathspecs (2), Opts));
+               elsif LCount = 3 then
                   declare
                      Repo               :
                        constant Version.Repository.Repository_Handle :=
@@ -1744,9 +7195,9 @@ package body Version.CLI is
                   begin
                      begin
                         Old_Id :=
-                          Version.Revisions.Resolve_Commit (Repo, Arg (2));
+                          Version.Revisions.Resolve_Commit (Repo, LArg (2));
                         New_Id :=
-                          Version.Revisions.Resolve_Commit (Repo, Arg (3));
+                          Version.Revisions.Resolve_Commit (Repo, LArg (3));
                         Revisions_Resolved := True;
                      exception
                         when Ada.IO_Exceptions.Data_Error | Constraint_Error =>
@@ -1754,12 +7205,13 @@ package body Version.CLI is
                      end;
 
                      if Revisions_Resolved then
-                        Ada.Text_IO.Put
-                          (Version.Diff.Diff_Commits (Repo, Old_Id, New_Id));
+                        Version.Console.Put
+                          (Version.Diff.Diff_Commits
+                             (Repo, Old_Id, New_Id, Opts));
                      else
-                        Ada.Text_IO.Put
+                        Version.Console.Put
                           (Version.Diff.Diff_Working_Tree
-                             (Repo, Pathspecs_From_Args (2)));
+                             (Repo, LPathspecs (2), Opts));
                      end if;
                   end;
                else
@@ -1771,18 +7223,110 @@ package body Version.CLI is
          elsif Command = "log" then
             declare
                Usage : constant String :=
-                 "version log [--oneline] [--show-signature] [REV]";
-               Oneline  : Boolean := False;
-               Show_Sig : Boolean := False;
-               Rev      : Unbounded_String;
-               Have_Rev : Boolean := False;
-               Bad      : Boolean := False;
+                 "version log [--oneline] [--stat] [--show-signature]"
+                 & " [--format=<fmt>] [-<n>|-n <count>|--max-count=<n>] [REV]";
+               Oneline    : Boolean := False;
+               Show_Sig   : Boolean := False;
+               Rev        : Unbounded_String;
+               Have_Rev   : Boolean := False;
+               Bad        : Boolean := False;
+               Max_Count  : Natural := 0;
+               Max_Prefix : constant String := "--max-count=";
+               Want_Count : Boolean := False;
+               Format     : Unbounded_String;
+               Has_Format : Boolean := False;
+               Terminator : Boolean := True;
+               Stat       : Boolean := False;
+               Patch      : Boolean := False;
+               Context    : Natural := 3;
+
+               function Starts (S, P : String) return Boolean is
+                 (S'Length >= P'Length
+                  and then S (S'First .. S'First + P'Length - 1) = P);
+               function After (S, P : String) return String is
+                 (S (S'First + P'Length .. S'Last));
+
+               function All_Digits (S : String) return Boolean is
+               begin
+                  if S'Length = 0 then
+                     return False;
+                  end if;
+                  for C of S loop
+                     if C not in '0' .. '9' then
+                        return False;
+                     end if;
+                  end loop;
+                  return True;
+               end All_Digits;
             begin
                for I in 2 .. Count loop
-                  if Arg (I) = "--oneline" then
+                  if Want_Count then
+                     if All_Digits (Arg (I)) then
+                        Max_Count := Natural'Value (Arg (I));
+                        Want_Count := False;
+                     else
+                        Usage_Error
+                          ("log -n requires a count: " & Arg (I), Usage);
+                        Bad := True;
+                        exit;
+                     end if;
+                  elsif Arg (I) = "--oneline" then
                      Oneline := True;
+                  elsif Arg (I) = "--stat" then
+                     Stat := True;
                   elsif Arg (I) = "--show-signature" then
                      Show_Sig := True;
+                  elsif Starts (Arg (I), "--format=") then
+                     Format := To_Unbounded_String (After (Arg (I), "--format="));
+                     Has_Format := True;
+                     Terminator := True;
+                  elsif Starts (Arg (I), "--pretty=tformat:") then
+                     Format :=
+                       To_Unbounded_String (After (Arg (I), "--pretty=tformat:"));
+                     Has_Format := True;
+                     Terminator := True;
+                  elsif Starts (Arg (I), "--pretty=format:") then
+                     Format :=
+                       To_Unbounded_String (After (Arg (I), "--pretty=format:"));
+                     Has_Format := True;
+                     Terminator := False;
+                  elsif Arg (I) = "-p" or else Arg (I) = "--patch" then
+                     Patch := True;
+                  elsif Arg (I)'Length > 2
+                    and then Arg (I) (Arg (I)'First .. Arg (I)'First + 1) = "-U"
+                    and then All_Digits
+                               (Arg (I) (Arg (I)'First + 2 .. Arg (I)'Last))
+                  then
+                     Context := Natural'Value
+                       (Arg (I) (Arg (I)'First + 2 .. Arg (I)'Last));
+                     Patch := True;
+                  elsif Starts (Arg (I), "--unified=")
+                    and then All_Digits (After (Arg (I), "--unified="))
+                  then
+                     Context := Natural'Value (After (Arg (I), "--unified="));
+                     Patch := True;
+                  elsif Arg (I) = "-n" then
+                     Want_Count := True;
+                  elsif Arg (I)'Length > Max_Prefix'Length
+                    and then Arg (I) (Arg (I)'First ..
+                                        Arg (I)'First + Max_Prefix'Length - 1)
+                             = Max_Prefix
+                    and then All_Digits
+                               (Arg (I) (Arg (I)'First + Max_Prefix'Length
+                                         .. Arg (I)'Last))
+                  then
+                     Max_Count :=
+                       Natural'Value
+                         (Arg (I) (Arg (I)'First + Max_Prefix'Length
+                                   .. Arg (I)'Last));
+                  elsif Arg (I)'Length >= 2
+                    and then Arg (I) (Arg (I)'First) = '-'
+                    and then All_Digits
+                               (Arg (I) (Arg (I)'First + 1 .. Arg (I)'Last))
+                  then
+                     Max_Count :=
+                       Natural'Value
+                         (Arg (I) (Arg (I)'First + 1 .. Arg (I)'Last));
                   elsif Arg (I)'Length > 0
                     and then Arg (I) (Arg (I)'First) = '-'
                   then
@@ -1799,31 +7343,61 @@ package body Version.CLI is
                   end if;
                end loop;
 
+               if Want_Count and then not Bad then
+                  Usage_Error ("log -n requires a count", Usage);
+                  Bad := True;
+               end if;
+
                if not Bad then
                   declare
                      Repo : constant Version.Repository.Repository_Handle :=
                        Version.Repository.Open;
                   begin
-                     if Oneline and then Have_Rev then
-                        Ada.Text_IO.Put
+                     if Has_Format then
+                        declare
+                           Tip : constant Version.Objects.Hex_Object_Id :=
+                             (if Have_Rev
+                              then Version.Revisions.Resolve_Commit
+                                     (Repo, To_String (Rev))
+                              else Version.Objects.To_Object_Id
+                                     (Version.Refs.Current_Commit_Id (Repo)));
+                        begin
+                           Version.Console.Put
+                             (Version.Log.Log_Formatted_From_Commit
+                                (Repo, Tip, To_String (Format),
+                                 Terminate_Records => Terminator,
+                                 Max_Count         => Max_Count));
+                        end;
+                     elsif Oneline and then Have_Rev then
+                        Version.Console.Put
                           (Version.Log.Log_Oneline_From_Commit
                              (Repo,
                               Version.Revisions.Resolve_Commit
-                                (Repo, To_String (Rev))));
+                                (Repo, To_String (Rev)),
+                              Max_Count => Max_Count));
                      elsif Oneline then
-                        Ada.Text_IO.Put
-                          (Version.Log.Log_Oneline_Head (Repo));
+                        Version.Console.Put
+                          (Version.Log.Log_Oneline_Head
+                             (Repo, Max_Count => Max_Count));
                      elsif Have_Rev then
-                        Ada.Text_IO.Put
+                        Version.Console.Put
                           (Version.Log.Log_From_Commit
                              (Repo,
                               Version.Revisions.Resolve_Commit
                                 (Repo, To_String (Rev)),
-                              Show_Signature => Show_Sig));
+                              Show_Signature => Show_Sig,
+                              Max_Count      => Max_Count,
+                              Stat           => Stat,
+                              Patch          => Patch,
+                              Context        => Context));
                      else
-                        Ada.Text_IO.Put
+                        Version.Console.Put
                           (Version.Log.Log_Head
-                             (Repo, Show_Signature => Show_Sig));
+                             (Repo, Show_Signature => Show_Sig,
+                              Max_Count => Max_Count,
+                              Stat      => Stat,
+                              Patch     => Patch,
+                              Context   => Context));
                      end if;
                   end;
                end if;
@@ -1831,36 +7405,135 @@ package body Version.CLI is
 
          elsif Command = "show" then
             declare
-               Usage : constant String := "version show [REV]";
+               Usage    : constant String := "version show [--stat] [REV]";
+               Stat     : Boolean := False;
+               Rev      : Unbounded_String := To_Unbounded_String ("HEAD");
+               Have_Rev : Boolean := False;
+               Bad      : Boolean := False;
             begin
-               if Count = 1 then
-                  declare
-                     Repo : constant Version.Repository.Repository_Handle :=
-                       Version.Repository.Open;
-                  begin
-                     Ada.Text_IO.Put
-                       (Version.Show.Show_Commit
-                          (Repo, Version.Show.Resolve_Revision (Repo, "HEAD")));
-                  end;
-               elsif Count = 2 then
-                  if Arg (2)'Length > 0 and then Arg (2) (Arg (2)'First) = '-' then
-                     Usage_Error ("unknown show option: " & Arg (2), Usage);
-                     return;
+               for I in 2 .. Count loop
+                  if Arg (I) = "--stat" then
+                     Stat := True;
+                  elsif Arg (I)'Length > 0
+                    and then Arg (I) (Arg (I)'First) = '-'
+                  then
+                     Usage_Error ("unknown show option: " & Arg (I), Usage);
+                     Bad := True;
+                     exit;
+                  elsif not Have_Rev then
+                     Rev := To_Unbounded_String (Arg (I));
+                     Have_Rev := True;
+                  else
+                     Usage_Error ("too many show arguments", Usage);
+                     Bad := True;
+                     exit;
                   end if;
+               end loop;
+
+               if not Bad then
                   declare
                      Repo : constant Version.Repository.Repository_Handle :=
                        Version.Repository.Open;
+                     Opts : constant Version.Diff.Diff_Options :=
+                       (Stat => Stat, others => <>);
+                     Spec  : constant String := To_String (Rev);
+                     Colon : constant Natural :=
+                       Ada.Strings.Fixed.Index (Spec, ":");
                   begin
-                     Ada.Text_IO.Put
-                       (Version.Show.Show_Commit
-                          (Repo, Version.Show.Resolve_Revision (Repo, Arg (2))));
+                     --  `show <rev>:<path>`: the object at that path, not the
+                     --  commit -- a blob's contents verbatim, or git's listing
+                     --  for a tree.
+                     if Colon > Spec'First then
+                        declare
+                           Rev_Part  : constant String :=
+                             Spec (Spec'First .. Colon - 1);
+                           Path_Part : constant String :=
+                             Spec (Colon + 1 .. Spec'Last);
+                           Tree_Id : constant Version.Objects.Hex_Object_Id :=
+                             Version.Revisions.Resolve_Tree (Repo, Rev_Part);
+                           Items : constant
+                             Version.Objects.Tree_Entry_Vectors.Vector :=
+                               Version.Objects.Flatten_Tree (Repo, Tree_Id);
+                           Found : Boolean := False;
+                           Listing : Unbounded_String;
+                        begin
+                           for E of Items loop
+                              if To_String (E.Path) = Path_Part then
+                                 Version.Console.Put
+                                   (Version.Objects.Content
+                                      (Version.Objects.Read_Object
+                                         (Repo, E.Id)));
+                                 Found := True;
+                                 exit;
+                              end if;
+                           end loop;
+
+                           if not Found then
+                              --  A directory: git prints `tree <spec>` then the
+                              --  entries directly under it.
+                              declare
+                                 Prefix : constant String := Path_Part & "/";
+                                 Seen   : Version.Trailers.String_Vectors.Vector;
+                              begin
+                                 for E of Items loop
+                                    declare
+                                       P : constant String := To_String (E.Path);
+                                    begin
+                                       if P'Length > Prefix'Length
+                                         and then P (P'First .. P'First
+                                                     + Prefix'Length - 1)
+                                                  = Prefix
+                                       then
+                                          declare
+                                             Rest : constant String :=
+                                               P (P'First + Prefix'Length
+                                                  .. P'Last);
+                                             Slash : constant Natural :=
+                                               Ada.Strings.Fixed.Index
+                                                 (Rest, "/");
+                                             Name : constant String :=
+                                               (if Slash = 0 then Rest
+                                                else Rest (Rest'First
+                                                           .. Slash - 1) & "/");
+                                             Dup : Boolean := False;
+                                          begin
+                                             for X of Seen loop
+                                                if X = Name then
+                                                   Dup := True;
+                                                end if;
+                                             end loop;
+                                             if not Dup then
+                                                Seen.Append (Name);
+                                                Append (Listing,
+                                                        Name & ASCII.LF);
+                                             end if;
+                                             Found := True;
+                                          end;
+                                       end if;
+                                    end;
+                                 end loop;
+
+                                 if Found then
+                                    Version.Console.Put
+                                      ("tree " & Spec & ASCII.LF & ASCII.LF
+                                       & To_String (Listing));
+                                 else
+                                    Error_Line
+                                      ("path does not exist in "
+                                       & Rev_Part & ": " & Path_Part);
+                                    Set_Command_Failure;
+                                 end if;
+                              end;
+                           end if;
+                        end;
+                     else
+                        Version.Console.Put
+                          (Version.Show.Show_Commit
+                             (Repo,
+                              Version.Show.Resolve_Revision (Repo, Spec),
+                              Opts));
+                     end if;
                   end;
-               elsif Arg (2)'Length > 0 and then Arg (2) (Arg (2)'First) = '-' then
-                  Usage_Error ("unknown show option: " & Arg (2), Usage);
-                  return;
-               else
-                  Usage_Error ("too many show arguments", Usage);
-                  return;
                end if;
             end;
 
@@ -2026,13 +7699,17 @@ package body Version.CLI is
          elsif Command = "save" then
             declare
                Usage      : constant String :=
-                 "version save [--amend] [--no-verify] [-m] MESSAGE";
+                 "version save [--amend] [--no-verify] [-S[<keyid>]]"
+                 & " [--no-gpg-sign] [-m] MESSAGE";
                I          : Natural := 2;
                Amend      : Boolean := False;
                No_Verify  : Boolean := False;
                Message    : Unbounded_String;
                Has_Message : Boolean := False;
                Used_M     : Boolean := False;
+               Sign        : Version.Write.Sign_Choice :=
+                 Version.Write.Sign_From_Config;
+               Signing_Key : Unbounded_String;
             begin
                while I <= Count loop
                   if Arg (I) = "--amend" then
@@ -2070,6 +7747,35 @@ package body Version.CLI is
                      Message := To_Unbounded_String (Arg (I + 1));
                      I := I + 2;
 
+                  elsif Arg (I) = "-S" or else Arg (I) = "--gpg-sign" then
+                     Sign := Version.Write.Sign_Force;
+                     Signing_Key := Null_Unbounded_String;
+                     I := I + 1;
+
+                  elsif Arg (I)'Length > 2
+                    and then Arg (I) (Arg (I)'First .. Arg (I)'First + 1) = "-S"
+                  then
+                     Sign := Version.Write.Sign_Force;
+                     Signing_Key :=
+                       To_Unbounded_String
+                         (Arg (I) (Arg (I)'First + 2 .. Arg (I)'Last));
+                     I := I + 1;
+
+                  elsif Arg (I)'Length > 11
+                    and then Arg (I) (Arg (I)'First .. Arg (I)'First + 10)
+                             = "--gpg-sign="
+                  then
+                     Sign := Version.Write.Sign_Force;
+                     Signing_Key :=
+                       To_Unbounded_String
+                         (Arg (I) (Arg (I)'First + 11 .. Arg (I)'Last));
+                     I := I + 1;
+
+                  elsif Arg (I) = "--no-gpg-sign" then
+                     Sign := Version.Write.Sign_Disable;
+                     Signing_Key := Null_Unbounded_String;
+                     I := I + 1;
+
                   elsif Arg (I)'Length > 0
                     and then Arg (I) (Arg (I)'First) = '-'
                   then
@@ -2093,12 +7799,16 @@ package body Version.CLI is
                   return;
                elsif Amend then
                   Version.Write.Save_Amend
-                    (Message   => To_String (Message),
-                     Run_Hooks => not No_Verify);
+                    (Message     => To_String (Message),
+                     Run_Hooks   => not No_Verify,
+                     Sign        => Sign,
+                     Signing_Key => To_String (Signing_Key));
                else
                   Version.Write.Save
-                    (Message   => To_String (Message),
-                     Run_Hooks => not No_Verify);
+                    (Message     => To_String (Message),
+                     Run_Hooks   => not No_Verify,
+                     Sign        => Sign,
+                     Signing_Key => To_String (Signing_Key));
                end if;
 
                Success_Line
@@ -2113,14 +7823,28 @@ package body Version.CLI is
                Usage : constant String := "version branch SUBCOMMAND [ARGS]";
             begin
                if Count < 2 then
-                  Usage_Error ("missing branch subcommand", Usage);
-                  return;
+                  --  Bare `branch` lists branches, like git.
+                  Print_Branch_List;
+               elsif Count = 2
+                 and then (Arg (2) = "-v" or else Arg (2) = "-vv"
+                           or else Arg (2) = "--verbose")
+               then
+                  Version.Console.Put
+                    (Version.Branch.List_Branches_Verbose_Text);
+               elsif Count = 2
+                 and then (Arg (2) = "-a" or else Arg (2) = "--all"
+                           or else Arg (2) = "-r" or else Arg (2) = "--remotes")
+               then
+                  --  git -a/-r also lists remote-tracking branches; with none
+                  --  present this equals the local listing.
+                  Print_Branch_List;
                elsif Arg (2) = "list" then
                   if Count = 2 then
                      Print_Branch_List;
                   elsif Arg (3) = "--verbose" then
                      if Count = 3 then
-                        Ada.Text_IO.Put (Version.Branch.List_Branches_Verbose_Text);
+                        Version.Console.Put
+                          (Version.Branch.List_Branches_Verbose_Text);
                      else
                         Usage_Error ("too many branch list arguments", Usage);
                         return;
@@ -2588,7 +8312,8 @@ package body Version.CLI is
                   elsif Config_False (Stat_Config) or else Config_False (Summary_Config) then
                      return False;
                   else
-                     return Options.Stat;
+                     --  git's merge.stat defaults to true.
+                     return True;
                   end if;
                end Effective_Stat;
 
@@ -2608,75 +8333,15 @@ package body Version.CLI is
                is
                   Repo : constant Version.Repository.Repository_Handle :=
                     Version.Repository.Open;
-                  Old_Items : constant Version.Objects.Tree_Entry_Vectors.Vector :=
-                    Version.Objects.Flatten_Tree
-                      (Repo => Repo, Tree_Id => Commit_Tree_Id (Repo, Before_Id));
-                  New_Items : constant Version.Objects.Tree_Entry_Vectors.Vector :=
-                    Version.Objects.Flatten_Tree
-                      (Repo => Repo, Tree_Id => Commit_Tree_Id (Repo, After_Id));
-                  Paths : Version.Path_Safety.Path_Vector;
-                  Text  : Ada.Strings.Unbounded.Unbounded_String;
-                  Count : Natural := 0;
-
-                  function Find_Path
-                    (Items : Version.Objects.Tree_Entry_Vectors.Vector;
-                     Path  : String) return Natural
-                  is
-                  begin
-                     if not Items.Is_Empty then
-                        for I in Items.First_Index .. Items.Last_Index loop
-                           if To_String (Items.Element (I).Path) = Path then
-                              return I;
-                           end if;
-                        end loop;
-                     end if;
-
-                     return Natural'Last;
-                  end Find_Path;
-
-                  function Changed (Path : String) return Boolean is
-                     Old_Pos : constant Natural := Find_Path (Old_Items, Path);
-                     New_Pos : constant Natural := Find_Path (New_Items, Path);
-                  begin
-                     if Old_Pos = Natural'Last or else New_Pos = Natural'Last then
-                        return Old_Pos /= New_Pos;
-                     else
-                        return Old_Items.Element (Old_Pos).Id /= New_Items.Element (New_Pos).Id
-                          or else Old_Items.Element (Old_Pos).Kind /= New_Items.Element (New_Pos).Kind
-                          or else To_String (Old_Items.Element (Old_Pos).Mode)
-                                  /= To_String (New_Items.Element (New_Pos).Mode);
-                     end if;
-                  end Changed;
-
-                  procedure Add_Paths
-                    (Items : Version.Objects.Tree_Entry_Vectors.Vector) is
-                  begin
-                     if not Items.Is_Empty then
-                        for I in Items.First_Index .. Items.Last_Index loop
-                           Append_Unique (Paths, To_String (Items.Element (I).Path));
-                        end loop;
-                     end if;
-                  end Add_Paths;
                begin
-                  Add_Paths (Old_Items);
-                  Add_Paths (New_Items);
-
-                  if not Paths.Is_Empty then
-                     for I in Paths.First_Index .. Paths.Last_Index loop
-                        if Changed (Paths.Element (I)) then
-                           Count := Count + 1;
-                           Ada.Strings.Unbounded.Append
-                             (Text, " " & Paths.Element (I) & Character'Val (10));
-                        end if;
-                     end loop;
-                  end if;
-
-                  if Count > 0 then
-                     Ada.Strings.Unbounded.Append
-                       (Text, Natural'Image (Count) & " files changed");
-                  end if;
-
-                  return Ada.Strings.Unbounded.To_String (Text);
+                  --  git shows `--stat --summary` of ORIG_HEAD..HEAD after a
+                  --  merge / fast-forward.
+                  return Version.Diff.Diff_Commits
+                    (Repo    => Repo,
+                     Old_Id  => Before_Id,
+                     New_Id  => After_Id,
+                     Options =>
+                       (Context_Lines => 3, Stat => True, Summary => True, others => <>));
                end Merge_Stat_Text;
 
                procedure Print_Merge_Stat_If_Requested
@@ -2695,13 +8360,106 @@ package body Version.CLI is
                           Merge_Stat_Text
                             (Before_Id => Before_Id,
                              After_Id  => Version.Objects.To_Object_Id (After_Text));
+                        Last      : Natural := Stat_Text'Last;
                      begin
-                        if Stat_Text'Length > 0 then
-                           Success_Line (Stat_Text);
+                        --  Trim the block's trailing newline; Success_Line adds
+                        --  one back so the multi-line stat prints byte-exactly.
+                        if Last >= Stat_Text'First
+                          and then Stat_Text (Last) = Character'Val (10)
+                        then
+                           Last := Last - 1;
+                        end if;
+                        if Last >= Stat_Text'First then
+                           Success_Line (Stat_Text (Stat_Text'First .. Last));
                         end if;
                      end;
                   end if;
                end Print_Merge_Stat_If_Requested;
+
+               --  git's fast-forward headline "Updating <old>..<new>" using
+               --  the shortest-unique abbreviation (7-char floor) for each id.
+               procedure Print_Merge_Updating
+                 (Before_Id : Version.Objects.Hex_Object_Id)
+               is
+                  Repo       : constant Version.Repository.Repository_Handle :=
+                    Version.Repository.Open;
+                  After_Text : constant String :=
+                    Version.Refs.Current_Commit_Id (Repo);
+                  Old_Full   : constant String := To_String (Before_Id);
+               begin
+                  if not Version.Objects.Is_Valid_Hex_Object_Id (After_Text)
+                    or else not Version.Objects.Is_Valid_Hex_Object_Id (Old_Full)
+                  then
+                     return;
+                  end if;
+
+                  declare
+                     After_Id : constant Version.Objects.Hex_Object_Id :=
+                       Version.Objects.To_Object_Id (After_Text);
+                     OL : constant Natural :=
+                       Version.Revisions.Unique_Abbrev_Length
+                         (Repo, Before_Id, 7);
+                     NL : constant Natural :=
+                       Version.Revisions.Unique_Abbrev_Length
+                         (Repo, After_Id, 7);
+                  begin
+                     Success_Line
+                       ("Updating "
+                        & Old_Full (Old_Full'First .. Old_Full'First + OL - 1)
+                        & ".."
+                        & After_Text
+                            (After_Text'First .. After_Text'First + NL - 1));
+                  end;
+               end Print_Merge_Updating;
+
+               --  git-merge-octopus progress narration: from the pre-merge
+               --  HEAD, fast-forward through leading ancestor targets, then
+               --  "trying simple merge" for the rest (matching git's steps).
+               procedure Print_Octopus_Progress
+                 (Before_Id : Version.Objects.Hex_Object_Id;
+                  Targets   : Version.Branch.Merge_Target_Vectors.Vector)
+               is
+                  Repo   : constant Version.Repository.Repository_Handle :=
+                    Version.Repository.Open;
+                  MRC    : Version.Objects.Hex_Object_Id := Before_Id;
+                  Non_FF : Boolean := False;
+               begin
+                  for I in Targets.First_Index .. Targets.Last_Index loop
+                     declare
+                        Name     : constant String :=
+                          To_String (Targets.Element (I));
+                        Resolved : Boolean := True;
+                        SHA1     : Version.Objects.Hex_Object_Id :=
+                          Version.Objects.Zero_Object_Id;
+                     begin
+                        begin
+                           SHA1 := Version.Revisions.Resolve_Commit (Repo, Name);
+                        exception
+                           when Ada.IO_Exceptions.Data_Error
+                              | Constraint_Error =>
+                              Resolved := False;
+                        end;
+
+                        if Resolved then
+                           if Version.History.Is_Ancestor
+                                (Repo, Base_Id => SHA1, Derived_Id => MRC)
+                           then
+                              Success_Line ("Already up to date with " & Name);
+                           elsif not Non_FF
+                             and then Version.History.Is_Ancestor
+                                        (Repo, Base_Id => MRC,
+                                         Derived_Id => SHA1)
+                           then
+                              Success_Line ("Fast-forwarding to: " & Name);
+                              MRC := SHA1;
+                           else
+                              Non_FF := True;
+                              Success_Line ("Trying simple merge with " & Name);
+                           end if;
+                        end if;
+                     end;
+                  end loop;
+               end Print_Octopus_Progress;
 
                procedure Put_Merge_Diagnostic (Text : String);
 
@@ -2960,11 +8718,17 @@ package body Version.CLI is
                   Entries    : Version.Staging.Index_Entry_Vectors.Vector) return Boolean
                is
                begin
-                  return not Is_Rename_Delete_Diagnostic
-                    (Repo    => Repo,
-                     Base_Id => Base_Id,
-                     Item    => Item,
-                     Entries => Entries)
+                  --  git prints "Auto-merging X" only when it runs the
+                  --  content three-way merge on X (both sides changed the
+                  --  content). A modify/delete, rename/delete, or
+                  --  file/directory collision has no content merge, so no line.
+                  return Item.Kind /= Version.Merge.Delete_Modify_Conflict
+                    and then Item.Kind /= Version.Merge.Directory_File_Conflict
+                    and then not Is_Rename_Delete_Diagnostic
+                      (Repo    => Repo,
+                       Base_Id => Base_Id,
+                       Item    => Item,
+                       Entries => Entries)
                     and then not Is_File_Location_Diagnostic
                       (Repo       => Repo,
                        Current_Id => Current_Id,
@@ -3079,9 +8843,27 @@ package body Version.CLI is
                            end if;
                         end;
                      when Version.Merge.Directory_File_Conflict =>
-                        Put_Merge_Diagnostic
-                          ("CONFLICT (file/directory): directory/file conflict in "
-                           & Path);
+                        --  The engine renamed the losing file to
+                        --  "<original>~<label>"; label is HEAD for a stage-2
+                        --  entry, else the target label.
+                        declare
+                           In_Stage_2 : constant Boolean :=
+                             Has_Conflict_Stage (Entries, Path, 2);
+                           Label      : constant String :=
+                             (if In_Stage_2 then "HEAD" else Target_Label);
+                           Suffix     : constant String := "~" & Label;
+                           Original   : constant String :=
+                             (if Path'Length > Suffix'Length
+                                and then Path (Path'Last - Suffix'Length + 1
+                                               .. Path'Last) = Suffix
+                              then Path (Path'First .. Path'Last - Suffix'Length)
+                              else Path);
+                        begin
+                           Put_Merge_Diagnostic
+                             ("CONFLICT (file/directory): directory in the way of "
+                              & Original & " from " & Label
+                              & "; moving it to " & Path & " instead.");
+                        end;
                      when others =>
                         Put_Merge_Diagnostic
                           ("CONFLICT ("
@@ -3098,6 +8880,9 @@ package body Version.CLI is
 
                Last_Merge_Was_Fast_Forward : Boolean := False;
                Last_Merge_Was_Already_Up_To_Date : Boolean := False;
+               Last_Merge_Before_Id : Version.Objects.Hex_Object_Id :=
+                 Version.Objects.Zero_Object_Id;
+               Last_Merge_Before_Valid : Boolean := False;
 
                procedure Print_Git_Ort_Conflict_Output is
                   Repo : constant Version.Repository.Repository_Handle :=
@@ -3235,6 +9020,83 @@ package body Version.CLI is
                      Conflicts     => Conflicts);
                   Entries := Version.Staging.Load (Repo);
 
+                  --  git prints "Auto-merging <path>" for every path it runs
+                  --  the three-way content merge on -- clean ones included.
+                  --  The conflicted ones are announced in the loop below, so
+                  --  only the cleanly merged paths are left to report here.
+                  declare
+                     Base_Items : constant
+                       Version.Objects.Tree_Entry_Vectors.Vector :=
+                         Version.Objects.Flatten_Tree
+                           (Repo    => Repo,
+                            Tree_Id => Commit_Tree_Id (Repo, Base_Id));
+                     Ours_Items : constant
+                       Version.Objects.Tree_Entry_Vectors.Vector :=
+                         Version.Objects.Flatten_Tree
+                           (Repo    => Repo,
+                            Tree_Id => Commit_Tree_Id (Repo, Current_Id));
+                     Theirs_Items : constant
+                       Version.Objects.Tree_Entry_Vectors.Vector :=
+                         Version.Objects.Flatten_Tree
+                           (Repo    => Repo,
+                            Tree_Id => Commit_Tree_Id (Repo, Target_Id));
+
+                     function Blob_Of
+                       (Items : Version.Objects.Tree_Entry_Vectors.Vector;
+                        Path  : String;
+                        Found : out Boolean) return String is
+                     begin
+                        Found := False;
+                        for I in Items.First_Index .. Items.Last_Index loop
+                           if To_String (Items.Element (I).Path) = Path then
+                              Found := True;
+                              return Version.Objects.To_String
+                                (Items.Element (I).Id);
+                           end if;
+                        end loop;
+                        return "";
+                     end Blob_Of;
+
+                     function Is_Conflicted (Path : String) return Boolean is
+                     begin
+                        for I in Conflicts.First_Index .. Conflicts.Last_Index
+                        loop
+                           if To_String (Conflicts.Element (I).Path) = Path then
+                              return True;
+                           end if;
+                        end loop;
+                        return False;
+                     end Is_Conflicted;
+                  begin
+                     for I in Base_Items.First_Index .. Base_Items.Last_Index
+                     loop
+                        declare
+                           Path : constant String :=
+                             To_String (Base_Items.Element (I).Path);
+                           Base_Blob : constant String :=
+                             Version.Objects.To_String
+                               (Base_Items.Element (I).Id);
+                           Has_O, Has_T : Boolean;
+                           Ours_Blob   : constant String :=
+                             Blob_Of (Ours_Items, Path, Has_O);
+                           Theirs_Blob : constant String :=
+                             Blob_Of (Theirs_Items, Path, Has_T);
+                        begin
+                           --  Both sides kept the path and both changed it,
+                           --  differently: that is exactly when git merges the
+                           --  content.
+                           if Has_O and then Has_T
+                             and then Ours_Blob /= Base_Blob
+                             and then Theirs_Blob /= Base_Blob
+                             and then Ours_Blob /= Theirs_Blob
+                             and then not Is_Conflicted (Path)
+                           then
+                              Put_Merge_Diagnostic ("Auto-merging " & Path);
+                           end if;
+                        end;
+                     end loop;
+                  end;
+
                   if not Conflicts.Is_Empty then
                      for Index in Conflicts.First_Index .. Conflicts.Last_Index loop
                         declare
@@ -3292,6 +9154,80 @@ package body Version.CLI is
                      null;
                end Print_Git_Ort_Conflict_Output;
 
+               --  git prints "Auto-merging <path>" for every path whose content
+               --  it three-way merges: both sides kept it and both changed it,
+               --  differently.  Conflicted paths are announced by the conflict
+               --  diagnostics, so Skip_Conflicted leaves those to it.
+               procedure Print_Auto_Merged_Paths
+                 (Repo       : Version.Repository.Repository_Handle;
+                  Ours_Id    : Version.Objects.Hex_Object_Id;
+                  Theirs_Id  : Version.Objects.Hex_Object_Id;
+                  Base_Id    : Version.Objects.Hex_Object_Id;
+                  Conflicted : Version.Merge.Conflict_Vectors.Vector)
+               is
+                  Base_Items : constant Version.Objects.Tree_Entry_Vectors.Vector :=
+                    Version.Objects.Flatten_Tree
+                      (Repo => Repo, Tree_Id => Commit_Tree_Id (Repo, Base_Id));
+                  Ours_Items : constant Version.Objects.Tree_Entry_Vectors.Vector :=
+                    Version.Objects.Flatten_Tree
+                      (Repo => Repo, Tree_Id => Commit_Tree_Id (Repo, Ours_Id));
+                  Theirs_Items : constant Version.Objects.Tree_Entry_Vectors.Vector :=
+                    Version.Objects.Flatten_Tree
+                      (Repo => Repo, Tree_Id => Commit_Tree_Id (Repo, Theirs_Id));
+
+                  function Blob_Of
+                    (Items : Version.Objects.Tree_Entry_Vectors.Vector;
+                     Path  : String;
+                     Found : out Boolean) return String is
+                  begin
+                     Found := False;
+                     for I in Items.First_Index .. Items.Last_Index loop
+                        if To_String (Items.Element (I).Path) = Path then
+                           Found := True;
+                           return Version.Objects.To_String
+                             (Items.Element (I).Id);
+                        end if;
+                     end loop;
+                     return "";
+                  end Blob_Of;
+
+                  function Is_Conflicted (Path : String) return Boolean is
+                  begin
+                     for I in Conflicted.First_Index .. Conflicted.Last_Index loop
+                        if To_String (Conflicted.Element (I).Path) = Path then
+                           return True;
+                        end if;
+                     end loop;
+                     return False;
+                  end Is_Conflicted;
+               begin
+                  for I in Base_Items.First_Index .. Base_Items.Last_Index loop
+                     declare
+                        Path : constant String :=
+                          To_String (Base_Items.Element (I).Path);
+                        Base_Blob : constant String :=
+                          Version.Objects.To_String (Base_Items.Element (I).Id);
+                        Has_O, Has_T : Boolean;
+                        Ours_Blob   : constant String :=
+                          Blob_Of (Ours_Items, Path, Has_O);
+                        Theirs_Blob : constant String :=
+                          Blob_Of (Theirs_Items, Path, Has_T);
+                     begin
+                        if Has_O and then Has_T
+                          and then Ours_Blob /= Base_Blob
+                          and then Theirs_Blob /= Base_Blob
+                          and then Ours_Blob /= Theirs_Blob
+                          and then not Is_Conflicted (Path)
+                        then
+                           Put_Merge_Diagnostic ("Auto-merging " & Path);
+                        end if;
+                     end;
+                  end loop;
+               exception
+                  when others =>
+                     null;   --  diagnostics must never fail a merge
+               end Print_Auto_Merged_Paths;
+
                function Run_Merge_One
                  (Target  : String;
                   Options : Version.Branch.Merge_Options) return Boolean
@@ -3348,7 +9284,38 @@ package body Version.CLI is
                      end if;
                   end;
 
-                  Print_Merge_Stat_If_Requested (Options, Before_Id);
+                  --  A real (non-fast-forward) merge that came out clean:
+                  --  report the paths whose content was merged, as git does.
+                  if not Last_Merge_Was_Fast_Forward
+                    and then not Last_Merge_Was_Already_Up_To_Date
+                  then
+                     declare
+                        Repo_After : constant
+                          Version.Repository.Repository_Handle :=
+                            Version.Repository.Open;
+                        Theirs_Id : constant Version.Objects.Hex_Object_Id :=
+                          Version.Revisions.Resolve_Commit (Repo_After, Target);
+                        Base_Id : constant Version.Objects.Hex_Object_Id :=
+                          Version.History.Merge_Base
+                            (Repo_After, Before_Id, Theirs_Id);
+                        None : Version.Merge.Conflict_Vectors.Vector;
+                     begin
+                        Print_Auto_Merged_Paths
+                          (Repo       => Repo_After,
+                           Ours_Id    => Before_Id,
+                           Theirs_Id  => Theirs_Id,
+                           Base_Id    => Base_Id,
+                           Conflicted => None);
+                     exception
+                        when others =>
+                           null;
+                     end;
+                  end if;
+
+                  --  Stat is emitted by the caller after the headline line, so
+                  --  the "Fast-forward"/"Merge made by" text precedes it.
+                  Last_Merge_Before_Id := Before_Id;
+                  Last_Merge_Before_Valid := True;
                   return True;
                end Run_Merge_One;
 
@@ -3378,7 +9345,8 @@ package body Version.CLI is
                         raise;
                   end;
 
-                  Print_Merge_Stat_If_Requested (Options, Before_Id);
+                  Last_Merge_Before_Id := Before_Id;
+                  Last_Merge_Before_Valid := True;
                   return True;
                end Run_Merge_Multiple;
 
@@ -4169,18 +10137,29 @@ package body Version.CLI is
                                  Options => Options)
                            then
                               if Options.Squash then
-                                 Success_Line ("Squash commit -- not updating HEAD");
                                  Success_Line
                                    ("Automatic merge went well; stopped before committing as requested");
+                                 Success_Line ("Squash commit -- not updating HEAD");
                               elsif Options.No_Commit then
                                  Success_Line
                                    ("Automatic merge went well; stopped before committing as requested");
                               elsif Last_Merge_Was_Fast_Forward then
+                                 if Last_Merge_Before_Valid then
+                                    Print_Merge_Updating (Last_Merge_Before_Id);
+                                 end if;
                                  Success_Line ("Fast-forward");
+                                 if Last_Merge_Before_Valid then
+                                    Print_Merge_Stat_If_Requested
+                                      (Options, Last_Merge_Before_Id);
+                                 end if;
                               elsif Last_Merge_Was_Already_Up_To_Date then
                                  Success_Line ("Already up to date.");
                               else
                                  Success_Line ("Merge made by the 'ort' strategy.");
+                                 if Last_Merge_Before_Valid then
+                                    Print_Merge_Stat_If_Requested
+                                      (Options, Last_Merge_Before_Id);
+                                 end if;
                               end if;
                            end if;
                         end;
@@ -4189,15 +10168,23 @@ package body Version.CLI is
                              (Targets => Targets,
                               Options => Options)
                         then
+                           if Last_Merge_Before_Valid then
+                              Print_Octopus_Progress
+                                (Last_Merge_Before_Id, Targets);
+                           end if;
                            if Options.Squash then
-                              Success_Line ("Squash commit -- not updating HEAD");
                               Success_Line
                                 ("Automatic merge went well; stopped before committing as requested");
+                              Success_Line ("Squash commit -- not updating HEAD");
                            elsif Options.No_Commit then
                               Success_Line
                                 ("Automatic merge went well; stopped before committing as requested");
                            else
                               Success_Line ("Merge made by the 'octopus' strategy.");
+                              if Last_Merge_Before_Valid then
+                                 Print_Merge_Stat_If_Requested
+                                   (Options, Last_Merge_Before_Id);
+                              end if;
                            end if;
                         end if;
                      end if;
@@ -4262,6 +10249,97 @@ package body Version.CLI is
                      return;
                   end if;
                   Version.Submodules.Status;
+
+               elsif Arg (2) = "sync" then
+                  declare
+                     Sync_Usage : constant String :=
+                       "version submodule sync [--recursive]";
+                     Recursive  : Boolean := False;
+                  begin
+                     for I in 3 .. Count loop
+                        if Arg (I) = "--recursive" then
+                           Recursive := True;
+                        else
+                           Usage_Error
+                             ("unknown submodule sync option: " & Arg (I),
+                              Sync_Usage);
+                           return;
+                        end if;
+                     end loop;
+                     Version.Submodules.Sync (Recursive => Recursive);
+                  end;
+
+               elsif Arg (2) = "foreach" then
+                  declare
+                     Foreach_Usage : constant String :=
+                       "version submodule foreach [--recursive] COMMAND";
+                     Recursive : Boolean := False;
+                     First     : Natural := 3;
+                  begin
+                     if First <= Count and then Arg (First) = "--recursive" then
+                        Recursive := True;
+                        First := First + 1;
+                     end if;
+
+                     if First > Count then
+                        Usage_Error
+                          ("missing submodule foreach command", Foreach_Usage);
+                        return;
+                     end if;
+
+                     --  The remainder of the command line is the shell command
+                     --  (git joins the arguments with spaces).
+                     declare
+                        Command : Unbounded_String;
+                     begin
+                        for I in First .. Count loop
+                           if I > First then
+                              Append (Command, " ");
+                           end if;
+                           Append (Command, Arg (I));
+                        end loop;
+                        Version.Submodules.Foreach
+                          (To_String (Command), Recursive => Recursive);
+                     end;
+                  end;
+
+               elsif Arg (2) = "deinit" then
+                  declare
+                     Deinit_Usage : constant String :=
+                       "version submodule deinit [--force] [--all|PATH...]";
+                     Force : Boolean := False;
+                     All_S : Boolean := False;
+                     Paths : Version.Submodules.Path_Vectors.Vector;
+                  begin
+                     for I in 3 .. Count loop
+                        if Arg (I) = "--force" or else Arg (I) = "-f" then
+                           Force := True;
+                        elsif Arg (I) = "--all" then
+                           All_S := True;
+                        elsif Arg (I)'Length > 0
+                          and then Arg (I) (Arg (I)'First) = '-'
+                        then
+                           Usage_Error
+                             ("unknown submodule deinit option: " & Arg (I),
+                              Deinit_Usage);
+                           return;
+                        else
+                           Paths.Append (Arg (I));
+                        end if;
+                     end loop;
+
+                     if All_S and then not Paths.Is_Empty then
+                        Usage_Error
+                          ("submodule deinit: --all cannot be combined with"
+                           & " a path", Deinit_Usage);
+                        return;
+                     end if;
+
+                     Version.Submodules.Deinit
+                       (Paths          => Paths,
+                        All_Submodules => All_S,
+                        Force          => Force);
+                  end;
 
                else
                   Usage_Error
@@ -5104,8 +11182,9 @@ package body Version.CLI is
                end if;
             end;
 
-         elsif Command = "sparse" then
+         elsif Command = "sparse" or else Command = "sparse-checkout" then
             declare
+               Cmd_Name   : constant String := Command;
                Subcommand : constant String :=
                  (if Count >= 2 then Arg (2) else "");
 
@@ -5127,43 +11206,64 @@ package body Version.CLI is
                   end if;
                end Reject_Extra;
 
-               procedure Parse_Pathspec_Operands
-                 (Context, Usage : String; OK : out Boolean) is
+               --  Parse "[--cone|--no-cone] [--] OPERAND..." for set/add/init.
+               procedure Parse_Set_Like
+                 (Context, Usage : String;
+                  Cone           : in out Boolean;
+                  Cone_Explicit  : out Boolean;
+                  Operands       : out Version.Sparse.String_Vectors.Vector;
+                  OK             : out Boolean)
+               is
                   After_Separator : Boolean := False;
-                  Operand_Count   : Natural := 0;
                begin
-                  OK := False;
+                  Operands      := Version.Sparse.String_Vectors.Empty_Vector;
+                  Cone_Explicit := False;
+                  OK            := False;
 
-                  if Count >= 3 then
-                     for I in 3 .. Count loop
-                        if Arg (I) = "--" and then not After_Separator then
+                  for I in 3 .. Count loop
+                     declare
+                        A : constant String := Arg (I);
+                     begin
+                        if not After_Separator and then A = "--" then
                            After_Separator := True;
-                        elsif not After_Separator and then Is_Option (Arg (I)) then
+                        elsif not After_Separator and then A = "--cone" then
+                           Cone := True;
+                           Cone_Explicit := True;
+                        elsif not After_Separator and then A = "--no-cone" then
+                           Cone := False;
+                           Cone_Explicit := True;
+                        elsif not After_Separator and then Is_Option (A) then
                            Usage_Error
-                             ("unknown sparse " & Context & " option: " & Arg (I),
+                             ("unknown sparse " & Context & " option: " & A,
                               Usage);
                            return;
                         else
-                           Operand_Count := Operand_Count + 1;
+                           Operands.Append (A);
                         end if;
-                     end loop;
-                  end if;
+                     end;
+                  end loop;
 
-                  if Operand_Count = 0 then
-                     Usage_Error ("missing sparse pathspec", Usage);
-                  else
-                     OK := True;
+                  OK := True;
+               end Parse_Set_Like;
+
+               procedure Require_Born (Repo : Version.Repository.Repository_Handle)
+               is
+               begin
+                  if Version.Refs.Current_Commit_Id (Repo)'Length = 0 then
+                     raise Ada.IO_Exceptions.Data_Error
+                       with "cannot update sparse checkout on unborn branch";
                   end if;
-               end Parse_Pathspec_Operands;
+               end Require_Born;
             begin
                if Count = 1 then
                   Usage_Error
-                    ("missing sparse subcommand", "version sparse <subcommand>");
+                    ("missing sparse subcommand",
+                     "version " & Cmd_Name & " <subcommand>");
                   return;
 
                elsif Subcommand = "list" then
                   declare
-                     Usage : constant String := "version sparse list";
+                     Usage : constant String := "version " & Cmd_Name & " list";
                   begin
                      if Count > 2 then
                         Reject_Extra (3, "list", Usage);
@@ -5175,7 +11275,8 @@ package body Version.CLI is
 
                elsif Subcommand = "status" then
                   declare
-                     Usage : constant String := "version sparse status";
+                     Usage : constant String :=
+                       "version " & Cmd_Name & " status";
                   begin
                      if Count > 2 then
                         Reject_Extra (3, "status", Usage);
@@ -5187,73 +11288,136 @@ package body Version.CLI is
 
                elsif Subcommand = "set" then
                   declare
-                     Usage : constant String := "version sparse set PATHSPEC...";
-                     OK    : Boolean := False;
+                     Usage : constant String :=
+                       "version " & Cmd_Name
+                       & " set [--cone|--no-cone] DIR...";
+                     Cone     : Boolean := True;
+                     Explicit : Boolean := False;
+                     Operands : Version.Sparse.String_Vectors.Vector;
+                     OK       : Boolean := False;
                   begin
-                     Parse_Pathspec_Operands ("set", Usage, OK);
+                     Parse_Set_Like ("set", Usage, Cone, Explicit, Operands, OK);
                      if not OK then
                         return;
                      end if;
-                  end;
 
-                  Require_Clean_Working_Tree_Including_Sparse_Excluded
-                    ("sparse set");
-                  declare
-                     Repo  : constant Version.Repository.Repository_Handle :=
-                       Version.Repository.Open;
-                     Items : constant Version.Sparse.String_Vectors.Vector :=
-                       Sparse_Items_From_Args (3);
-                  begin
-                     Preflight_Sparse_Restore
-                       (Repo => Repo, Sparse_Enabled => True, Items => Items);
-                     Version.Sparse.Set_From_Strings
-                       (Repo => Repo, Items => Items);
-                     Version.Restore.Restore_Working_Tree (Repo);
+                     if not Cone and then Operands.Is_Empty then
+                        Usage_Error ("missing sparse pathspec", Usage);
+                        return;
+                     end if;
+
+                     Require_Clean_Working_Tree_Including_Sparse_Excluded
+                       ("sparse set");
+                     declare
+                        Repo : constant Version.Repository.Repository_Handle :=
+                          Version.Repository.Open;
+                     begin
+                        Require_Born (Repo);
+                        if Cone then
+                           Version.Sparse.Set_Cone (Repo, Operands);
+                        else
+                           Version.Sparse.Set_From_Strings (Repo, Operands);
+                        end if;
+                        Version.Restore.Restore_Working_Tree (Repo);
+                        Version.Restore.Apply_Sparse_Skip_Worktree (Repo);
+                     end;
+                     Success_Line ("updated sparse checkout");
                   end;
-                  Success_Line ("updated sparse checkout");
 
                elsif Subcommand = "add" then
                   declare
-                     Usage : constant String := "version sparse add PATHSPEC...";
-                     OK    : Boolean := False;
+                     Usage : constant String :=
+                       "version " & Cmd_Name
+                       & " add [--cone|--no-cone] DIR...";
+                     Cone     : Boolean := True;
+                     Explicit : Boolean := False;
+                     Added    : Version.Sparse.String_Vectors.Vector;
+                     OK       : Boolean := False;
                   begin
-                     Parse_Pathspec_Operands ("add", Usage, OK);
+                     --  Validate arguments before touching the repository so a
+                     --  missing operand / bad option reports cleanly.
+                     Parse_Set_Like ("add", Usage, Cone, Explicit, Added, OK);
                      if not OK then
                         return;
                      end if;
-                  end;
 
-                  declare
-                     Repo     : constant Version.Repository.Repository_Handle :=
-                       Version.Repository.Open;
-                     Existing : Version.Sparse.String_Vectors.Vector;
-                     Added    : constant Version.Sparse.String_Vectors.Vector :=
-                       Sparse_Items_From_Args (3);
-                  begin
+                     if Added.Is_Empty then
+                        Usage_Error ("missing sparse pathspec", Usage);
+                        return;
+                     end if;
+
                      Require_Clean_Working_Tree_Including_Sparse_Excluded
                        ("sparse add");
+                     declare
+                        Repo : constant Version.Repository.Repository_Handle :=
+                          Version.Repository.Open;
+                        Combined : Version.Sparse.String_Vectors.Vector;
+                     begin
+                        Require_Born (Repo);
 
-                     if Version.Sparse.Enabled (Repo) then
-                        Existing := Version.Sparse.Pattern_Texts (Repo);
-                     end if;
+                        --  git's `add` keeps the repository's current mode
+                        --  unless overridden by an explicit --cone/--no-cone.
+                        if not Explicit then
+                           Cone := Version.Sparse.Cone_Mode (Repo);
+                        end if;
 
-                     if not Added.Is_Empty then
-                        for I in Added.First_Index .. Added.Last_Index loop
-                           Existing.Append (Added.Element (I));
-                        end loop;
-                     end if;
+                        if Cone then
+                           if Version.Sparse.Enabled (Repo)
+                             and then Version.Sparse.Cone_Mode (Repo)
+                           then
+                              Combined :=
+                                Version.Sparse.Cone_Recursive_Directories (Repo);
+                           end if;
+                           for D of Added loop
+                              Combined.Append (D);
+                           end loop;
+                           Version.Sparse.Set_Cone (Repo, Combined);
+                        else
+                           if Version.Sparse.Enabled (Repo) then
+                              Combined := Version.Sparse.Pattern_Texts (Repo);
+                           end if;
+                           for P of Added loop
+                              Combined.Append (P);
+                           end loop;
+                           Version.Sparse.Set_From_Strings (Repo, Combined);
+                        end if;
 
-                     Preflight_Sparse_Restore
-                       (Repo => Repo, Sparse_Enabled => True, Items => Existing);
-                     Version.Sparse.Set_From_Strings
-                       (Repo => Repo, Items => Existing);
-                     Version.Restore.Restore_Working_Tree (Repo);
+                        Version.Restore.Restore_Working_Tree (Repo);
+                        Version.Restore.Apply_Sparse_Skip_Worktree (Repo);
+                     end;
+                     Success_Line ("updated sparse checkout");
                   end;
-                  Success_Line ("updated sparse checkout");
+
+               elsif Subcommand = "reapply" then
+                  declare
+                     Usage : constant String :=
+                       "version " & Cmd_Name & " reapply";
+                  begin
+                     if Count > 2 then
+                        Reject_Extra (3, "reapply", Usage);
+                        return;
+                     end if;
+
+                     Require_Clean_Working_Tree_Including_Sparse_Excluded
+                       ("sparse reapply");
+                     declare
+                        Repo : constant Version.Repository.Repository_Handle :=
+                          Version.Repository.Open;
+                     begin
+                        if not Version.Sparse.Enabled (Repo) then
+                           raise Ada.IO_Exceptions.Data_Error
+                             with "this worktree is not sparse";
+                        end if;
+                        Version.Restore.Restore_Working_Tree (Repo);
+                        Version.Restore.Apply_Sparse_Skip_Worktree (Repo);
+                     end;
+                     Success_Line ("updated sparse checkout");
+                  end;
 
                elsif Subcommand = "disable" then
                   declare
-                     Usage : constant String := "version sparse disable";
+                     Usage : constant String :=
+                       "version " & Cmd_Name & " disable";
                   begin
                      if Count > 2 then
                         Reject_Extra (3, "disable", Usage);
@@ -5263,23 +11427,30 @@ package body Version.CLI is
                      Require_Clean_Working_Tree_Including_Sparse_Excluded
                        ("sparse disable");
                      declare
-                        Repo  : constant Version.Repository.Repository_Handle :=
+                        Repo : constant Version.Repository.Repository_Handle :=
                           Version.Repository.Open;
-                        Items : Version.Sparse.String_Vectors.Vector;
                      begin
-                        Preflight_Sparse_Restore
-                          (Repo => Repo, Sparse_Enabled => False, Items => Items);
                         Version.Sparse.Disable (Repo);
                         Version.Restore.Restore_Working_Tree (Repo);
+                        Version.Restore.Clear_Skip_Worktree (Repo);
                      end;
                      Success_Line ("disabled sparse checkout");
                   end;
 
                elsif Subcommand = "init" then
                   declare
-                     Usage : constant String := "version sparse init";
+                     Usage : constant String :=
+                       "version " & Cmd_Name & " init [--cone|--no-cone]";
+                     Cone     : Boolean := True;
+                     Explicit : Boolean := False;
+                     Operands : Version.Sparse.String_Vectors.Vector;
+                     OK       : Boolean := False;
                   begin
-                     if Count > 2 then
+                     Parse_Set_Like ("init", Usage, Cone, Explicit, Operands, OK);
+                     if not OK then
+                        return;
+                     end if;
+                     if not Operands.Is_Empty then
                         Reject_Extra (3, "init", Usage);
                         return;
                      end if;
@@ -5287,19 +11458,29 @@ package body Version.CLI is
                      Require_Clean_Working_Tree_Including_Sparse_Excluded
                        ("sparse init");
                      declare
-                        Items : Version.Sparse.String_Vectors.Vector;
+                        Repo : constant Version.Repository.Repository_Handle :=
+                          Version.Repository.Open;
+                        Dirs : Version.Sparse.String_Vectors.Vector;
                      begin
-                        Items.Append ("*");
-                        declare
-                           Repo : constant Version.Repository.Repository_Handle :=
-                             Version.Repository.Open;
-                        begin
-                           Preflight_Sparse_Restore
-                             (Repo => Repo, Sparse_Enabled => True, Items => Items);
-                           Version.Sparse.Set_From_Strings
-                             (Repo => Repo, Items => Items);
-                           Version.Restore.Restore_Working_Tree (Repo);
-                        end;
+                        Require_Born (Repo);
+                        --  git's deprecated `init` enables sparse using the
+                        --  existing patterns, or just the top level if none.
+                        if Version.Sparse.Cone_Mode (Repo) then
+                           Dirs :=
+                             Version.Sparse.Cone_Recursive_Directories (Repo);
+                        end if;
+                        if Cone then
+                           Version.Sparse.Set_Cone (Repo, Dirs);
+                        else
+                           declare
+                              Items : Version.Sparse.String_Vectors.Vector;
+                           begin
+                              Items.Append ("/*");
+                              Version.Sparse.Set_From_Strings (Repo, Items);
+                           end;
+                        end if;
+                        Version.Restore.Restore_Working_Tree (Repo);
+                        Version.Restore.Apply_Sparse_Skip_Worktree (Repo);
                      end;
                      Success_Line ("initialized sparse checkout");
                   end;
@@ -5307,12 +11488,12 @@ package body Version.CLI is
                elsif Is_Option (Subcommand) then
                   Usage_Error
                     ("unknown sparse option: " & Subcommand,
-                     "version sparse <subcommand>");
+                     "version " & Cmd_Name & " <subcommand>");
                   return;
                else
                   Usage_Error
                     ("unknown sparse subcommand: " & Subcommand,
-                     "version sparse <subcommand>");
+                     "version " & Cmd_Name & " <subcommand>");
                   return;
                end if;
             end;
@@ -5671,6 +11852,178 @@ package body Version.CLI is
                end if;
             end;
 
+         elsif Command = "switch" then
+            declare
+               Usage : constant String :=
+                 "version switch [-c|-C <new-branch>] [--detach]"
+                 & " (<branch>|<start-point>|-)";
+               Create   : Boolean := False;
+               Detach   : Boolean := False;
+               New_Name : Ada.Strings.Unbounded.Unbounded_String;
+               Target   : Ada.Strings.Unbounded.Unbounded_String;
+               Has_Tgt  : Boolean := False;
+               Bad      : Boolean := False;
+               I        : Positive := 2;
+
+               function Previous_Branch
+                 (Repo : Version.Repository.Repository_Handle) return String
+               is
+                  Entries :
+                    constant Version.Reflog.Log_Entry_Vectors.Vector :=
+                      Version.Reflog.Read_Entries (Repo, "HEAD");
+               begin
+                  --  git names "-" from the newest HEAD reflog entry, whose
+                  --  message is "... moving from <from> to <to>". version's
+                  --  own switch writes the same "moving from X to Y" shape,
+                  --  so this parse works for both git- and version-made logs.
+                  if not Entries.Is_Empty then
+                     declare
+                        M   : constant String :=
+                          Ada.Strings.Unbounded.To_String
+                            (Entries.Last_Element.Message);
+                        Key : constant String := "moving from ";
+                        F   : Natural := 0;
+                        T   : Natural := 0;
+                     begin
+                        for P in M'First .. M'Last - Key'Length + 1 loop
+                           if M (P .. P + Key'Length - 1) = Key then
+                              F := P + Key'Length;
+                              exit;
+                           end if;
+                        end loop;
+                        if F /= 0 then
+                           for P in reverse F .. M'Last - 3 loop
+                              if M (P .. P + 3) = " to " then
+                                 T := P;
+                                 exit;
+                              end if;
+                           end loop;
+                           if T /= 0 then
+                              return M (F .. T - 1);
+                           end if;
+                        end if;
+                     end;
+                  end if;
+                  raise Ada.IO_Exceptions.Data_Error
+                    with "switch: no previous branch to switch to";
+               end Previous_Branch;
+            begin
+               while I <= Count and then not Bad loop
+                  if Arg (I) = "-c" or else Arg (I) = "-C" then
+                     if I = Count then
+                        Usage_Error
+                          ("switch -c requires a branch name", Usage);
+                        Bad := True;
+                     else
+                        Create   := True;
+                        New_Name :=
+                          Ada.Strings.Unbounded.To_Unbounded_String
+                            (Arg (I + 1));
+                        I := I + 2;
+                     end if;
+                  elsif Arg (I) = "--detach" or else Arg (I) = "-d" then
+                     Detach := True;
+                     I      := I + 1;
+                  elsif Arg (I) = "-" then
+                     Target  := Ada.Strings.Unbounded.To_Unbounded_String ("-");
+                     Has_Tgt := True;
+                     I       := I + 1;
+                  elsif Arg (I)'Length > 0
+                    and then Arg (I) (Arg (I)'First) = '-'
+                  then
+                     Usage_Error ("unknown switch option: " & Arg (I), Usage);
+                     Bad := True;
+                  elsif not Has_Tgt then
+                     Target  :=
+                       Ada.Strings.Unbounded.To_Unbounded_String (Arg (I));
+                     Has_Tgt := True;
+                     I       := I + 1;
+                  else
+                     Usage_Error ("too many switch arguments", Usage);
+                     Bad := True;
+                  end if;
+               end loop;
+
+               if not Bad then
+                  declare
+                     Repo : constant Version.Repository.Repository_Handle :=
+                       Version.Repository.Open;
+                     Prev_Detached : constant Boolean :=
+                       Version.Refs.Is_Detached (Repo);
+                     Tgt  : constant String :=
+                       (if Has_Tgt
+                          and then Ada.Strings.Unbounded.To_String (Target) = "-"
+                        then Previous_Branch (Repo)
+                        elsif Has_Tgt
+                        then Ada.Strings.Unbounded.To_String (Target)
+                        elsif Detach then "HEAD"
+                        else "");
+
+                     procedure Note_Previous is
+                     begin
+                        --  git announces the abandoned commit whenever a switch
+                        --  leaves a detached HEAD, before the destination line.
+                        if Prev_Detached then
+                           declare
+                              P   : constant Version.Objects.Hex_Object_Id :=
+                                Version.Refs.Detached_Commit_Id (Repo);
+                              Hex : constant String :=
+                                Version.Objects.To_String (P);
+                              Obj : constant Version.Objects.Git_Object :=
+                                Version.Objects.Read_Object (Repo, P);
+                           begin
+                              Success_Line
+                                ("Previous HEAD position was "
+                                 & Hex (Hex'First .. Hex'First + 6) & " "
+                                 & Version.Objects.Commit_Message_First_Line
+                                     (Obj));
+                           end;
+                        end if;
+                     end Note_Previous;
+                  begin
+                     if Create then
+                        Note_Previous;
+                        if Has_Tgt then
+                           Version.Branch.Create_Branch
+                             (Ada.Strings.Unbounded.To_String (New_Name),
+                              Version.Objects.To_String
+                                (Version.Revisions.Resolve_Commit (Repo, Tgt)));
+                        else
+                           Version.Branch.Create_Branch
+                             (Ada.Strings.Unbounded.To_String (New_Name));
+                        end if;
+                        Version.Branch.Switch_Branch
+                          (Ada.Strings.Unbounded.To_String (New_Name));
+                        Success_Line
+                          ("Switched to a new branch '"
+                           & Ada.Strings.Unbounded.To_String (New_Name) & "'");
+                     elsif not Has_Tgt and then not Detach then
+                        Usage_Error ("switch requires a branch name", Usage);
+                     elsif Detach then
+                        declare
+                           C   : constant Version.Objects.Hex_Object_Id :=
+                             Version.Revisions.Resolve_Commit (Repo, Tgt);
+                           Hex : constant String :=
+                             Version.Objects.To_String (C);
+                           Obj : constant Version.Objects.Git_Object :=
+                             Version.Objects.Read_Object (Repo, C);
+                        begin
+                           Note_Previous;
+                           Version.Checkout.Checkout_Commit (C);
+                           Success_Line
+                             ("HEAD is now at "
+                              & Hex (Hex'First .. Hex'First + 6) & " "
+                              & Version.Objects.Commit_Message_First_Line (Obj));
+                        end;
+                     else
+                        Note_Previous;
+                        Version.Branch.Switch_Branch (Tgt);
+                        Success_Line ("Switched to branch '" & Tgt & "'");
+                     end if;
+                  end;
+               end if;
+            end;
+
          elsif Command = "reset" then
             declare
                Usage : constant String :=
@@ -5860,10 +12213,12 @@ package body Version.CLI is
                            & "multiple sources", Usage);
                      else
                         for J in I .. Count - 1 loop
+                           --  Join tolerates a trailing slash on the directory
+                           --  (git accepts `mv file dir/`).
                            Version.Move.Move_Path
                              (Repo, Arg (J),
-                              Last & "/"
-                              & Ada.Directories.Simple_Name (Arg (J)),
+                              Version.Files.Join
+                                (Last, Ada.Directories.Simple_Name (Arg (J))),
                               Force);
                         end loop;
                      end if;
@@ -6078,8 +12433,9 @@ package body Version.CLI is
          elsif Command = "apply" then
             declare
                Usage    : constant String :=
-                 "version apply [--check] [PATCHFILE]";
-               Check    : Boolean := False;
+                 "version apply [--check] [-R] [-p<n>] [--index] [--cached]"
+                 & " [PATCHFILE]";
+               Opts     : Version.Apply.Apply_Options;
                Bad_Opt  : Boolean := False;
                Bad_Text : Unbounded_String;
                File_Idx : Natural := 0;
@@ -6111,7 +12467,27 @@ package body Version.CLI is
                  and then Arg (I) (Arg (I)'First) = '-'
                loop
                   if Arg (I) = "--check" then
-                     Check := True;
+                     Opts.Check := True;
+                  elsif Arg (I) = "-R" or else Arg (I) = "--reverse" then
+                     Opts.Reverse_Patch := True;
+                  elsif Arg (I) = "--index" then
+                     Opts.Update_Index := True;
+                  elsif Arg (I) = "--cached" then
+                     Opts.Cached := True;
+                  elsif Arg (I)'Length >= 2
+                    and then Arg (I) (Arg (I)'First .. Arg (I)'First + 1) = "-p"
+                  then
+                     declare
+                        Digits_Text : constant String :=
+                          Arg (I) (Arg (I)'First + 2 .. Arg (I)'Last);
+                     begin
+                        Opts.Strip := Natural'Value (Digits_Text);
+                     exception
+                        when others =>
+                           Bad_Opt := True;
+                           Bad_Text := To_Unbounded_String (Arg (I));
+                           exit;
+                     end;
                   elsif Arg (I) = "--" then
                      I := I + 1;
                      exit;
@@ -6142,8 +12518,7 @@ package body Version.CLI is
                         then Version.Files.Read_Binary_File (Arg (File_Idx))
                         else Read_Stdin);
                   begin
-                     Version.Apply.Apply_Patch
-                       (Repo, Patch_Text, (Check => Check));
+                     Version.Apply.Apply_Patch (Repo, Patch_Text, Opts);
                   end;
                end if;
             end;
@@ -6326,21 +12701,48 @@ package body Version.CLI is
                   end loop;
                   return To_String (Acc);
                end Read_Stdin;
+               Sub : constant String := (if Count >= 2 then Arg (2) else "");
             begin
-               if Count < 2 then
-                  Mailbox := To_Unbounded_String (Read_Stdin);
-               else
-                  for J in 2 .. Count loop
-                     Append
-                       (Mailbox, Version.Files.Read_Binary_File (Arg (J)));
-                  end loop;
-               end if;
-
                declare
                   Repo : constant Version.Repository.Repository_Handle :=
                     Version.Repository.Open;
                begin
-                  Version.Am.Apply_Mailbox (Repo, To_String (Mailbox));
+                  if Sub = "--continue" or else Sub = "-r"
+                    or else Sub = "--resolved"
+                  then
+                     Version.Am.Continue (Repo);
+                  elsif Sub = "--skip" then
+                     Version.Am.Skip (Repo);
+                  elsif Sub = "--abort" then
+                     Version.Am.Abort_Am (Repo);
+                  else
+                     if Count < 2 then
+                        Mailbox := To_Unbounded_String (Read_Stdin);
+                     else
+                        for J in 2 .. Count loop
+                           Append
+                             (Mailbox,
+                              Version.Files.Read_Binary_File (Arg (J)));
+                        end loop;
+                     end if;
+                     Version.Am.Apply_Mailbox (Repo, To_String (Mailbox));
+                  end if;
+               exception
+                  when E : Version.Am.Am_Conflict =>
+                     Error_Line (Ada.Exceptions.Exception_Message (E));
+                     Ada.Text_IO.Put_Line
+                       (Ada.Text_IO.Standard_Error,
+                        "When you have resolved this problem, run"
+                        & " ""version am --continue"".");
+                     Ada.Text_IO.Put_Line
+                       (Ada.Text_IO.Standard_Error,
+                        "If you prefer to skip this patch, run"
+                        & " ""version am --skip"" instead.");
+                     Ada.Text_IO.Put_Line
+                       (Ada.Text_IO.Standard_Error,
+                        "To restore the original branch and stop patching,"
+                        & " run ""version am --abort"".");
+                     Set_Command_Failure;
                end;
             end;
 
@@ -6529,10 +12931,21 @@ package body Version.CLI is
                   declare
                      A : constant String := Arg (I);
                   begin
-                     if A = "-s" then
-                        Summary := True;
-                     elsif A = "-n" then
-                        By_Count := True;
+                     if A'Length >= 2 and then A (A'First) = '-'
+                       and then A (A'First + 1) /= '-'
+                     then
+                        --  Short flags, possibly bundled (git accepts -sn).
+                        for K in A'First + 1 .. A'Last loop
+                           if A (K) = 's' then
+                              Summary := True;
+                           elsif A (K) = 'n' then
+                              By_Count := True;
+                           else
+                              Bad_Opt := True;
+                              Bad_Text := To_Unbounded_String (A);
+                           end if;
+                        end loop;
+                        exit when Bad_Opt;
                      elsif A'Length >= 1 and then A (A'First) = '-' then
                         Bad_Opt := True;
                         Bad_Text := To_Unbounded_String (A);
@@ -6563,10 +12976,15 @@ package body Version.CLI is
                      Groups : Version.Shortlog.Group_Vectors.Vector :=
                        Version.Shortlog.Summarize (Repo, Tip);
 
+                     --  git -n sorts by descending count, breaking ties by the
+                     --  group's (alphabetical) name so the sort is stable.
                      function Fewer
                        (L, R : Version.Shortlog.Author_Group) return Boolean is
-                       (Natural (L.Subjects.Length)
-                        > Natural (R.Subjects.Length));
+                       (if Natural (L.Subjects.Length)
+                           /= Natural (R.Subjects.Length)
+                        then Natural (L.Subjects.Length)
+                             > Natural (R.Subjects.Length)
+                        else L.Name < R.Name);
                      package Sorter is new
                        Version.Shortlog.Group_Vectors.Generic_Sorting (Fewer);
                   begin
@@ -6602,9 +13020,13 @@ package body Version.CLI is
 
          elsif Command = "grep" then
             declare
-               Usage      : constant String := "version grep [-n] [-i] PATTERN";
+               Usage      : constant String :=
+                 "version grep [-n] [-c] [-l] [-i] [-w] [-v] [-E|-F|-G|-P]"
+                 & " PATTERN [--] [PATH...]";
                Show_Lines : Boolean := False;
-               Ignore     : Boolean := False;
+               Count_Mode : Boolean := False;
+               Files_Mode : Boolean := False;
+               Opts       : Version.Grep.Options;
                Bad_Opt    : Boolean := False;
                Bad_Text   : Unbounded_String;
                Pat_Idx    : Natural := 0;
@@ -6621,8 +13043,24 @@ package body Version.CLI is
                loop
                   if Arg (I) = "-n" then
                      Show_Lines := True;
+                  elsif Arg (I) = "-c" then
+                     Count_Mode := True;
+                  elsif Arg (I) = "-l" then
+                     Files_Mode := True;
                   elsif Arg (I) = "-i" then
-                     Ignore := True;
+                     Opts.Ignore_Case := True;
+                  elsif Arg (I) = "-w" then
+                     Opts.Word_Match := True;
+                  elsif Arg (I) = "-v" then
+                     Opts.Invert := True;
+                  elsif Arg (I) = "-E" then
+                     Opts.Kind := Version.Grep.Extended_Regex;
+                  elsif Arg (I) = "-F" then
+                     Opts.Kind := Version.Grep.Fixed_String;
+                  elsif Arg (I) = "-G" then
+                     Opts.Kind := Version.Grep.Basic_Regex;
+                  elsif Arg (I) = "-P" then
+                     Opts.Kind := Version.Grep.Perl_Regex;
                   elsif Arg (I) = "--" then
                      I := I + 1;
                      exit;
@@ -6644,25 +13082,68 @@ package body Version.CLI is
                                Usage);
                elsif Pat_Idx = 0 then
                   Usage_Error ("grep requires a pattern", Usage);
-               elsif I <= Count then
-                  Usage_Error ("grep path arguments are not supported", Usage);
                else
                   declare
                      Repo : constant Version.Repository.Repository_Handle :=
                        Version.Repository.Open;
+                     Pathspecs :
+                       constant Version.Pathspec.Pathspec_Vectors.Vector :=
+                         Pathspecs_From_Args (Pat_Idx + 1);
                      Matches : constant Version.Grep.Match_Vectors.Vector :=
-                       Version.Grep.Search (Repo, Arg (Pat_Idx), Ignore);
+                       Version.Grep.Search
+                         (Repo, Arg (Pat_Idx), Opts, Pathspecs);
                   begin
-                     for M of Matches loop
-                        if Show_Lines then
-                           Success_Line
-                             (To_String (M.Path) & ":" & Img (M.Line_No) & ":"
-                              & To_String (M.Text));
-                        else
-                           Success_Line
-                             (To_String (M.Path) & ":" & To_String (M.Text));
-                        end if;
-                     end loop;
+                     if Files_Mode then
+                        --  git -l: each matching file once, in match order.
+                        declare
+                           Prev : Unbounded_String;
+                           Seen : Boolean := False;
+                        begin
+                           for M of Matches loop
+                              if not Seen or else M.Path /= Prev then
+                                 Success_Line (To_String (M.Path));
+                                 Prev := M.Path;
+                                 Seen := True;
+                              end if;
+                           end loop;
+                        end;
+                     elsif Count_Mode then
+                        --  git -c: "<path>:<count>" per file with matches.
+                        declare
+                           Prev  : Unbounded_String;
+                           Cnt   : Natural := 0;
+                           Seen  : Boolean := False;
+                           procedure Flush is
+                           begin
+                              if Seen then
+                                 Success_Line
+                                   (To_String (Prev) & ":" & Img (Cnt));
+                              end if;
+                           end Flush;
+                        begin
+                           for M of Matches loop
+                              if not Seen or else M.Path /= Prev then
+                                 Flush;
+                                 Prev := M.Path;
+                                 Cnt := 0;
+                                 Seen := True;
+                              end if;
+                              Cnt := Cnt + 1;
+                           end loop;
+                           Flush;
+                        end;
+                     else
+                        for M of Matches loop
+                           if Show_Lines then
+                              Success_Line
+                                (To_String (M.Path) & ":" & Img (M.Line_No)
+                                 & ":" & To_String (M.Text));
+                           else
+                              Success_Line
+                                (To_String (M.Path) & ":" & To_String (M.Text));
+                           end if;
+                        end loop;
+                     end if;
                      if Matches.Is_Empty then
                         Set_Command_Failure;
                      end if;
@@ -6672,20 +13153,43 @@ package body Version.CLI is
 
          elsif Command = "describe" then
             declare
-               Usage : constant String := "version describe [REV]";
+               Usage    : constant String := "version describe [--tags] [REV]";
+               All_Tags : Boolean := False;
+               Rev      : Unbounded_String;
+               Has_Rev  : Boolean := False;
+               Bad      : Boolean := False;
+               I        : Positive := 2;
             begin
-               if Count > 2 then
-                  Usage_Error ("describe takes at most one revision", Usage);
-               else
+               while I <= Count and then not Bad loop
+                  if Arg (I) = "--tags" then
+                     All_Tags := True;
+                  elsif Arg (I)'Length > 0 and then Arg (I) (Arg (I)'First) = '-'
+                  then
+                     Usage_Error ("unknown describe option: " & Arg (I), Usage);
+                     Bad := True;
+                  elsif Has_Rev then
+                     Usage_Error ("describe takes at most one revision", Usage);
+                     Bad := True;
+                  else
+                     Rev := To_Unbounded_String (Arg (I));
+                     Has_Rev := True;
+                  end if;
+                  I := I + 1;
+               end loop;
+
+               if not Bad then
                   declare
                      Repo : constant Version.Repository.Repository_Handle :=
                        Version.Repository.Open;
                      Commit : constant Version.Objects.Hex_Object_Id :=
-                       (if Count = 2
-                        then Version.Revisions.Resolve_Commit (Repo, Arg (2))
-                        else Version.Objects.To_Object_Id (Version.Refs.Current_Commit_Id (Repo)));
+                       (if Has_Rev
+                        then Version.Revisions.Resolve_Commit
+                               (Repo, To_String (Rev))
+                        else Version.Objects.To_Object_Id
+                               (Version.Refs.Current_Commit_Id (Repo)));
                   begin
-                     Success_Line (Version.Describe.Describe (Repo, Commit));
+                     Success_Line
+                       (Version.Describe.Describe (Repo, Commit, All_Tags));
                   end;
                end if;
             end;
@@ -6770,10 +13274,11 @@ package body Version.CLI is
                         Error_Line ("no note found for " & To_String (Commit));
                         Set_Command_Failure;
                      else
-                        Ada.Text_IO.Put (Note);
-                        if Note (Note'Last) /= Character'Val (10) then
-                           Ada.Text_IO.New_Line;
-                        end if;
+                        --  Emit the note blob verbatim, like git (which cats
+                        --  the note object). Version.Console.Put avoids GNAT
+                        --  Text_IO's spurious trailing terminator, which was
+                        --  doubling the note's own final newline.
+                        Version.Console.Put (Note);
                      end if;
                   end;
                else
@@ -6785,12 +13290,20 @@ package body Version.CLI is
          elsif Command = "blame" then
             declare
                Usage : constant String := "version blame [REV] FILE";
+               LF    : constant Character := Character'Val (10);
 
                function Img (N : Natural) return String is
                   S : constant String := Natural'Image (N);
                begin
                   return S (S'First + 1 .. S'Last);
                end Img;
+
+               function Spaces (N : Integer) return String is
+                 (if N <= 0 then "" else [1 .. N => ' ']);
+               function Pad_Right (S : String; W : Natural) return String is
+                 (S & Spaces (W - S'Length));
+               function Pad_Left (S : String; W : Natural) return String is
+                 (Spaces (W - S'Length) & S);
             begin
                if Count < 2 then
                   Usage_Error ("blame requires a file", Usage);
@@ -6802,19 +13315,110 @@ package body Version.CLI is
                      Tip  : constant Version.Objects.Hex_Object_Id :=
                        (if Two
                         then Version.Revisions.Resolve_Commit (Repo, Arg (2))
-                        else Version.Objects.To_Object_Id (Version.Refs.Current_Commit_Id (Repo)));
+                        else Version.Objects.To_Object_Id
+                               (Version.Refs.Current_Commit_Id (Repo)));
                      File : constant String := (if Two then Arg (3) else Arg (2));
                      Lines : constant Version.Blame.Blame_Vectors.Vector :=
                        Version.Blame.Blame_File (Repo, Tip, File);
-                     N : Natural := 0;
+
+                     --  Per-commit metadata (author name, iso date, boundary),
+                     --  cached so each distinct commit is read once.
+                     type Meta is record
+                        Hex      : Unbounded_String;
+                        Author   : Unbounded_String;
+                        Date     : Unbounded_String;
+                        Boundary : Boolean := False;
+                     end record;
+                     package Meta_Vectors is new Ada.Containers.Vectors
+                       (Index_Type => Positive, Element_Type => Meta);
+                     Cache : Meta_Vectors.Vector;
+
+                     function Meta_For (Hex : String) return Meta is
+                     begin
+                        for M of Cache loop
+                           if To_String (M.Hex) = Hex then
+                              return M;
+                           end if;
+                        end loop;
+                        declare
+                           Obj : constant Version.Objects.Git_Object :=
+                             Version.Objects.Read_Object
+                               (Repo, Version.Objects.To_Object_Id (Hex));
+                           C   : constant String := Version.Objects.Content (Obj);
+                           P   : constant Natural :=
+                             Ada.Strings.Fixed.Index (C, "author ");
+                           EOL : Natural :=
+                             (if P = 0 then 0
+                              else Ada.Strings.Fixed.Index
+                                     (C (P .. C'Last), "" & LF));
+                           Result : Meta;
+                        begin
+                           Result.Hex := To_Unbounded_String (Hex);
+                           Result.Boundary :=
+                             Version.Objects.Commit_Parent_Ids (Obj).Is_Empty;
+                           if P /= 0 then
+                              if EOL = 0 then
+                                 EOL := C'Last + 1;
+                              end if;
+                              declare
+                                 Ident : constant String := C (P + 7 .. EOL - 1);
+                                 Lt : constant Natural :=
+                                   Ada.Strings.Fixed.Index (Ident, " <");
+                                 Gt : constant Natural :=
+                                   Ada.Strings.Fixed.Index (Ident, "> ");
+                              begin
+                                 Result.Author := To_Unbounded_String
+                                   (if Lt > 0
+                                    then Ident (Ident'First .. Lt - 1)
+                                    else Ident);
+                                 if Gt > 0 then
+                                    Result.Date := To_Unbounded_String
+                                      (Version.Ref_Format.Git_Date
+                                         (Ident (Gt + 2 .. Ident'Last), "iso"));
+                                 end if;
+                              end;
+                           end if;
+                           Cache.Append (Result);
+                           return Result;
+                        end;
+                     end Meta_For;
+
+                     Author_W : Natural := 0;
+                     Line_W   : constant Natural := Img (Natural (Lines.Length))'Length;
                   begin
+                     --  Pass 1: resolve metadata and size the author column.
                      for L of Lines loop
-                        N := N + 1;
-                        Success_Line
-                          (To_String (L.Commit)
-                             (1 .. 1 + 7)
-                           & " " & Img (N) & ") " & To_String (L.Text));
+                        declare
+                           M : constant Meta := Meta_For (To_String (L.Commit));
+                        begin
+                           Author_W :=
+                             Natural'Max (Author_W, Length (M.Author));
+                        end;
                      end loop;
+
+                     --  Pass 2: emit git's default annotation format.
+                     declare
+                        N : Natural := 0;
+                     begin
+                        for L of Lines loop
+                           N := N + 1;
+                           declare
+                              M   : constant Meta :=
+                                Meta_For (To_String (L.Commit));
+                              Hex : constant String := To_String (L.Commit);
+                              Sha : constant String :=
+                                (if M.Boundary then "^" & Hex (1 .. 7)
+                                 else Hex (1 .. 8));
+                           begin
+                              Success_Line
+                                (Sha & " ("
+                                 & Pad_Right (To_String (M.Author), Author_W)
+                                 & " " & To_String (M.Date)
+                                 & " " & Pad_Left (Img (N), Line_W)
+                                 & ") " & To_String (L.Text));
+                           end;
+                        end loop;
+                     end;
                   end;
                end if;
             end;
@@ -6822,7 +13426,8 @@ package body Version.CLI is
          elsif Command = "cat-file" then
             declare
                Usage : constant String :=
-                 "version cat-file (-t|-s|-e|-p|--batch|--batch-check) OBJECT";
+                 "version cat-file (-t|-s|-e|-p|blob|tree|commit|tag"
+                 & "|--batch|--batch-check) OBJECT";
                function Img (N : Natural) return String is
                   S : constant String := Natural'Image (N);
                begin
@@ -6843,6 +13448,8 @@ package body Version.CLI is
                                     and then Arg (2)
                                       (Arg (2)'First .. Arg (2)'First + 13)
                                       = "--batch-check="));
+               All_Objects : constant Boolean :=
+                 (for some J in 2 .. Count => Arg (J) = "--batch-all-objects");
             begin
                if Is_Batch or else Is_Batch_Check then
                   declare
@@ -6915,44 +13522,68 @@ package body Version.CLI is
                         end loop;
                         return To_String (Result);
                      end Expand;
-                  begin
-                     while not Ada.Text_IO.End_Of_File loop
-                        declare
-                           Line  : constant String := Ada.Text_IO.Get_Line;
-                           Sp    : constant Natural :=
-                             Ada.Strings.Fixed.Index (Line, " ");
-                           Token : constant String :=
-                             (if Sp = 0 then Line
-                              else Line (Line'First .. Sp - 1));
-                           Rest  : constant String :=
-                             (if Sp = 0 then ""
-                              else Line (Sp + 1 .. Line'Last));
+                     procedure Emit (Token, Rest : String) is
+                     begin
+                        if Token = "" then
+                           return;
+                        end if;
                         begin
-                           if Token = "" then
-                              null;
-                           else
-                              begin
-                                 declare
-                                    Id : constant Version.Objects.Hex_Object_Id
-                                      := Version.Revisions.Resolve
-                                           (Repo, Token);
-                                    Obj : constant Version.Objects.Git_Object
-                                      := Version.Objects.Read_Object (Repo, Id);
-                                 begin
-                                    Success_Line (Expand (Token, Rest, Id, Obj));
-                                    if Is_Batch then
-                                       Ada.Text_IO.Put
-                                         (Version.Objects.Content (Obj));
-                                       Ada.Text_IO.New_Line;
-                                    end if;
-                                 end;
-                              exception
-                                 when others =>
-                                    Success_Line (Token & " missing");
-                              end;
-                           end if;
+                           declare
+                              Id : constant Version.Objects.Hex_Object_Id
+                                := Version.Revisions.Resolve (Repo, Token);
+                              Obj : constant Version.Objects.Git_Object
+                                := Version.Objects.Read_Object (Repo, Id);
+                           begin
+                              Success_Line (Expand (Token, Rest, Id, Obj));
+                              if Is_Batch then
+                                 Ada.Text_IO.Put
+                                   (Version.Objects.Content (Obj));
+                                 Ada.Text_IO.New_Line;
+                              end if;
+                           end;
+                        exception
+                           when others =>
+                              Success_Line (Token & " missing");
                         end;
-                     end loop;
+                     end Emit;
+                  begin
+                     if All_Objects then
+                        --  Enumerate every object (loose + packed), sorted by
+                        --  oid via an ordered set (matches git's order + dedup).
+                        declare
+                           package Hex_Sets is new
+                             Ada.Containers.Indefinite_Ordered_Sets (String);
+                           Oids : Hex_Sets.Set;
+                        begin
+                           for O of Version.Reachability.All_Loose_Objects
+                             (Repo)
+                           loop
+                              Oids.Include (Version.Objects.To_String (O));
+                           end loop;
+                           for O of Version.Pack.All_Pack_Objects (Repo) loop
+                              Oids.Include (Version.Objects.To_String (O));
+                           end loop;
+                           for Hex of Oids loop
+                              Emit (Hex, "");
+                           end loop;
+                        end;
+                     else
+                        while not Ada.Text_IO.End_Of_File loop
+                           declare
+                              Line  : constant String := Ada.Text_IO.Get_Line;
+                              Sp    : constant Natural :=
+                                Ada.Strings.Fixed.Index (Line, " ");
+                              Token : constant String :=
+                                (if Sp = 0 then Line
+                                 else Line (Line'First .. Sp - 1));
+                              Rest  : constant String :=
+                                (if Sp = 0 then ""
+                                 else Line (Sp + 1 .. Line'Last));
+                           begin
+                              Emit (Token, Rest);
+                           end;
+                        end loop;
+                     end if;
                   end;
                elsif Count /= 3 then
                   Usage_Error ("cat-file requires an option and an object",
@@ -6983,16 +13614,38 @@ package body Version.CLI is
                         null;  --  resolve+read succeeded: exists, exit 0
                      elsif Arg (2) = "-p" then
                         if K = Tree_Object then
-                           for E of Version.Objects.Flatten_Tree (Repo, Id) loop
-                              Success_Line
-                                (To_String (E.Mode) & " "
-                                 & (if E.Kind = Tree_Gitlink then "commit"
-                                    else "blob")
-                                 & " " & To_String (E.Id)
-                                 & Character'Val (9) & To_String (E.Path));
-                           end loop;
+                           --  git cat-file -p <tree> lists one level (subtrees
+                           --  as "tree"), with modes zero-padded to six digits.
+                           declare
+                              function Mode6 (M : String) return String is
+                                ([1 .. 6 - M'Length => '0'] & M);
+                           begin
+                              for E of Version.Objects.Tree_Entries (Repo, Id)
+                              loop
+                                 Success_Line
+                                   (Mode6 (To_String (E.Mode)) & " "
+                                    & (if E.Kind = Tree_Directory then "tree"
+                                       elsif E.Kind = Tree_Gitlink then "commit"
+                                       else "blob")
+                                    & " " & To_String (E.Id)
+                                    & Character'Val (9) & To_String (E.Path));
+                              end loop;
+                           end;
                         else
-                           Ada.Text_IO.Put (Version.Objects.Content (Obj));
+                           Version.Console.Put (Version.Objects.Content (Obj));
+                        end if;
+                     elsif Arg (2) = "blob" or else Arg (2) = "tree"
+                       or else Arg (2) = "commit" or else Arg (2) = "tag"
+                     then
+                        --  git's `cat-file <type> <object>` form: print the
+                        --  contents, but only if the object really is that
+                        --  type.
+                        if Arg (2) /= Kind_Name then
+                           Error_Line
+                             ("fatal: git cat-file " & Arg (2) & ": bad file");
+                           Set_Command_Failure;
+                        else
+                           Version.Console.Put (Version.Objects.Content (Obj));
                         end if;
                      else
                         Usage_Error ("unknown cat-file option: " & Arg (2),
@@ -7005,16 +13658,63 @@ package body Version.CLI is
          elsif Command = "rev-parse" then
             declare
                Usage : constant String :=
-                 "version rev-parse [--abbrev-ref] REV...";
-               Abbrev : Boolean := False;
-               I      : Positive := 2;
+                 "version rev-parse [--abbrev-ref] [--short] [--show-toplevel]"
+                 & " [--git-dir] [--is-inside-work-tree] REV...";
+               Abbrev  : Boolean := False;
+               Short   : Boolean := False;
+               Bad_Opt : Boolean := False;
+               Done    : Boolean := False;
+               I       : Positive := 2;
             begin
-               if Count >= 2 and then Arg (2) = "--abbrev-ref" then
-                  Abbrev := True;
-                  I := 3;
-               end if;
-               if I > Count then
-                  Usage_Error ("rev-parse requires a revision", Usage);
+               while I <= Count and then Arg (I)'Length >= 2
+                 and then Arg (I) (Arg (I)'First .. Arg (I)'First + 1) = "--"
+               loop
+                  if Arg (I) = "--abbrev-ref" then
+                     Abbrev := True;
+                  elsif Arg (I) = "--short" then
+                     Short := True;
+                  elsif Arg (I) = "--show-toplevel" then
+                     Success_Line
+                       (Version.Repository.Root_Path
+                          (Version.Repository.Open));
+                     Done := True;
+                  elsif Arg (I) = "--git-dir" then
+                     declare
+                        Dir : constant String :=
+                          Version.Repository.Git_Dir (Version.Repository.Open);
+                        Here : constant String :=
+                          Version.Files.Normalize_Separators
+                            (Ada.Directories.Current_Directory) & "/";
+                     begin
+                        --  git reports it relative when it sits under the cwd.
+                        if Dir'Length > Here'Length
+                          and then Dir (Dir'First .. Dir'First + Here'Length - 1)
+                                   = Here
+                        then
+                           Success_Line
+                             (Dir (Dir'First + Here'Length .. Dir'Last));
+                        else
+                           Success_Line (Dir);
+                        end if;
+                     end;
+                     Done := True;
+                  elsif Arg (I) = "--is-inside-work-tree" then
+                     Success_Line ("true");
+                     Done := True;
+                  else
+                     Usage_Error ("unknown rev-parse option: " & Arg (I), Usage);
+                     Bad_Opt := True;
+                     exit;
+                  end if;
+                  I := I + 1;
+               end loop;
+
+               if Bad_Opt then
+                  null;
+               elsif I > Count then
+                  if not Done then
+                     Usage_Error ("rev-parse requires a revision", Usage);
+                  end if;
                else
                   declare
                      Repo : constant Version.Repository.Repository_Handle :=
@@ -7035,8 +13735,17 @@ package body Version.CLI is
                         elsif Abbrev then
                            Success_Line (Arg (J));
                         else
-                           Success_Line
-                             (To_String (Version.Revisions.Resolve (Repo, Arg (J))));
+                           declare
+                              Full : constant String :=
+                                To_String
+                                  (Version.Revisions.Resolve (Repo, Arg (J)));
+                           begin
+                              --  git's --short defaults to a 7-hex abbreviation.
+                              Success_Line
+                                (if Short and then Full'Length >= 7
+                                 then Full (Full'First .. Full'First + 6)
+                                 else Full);
+                           end;
                         end if;
                      end loop;
                   end;
@@ -7049,10 +13758,129 @@ package body Version.CLI is
                  Version.Repository.Open;
                Entries : constant Version.Staging.Index_Entry_Vectors.Vector :=
                  Version.Staging.Load (Repo);
+               Usage : constant String :=
+                 "version ls-files [-s|--stage] [-o|--others] [-m|--modified]"
+                 & " [-d|--deleted] [--exclude-standard] [--] [PATHSPEC...]";
+               Specs     : Version.Pathspec.Pathspec_Vectors.Vector;
+               After_Sep : Boolean := False;
+               Stage_Fmt : Boolean := False;
+               Others_M  : Boolean := False;
+               Modified  : Boolean := False;
+               Deleted   : Boolean := False;
+               Exclude   : Boolean := False;
+               Bad       : Boolean := False;
+
+               function Img (N : Natural) return String is
+                  S : constant String := Natural'Image (N);
+               begin
+                  return S (S'First + 1 .. S'Last);
+               end Img;
+
+               procedure Emit (Path : String) is
+               begin
+                  if Specs.Is_Empty
+                    or else Version.Pathspec.Matches_Any (Specs, Path)
+                  then
+                     Success_Line (Path);
+                  end if;
+               end Emit;
             begin
+               for I in 2 .. Count loop
+                  if not After_Sep and then Arg (I) = "--" then
+                     After_Sep := True;
+                  elsif not After_Sep
+                    and then (Arg (I) = "-s" or else Arg (I) = "--stage")
+                  then
+                     Stage_Fmt := True;
+                  elsif not After_Sep
+                    and then (Arg (I) = "-o" or else Arg (I) = "--others")
+                  then
+                     Others_M := True;
+                  elsif not After_Sep
+                    and then (Arg (I) = "-m" or else Arg (I) = "--modified")
+                  then
+                     Modified := True;
+                  elsif not After_Sep
+                    and then (Arg (I) = "-d" or else Arg (I) = "--deleted")
+                  then
+                     Deleted := True;
+                  elsif not After_Sep
+                    and then Arg (I) = "--exclude-standard"
+                  then
+                     Exclude := True;
+                  elsif not After_Sep
+                    and then Arg (I)'Length > 0
+                    and then Arg (I) (Arg (I)'First) = '-'
+                  then
+                     Usage_Error ("unknown ls-files option: " & Arg (I), Usage);
+                     Bad := True;
+                     exit;
+                  else
+                     Version.Pathspec.Append_Parse (Specs, Arg (I));
+                  end if;
+               end loop;
+
+               --  -o/-m/-d select from the working tree rather than the index.
+               if not Bad and then (Others_M or else Modified or else Deleted)
+               then
+                  declare
+                     St : constant Version.Status.Status_Result :=
+                       (if Others_M and then not Exclude
+                        then Version.Status.Current_Status_With_Ignored
+                               (Mode          =>
+                                  Version.Status.Ignored_Traditional,
+                                All_Untracked => True)
+                        else Version.Status.Current_Status
+                               (All_Untracked => True));
+                  begin
+                     if Others_M then
+                        for E of St.Untracked loop
+                           Emit (To_String (E.Path));
+                        end loop;
+                        if not Exclude then
+                           for E of St.Ignored loop
+                              Emit (To_String (E.Path));
+                           end loop;
+                        end if;
+                     end if;
+                     if Modified then
+                        for E of St.Changes loop
+                           if not Version.Status."="
+                                (E.Kind, Version.Status.Deleted_File)
+                           then
+                              Emit (To_String (E.Path));
+                           end if;
+                        end loop;
+                     end if;
+                     if Deleted then
+                        for E of St.Changes loop
+                           if Version.Status."="
+                                (E.Kind, Version.Status.Deleted_File)
+                           then
+                              Emit (To_String (E.Path));
+                           end if;
+                        end loop;
+                     end if;
+                  end;
+                  Bad := True;   --  handled; skip the index listing below
+               end if;
+
                for E of Entries loop
-                  if E.Stage = 0 then
-                     Success_Line (To_String (E.Path));
+                  if not Bad and then E.Stage = 0
+                    and then
+                      (Specs.Is_Empty
+                       or else Version.Pathspec.Matches_Any
+                                 (Specs, To_String (E.Path)))
+                  then
+                     if Stage_Fmt then
+                        --  git: <mode> SP <object> SP <stage> TAB <path>
+                        Success_Line
+                          (To_String (E.Mode) & " " & To_String (E.Id)
+                           & " " & Img (E.Stage)
+                           & Character'Val (9) & To_String (E.Path));
+                     else
+                        Success_Line (To_String (E.Path));
+                     end if;
                   end if;
                end loop;
             end;
@@ -7060,20 +13888,26 @@ package body Version.CLI is
          elsif Command = "ls-tree" then
             declare
                Usage : constant String :=
-                 "version ls-tree [-r] [--name-only] TREE-ISH";
+                 "version ls-tree [-r] [--name-only] TREE-ISH [--] [PATH...]";
                Name_Only : Boolean := False;
                Recursive : Boolean := False;
                Bad_Opt   : Boolean := False;
                Bad_Text  : Unbounded_String;
                Tree_Idx  : Natural := 0;
+               Sep       : Boolean := False;
+               Specs     : Version.Pathspec.Pathspec_Vectors.Vector;
                I         : Positive := 2;
 
                --  git renders modes as six zero-padded octal digits.
                function Mode6 (M : String) return String is
-                 ((1 .. 6 - M'Length => '0') & M);
+                 ([1 .. 6 - M'Length => '0'] & M);
             begin
                while I <= Count loop
-                  if Arg (I) = "-r" then
+                  if not Sep and then Arg (I) = "--" then
+                     Sep := True;
+                  elsif Sep then
+                     Version.Pathspec.Append_Parse (Specs, Arg (I));
+                  elsif Arg (I) = "-r" then
                      Recursive := True;
                   elsif Arg (I) = "--name-only" then
                      Name_Only := True;
@@ -7085,9 +13919,8 @@ package body Version.CLI is
                   elsif Tree_Idx = 0 then
                      Tree_Idx := I;
                   else
-                     Bad_Opt := True;
-                     Bad_Text := To_Unbounded_String (Arg (I));
-                     exit;
+                     --  git also takes bare paths after the tree-ish.
+                     Version.Pathspec.Append_Parse (Specs, Arg (I));
                   end if;
                   I := I + 1;
                end loop;
@@ -7110,21 +13943,239 @@ package body Version.CLI is
                           else Version.Objects.Tree_Entries (Repo, Tree));
                   begin
                      for E of Entries loop
-                        if Name_Only then
-                           Success_Line (To_String (E.Path));
-                        else
-                           Success_Line
-                             (Mode6 (To_String (E.Mode)) & " "
-                              & (case E.Kind is
-                                    when Tree_Directory => "tree",
-                                    when Tree_Gitlink   => "commit",
-                                    when Tree_Blob      => "blob")
-                              & " " & To_String (E.Id)
-                              & Character'Val (9) & To_String (E.Path));
+                        --  A pathspec selects entries; git matches a directory
+                        --  entry by its own name as well as by what is under it.
+                        if Specs.Is_Empty
+                          or else Version.Pathspec.Matches_Any
+                                    (Specs, To_String (E.Path))
+                        then
+                           if Name_Only then
+                              Success_Line (To_String (E.Path));
+                           else
+                              Success_Line
+                                (Mode6 (To_String (E.Mode)) & " "
+                                 & (case E.Kind is
+                                       when Tree_Directory => "tree",
+                                       when Tree_Gitlink   => "commit",
+                                       when Tree_Blob      => "blob")
+                                 & " " & To_String (E.Id)
+                                 & Character'Val (9) & To_String (E.Path));
+                           end if;
                         end if;
                      end loop;
                   end;
                end if;
+            end;
+
+         elsif Command = "patch-id" then
+            declare
+               --  git's patch-id: a SHA-1 over the patch with all whitespace
+               --  removed, the hunk headers dropped (so line numbers do not
+               --  change the id) and the `index` lines ignored.  Prints
+               --  "<patch-id> <commit-id>" per patch on the input.
+               function Read_Stdin return String is
+                  Buffer : aliased String (1 .. 65536);
+                  Acc    : Unbounded_String;
+               begin
+                  loop
+                     declare
+                        N : constant Interfaces.C.long :=
+                          Read
+                            (0,
+                             Buffer (Buffer'First)'Address,
+                             Interfaces.C.size_t (Buffer'Length));
+                     begin
+                        exit when N <= 0;
+                        Append
+                          (Acc,
+                           Buffer (Buffer'First
+                                   .. Buffer'First + Natural (N) - 1));
+                     end;
+                  end loop;
+                  return To_String (Acc);
+               end Read_Stdin;
+
+               Text  : constant String := Read_Stdin;
+               Buf   : Unbounded_String;   --  bytes hashed for this patch
+               Len   : Natural := 0;       --  git's patchlen
+               Commit_Oid : Unbounded_String :=
+                 To_Unbounded_String ([1 .. 40 => '0']);
+               Next_Oid   : Unbounded_String;
+               Before, After : Integer := -1;
+               Start : Natural := Text'First;
+
+               function Strip_Space (L : String) return String is
+                  R : String (1 .. L'Length);
+                  N : Natural := 0;
+               begin
+                  for C of L loop
+                     if C /= ' ' and then C /= ASCII.HT
+                       and then C /= ASCII.CR and then C /= ASCII.LF
+                     then
+                        N := N + 1;
+                        R (N) := C;
+                     end if;
+                  end loop;
+                  return R (1 .. N);
+               end Strip_Space;
+
+               function Starts (L, P : String) return Boolean is
+                 (L'Length >= P'Length
+                  and then L (L'First .. L'First + P'Length - 1) = P);
+
+               function Is_Hex_Oid (L : String) return Boolean is
+               begin
+                  if L'Length < 40 then
+                     return False;
+                  end if;
+                  for I in L'First .. L'First + 39 loop
+                     if not (L (I) in '0' .. '9' or else L (I) in 'a' .. 'f')
+                     then
+                        return False;
+                     end if;
+                  end loop;
+                  return True;
+               end Is_Hex_Oid;
+
+               procedure Flush is
+               begin
+                  if Len > 0 then
+                     Success_Line
+                       (Version.Hash.Sha1_Hex (To_String (Buf)) & " "
+                        & To_String (Commit_Oid));
+                  end if;
+                  Buf := Null_Unbounded_String;
+                  Len := 0;
+                  Before := -1;
+                  After := -1;
+               end Flush;
+
+               procedure Add (L : String) is
+                  Stripped : constant String := Strip_Space (L);
+               begin
+                  Append (Buf, Stripped);
+                  Len := Len + Stripped'Length;
+               end Add;
+            begin
+               while Start <= Text'Last loop
+                  declare
+                     Stop : Natural := Start;
+                  begin
+                     while Stop <= Text'Last
+                       and then Text (Stop) /= ASCII.LF
+                     loop
+                        Stop := Stop + 1;
+                     end loop;
+
+                     declare
+                        Line : constant String := Text (Start .. Stop - 1);
+                        P    : constant String :=
+                          (if Starts (Line, "commit ") then Line (Line'First + 7 .. Line'Last)
+                           elsif Starts (Line, "From ") then Line (Line'First + 5 .. Line'Last)
+                           else Line);
+                     begin
+                        if Starts (Line, "\ ") then
+                           null;   --  "\ No newline at end of file"
+                        elsif Is_Hex_Oid (P) then
+                           --  The next patch starts here.
+                           Next_Oid :=
+                             To_Unbounded_String (P (P'First .. P'First + 39));
+                           Flush;
+                           Commit_Oid := Next_Oid;
+                        elsif Len = 0 and then not Starts (Line, "diff ") then
+                           null;   --  commit message and other preamble
+                        elsif Before = -1 then
+                           if Starts (Line, "index ") then
+                              null;
+                           elsif Starts (Line, "--- ") then
+                              Before := 1;
+                              After := 1;
+                              Add (Line);
+                              Before := Before - 1;
+                           elsif Line'Length = 0
+                             or else not (Line (Line'First) in 'a' .. 'z'
+                                          or else Line (Line'First) in 'A' .. 'Z')
+                           then
+                              null;   --  end of this patch's header
+                           else
+                              Add (Line);   --  "diff --git ...", "new file ..."
+                           end if;
+                        elsif Before = 0 and then After = 0 then
+                           if Starts (Line, "@@ -") then
+                              --  Parse the counts but never hash the header:
+                              --  that is what makes the id independent of the
+                              --  line numbers.
+                              declare
+                                 B, A : Natural := 1;
+                                 I : Natural := Line'First + 4;
+
+                                 procedure Scan (N : out Natural) is
+                                    V : Natural := 0;
+                                    Seen : Boolean := False;
+                                 begin
+                                    while I <= Line'Last
+                                      and then Line (I) in '0' .. '9'
+                                    loop
+                                       I := I + 1;   --  skip the start line
+                                    end loop;
+                                    N := 1;
+                                    if I <= Line'Last and then Line (I) = ',' then
+                                       I := I + 1;
+                                       while I <= Line'Last
+                                         and then Line (I) in '0' .. '9'
+                                       loop
+                                          V := V * 10
+                                            + (Character'Pos (Line (I))
+                                               - Character'Pos ('0'));
+                                          Seen := True;
+                                          I := I + 1;
+                                       end loop;
+                                       if Seen then
+                                          N := V;
+                                       end if;
+                                    end if;
+                                 end Scan;
+                              begin
+                                 Scan (B);
+                                 while I <= Line'Last
+                                   and then Line (I) /= '+'
+                                 loop
+                                    I := I + 1;
+                                 end loop;
+                                 I := I + 1;
+                                 Scan (A);
+                                 Before := B;
+                                 After := A;
+                              end;
+                           elsif not Starts (Line, "diff ") then
+                              null;   --  end of the patch
+                           else
+                              Before := -1;
+                              After := -1;
+                              Add (Line);
+                           end if;
+                        else
+                           if Line'Length > 0
+                             and then (Line (Line'First) = '-'
+                                       or else Line (Line'First) = ' ')
+                           then
+                              Before := Before - 1;
+                           end if;
+                           if Line'Length > 0
+                             and then (Line (Line'First) = '+'
+                                       or else Line (Line'First) = ' ')
+                           then
+                              After := After - 1;
+                           end if;
+                           Add (Line);
+                        end if;
+                     end;
+
+                     Start := Stop + 1;
+                  end;
+               end loop;
+
+               Flush;
             end;
 
          elsif Command = "hash-object" then
@@ -7340,25 +14391,61 @@ package body Version.CLI is
 
          elsif Command = "show-ref" then
             declare
+               Usage : constant String :=
+                 "version show-ref [--heads] [--tags]";
                Repo : constant Version.Repository.Repository_Handle :=
                  Version.Repository.Open;
+               --  git: naming --heads and/or --tags restricts to those
+               --  namespaces; with neither, all refs are shown.
+               Want_Heads : Boolean := True;
+               Want_Tags  : Boolean := True;
+               Filtered   : Boolean := False;
+               Bad        : Boolean := False;
             begin
-               for B of Version.Refs.List_Branches (Repo) loop
-                  declare
-                     R : constant String := "refs/heads/" & To_String (B);
-                  begin
-                     Success_Line
-                       (To_String (Version.Refs.Resolve_Ref (Repo, R)) & " " & R);
-                  end;
+               for I in 2 .. Count loop
+                  if Arg (I) = "--heads" or else Arg (I) = "--tags" then
+                     if not Filtered then
+                        Want_Heads := False;
+                        Want_Tags  := False;
+                        Filtered   := True;
+                     end if;
+                     if Arg (I) = "--heads" then
+                        Want_Heads := True;
+                     else
+                        Want_Tags := True;
+                     end if;
+                  else
+                     Usage_Error
+                       ("unknown show-ref argument: " & Arg (I), Usage);
+                     Bad := True;
+                     exit;
+                  end if;
                end loop;
-               for Tg of Version.Tags.List_Tags loop
+
+               if not Bad then
+                  --  Reuse for-each-ref, which sorts by refname like git
+                  --  show-ref. With no filter, every ref is shown; --heads /
+                  --  --tags restrict to those namespaces.
                   declare
-                     R : constant String := "refs/tags/" & To_String (Tg);
+                     Patterns : Version.Ref_Format.String_Vectors.Vector;
                   begin
-                     Success_Line
-                       (To_String (Version.Refs.Resolve_Ref (Repo, R)) & " " & R);
+                     if Filtered then
+                        if Want_Heads then
+                           Patterns.Append ("refs/heads/");
+                        end if;
+                        if Want_Tags then
+                           Patterns.Append ("refs/tags/");
+                        end if;
+                     end if;
+                     for Line of Version.Ref_Format.For_Each_Ref
+                       (Repo     => Repo,
+                        Patterns => Patterns,
+                        Format   => "%(objectname) %(refname)")
+                     loop
+                        Success_Line (Line);
+                     end loop;
                   end;
-               end loop;
+               end if;
             end;
 
          elsif Command = "read-tree" then
@@ -7492,7 +14579,7 @@ package body Version.CLI is
                      (Path  => To_Unbounded_String (Path),
                       Id    => Version.Objects.To_Object_Id (Sha),
                       Mode  => To_Unbounded_String (Mode),
-                      Stage => 0));
+                      Stage => 0, Skip_Worktree => False));
                   Version.Staging.Write (Repo, E);
                end Insert_Cacheinfo;
 
@@ -7655,11 +14742,15 @@ package body Version.CLI is
 
          elsif Command = "rev-list" then
             declare
-               Usage : constant String := "version rev-list [--count] REV";
+               Usage : constant String :=
+                 "version rev-list [--count] [--all]"
+                 & " [--max-count=<n>|-n <n>] [REV]";
                Count_Only : Boolean := False;
+               Max_Count  : Integer := -1;  --  -1 = unlimited
                Bad_Opt    : Boolean := False;
                Bad_Text   : Unbounded_String;
                Rev_Idx    : Natural := 0;
+               All_Refs   : Boolean := False;
                I          : Positive := 2;
 
                function Img (N : Natural) return String is
@@ -7671,6 +14762,22 @@ package body Version.CLI is
                while I <= Count loop
                   if Arg (I) = "--count" then
                      Count_Only := True;
+                  elsif Arg (I) = "--all" then
+                     All_Refs := True;
+                  elsif Arg (I)'Length > 12
+                    and then Arg (I) (Arg (I)'First .. Arg (I)'First + 11)
+                             = "--max-count="
+                  then
+                     Max_Count :=
+                       Integer'Value (Arg (I) (Arg (I)'First + 12 .. Arg (I)'Last));
+                  elsif Arg (I) = "--max-count" or else Arg (I) = "-n" then
+                     if I = Count then
+                        Bad_Opt := True;
+                        Bad_Text := To_Unbounded_String (Arg (I));
+                        exit;
+                     end if;
+                     I := I + 1;
+                     Max_Count := Integer'Value (Arg (I));
                   elsif Arg (I)'Length >= 1 and then Arg (I) (Arg (I)'First) = '-'
                   then
                      Bad_Opt := True;
@@ -7689,7 +14796,7 @@ package body Version.CLI is
                if Bad_Opt then
                   Usage_Error ("unknown rev-list argument: "
                                & To_String (Bad_Text), Usage);
-               elsif Rev_Idx = 0 then
+               elsif Rev_Idx = 0 and then not All_Refs then
                   Usage_Error ("rev-list requires a revision", Usage);
                else
                   declare
@@ -7709,8 +14816,31 @@ package body Version.CLI is
                         return False;
                      end Seen;
                   begin
-                     Queue.Append
-                       (Version.Revisions.Resolve_Commit (Repo, Arg (Rev_Idx)));
+                     if All_Refs then
+                        --  Seed from every ref tip (peeled to a commit).
+                        declare
+                           No_Patterns :
+                             Version.Ref_Format.String_Vectors.Vector;
+                        begin
+                           for Ref of Version.Ref_Format.For_Each_Ref
+                             (Repo, No_Patterns, Format => "%(refname)")
+                           loop
+                              begin
+                                 Queue.Append
+                                   (Version.Revisions.Resolve_Commit
+                                      (Repo, Ref));
+                              exception
+                                 when others =>
+                                    null;  --  non-commit ref (e.g. blob tag)
+                              end;
+                           end loop;
+                        end;
+                     end if;
+                     if Rev_Idx /= 0 then
+                        Queue.Append
+                          (Version.Revisions.Resolve_Commit
+                             (Repo, Arg (Rev_Idx)));
+                     end if;
                      while not Queue.Is_Empty loop
                         declare
                            C : constant Version.Objects.Hex_Object_Id :=
@@ -7729,13 +14859,24 @@ package body Version.CLI is
                         end;
                      end loop;
 
-                     if Count_Only then
-                        Success_Line (Img (Natural (Result.Length)));
-                     else
-                        for C of Result loop
-                           Success_Line (To_String (C));
-                        end loop;
-                     end if;
+                     declare
+                        --  git stops the walk after --max-count commits.
+                        Limit : constant Natural :=
+                          (if Max_Count >= 0
+                           then Natural'Min (Max_Count, Natural (Result.Length))
+                           else Natural (Result.Length));
+                        Emitted : Natural := 0;
+                     begin
+                        if Count_Only then
+                           Success_Line (Img (Limit));
+                        else
+                           for C of Result loop
+                              exit when Emitted >= Limit;
+                              Success_Line (To_String (C));
+                              Emitted := Emitted + 1;
+                           end loop;
+                        end if;
+                     end;
                   end;
                end if;
             end;
@@ -7811,7 +14952,22 @@ package body Version.CLI is
                           & "branch";
                      end if;
 
-                     Version.Fetch.Fetch (To_String (Remote));
+                     declare
+                        Fetch_Before : constant Fetch_Ref_Maps.Map :=
+                          Snapshot_Fetch_Refs (Repo, To_String (Remote));
+                     begin
+                        Version.Fetch.Fetch (To_String (Remote));
+                        if Length (Branch_Arg) > 0 then
+                           --  Explicit `pull <remote> <branch>`: git fetches to
+                           --  FETCH_HEAD and reports that form.
+                           Print_Fetch_Head_Summary
+                             (Repo, To_String (Remote),
+                              To_String (Branch_Arg), Fetch_Before);
+                        else
+                           Print_Fetch_Summary
+                             (Repo, To_String (Remote), Fetch_Before);
+                        end if;
+                     end;
 
                      if Do_Rebase then
                         Version.Rebase.Start (To_String (Target));
@@ -7822,6 +14978,66 @@ package body Version.CLI is
                            Before  : constant String :=
                              Version.Refs.Current_Commit_Id (Repo);
                            Options : Version.Branch.Merge_Options;
+
+                           function Stat_Enabled return Boolean is
+                              V : Unbounded_String;
+                           begin
+                              begin
+                                 V := To_Unbounded_String
+                                   (Version.Config.Get_Value
+                                      (Repo, "merge.stat"));
+                              exception
+                                 when others =>
+                                    V := Null_Unbounded_String;
+                              end;
+                              --  git's merge.stat defaults to true.
+                              return
+                                To_String (V) not in
+                                  "false" | "0" | "no" | "off";
+                           end Stat_Enabled;
+
+                           procedure Show_Pull_Stat
+                             (B, A : Version.Objects.Hex_Object_Id)
+                           is
+                              Block : constant String :=
+                                Version.Diff.Diff_Commits
+                                  (Repo, B, A,
+                                   Version.Diff.Diff_Options'
+                                     (Context_Lines => 3, Stat => True,
+                                      Summary => True, others => <>));
+                              Last  : Natural := Block'Last;
+                           begin
+                              if not Stat_Enabled then
+                                 return;
+                              end if;
+                              if Last >= Block'First
+                                and then Block (Last) = Character'Val (10)
+                              then
+                                 Last := Last - 1;
+                              end if;
+                              if Last >= Block'First then
+                                 Success_Line (Block (Block'First .. Last));
+                              end if;
+                           end Show_Pull_Stat;
+
+                           procedure Show_Pull_Updating
+                             (B, A : Version.Objects.Hex_Object_Id)
+                           is
+                              Ob : constant String := To_String (B);
+                              Ab : constant String := To_String (A);
+                              OL : constant Natural :=
+                                Version.Revisions.Unique_Abbrev_Length
+                                  (Repo, B, 7);
+                              AL : constant Natural :=
+                                Version.Revisions.Unique_Abbrev_Length
+                                  (Repo, A, 7);
+                           begin
+                              Success_Line
+                                ("Updating "
+                                 & Ob (Ob'First .. Ob'First + OL - 1)
+                                 & ".."
+                                 & Ab (Ab'First .. Ab'First + AL - 1));
+                           end Show_Pull_Updating;
                         begin
                            if FF_Only then
                               Options.Fast_Forward :=
@@ -7836,13 +15052,15 @@ package body Version.CLI is
                            declare
                               After : constant String :=
                                 Version.Refs.Current_Commit_Id (Repo);
+                              Valid_Ids : constant Boolean :=
+                                Version.Objects.Is_Valid_Hex_Object_Id (Before)
+                                and then
+                                  Version.Objects.Is_Valid_Hex_Object_Id
+                                    (After);
                            begin
                               if After = Before then
                                  Success_Line ("Already up to date.");
-                              elsif Version.Objects.Is_Valid_Hex_Object_Id
-                                      (Before)
-                                and then
-                                  Version.Objects.Is_Valid_Hex_Object_Id (After)
+                              elsif Valid_Ids
                                 and then Version.History.Parent_Commits
                                   (Repo      => Repo,
                                    Commit_Id =>
@@ -7855,10 +15073,21 @@ package body Version.CLI is
                                    Derived_Id =>
                                      Version.Objects.To_Object_Id (After))
                               then
+                                 Show_Pull_Updating
+                                   (Version.Objects.To_Object_Id (Before),
+                                    Version.Objects.To_Object_Id (After));
                                  Success_Line ("Fast-forward");
+                                 Show_Pull_Stat
+                                   (Version.Objects.To_Object_Id (Before),
+                                    Version.Objects.To_Object_Id (After));
                               else
                                  Success_Line
                                    ("Merge made by the 'ort' strategy.");
+                                 if Valid_Ids then
+                                    Show_Pull_Stat
+                                      (Version.Objects.To_Object_Id (Before),
+                                       Version.Objects.To_Object_Id (After));
+                                 end if;
                               end if;
                            end;
                         exception
@@ -8000,7 +15229,49 @@ package body Version.CLI is
                   end if;
                end;
 
-            elsif Count = 2 and then Arg (2) = "list" then
+            elsif Count >= 2
+              and then (for all J in 2 .. Count =>
+                          (Arg (J)'Length > 7
+                           and then Arg (J) (Arg (J)'First .. Arg (J)'First + 6)
+                                    = "--sort=")
+                          or else Arg (J) = "list" or else Arg (J) = "-l"
+                          or else Arg (J) = "--list")
+              and then (for some J in 2 .. Count =>
+                          Arg (J)'Length > 7
+                          and then Arg (J) (Arg (J)'First .. Arg (J)'First + 6)
+                                   = "--sort=")
+            then
+               --  `tag [-l] --sort=<key>`: list tags sorted via for-each-ref.
+               declare
+                  Repo : constant Version.Repository.Repository_Handle :=
+                    Version.Repository.Open;
+                  Key  : Unbounded_String;
+                  Pat  : Version.Ref_Format.String_Vectors.Vector;
+               begin
+                  for J in 2 .. Count loop
+                     if Arg (J)'Length > 7
+                       and then Arg (J) (Arg (J)'First .. Arg (J)'First + 6)
+                                = "--sort="
+                     then
+                        Key := To_Unbounded_String
+                          (Arg (J) (Arg (J)'First + 7 .. Arg (J)'Last));
+                     end if;
+                  end loop;
+                  Pat.Append ("refs/tags/");
+                  for Line of Version.Ref_Format.For_Each_Ref
+                    (Repo, Pat, Format => "%(refname:short)",
+                     Sort_Key => To_String (Key))
+                  loop
+                     Success_Line (Line);
+                  end loop;
+               end;
+
+            elsif Count = 1
+              or else (Count = 2
+                       and then (Arg (2) = "list" or else Arg (2) = "-l"
+                                 or else Arg (2) = "--list"))
+            then
+               --  Bare `tag`, `tag list`, and `tag -l`/`--list` all list tags.
                declare
                   Tags : constant Version.Tags.Tag_Name_Vectors.Vector :=
                     Version.Tags.List_Tags;
@@ -8127,7 +15398,7 @@ package body Version.CLI is
                         return;
                      end if;
 
-                     Ada.Text_IO.Put
+                     Version.Console.Put
                        (Version.Config.List_Text (Version.Repository.Open));
                   end;
 
@@ -8140,7 +15411,7 @@ package body Version.CLI is
                         return;
                      end if;
 
-                     Ada.Text_IO.Put
+                     Version.Console.Put
                        (Version.Config.Keys_Text (Version.Repository.Open));
                   end;
 
@@ -8155,7 +15426,7 @@ package body Version.CLI is
                         return;
                      end if;
 
-                     Ada.Text_IO.Put
+                     Version.Console.Put
                        (Version.Config.Get_Text
                           (Version.Repository.Open, To_String (Key)));
                   end;
@@ -8488,12 +15759,22 @@ package body Version.CLI is
          elsif Command = "fetch" then
             declare
                Usage         : constant String :=
-                 "version fetch [--depth N] REMOTE";
+                 "version fetch [--depth N|--deepen N|--unshallow] REMOTE [REF]";
                I             : Natural := 2;
                Has_Depth     : Boolean := False;
                Depth_Value   : Positive := 1;
+               Has_Deepen    : Boolean := False;
+               Deepen_Value  : Positive := 1;
+               Unshallow     : Boolean := False;
                Remote_Name   : Unbounded_String;
+               Ref_Name      : Unbounded_String;
+               Have_Ref      : Boolean := False;
                Operand_Count : Natural := 0;
+
+               function Shallow_Modes return Natural is
+                 ((if Has_Depth then 1 else 0)
+                  + (if Has_Deepen then 1 else 0)
+                  + (if Unshallow then 1 else 0));
             begin
                while I <= Count loop
                   if Arg (I) = "--depth" then
@@ -8509,6 +15790,23 @@ package body Version.CLI is
                      Depth_Value := Parse_Depth_Argument (Arg (I + 1));
                      I := I + 2;
 
+                  elsif Arg (I) = "--deepen" then
+                     if Has_Deepen then
+                        Usage_Error ("duplicate option: --deepen", Usage);
+                        return;
+                     elsif I = Count then
+                        Usage_Error ("--deepen requires a value", Usage);
+                        return;
+                     end if;
+
+                     Has_Deepen := True;
+                     Deepen_Value := Parse_Depth_Argument (Arg (I + 1));
+                     I := I + 2;
+
+                  elsif Arg (I) = "--unshallow" then
+                     Unshallow := True;
+                     I := I + 1;
+
                   elsif Arg (I)'Length > 0
                     and then Arg (I) (Arg (I)'First) = '-'
                   then
@@ -8519,6 +15817,9 @@ package body Version.CLI is
                      Operand_Count := Operand_Count + 1;
                      if Operand_Count = 1 then
                         Remote_Name := To_Unbounded_String (Arg (I));
+                     elsif Operand_Count = 2 then
+                        Ref_Name := To_Unbounded_String (Arg (I));
+                        Have_Ref := True;
                      else
                         Usage_Error ("too many fetch arguments", Usage);
                         return;
@@ -8527,18 +15828,48 @@ package body Version.CLI is
                   end if;
                end loop;
 
-               if Operand_Count = 0 then
+               if Shallow_Modes > 1 then
+                  Usage_Error
+                    ("--depth, --deepen, and --unshallow are mutually exclusive",
+                     Usage);
+                  return;
+               elsif Operand_Count = 0 then
                   Usage_Error ("missing remote", Usage);
                   return;
-               elsif Has_Depth then
-                  Version.Fetch.Fetch
-                    (Remote_Name => To_String (Remote_Name),
-                     Depth       => Depth_Value);
                else
-                  Version.Fetch.Fetch (To_String (Remote_Name));
-               end if;
+                  declare
+                     Repo   : constant Version.Repository.Repository_Handle :=
+                       Version.Repository.Open;
+                     Before : constant Fetch_Ref_Maps.Map :=
+                       Snapshot_Fetch_Refs (Repo, To_String (Remote_Name));
+                  begin
+                     if Has_Depth then
+                        Version.Fetch.Fetch
+                          (Remote_Name => To_String (Remote_Name),
+                           Depth       => Depth_Value);
+                     elsif Has_Deepen then
+                        Version.Fetch.Fetch_Deepen
+                          (Remote_Name => To_String (Remote_Name),
+                           Depth       => Deepen_Value);
+                     elsif Unshallow then
+                        Version.Fetch.Fetch_Unshallow
+                          (To_String (Remote_Name));
+                     else
+                        Version.Fetch.Fetch (To_String (Remote_Name));
+                     end if;
 
-               Success_Line ("fetched " & To_String (Remote_Name));
+                     if Have_Ref then
+                        --  Explicit `fetch <remote> <ref>`: git reports the
+                        --  FETCH_HEAD form plus opportunistic tracking updates.
+                        Print_Fetch_Head_Summary
+                          (Repo, To_String (Remote_Name),
+                           To_String (Ref_Name), Before);
+                     else
+                        Print_Fetch_Summary
+                          (Repo, To_String (Remote_Name), Before);
+                     end if;
+                  end;
+               end if;
             end;
 
          elsif Command = "clone" then
@@ -8880,6 +16211,99 @@ package body Version.CLI is
                end;
             end;
 
+         elsif Command = "maintenance" then
+            declare
+               Usage : constant String :=
+                 "version maintenance run [--task=<task>] [--quiet] [--auto]";
+
+               function Is_Valid_Task (T : String) return Boolean is
+                 (T = "gc" or else T = "commit-graph"
+                  or else T = "loose-objects"
+                  or else T = "incremental-repack"
+                  or else T = "pack-refs" or else T = "prefetch");
+
+               --  Tasks that touch object storage map onto version's GC;
+               --  the auxiliary tasks (commit-graph, pack-refs, prefetch)
+               --  maintain files version does not keep, so they are no-ops.
+               function Is_Object_Task (T : String) return Boolean is
+                 (T = "gc" or else T = "loose-objects"
+                  or else T = "incremental-repack");
+            begin
+               if Count < 2 then
+                  Usage_Error ("maintenance needs a subcommand", Usage);
+               elsif Arg (2) = "run" then
+                  declare
+                     Bad      : Boolean  := False;
+                     Saw_Task : Boolean  := False;
+                     Run_GC   : Boolean  := False;
+                     I        : Positive := 3;
+                     Prefix   : constant String := "--task=";
+                  begin
+                     while I <= Count and then not Bad loop
+                        if Arg (I) = "--quiet" or else Arg (I) = "--auto" then
+                           I := I + 1;
+                        elsif Arg (I)'Length > Prefix'Length
+                          and then Arg (I)
+                                     (Arg (I)'First ..
+                                        Arg (I)'First + Prefix'Length - 1)
+                                   = Prefix
+                        then
+                           declare
+                              TN : constant String :=
+                                Arg (I)
+                                  (Arg (I)'First + Prefix'Length .. Arg (I)'Last);
+                           begin
+                              if not Is_Valid_Task (TN) then
+                                 Usage_Error
+                                   ("'" & TN & "' is not a valid task", Usage);
+                                 Bad := True;
+                              else
+                                 Saw_Task := True;
+                                 Run_GC   := Run_GC or else Is_Object_Task (TN);
+                              end if;
+                           end;
+                           I := I + 1;
+                        else
+                           Usage_Error
+                             ("unknown maintenance option: " & Arg (I), Usage);
+                           Bad := True;
+                        end if;
+                     end loop;
+
+                     --  With no explicit task, git runs the gc task by default.
+                     if not Bad then
+                        if not Saw_Task then
+                           Run_GC := True;
+                        end if;
+
+                        if Run_GC then
+                           declare
+                              Result :
+                                constant Version.Maintenance.Maintenance_Result
+                                  := Version.Maintenance.GC
+                                       (Repo    => Version.Repository.Open,
+                                        Dry_Run => False);
+                              pragma Unreferenced (Result);
+                           begin
+                              null;  --  git maintenance run is silent on success
+                           end;
+                        end if;
+                     end if;
+                  end;
+               elsif Arg (2) = "start" or else Arg (2) = "stop"
+                 or else Arg (2) = "register" or else Arg (2) = "unregister"
+               then
+                  Usage_Error
+                    ("maintenance " & Arg (2)
+                     & " manages OS background scheduling, which version does"
+                     & " not provide; run `version maintenance run` directly",
+                     Usage);
+               else
+                  Usage_Error
+                    ("unknown maintenance subcommand: " & Arg (2), Usage);
+               end if;
+            end;
+
          elsif Command = "push" then
             declare
                Usage         : constant String :=
@@ -8999,13 +16423,14 @@ package body Version.CLI is
                              ("push refspec is missing a destination ref",
                               Usage);
                         elsif Src'Length = 0 then
+                           --  Raw Dst: Delete_Ref resolves an unqualified name
+                           --  against the remote (branch, then tag) like git.
                            Version.Push.Delete_Ref
                              (Remote_Name => Remote,
-                              Ref_Name    => Normalize_Ref (Dst),
+                              Ref_Name    => Dst,
                               Run_Hooks   => Run_Hooks);
                            Success_Line
-                             ("deleted " & Normalize_Ref (Dst)
-                              & " on " & Remote);
+                             ("deleted " & Dst & " on " & Remote);
                         elsif Ada.Strings.Fixed.Index (Src, "*") /= 0
                           and then Ada.Strings.Fixed.Index (Dst, "*") /= 0
                         then
@@ -9230,19 +16655,16 @@ package body Version.CLI is
                         & " ref(s) on " & To_String (Remote_Name));
                   else
                      --  Delete every listed ref on the remote (git parity).
+                     --  Pass the raw name so Delete_Ref can resolve an
+                     --  unqualified name against the remote (branch, then tag).
                      for Ref_Arg of Refspecs loop
-                        declare
-                           Full_Ref : constant String :=
-                             Normalize_Ref (Ref_Arg);
-                        begin
-                           Version.Push.Delete_Ref
-                             (Remote_Name => To_String (Remote_Name),
-                              Ref_Name    => Full_Ref,
-                              Run_Hooks   => not No_Verify);
-                           Success_Line
-                             ("deleted " & Full_Ref & " on "
-                              & To_String (Remote_Name));
-                        end;
+                        Version.Push.Delete_Ref
+                          (Remote_Name => To_String (Remote_Name),
+                           Ref_Name    => Ref_Arg,
+                           Run_Hooks   => not No_Verify);
+                        Success_Line
+                          ("deleted " & Ref_Arg & " on "
+                           & To_String (Remote_Name));
                      end loop;
                   end if;
 
@@ -9314,6 +16736,3284 @@ package body Version.CLI is
                        (To_String (Remote_Name), Spec, Force,
                         not No_Verify);
                   end loop;
+               end if;
+            end;
+
+         elsif Command = "lfs" then
+            declare
+               Usage : constant String :=
+                 "version lfs (track [PATTERN...] | untrack PATTERN... | "
+                 & "ls-files [-l] [REF] | status | pointer --file=PATH | env | "
+                 & "fetch [REMOTE [REF...]] | pull [REMOTE] | checkout [PATH...] "
+                 & "| push REMOTE [REF] | lock PATH | "
+                 & "unlock PATH|--id ID [--force] | "
+                 & "locks [--path PATH] [--id ID] [--verify])";
+               Sub   : constant String := (if Count >= 2 then Arg (2) else "");
+            begin
+               if Sub = "lock" then
+                  if Count /= 3 then
+                     Usage_Error ("lfs lock requires a single PATH", Usage);
+                  else
+                     declare
+                        Repo : constant Version.Repository.Repository_Handle :=
+                          Version.Repository.Open;
+                        Created : constant Version.LFS.Lock_Info :=
+                          Version.LFS.Create_Lock (Repo, Arg (3));
+                        pragma Unreferenced (Created);
+                     begin
+                        Ada.Text_IO.Put_Line ("Locked " & Arg (3));
+                     end;
+                  end if;
+
+               elsif Sub = "unlock" then
+                  declare
+                     Id    : Unbounded_String;
+                     Path  : Unbounded_String;
+                     Force : Boolean := False;
+                     OK    : Boolean := True;
+                     I     : Positive := 3;
+                  begin
+                     while OK and then I <= Count loop
+                        declare
+                           A : constant String := Arg (I);
+                        begin
+                           if A = "--force" or else A = "-f" then
+                              Force := True;
+                           elsif A = "--id" then
+                              if I = Count then
+                                 OK := False;
+                              else
+                                 I := I + 1;
+                                 Id := To_Unbounded_String (Arg (I));
+                              end if;
+                           elsif A'Length > 0 and then A (A'First) = '-' then
+                              OK := False;
+                           elsif Length (Path) = 0 then
+                              Path := To_Unbounded_String (A);
+                           else
+                              OK := False;
+                           end if;
+                        end;
+                        I := I + 1;
+                     end loop;
+                     if not OK
+                       or else (Length (Id) = 0 and then Length (Path) = 0)
+                     then
+                        Usage_Error
+                          ("lfs unlock requires a PATH or --id ID", Usage);
+                     else
+                        declare
+                           Repo :
+                             constant Version.Repository.Repository_Handle :=
+                               Version.Repository.Open;
+                        begin
+                           Version.LFS.Delete_Lock
+                             (Repo  => Repo,
+                              Id    => To_String (Id),
+                              Path  => To_String (Path),
+                              Force => Force);
+                           if Length (Path) > 0 then
+                              Ada.Text_IO.Put_Line
+                                ("Unlocked " & To_String (Path));
+                           else
+                              Ada.Text_IO.Put_Line
+                                ("Unlocked lock " & To_String (Id));
+                           end if;
+                        end;
+                     end if;
+                  end;
+
+               elsif Sub = "locks" then
+                  declare
+                     Path   : Unbounded_String;
+                     Id     : Unbounded_String;
+                     Verify : Boolean := False;
+                     OK     : Boolean := True;
+                     I      : Positive := 3;
+                  begin
+                     while OK and then I <= Count loop
+                        declare
+                           A : constant String := Arg (I);
+                        begin
+                           if A = "--verify" then
+                              Verify := True;
+                           elsif A = "--path" then
+                              if I = Count then
+                                 OK := False;
+                              else
+                                 I := I + 1;
+                                 Path := To_Unbounded_String (Arg (I));
+                              end if;
+                           elsif A = "--id" then
+                              if I = Count then
+                                 OK := False;
+                              else
+                                 I := I + 1;
+                                 Id := To_Unbounded_String (Arg (I));
+                              end if;
+                           else
+                              OK := False;
+                           end if;
+                        end;
+                        I := I + 1;
+                     end loop;
+                     if not OK then
+                        Usage_Error ("unknown lfs locks option", Usage);
+                     else
+                        declare
+                           Repo :
+                             constant Version.Repository.Repository_Handle :=
+                               Version.Repository.Open;
+                           Result : constant Version.LFS.Lock_Array :=
+                             Version.LFS.List_Locks
+                               (Repo   => Repo,
+                                Path   => To_String (Path),
+                                Id     => To_String (Id),
+                                Verify => Verify);
+                        begin
+                           for L of Result loop
+                              Ada.Text_IO.Put_Line
+                                ((if not Verify then ""
+                                  elsif L.Owned then "O " else "T ")
+                                 & To_String (L.Path) & Character'Val (9)
+                                 & To_String (L.Owner) & Character'Val (9)
+                                 & "ID:" & To_String (L.Id));
+                           end loop;
+                        end;
+                     end if;
+                  end;
+
+               elsif Sub = "track" then
+                  declare
+                     Repo : constant Version.Repository.Repository_Handle :=
+                       Version.Repository.Open;
+                  begin
+                     if Count = 2 then
+                        Ada.Text_IO.Put_Line ("Listing tracked patterns");
+                        for P of Version.LFS.Tracked_Patterns (Repo) loop
+                           Ada.Text_IO.Put_Line
+                             ("    " & To_String (P.Pattern)
+                              & " (" & To_String (P.Source) & ")");
+                        end loop;
+                        Ada.Text_IO.Put_Line ("Listing excluded patterns");
+                     else
+                        for I in 3 .. Count loop
+                           if Version.LFS.Track_Pattern (Repo, Arg (I)) then
+                              Ada.Text_IO.Put_Line
+                                ("Tracking """ & Arg (I) & """");
+                           else
+                              Ada.Text_IO.Put_Line
+                                ("""" & Arg (I) & """ already supported");
+                           end if;
+                        end loop;
+                     end if;
+                  end;
+
+               elsif Sub = "untrack" then
+                  if Count < 3 then
+                     Usage_Error ("lfs untrack requires a PATTERN", Usage);
+                  else
+                     declare
+                        Repo : constant Version.Repository.Repository_Handle :=
+                          Version.Repository.Open;
+                     begin
+                        for I in 3 .. Count loop
+                           if Version.LFS.Untrack_Pattern (Repo, Arg (I)) then
+                              Ada.Text_IO.Put_Line
+                                ("Untracking """ & Arg (I) & """");
+                           end if;
+                        end loop;
+                     end;
+                  end if;
+
+               elsif Sub = "ls-files" then
+                  declare
+                     Long : Boolean := False;
+                     Ref  : Unbounded_String;
+                     OK   : Boolean := True;
+                     I    : Positive := 3;
+                  begin
+                     while OK and then I <= Count loop
+                        declare
+                           A : constant String := Arg (I);
+                        begin
+                           if A = "-l" or else A = "--long" then
+                              Long := True;
+                           elsif A'Length > 0 and then A (A'First) = '-' then
+                              OK := False;
+                           elsif Length (Ref) = 0 then
+                              Ref := To_Unbounded_String (A);
+                           else
+                              OK := False;
+                           end if;
+                        end;
+                        I := I + 1;
+                     end loop;
+                     if not OK then
+                        Usage_Error ("unknown lfs ls-files option", Usage);
+                     else
+                        declare
+                           Repo :
+                             constant Version.Repository.Repository_Handle :=
+                               Version.Repository.Open;
+                           Entries : constant Version.LFS.LFS_Entry_Array :=
+                             (if Length (Ref) > 0
+                              then Version.LFS.LFS_Entries_In_Commit
+                                     (Repo,
+                                      Version.Revisions.Resolve_Commit
+                                        (Repo, To_String (Ref)))
+                              else Version.LFS.LFS_Entries_In_Index (Repo));
+                        begin
+                           for E of Entries loop
+                              declare
+                                 Oid   : constant String := To_String (E.Oid);
+                                 Shown : constant String :=
+                                   (if Long or else Oid'Length < 10 then Oid
+                                    else Oid (Oid'First .. Oid'First + 9));
+                              begin
+                                 Ada.Text_IO.Put_Line
+                                   (Shown & " "
+                                    & (if E.Cached then "*" else "-") & " "
+                                    & To_String (E.Path));
+                              end;
+                           end loop;
+                        end;
+                     end if;
+                  end;
+
+               elsif Sub = "pointer" then
+                  declare
+                     File : Unbounded_String;
+                     OK   : Boolean := True;
+                     I    : Positive := 3;
+                  begin
+                     while OK and then I <= Count loop
+                        declare
+                           A : constant String := Arg (I);
+                        begin
+                           if A'Length > 7
+                             and then A (A'First .. A'First + 6) = "--file="
+                           then
+                              File :=
+                                To_Unbounded_String (A (A'First + 7 .. A'Last));
+                           elsif A = "--file" then
+                              if I = Count then
+                                 OK := False;
+                              else
+                                 I := I + 1;
+                                 File := To_Unbounded_String (Arg (I));
+                              end if;
+                           else
+                              OK := False;
+                           end if;
+                        end;
+                        I := I + 1;
+                     end loop;
+                     if not OK or else Length (File) = 0 then
+                        Usage_Error
+                          ("lfs pointer requires --file=PATH", Usage);
+                     else
+                        declare
+                           Content : constant String :=
+                             Version.Files.Read_Binary_File (To_String (File));
+                        begin
+                           Ada.Text_IO.Put_Line
+                             (Ada.Text_IO.Standard_Error,
+                              "Git LFS pointer for " & To_String (File));
+                           Ada.Text_IO.New_Line (Ada.Text_IO.Standard_Error);
+                           Ada.Text_IO.Put (Version.LFS.Build_Pointer (Content));
+                        end;
+                     end if;
+                  end;
+
+               elsif Sub = "env" then
+                  declare
+                     Repo : constant Version.Repository.Repository_Handle :=
+                       Version.Repository.Open;
+                     Git_Dir : constant String :=
+                       Version.Repository.Common_Git_Dir (Repo);
+                  begin
+                     Ada.Text_IO.Put_Line
+                       ("LocalWorkingDir="
+                        & Version.Repository.Root_Path (Repo));
+                     Ada.Text_IO.Put_Line ("LocalGitDir=" & Git_Dir);
+                     Ada.Text_IO.Put_Line
+                       ("LocalMediaDir=" & Git_Dir & "/lfs/objects");
+                     if Version.Config.Has_Key (Repo, "lfs.url") then
+                        Ada.Text_IO.Put_Line
+                          ("Endpoint="
+                           & Version.Config.Get_Value (Repo, "lfs.url"));
+                     elsif Version.Config.Has_Key
+                             (Repo, "remote.origin.url")
+                     then
+                        Ada.Text_IO.Put_Line
+                          ("Endpoint="
+                           & Version.Config.Get_Value
+                               (Repo, "remote.origin.url"));
+                     end if;
+                  end;
+
+               elsif Sub = "status" then
+                  declare
+                     Repo : constant Version.Repository.Repository_Handle :=
+                       Version.Repository.Open;
+                     St   : constant Version.Status.Status_Result :=
+                       Version.Status.Current_Status;
+                     Idx  : constant
+                       Version.Staging.Index_Entry_Vectors.Vector :=
+                         Version.Staging.Load (Repo);
+                     Ents : constant Version.LFS.LFS_Entry_Array :=
+                       Version.LFS.LFS_Entries_In_Index (Repo);
+
+                     function Short (S : String) return String is
+                       (if S'Length >= 7 then S (S'First .. S'First + 6)
+                        else S);
+
+                     function LFS_Oid (Path : String) return String is
+                     begin
+                        for E of Ents loop
+                           if To_String (E.Path) = Path then
+                              return To_String (E.Oid);
+                           end if;
+                        end loop;
+                        return "";
+                     end LFS_Oid;
+
+                     function Git_Oid (Path : String) return String is
+                     begin
+                        for E of Idx loop
+                           if To_String (E.Path) = Path then
+                              return Version.Objects.To_String (E.Id);
+                           end if;
+                        end loop;
+                        return "";
+                     end Git_Oid;
+
+                     --  LFS oid of the working-tree file after the clean
+                     --  filter (git-lfs compares this against the index so an
+                     --  unchanged pointer file is not "modified").
+                     function Worktree_LFS_Oid (Path : String) return String is
+                        Full : constant String :=
+                          Version.Files.Join
+                            (Version.Repository.Root_Path (Repo), Path);
+                     begin
+                        if not Ada.Directories.Exists (Full) then
+                           return "";
+                        end if;
+                        declare
+                           Info : constant Version.LFS.Pointer_Info :=
+                             Version.LFS.Parse_Pointer
+                               (Version.LFS.Clean_Content
+                                  (Repo, Path,
+                                   Version.Files.Read_Binary_File (Full)));
+                        begin
+                           return
+                             (if Info.Is_Pointer then To_String (Info.Oid)
+                              else "");
+                        end;
+                     exception
+                        when others => return "";
+                     end Worktree_LFS_Oid;
+
+                     procedure Section
+                       (Header   : String;
+                        V        : Version.Status.File_Change_Vectors.Vector;
+                        Worktree : Boolean)
+                     is
+                     begin
+                        Ada.Text_IO.New_Line;
+                        Ada.Text_IO.Put_Line (Header);
+                        Ada.Text_IO.New_Line;
+                        for C of V loop
+                           declare
+                              Path  : constant String := To_String (C.Path);
+                              Idx_L : constant String := LFS_Oid (Path);
+                              Show  : Boolean := True;
+                              Line  : Unbounded_String;
+                           begin
+                              if Idx_L'Length > 0 and then Worktree then
+                                 declare
+                                    WT : constant String :=
+                                      Worktree_LFS_Oid (Path);
+                                 begin
+                                    if WT'Length = 0 or else WT = Idx_L then
+                                       Show := False;    --  unchanged pointer
+                                    else
+                                       Line := To_Unbounded_String
+                                         (Character'Val (9) & Path
+                                          & " (LFS: " & Short (WT) & ")");
+                                    end if;
+                                 end;
+                              elsif Idx_L'Length > 0 then
+                                 Line := To_Unbounded_String
+                                   (Character'Val (9) & Path
+                                    & " (LFS: " & Short (Idx_L) & ")");
+                              else
+                                 Line := To_Unbounded_String
+                                   (Character'Val (9) & Path
+                                    & " (Git: " & Short (Git_Oid (Path)) & ")");
+                              end if;
+                              if Show then
+                                 Ada.Text_IO.Put_Line (To_String (Line));
+                              end if;
+                           end;
+                        end loop;
+                     end Section;
+                  begin
+                     Section ("Objects to be committed:", St.Staged, False);
+                     Section
+                       ("Objects not staged for commit:", St.Changes, True);
+                     Ada.Text_IO.New_Line;
+                  end;
+
+               elsif Sub = "fsck" then
+                  declare
+                     Repo : constant Version.Repository.Repository_Handle :=
+                       Version.Repository.Open;
+                     Head    : Unbounded_String;
+                     Corrupt : Natural := 0;
+                  begin
+                     begin
+                        Head := To_Unbounded_String
+                          (Version.Refs.Current_Commit_Id (Repo));
+                     exception
+                        when others => Head := Null_Unbounded_String;
+                     end;
+                     if Length (Head) > 0 then
+                        for E of Version.LFS.LFS_Entries_In_Commit
+                                   (Repo,
+                                    Version.Objects.To_Object_Id
+                                      (To_String (Head)))
+                        loop
+                           if Version.LFS.Object_Corrupt
+                                (Repo, To_String (E.Oid))
+                           then
+                              Ada.Text_IO.Put_Line
+                                ("corruptObject: " & To_String (E.Path)
+                                 & " (" & To_String (E.Oid) & ") is corrupt");
+                              Corrupt := Corrupt + 1;
+                           end if;
+                        end loop;
+                     end if;
+                     if Corrupt = 0 then
+                        Ada.Text_IO.Put_Line ("Git LFS fsck OK");
+                     else
+                        Set_Command_Failure;
+                     end if;
+                  end;
+
+               elsif Sub = "fetch" or else Sub = "pull" then
+                  declare
+                     Repo : constant Version.Repository.Repository_Handle :=
+                       Version.Repository.Open;
+                     All_Refs    : Boolean := False;
+                     Remote_Seen : Boolean := False;
+                     Ref         : Unbounded_String;
+                  begin
+                     for I in 3 .. Count loop
+                        declare
+                           A : constant String := Arg (I);
+                        begin
+                           if A = "--all" then
+                              All_Refs := True;
+                           elsif A'Length > 0 and then A (A'First) = '-' then
+                              null;   --  ignore other flags
+                           elsif not Remote_Seen then
+                              --  REMOTE positional (endpoint comes from config)
+                              Remote_Seen := True;
+                           else
+                              Ref := To_Unbounded_String (A);
+                           end if;
+                        end;
+                     end loop;
+                     declare
+                        Entries : constant Version.LFS.LFS_Entry_Array :=
+                          (if All_Refs
+                           then Version.LFS.LFS_Entries_All_Refs (Repo)
+                           elsif Length (Ref) > 0
+                           then Version.LFS.LFS_Entries_In_Commit
+                                  (Repo,
+                                   Version.Revisions.Resolve_Commit
+                                     (Repo, To_String (Ref)))
+                           else Version.LFS.LFS_Entries_In_Commit
+                                  (Repo,
+                                   Version.Objects.To_Object_Id
+                                     (Version.Refs.Current_Commit_Id (Repo))));
+                        Failures : Natural := 0;
+                     begin
+                        for E of Entries loop
+                           if not Version.LFS.Fetch_Object
+                                    (Repo, To_String (E.Oid), E.Size)
+                           then
+                              Failures := Failures + 1;
+                           end if;
+                        end loop;
+                        if Sub = "pull" then
+                           LFS_Checkout (Repo);
+                        end if;
+                        Ada.Text_IO.Put_Line
+                          ("fetch: "
+                           & Ada.Strings.Fixed.Trim
+                               (Natural'Image (Entries'Length),
+                                Ada.Strings.Left)
+                           & (if Entries'Length = 1
+                              then " object found, done."
+                              else " objects found, done."));
+                        if Failures > 0 then
+                           Error_Line
+                             ("failed to fetch" & Natural'Image (Failures)
+                              & " LFS object(s)");
+                           Set_Command_Failure;
+                        end if;
+                     end;
+                  end;
+
+               elsif Sub = "checkout" then
+                  declare
+                     Repo : constant Version.Repository.Repository_Handle :=
+                       Version.Repository.Open;
+                     Filter : Path_Sets.Set;
+                  begin
+                     for I in 3 .. Count loop
+                        Filter.Include (Arg (I));
+                     end loop;
+                     LFS_Checkout (Repo, Filter);
+                  end;
+
+               elsif Sub = "push" then
+                  if Count < 3 then
+                     Usage_Error ("lfs push requires a REMOTE", Usage);
+                  else
+                     declare
+                        Repo : constant Version.Repository.Repository_Handle :=
+                          Version.Repository.Open;
+                        Commit : constant Version.Objects.Hex_Object_Id :=
+                          (if Count >= 4
+                           then Version.Revisions.Resolve_Commit
+                                  (Repo, Arg (4))
+                           else Version.Objects.To_Object_Id
+                                  (Version.Refs.Current_Commit_Id (Repo)));
+                     begin
+                        Version.LFS.Upload_Referenced_Objects
+                          (Repo, Commit, Arg (3));
+                     end;
+                  end if;
+
+               elsif Sub = "prune" then
+                  declare
+                     Repo : constant Version.Repository.Repository_Handle :=
+                       Version.Repository.Open;
+                     Dry_Run  : Boolean := False;
+                     Total    : Natural;
+                     Retained : Natural;
+                  begin
+                     for I in 3 .. Count loop
+                        if Arg (I) = "--dry-run" or else Arg (I) = "-d" then
+                           Dry_Run := True;
+                        end if;
+                     end loop;
+                     Version.LFS.Prune (Repo, Dry_Run, Total, Retained);
+                     Ada.Text_IO.Put_Line
+                       ("prune: "
+                        & Ada.Strings.Fixed.Trim
+                            (Natural'Image (Total), Ada.Strings.Left)
+                        & (if Total = 1 then " local object, "
+                           else " local objects, ")
+                        & Ada.Strings.Fixed.Trim
+                            (Natural'Image (Retained), Ada.Strings.Left)
+                        & " retained, done.");
+                  end;
+
+               elsif Sub = "migrate" then
+                  declare
+                     Op         : constant String :=
+                       (if Count >= 3 then Arg (3) else "");
+                     Include    : Unbounded_String;
+                     Everything : Boolean := False;
+                  begin
+                     for I in 4 .. Count loop
+                        declare
+                           A : constant String := Arg (I);
+                        begin
+                           if A'Length > 10
+                             and then A (A'First .. A'First + 9) = "--include="
+                           then
+                              Include := To_Unbounded_String
+                                (A (A'First + 10 .. A'Last));
+                           elsif A = "--everything" then
+                              Everything := True;
+                           end if;
+                        end;
+                     end loop;
+                     if Op = "import" or else Op = "export" then
+                        if Length (Include) = 0 then
+                           Usage_Error
+                             ("lfs migrate " & Op
+                              & " requires --include=PATTERN", Usage);
+                        else
+                           declare
+                              Repo :
+                                constant Version.Repository.Repository_Handle :=
+                                  Version.Repository.Open;
+                           begin
+                              Version.LFS.Migrate
+                                (Repo,
+                                 (if Op = "import"
+                                  then Version.LFS.Migrate_Import
+                                  else Version.LFS.Migrate_Export),
+                                 To_String (Include), Everything);
+                              Ada.Text_IO.Put_Line ("migrate: " & Op & " done.");
+                           end;
+                        end if;
+                     elsif Op = "info" then
+                        declare
+                           Repo :
+                             constant Version.Repository.Repository_Handle :=
+                               Version.Repository.Open;
+                           Info : constant Version.LFS.Migrate_Info_Array :=
+                             Version.LFS.Migrate_Info (Repo, Everything);
+                        begin
+                           for E of Info loop
+                              Ada.Text_IO.Put_Line
+                                (To_String (E.Name) & Character'Val (9)
+                                 & Ada.Strings.Fixed.Trim
+                                     (Long_Long_Integer'Image (E.Bytes),
+                                      Ada.Strings.Left)
+                                 & " B" & Character'Val (9)
+                                 & Ada.Strings.Fixed.Trim
+                                     (Natural'Image (E.Count), Ada.Strings.Left)
+                                 & (if E.Count = 1 then " file" else " files"));
+                           end loop;
+                        end;
+                     else
+                        Usage_Error
+                          ("lfs migrate requires import, export, or info",
+                           Usage);
+                     end if;
+                  end;
+
+               else
+                  Usage_Error
+                    ("lfs requires track, untrack, ls-files, status, pointer, "
+                     & "env, fetch, pull, checkout, push, fsck, prune, "
+                     & "migrate, lock, unlock, or locks",
+                     Usage);
+               end if;
+            end;
+
+         elsif Command = "var" then
+            declare
+               Usage : constant String :=
+                 "version var (GIT_AUTHOR_IDENT|GIT_COMMITTER_IDENT|GIT_EDITOR)";
+
+               function Now_Stamp return String is
+                  use type Ada.Calendar.Time;
+                  T : constant Long_Long_Integer :=
+                    Long_Long_Integer
+                      (Ada.Calendar.Clock - Ada.Calendar.Time_Of (1970, 1, 1));
+                  S : constant String := Long_Long_Integer'Image (T);
+               begin
+                  return S (S'First + 1 .. S'Last) & " +0000";
+               end Now_Stamp;
+
+               --  git honours GIT_AUTHOR_DATE / GIT_COMMITTER_DATE. The raw
+               --  "<unix> <tz>" (and "@<unix> <tz>") form is used verbatim;
+               --  other forms fall back to the current time.
+               function Ident_Date (Env : String) return String is
+               begin
+                  if not Ada.Environment_Variables.Exists (Env) then
+                     return Now_Stamp;
+                  end if;
+                  declare
+                     V : constant String := Ada.Environment_Variables.Value (Env);
+                     S : constant String :=
+                       (if V'Length > 0 and then V (V'First) = '@'
+                        then V (V'First + 1 .. V'Last) else V);
+                     Sp : constant Natural :=
+                       Ada.Strings.Fixed.Index (S, " ");
+                     Digits_Ok : Boolean := Sp > S'First;
+                  begin
+                     for K in S'First .. (if Sp = 0 then S'Last else Sp - 1) loop
+                        if S (K) not in '0' .. '9' then
+                           Digits_Ok := False;
+                        end if;
+                     end loop;
+                     if not Digits_Ok then
+                        return Now_Stamp;
+                     elsif Sp = 0 then
+                        return S & " +0000";
+                     else
+                        return S;
+                     end if;
+                  end;
+               end Ident_Date;
+            begin
+               if Count /= 2 then
+                  Usage_Error ("var requires a variable name", Usage);
+               else
+                  declare
+                     Name : constant String := Arg (2);
+                     Repo : constant Version.Repository.Repository_Handle :=
+                       Version.Repository.Open;
+                     Id   : constant Version.Config.Identity :=
+                       Version.Config.User_Identity (Repo);
+                     Who  : constant String :=
+                       To_String (Id.Name) & " <" & To_String (Id.Email) & "> ";
+                  begin
+                     if Name = "GIT_AUTHOR_IDENT" then
+                        Success_Line (Who & Ident_Date ("GIT_AUTHOR_DATE"));
+                     elsif Name = "GIT_COMMITTER_IDENT" then
+                        Success_Line (Who & Ident_Date ("GIT_COMMITTER_DATE"));
+                     elsif Name = "GIT_EDITOR" then
+                        Success_Line
+                          (if Ada.Environment_Variables.Exists ("EDITOR")
+                           then Ada.Environment_Variables.Value ("EDITOR")
+                           else "vi");
+                     else
+                        Error_Line ("error: unknown variable '" & Name & "'");
+                        Set_Usage_Failure;
+                     end if;
+                  end;
+               end if;
+            end;
+
+         elsif Command = "verify-pack" then
+            declare
+               Usage : constant String :=
+                 "version verify-pack [-v|--verbose] PACK.idx...";
+               Repo : constant Version.Repository.Repository_Handle :=
+                 Version.Repository.Open;
+               Verbose : Boolean := False;
+               Bad     : Boolean := False;
+               Files   : Version.Trailers.String_Vectors.Vector;
+
+               function Img (N : Long_Long_Integer) return String is
+                  S : constant String := Long_Long_Integer'Image (N);
+               begin
+                  return S (S'First + 1 .. S'Last);
+               end Img;
+
+               function Type_Name
+                 (K : Version.Objects.Object_Kind) return String is
+                 (case K is
+                     when Version.Objects.Commit_Object => "commit",
+                     when Version.Objects.Tree_Object   => "tree",
+                     when Version.Objects.Blob_Object   => "blob",
+                     when Version.Objects.Tag_Object    => "tag",
+                     when others                        => "unknown");
+
+               --  git pads the type to six columns.
+               function Pad6 (T : String) return String is
+                 (T & [1 .. Integer'Max (0, 6 - T'Length) => ' ']);
+
+               --  Chain depth: how many deltas sit between this entry and a
+               --  full object.
+               function Depth_Of
+                 (Loc : Version.Pack.Pack_Location) return Natural
+               is
+                  Cur   : Version.Pack.Pack_Location := Loc;
+                  Steps : Natural := 0;
+               begin
+                  loop
+                     declare
+                        D : constant Version.Pack.Delta_Base_Info :=
+                          Version.Pack.Read_Delta_Base (Repo, Cur);
+                     begin
+                        exit when not D.Is_Delta or else Steps > 1000;
+                        Steps := Steps + 1;
+                        if D.By_Offset then
+                           Cur :=
+                             (Found      => True,
+                              Pack_Path  => Cur.Pack_Path,
+                              Offset     => D.Base_Offset,
+                              End_Offset => Cur.Offset);
+                        else
+                           Cur :=
+                             Version.Pack.Find_Location (Repo, D.Base_Id);
+                           exit when not Cur.Found;
+                        end if;
+                     end;
+                  end loop;
+                  return Steps;
+               end Depth_Of;
+            begin
+               for I in 2 .. Count loop
+                  if Arg (I) = "-v" or else Arg (I) = "--verbose" then
+                     Verbose := True;
+                  elsif Arg (I)'Length > 0
+                    and then Arg (I) (Arg (I)'First) = '-'
+                  then
+                     Usage_Error
+                       ("unknown verify-pack option: " & Arg (I), Usage);
+                     Bad := True;
+                     exit;
+                  else
+                     Files.Append (Arg (I));
+                  end if;
+               end loop;
+
+               if not Bad and then Files.Is_Empty then
+                  Usage_Error ("verify-pack requires a pack index", Usage);
+                  Bad := True;
+               end if;
+
+               if not Bad then
+                  for Idx of Files loop
+                     if not Ada.Directories.Exists (Idx) then
+                        Error_Line
+                          ("fatal: Cannot open existing pack file '"
+                           & Idx & "'");
+                        Set_Command_Failure;
+                     else
+                        declare
+                           Chains : array (0 .. 64) of Natural :=
+                             [others => 0];
+                           Non_Delta : Natural := 0;
+                           Ids : constant
+                             Version.Objects.Object_Id_Vectors.Vector :=
+                               Version.Pack.All_Pack_Objects (Repo);
+
+                           --  offset -> id, so an OFS delta can name its base.
+                           package Off_Maps is new
+                             Ada.Containers.Ordered_Maps
+                               (Key_Type     => Long_Long_Integer,
+                                Element_Type => Unbounded_String);
+                           By_Offset : Off_Maps.Map;
+                        begin
+                           for Id of Ids loop
+                              declare
+                                 L : constant Version.Pack.Pack_Location :=
+                                   Version.Pack.Find_Location (Repo, Id);
+                              begin
+                                 if L.Found then
+                                    By_Offset.Include
+                                      (Long_Long_Integer (L.Offset),
+                                       To_Unbounded_String
+                                         (Version.Objects.To_String (Id)));
+                                 end if;
+                              end;
+                           end loop;
+                           for Id of Ids loop
+                              declare
+                                 Loc : constant Version.Pack.Pack_Location :=
+                                   Version.Pack.Find_Location (Repo, Id);
+                              begin
+                                 if Loc.Found then
+                                    declare
+                                       Obj : constant
+                                         Version.Objects.Git_Object :=
+                                           Version.Objects.Read_Object
+                                             (Repo, Id);
+                                       Hdr : constant
+                                         Version.Pack.Packed_Object_Header :=
+                                           Version.Pack.Read_Header (Loc);
+                                       Info : constant
+                                         Version.Pack.Delta_Base_Info :=
+                                           Version.Pack.Read_Delta_Base
+                                             (Repo, Loc);
+                                       --  For a delta git reports the size of
+                                       --  the *delta*, not of the object it
+                                       --  reconstructs.
+                                       Sz : constant Long_Long_Integer :=
+                                         (if Info.Is_Delta
+                                          then Long_Long_Integer (Hdr.Size)
+                                          else Long_Long_Integer
+                                            (Version.Objects.Content
+                                               (Obj)'Length));
+                                       In_Pack : constant Long_Long_Integer :=
+                                         Long_Long_Integer (Loc.End_Offset)
+                                         - Long_Long_Integer (Loc.Offset);
+                                       D : constant Natural := Depth_Of (Loc);
+
+                                       function Base_Name return String is
+                                       begin
+                                          if not Info.Is_Delta then
+                                             return "";
+                                          elsif Info.By_Offset then
+                                             declare
+                                                K : constant Long_Long_Integer
+                                                  := Long_Long_Integer
+                                                       (Info.Base_Offset);
+                                             begin
+                                                if By_Offset.Contains (K) then
+                                                   return " "
+                                                     & To_String
+                                                         (By_Offset.Element (K));
+                                                end if;
+                                                return "";
+                                             end;
+                                          else
+                                             return " " & Version.Objects
+                                               .To_String (Info.Base_Id);
+                                          end if;
+                                       end Base_Name;
+                                    begin
+                                       if D = 0 then
+                                          Non_Delta := Non_Delta + 1;
+                                       elsif D <= 64 then
+                                          Chains (D) := Chains (D) + 1;
+                                       end if;
+
+                                       if Verbose then
+                                          Success_Line
+                                            (Version.Objects.To_String (Id)
+                                             & " "
+                                             & Pad6 (Type_Name
+                                               (Version.Objects.Kind (Obj)))
+                                             & " " & Img (Sz)
+                                             & " " & Img (In_Pack)
+                                             & " "
+                                             & Img (Long_Long_Integer
+                                                      (Loc.Offset))
+                                             & (if D = 0 then ""
+                                                else " " & Img
+                                                  (Long_Long_Integer (D))
+                                                  & Base_Name));
+                                       end if;
+                                    end;
+                                 end if;
+                              end;
+                           end loop;
+
+                           if Verbose then
+                              Success_Line
+                                ("non delta: " & Img
+                                   (Long_Long_Integer (Non_Delta))
+                                 & (if Non_Delta = 1 then " object"
+                                    else " objects"));
+                              for D in 1 .. 64 loop
+                                 if Chains (D) > 0 then
+                                    Success_Line
+                                      ("chain length = "
+                                       & Img (Long_Long_Integer (D)) & ": "
+                                       & Img (Long_Long_Integer (Chains (D)))
+                                       & (if Chains (D) = 1 then " object"
+                                          else " objects"));
+                                 end if;
+                              end loop;
+                              Success_Line
+                                (Idx (Idx'First .. Idx'Last - 4) & ".pack: ok");
+                           end if;
+                        end;
+                     end if;
+                  end loop;
+               end if;
+            end;
+
+         elsif Command = "checkout-index" then
+            declare
+               Usage : constant String :=
+                 "version checkout-index [-a|--all] [-f|--force] [--prefix=<p>]"
+                 & " [--] [FILE...]";
+               Repo : constant Version.Repository.Repository_Handle :=
+                 Version.Repository.Open;
+               Entries : constant Version.Staging.Index_Entry_Vectors.Vector :=
+                 Version.Staging.Load (Repo);
+               Root : constant String := Version.Repository.Root_Path (Repo);
+               All_Files : Boolean := False;
+               Force     : Boolean := False;
+               Quiet     : Boolean := False;
+               Prefix    : Unbounded_String;
+               Sep       : Boolean := False;
+               Bad       : Boolean := False;
+               Wanted    : Version.Trailers.String_Vectors.Vector;
+
+               function Has_Pfx (L, P : String) return Boolean is
+                 (L'Length >= P'Length
+                  and then L (L'First .. L'First + P'Length - 1) = P);
+
+               procedure Write_One (E : Version.Staging.Index_Entry) is
+                  Path : constant String := To_String (E.Path);
+                  Dest : constant String :=
+                    (if Length (Prefix) > 0
+                     then To_String (Prefix) & Path
+                     else Version.Files.Join (Root, Path));
+               begin
+                  if E.Stage /= 0 then
+                     return;
+                  end if;
+                  if not Force and then Ada.Directories.Exists (Dest) then
+                     --  git leaves an existing file alone, and says so.
+                     if not Quiet then
+                        Stderr_Line (Path & " already exists, no checkout");
+                     end if;
+                     return;
+                  end if;
+                  Version.Files.Create_Directory_If_Missing
+                    (Ada.Directories.Containing_Directory (Dest));
+                  Version.Files.Write_Binary_File_Atomic
+                    (Path    => Dest,
+                     Content =>
+                       Version.Objects.Content
+                         (Version.Objects.Read_Object (Repo, E.Id)));
+                  if To_String (E.Mode) = "100755" then
+                     Version.Files.Set_Executable (Dest, True);
+                  end if;
+               end Write_One;
+            begin
+               for I in 2 .. Count loop
+                  if not Sep and then Arg (I) = "--" then
+                     Sep := True;
+                  elsif not Sep
+                    and then (Arg (I) = "-a" or else Arg (I) = "--all")
+                  then
+                     All_Files := True;
+                  elsif not Sep
+                    and then (Arg (I) = "-f" or else Arg (I) = "--force")
+                  then
+                     Force := True;
+                  elsif not Sep and then (Arg (I) = "-q"
+                                          or else Arg (I) = "--quiet")
+                  then
+                     Quiet := True;
+                  elsif not Sep and then Has_Pfx (Arg (I), "--prefix=") then
+                     Prefix := To_Unbounded_String
+                       (Arg (I) (Arg (I)'First + 9 .. Arg (I)'Last));
+                  elsif not Sep
+                    and then Arg (I)'Length > 0
+                    and then Arg (I) (Arg (I)'First) = '-'
+                  then
+                     Usage_Error
+                       ("unknown checkout-index option: " & Arg (I), Usage);
+                     Bad := True;
+                     exit;
+                  else
+                     Wanted.Append (Arg (I));
+                  end if;
+               end loop;
+
+               if not Bad then
+                  for E of Entries loop
+                     if All_Files then
+                        Write_One (E);
+                     else
+                        for W of Wanted loop
+                           if W = To_String (E.Path) then
+                              Write_One (E);
+                           end if;
+                        end loop;
+                     end if;
+                  end loop;
+               end if;
+            end;
+
+         elsif Command = "count-objects" then
+            --  Non-verbose git count-objects: the loose object count and their
+            --  on-disk size in KiB (disk blocks, so small objects round up to
+            --  the filesystem block; approximated as 4 KiB here to match git on
+            --  the common 4 KiB-block filesystems the tests run on).
+            declare
+               Repo : constant Version.Repository.Repository_Handle :=
+                 Version.Repository.Open;
+               Objects_Dir : constant String :=
+                 Version.Files.Join
+                   (Version.Repository.Common_Git_Dir (Repo), "objects");
+               Count_N : Natural := 0;
+               KiB     : Long_Long_Integer := 0;
+
+               function Img (N : Long_Long_Integer) return String is
+                  S : constant String := Long_Long_Integer'Image (N);
+               begin
+                  return S (S'First + 1 .. S'Last);
+               end Img;
+
+               procedure Scan_Fanout (Dir : String) is
+                  Search : Ada.Directories.Search_Type;
+                  E      : Ada.Directories.Directory_Entry_Type;
+               begin
+                  if not Ada.Directories.Exists (Dir) then
+                     return;
+                  end if;
+                  Ada.Directories.Start_Search
+                    (Search, Dir, "",
+                     [Ada.Directories.Ordinary_File => True, others => False]);
+                  while Ada.Directories.More_Entries (Search) loop
+                     Ada.Directories.Get_Next_Entry (Search, E);
+                     declare
+                        Sz : constant Long_Long_Integer :=
+                          Long_Long_Integer (Ada.Directories.Size (E));
+                     begin
+                        Count_N := Count_N + 1;
+                        --  ceil(size / 4096) * 4 KiB.
+                        KiB := KiB + ((Sz + 4095) / 4096) * 4;
+                     end;
+                  end loop;
+                  Ada.Directories.End_Search (Search);
+               end Scan_Fanout;
+            begin
+               if Ada.Directories.Exists (Objects_Dir) then
+                  for High in 0 .. 255 loop
+                     declare
+                        Hex : constant String := "0123456789abcdef";
+                        Name : constant String :=
+                          [Hex (Hex'First + High / 16),
+                           Hex (Hex'First + High mod 16)];
+                     begin
+                        Scan_Fanout (Version.Files.Join (Objects_Dir, Name));
+                     end;
+                  end loop;
+               end if;
+
+               if Count >= 2 and then (Arg (2) = "-v"
+                                       or else Arg (2) = "--verbose")
+               then
+                  --  git's verbose form: the loose counts plus what the packs
+                  --  hold.  in-pack is the sum of the pack index object counts;
+                  --  size-pack is the packs' size in KiB.
+                  declare
+                     Pack_Dir : constant String :=
+                       Version.Files.Join (Objects_Dir, "pack");
+                     Packs      : Natural := 0;
+                     In_Pack    : Long_Long_Integer := 0;
+                     Size_Pack  : Long_Long_Integer := 0;
+                     Search     : Ada.Directories.Search_Type;
+                     E          : Ada.Directories.Directory_Entry_Type;
+                  begin
+                     if Ada.Directories.Exists (Pack_Dir) then
+                        Ada.Directories.Start_Search
+                          (Search, Pack_Dir, "",
+                           [Ada.Directories.Ordinary_File => True,
+                            others => False]);
+                        while Ada.Directories.More_Entries (Search) loop
+                           Ada.Directories.Get_Next_Entry (Search, E);
+                           declare
+                              Nm : constant String :=
+                                Ada.Directories.Simple_Name (E);
+                           begin
+                              if Nm'Length > 4
+                                and then Nm (Nm'Last - 3 .. Nm'Last) = ".idx"
+                              then
+                                 Packs := Packs + 1;
+                              elsif Nm'Length > 5
+                                and then Nm (Nm'Last - 4 .. Nm'Last) = ".pack"
+                              then
+                                 Size_Pack := Size_Pack
+                                   + (Long_Long_Integer
+                                        (Ada.Directories.Size (E)) + 1023)
+                                     / 1024;
+                              end if;
+                           end;
+                        end loop;
+                        Ada.Directories.End_Search (Search);
+                     end if;
+
+                     In_Pack :=
+                       Long_Long_Integer
+                         (Version.Pack.All_Pack_Objects (Repo).Length);
+
+                     Success_Line ("count: " & Img (Long_Long_Integer (Count_N)));
+                     Success_Line ("size: " & Img (KiB));
+                     Success_Line ("in-pack: " & Img (In_Pack));
+                     Success_Line ("packs: " & Img (Long_Long_Integer (Packs)));
+                     Success_Line ("size-pack: " & Img (Size_Pack));
+                     Success_Line ("prune-packable: 0");
+                     Success_Line ("garbage: 0");
+                     Success_Line ("size-garbage: 0");
+                  end;
+               else
+                  Success_Line
+                    (Img (Long_Long_Integer (Count_N)) & " objects, "
+                     & Img (KiB) & " kilobytes");
+               end if;
+            end;
+
+         elsif Command = "name-rev" then
+            declare
+               Usage : constant String :=
+                 "version name-rev [--tags] (--all | COMMIT...)";
+               Tags_Only : Boolean := False;
+               Bad       : Boolean := False;
+
+               --  The nearest ref-based name for Target, walking first-parent
+               --  history from each ref tip (git's common case). Annotated
+               --  tags are rendered "tags/<name>^0"; a positive distance adds
+               --  "~<n>". Returns "undefined" when no ref reaches Target.
+               function Best_Name
+                 (Repo   : Version.Repository.Repository_Handle;
+                  Target : Version.Objects.Hex_Object_Id) return String
+               is
+                  Patterns  : Version.Ref_Format.String_Vectors.Vector;
+                  Best_Depth : Integer := Integer'Last;
+                  Best_Ref   : Unbounded_String;
+               begin
+                  Patterns.Append ("refs/tags/");
+                  if not Tags_Only then
+                     Patterns.Append ("refs/heads/");
+                  end if;
+                  for Refname of Version.Ref_Format.For_Each_Ref
+                    (Repo, Patterns, Format => "%(refname)")
+                  loop
+                     declare
+                        Cur   : Unbounded_String :=
+                          To_Unbounded_String
+                            (To_String
+                               (Version.Revisions.Resolve_Commit
+                                  (Repo, Refname)));
+                        Depth : Integer := 0;
+                        Done  : Boolean := False;
+                     begin
+                        while not Done loop
+                           if Version.Objects.To_Object_Id (To_String (Cur))
+                             = Target
+                           then
+                              --  git prefers a tag over a branch when both
+                              --  reach the commit at the same distance.
+                              declare
+                                 Tag_Pfx : constant String := "refs/tags/";
+                                 function Is_Tag (R : String) return Boolean is
+                                   (R'Length >= Tag_Pfx'Length
+                                    and then R (R'First .. R'First
+                                               + Tag_Pfx'Length - 1)
+                                             = Tag_Pfx);
+                              begin
+                                 if Depth < Best_Depth
+                                   or else (Depth = Best_Depth
+                                            and then Is_Tag (Refname)
+                                            and then not Is_Tag
+                                                       (To_String (Best_Ref)))
+                                 then
+                                    Best_Depth := Depth;
+                                    Best_Ref := To_Unbounded_String (Refname);
+                                 end if;
+                              end;
+                              Done := True;
+                           else
+                              declare
+                                 P : constant String :=
+                                   Version.Objects.Commit_Parent_Id
+                                     (Version.Objects.Read_Object
+                                        (Repo,
+                                         Version.Objects.To_Object_Id
+                                           (To_String (Cur))));
+                              begin
+                                 exit when P'Length = 0 or else Depth > 100_000;
+                                 Cur := To_Unbounded_String (P);
+                                 Depth := Depth + 1;
+                              end;
+                           end if;
+                        end loop;
+                     end;
+                  end loop;
+
+                  if Best_Depth = Integer'Last then
+                     return "undefined";
+                  end if;
+
+                  declare
+                     RN  : constant String := To_String (Best_Ref);
+                     Is_Tag : constant Boolean :=
+                       RN'Length > 10
+                       and then RN (RN'First .. RN'First + 9) = "refs/tags/";
+                     Base : constant String :=
+                       (if RN'Length > 11
+                          and then RN (RN'First .. RN'First + 10) = "refs/heads/"
+                        then RN (RN'First + 11 .. RN'Last)
+                        elsif Is_Tag
+                        then "tags/" & RN (RN'First + 10 .. RN'Last)
+                        else RN);
+                     --  Annotated tag: the ref names a tag object, so ^0 peels
+                     --  it to the commit.
+                     Peel : constant String :=
+                       (if Is_Tag
+                          and then Version.Objects.Kind
+                                     (Version.Objects.Read_Object
+                                        (Repo,
+                                         Version.Refs.Resolve_Ref (Repo, RN)))
+                                   = Version.Objects.Tag_Object
+                        then "^0" else "");
+                  begin
+                     if Best_Depth = 0 then
+                        return Base & Peel;
+                     else
+                        return Base & Peel & "~"
+                          & Natural_Image (Best_Depth);
+                     end if;
+                  end;
+               end Best_Name;
+            begin
+               for I in 2 .. Count loop
+                  if Arg (I) = "--tags" then
+                     Tags_Only := True;
+                  elsif Arg (I)'Length > 0 and then Arg (I) (Arg (I)'First) = '-'
+                  then
+                     Usage_Error
+                       ("unknown name-rev option: " & Arg (I), Usage);
+                     Bad := True;
+                     exit;
+                  end if;
+               end loop;
+
+               if not Bad then
+                  declare
+                     Repo : constant Version.Repository.Repository_Handle :=
+                       Version.Repository.Open;
+                     Any  : Boolean := False;
+                  begin
+                     for I in 2 .. Count loop
+                        if Arg (I) /= "--tags" then
+                           Any := True;
+                           declare
+                              --  name-rev names the input OBJECT: a tag object
+                              --  named by a tag ref is "tags/<name>" (no ^0);
+                              --  a commit is named via Best_Name (with ^0 for an
+                              --  annotated tag at its tip).
+                              Raw : constant Version.Objects.Hex_Object_Id :=
+                                Version.Revisions.Resolve (Repo, Arg (I));
+                              Name : Unbounded_String;
+                           begin
+                              if Version.Objects.Kind
+                                   (Version.Objects.Read_Object (Repo, Raw))
+                                = Version.Objects.Tag_Object
+                              then
+                                 declare
+                                    Tag_Pats :
+                                      Version.Ref_Format.String_Vectors.Vector;
+                                 begin
+                                    Tag_Pats.Append ("refs/tags/");
+                                    for R of Version.Ref_Format.For_Each_Ref
+                                      (Repo, Tag_Pats, Format => "%(refname)")
+                                    loop
+                                       if To_String
+                                            (Version.Refs.Resolve_Ref (Repo, R))
+                                          = To_String (Raw)
+                                       then
+                                          Name := To_Unbounded_String
+                                            ("tags/"
+                                             & R (R'First + 10 .. R'Last));
+                                          exit;
+                                       end if;
+                                    end loop;
+                                 end;
+                              end if;
+                              if Length (Name) = 0 then
+                                 Name := To_Unbounded_String
+                                   (Best_Name
+                                      (Repo,
+                                       Version.Revisions.Resolve_Commit
+                                         (Repo, Arg (I))));
+                              end if;
+                              Success_Line (Arg (I) & " " & To_String (Name));
+                           end;
+                        end if;
+                     end loop;
+                     if not Any then
+                        Usage_Error ("name-rev requires a commit", Usage);
+                     end if;
+                  end;
+               end if;
+            end;
+
+         elsif Command = "merge-base" then
+            declare
+               Usage : constant String :=
+                 "version merge-base [--all|--is-ancestor] COMMIT COMMIT";
+               All_Bases   : Boolean := False;
+               Is_Ancestor : Boolean := False;
+               A_Idx, B_Idx : Natural := 0;
+               Bad : Boolean := False;
+            begin
+               for I in 2 .. Count loop
+                  if Arg (I) = "--all" then
+                     All_Bases := True;
+                  elsif Arg (I) = "--is-ancestor" then
+                     Is_Ancestor := True;
+                  elsif Arg (I)'Length > 0 and then Arg (I) (Arg (I)'First) = '-'
+                  then
+                     Usage_Error
+                       ("unknown merge-base option: " & Arg (I), Usage);
+                     Bad := True;
+                     exit;
+                  elsif A_Idx = 0 then
+                     A_Idx := I;
+                  elsif B_Idx = 0 then
+                     B_Idx := I;
+                  else
+                     Usage_Error ("too many merge-base arguments", Usage);
+                     Bad := True;
+                     exit;
+                  end if;
+               end loop;
+
+               if not Bad then
+                  if A_Idx = 0 or else B_Idx = 0 then
+                     Usage_Error ("merge-base requires two commits", Usage);
+                  else
+                     declare
+                        Repo : constant Version.Repository.Repository_Handle :=
+                          Version.Repository.Open;
+                        A : constant Version.Objects.Hex_Object_Id :=
+                          Version.Revisions.Resolve_Commit (Repo, Arg (A_Idx));
+                        B : constant Version.Objects.Hex_Object_Id :=
+                          Version.Revisions.Resolve_Commit (Repo, Arg (B_Idx));
+                     begin
+                        if Is_Ancestor then
+                           --  Exit 0 if A is an ancestor of B, else 1.
+                           if not Version.History.Is_Ancestor
+                                    (Repo, Base_Id => A, Derived_Id => B)
+                           then
+                              Set_Command_Failure;
+                           end if;
+                        elsif All_Bases then
+                           for Base of Version.History.Merge_Bases (Repo, A, B)
+                           loop
+                              Success_Line (To_String (Base));
+                           end loop;
+                        else
+                           declare
+                              Base : constant Version.Objects.Hex_Object_Id :=
+                                Version.History.Merge_Base (Repo, A, B);
+                           begin
+                              if To_String (Base)'Length > 0 then
+                                 Success_Line (To_String (Base));
+                              else
+                                 --  No common ancestor: git exits 1, no output.
+                                 Set_Command_Failure;
+                              end if;
+                           end;
+                        end if;
+                     end;
+                  end if;
+               end if;
+            end;
+
+         elsif Command = "hook" then
+            declare
+               Usage : constant String :=
+                 "version hook run [--ignore-missing] <hook-name>"
+                 & " [-- <args>...]";
+            begin
+               if Count < 2 then
+                  Usage_Error ("missing hook subcommand", Usage);
+               elsif Arg (2) /= "run" then
+                  Usage_Error ("unknown hook subcommand: " & Arg (2), Usage);
+               else
+                  declare
+                     Ignore_Missing : Boolean := False;
+                     Name_Idx : Natural  := 0;
+                     Dash_Idx : Natural  := 0;
+                     Bad      : Boolean  := False;
+                     I        : Positive := 3;
+                  begin
+                     --  Options precede the hook name; everything after "--"
+                     --  is passed verbatim to the hook as its arguments.
+                     while I <= Count and then Dash_Idx = 0 and then not Bad loop
+                        if Arg (I) = "--" then
+                           Dash_Idx := I;
+                        elsif Arg (I) = "--ignore-missing" then
+                           Ignore_Missing := True;
+                           I := I + 1;
+                        elsif Name_Idx = 0
+                          and then (Arg (I)'Length = 0
+                                    or else Arg (I) (Arg (I)'First) /= '-')
+                        then
+                           Name_Idx := I;
+                           I := I + 1;
+                        elsif Arg (I)'Length > 0
+                          and then Arg (I) (Arg (I)'First) = '-'
+                        then
+                           Usage_Error
+                             ("unknown hook option: " & Arg (I), Usage);
+                           Bad := True;
+                        else
+                           Usage_Error ("too many hook arguments", Usage);
+                           Bad := True;
+                        end if;
+                     end loop;
+
+                     if not Bad then
+                        if Name_Idx = 0 then
+                           Usage_Error
+                             ("hook run requires a hook name", Usage);
+                        else
+                           declare
+                              Repo :
+                                constant Version.Repository.Repository_Handle :=
+                                  Version.Repository.Open;
+                              Args : Version.Hooks.Argument_Vectors.Vector;
+                              Res  : Version.Hooks.Hook_Result;
+                           begin
+                              if Dash_Idx /= 0 then
+                                 for J in Dash_Idx + 1 .. Count loop
+                                    Version.Hooks.Append_Argument
+                                      (Args, Arg (J));
+                                 end loop;
+                              end if;
+
+                              --  Run_Hook (Blocking) inherits stdout/stderr, so
+                              --  the hook's output streams through exactly as
+                              --  git's `hook run` does; propagate its exit code.
+                              Res :=
+                                Version.Hooks.Run_Hook
+                                  (Repo, Arg (Name_Idx), Args,
+                                   Blocking => True);
+
+                              if Res.Ran then
+                                 Ada.Command_Line.Set_Exit_Status
+                                   (Ada.Command_Line.Exit_Status
+                                      (Res.Exit_Code));
+                              elsif not Ignore_Missing then
+                                 Error_Line
+                                   ("cannot find a hook named "
+                                    & Arg (Name_Idx));
+                                 Set_Command_Failure;
+                              end if;
+                           end;
+                        end if;
+                     end if;
+                  end;
+               end if;
+            end;
+
+         elsif Command = "interpret-trailers" then
+            declare
+               Usage : constant String :=
+                 "version interpret-trailers [--trailer <token>=<value>]"
+                 & " [--where after|before] [--only-trailers] [--only-input]"
+                 & " [--unfold] [--parse] [--in-place] [<file>...]";
+               Where : Version.Trailers.Placement :=
+                 Version.Trailers.Placement_After;
+               Only_Trailers : Boolean := False;
+               Only_Input    : Boolean := False;
+               Unfold        : Boolean := False;
+               In_Place      : Boolean := False;
+               Adds          : Version.Trailers.String_Vectors.Vector;
+               Files         : Version.Trailers.String_Vectors.Vector;
+               Bad           : Boolean  := False;
+               I             : Positive := 2;
+
+               Where_Prefix   : constant String := "--where=";
+               Trailer_Prefix : constant String := "--trailer=";
+
+               function Read_Stdin return String is
+                  Buffer : aliased String (1 .. 65536);
+                  Acc    : Unbounded_String;
+               begin
+                  loop
+                     declare
+                        N : constant Interfaces.C.long :=
+                          Read
+                            (0, Buffer (Buffer'First)'Address,
+                             Interfaces.C.size_t (Buffer'Length));
+                     begin
+                        exit when N <= 0;
+                        Append
+                          (Acc,
+                           Buffer (Buffer'First ..
+                                     Buffer'First + Integer (N) - 1));
+                     end;
+                  end loop;
+                  return To_String (Acc);
+               end Read_Stdin;
+
+               function Read_File (Path : String) return String is
+                  use Ada.Streams.Stream_IO;
+                  F   : File_Type;
+                  Acc : Unbounded_String;
+                  Buf : Ada.Streams.Stream_Element_Array (1 .. 65536);
+                  Lst : Ada.Streams.Stream_Element_Offset;
+                  use type Ada.Streams.Stream_Element_Offset;
+               begin
+                  Open (F, In_File, Path);
+                  while not End_Of_File (F) loop
+                     Ada.Streams.Stream_IO.Read (F, Buf, Lst);
+                     declare
+                        S : String (1 .. Natural (Lst));
+                     begin
+                        for K in 1 .. Lst loop
+                           S (Natural (K)) := Character'Val (Buf (K));
+                        end loop;
+                        Append (Acc, S);
+                     end;
+                  end loop;
+                  Close (F);
+                  return To_String (Acc);
+               end Read_File;
+
+               procedure Write_File (Path : String; Data : String) is
+                  use Ada.Streams.Stream_IO;
+                  F   : File_Type;
+                  Buf : Ada.Streams.Stream_Element_Array
+                          (1 .. Ada.Streams.Stream_Element_Offset
+                                  (Data'Length));
+               begin
+                  for K in Data'Range loop
+                     Buf (Ada.Streams.Stream_Element_Offset
+                            (K - Data'First + 1)) :=
+                       Ada.Streams.Stream_Element (Character'Pos (Data (K)));
+                  end loop;
+                  Create (F, Out_File, Path);
+                  Ada.Streams.Stream_IO.Write (F, Buf);
+                  Close (F);
+               end Write_File;
+
+               function Process (Text : String) return String is
+                 (Version.Trailers.Interpret
+                    (Text, Adds, Where, Only_Trailers, Only_Input, Unfold));
+
+               procedure Set_Where (Value : String) is
+               begin
+                  if Value = "after" or else Value = "end" then
+                     Where := Version.Trailers.Placement_After;
+                  elsif Value = "before" or else Value = "start" then
+                     Where := Version.Trailers.Placement_Before;
+                  else
+                     Usage_Error ("invalid --where value: " & Value, Usage);
+                     Bad := True;
+                  end if;
+               end Set_Where;
+            begin
+               while I <= Count and then not Bad loop
+                  declare
+                     A : constant String := Arg (I);
+                  begin
+                     if A = "--trailer" then
+                        if I = Count then
+                           Usage_Error ("--trailer requires a value", Usage);
+                           Bad := True;
+                        else
+                           Adds.Append (Arg (I + 1));
+                           I := I + 2;
+                        end if;
+                     elsif A'Length > Trailer_Prefix'Length
+                       and then A (A'First .. A'First + Trailer_Prefix'Length - 1)
+                                = Trailer_Prefix
+                     then
+                        Adds.Append
+                          (A (A'First + Trailer_Prefix'Length .. A'Last));
+                        I := I + 1;
+                     elsif A = "--where" then
+                        if I = Count then
+                           Usage_Error ("--where requires a value", Usage);
+                           Bad := True;
+                        else
+                           Set_Where (Arg (I + 1));
+                           I := I + 2;
+                        end if;
+                     elsif A'Length > Where_Prefix'Length
+                       and then A (A'First .. A'First + Where_Prefix'Length - 1)
+                                = Where_Prefix
+                     then
+                        Set_Where (A (A'First + Where_Prefix'Length .. A'Last));
+                        I := I + 1;
+                     elsif A = "--only-trailers" then
+                        Only_Trailers := True;
+                        I := I + 1;
+                     elsif A = "--only-input" then
+                        Only_Input := True;
+                        I := I + 1;
+                     elsif A = "--unfold" then
+                        Unfold := True;
+                        I := I + 1;
+                     elsif A = "--parse" then
+                        Only_Trailers := True;
+                        Only_Input    := True;
+                        Unfold        := True;
+                        I := I + 1;
+                     elsif A = "--in-place" then
+                        In_Place := True;
+                        I := I + 1;
+                     elsif A = "--no-divider" then
+                        I := I + 1;
+                     elsif A'Length > 0 and then A (A'First) = '-'
+                       and then A /= "-"
+                     then
+                        Usage_Error
+                          ("unknown interpret-trailers option: " & A, Usage);
+                        Bad := True;
+                     else
+                        Files.Append (A);
+                        I := I + 1;
+                     end if;
+                  end;
+               end loop;
+
+               if not Bad and then Only_Input and then not Adds.Is_Empty then
+                  Usage_Error
+                    ("--trailer and --only-input cannot be used together",
+                     Usage);
+                  Bad := True;
+               end if;
+
+               if not Bad then
+                  if Files.Is_Empty then
+                     Version.Console.Put (Process (Read_Stdin));
+                  else
+                     for F of Files loop
+                        declare
+                           Result : constant String := Process (Read_File (F));
+                        begin
+                           if In_Place then
+                              Write_File (F, Result);
+                           else
+                              Version.Console.Put (Result);
+                           end if;
+                        end;
+                     end loop;
+                  end if;
+               end if;
+            end;
+
+         elsif Command = "stripspace" then
+            declare
+               Usage : constant String :=
+                 "version stripspace [-s|--strip-comments"
+                 & " | -c|--comment-lines]";
+               Kind : Version.Stripspace.Mode := Version.Stripspace.Default;
+               Bad  : Boolean := False;
+
+               function Read_Stdin return String is
+                  Buffer : aliased String (1 .. 65536);
+                  Acc    : Unbounded_String;
+               begin
+                  loop
+                     declare
+                        N : constant Interfaces.C.long :=
+                          Read
+                            (0, Buffer (Buffer'First)'Address,
+                             Interfaces.C.size_t (Buffer'Length));
+                     begin
+                        exit when N <= 0;
+                        Append
+                          (Acc,
+                           Buffer (Buffer'First ..
+                                     Buffer'First + Integer (N) - 1));
+                     end;
+                  end loop;
+                  return To_String (Acc);
+               end Read_Stdin;
+            begin
+               for I in 2 .. Count loop
+                  if Arg (I) = "-s" or else Arg (I) = "--strip-comments" then
+                     Kind := Version.Stripspace.Strip_Comments;
+                  elsif Arg (I) = "-c" or else Arg (I) = "--comment-lines" then
+                     Kind := Version.Stripspace.Comment_Lines;
+                  else
+                     Usage_Error
+                       ("unknown stripspace option: " & Arg (I), Usage);
+                     Bad := True;
+                     exit;
+                  end if;
+               end loop;
+
+               if not Bad then
+                  Version.Console.Put
+                    (Version.Stripspace.Clean (Read_Stdin, Kind));
+               end if;
+            end;
+
+         elsif Command = "check-ref-format" then
+            declare
+               Usage : constant String :=
+                 "version check-ref-format [--normalize] [--allow-onelevel]"
+                 & " [--no-allow-onelevel] [--refspec-pattern] <refname>"
+                 & " | version check-ref-format --branch <name>";
+               Allow_Onelevel  : Boolean := False;
+               Refspec_Pattern : Boolean := False;
+               Normalize       : Boolean := False;
+               Branch_Mode     : Boolean := False;
+               Name_Idx        : Natural := 0;
+               Bad             : Boolean := False;
+
+               --  git --branch resolves the @{-N} shorthand from the HEAD
+               --  reflog ("... moving from <from> to <to>"), newest first.
+               function Nth_Prior_Branch (N : Positive) return String is
+                  Repo : constant Version.Repository.Repository_Handle :=
+                    Version.Repository.Open;
+                  Entries :
+                    constant Version.Reflog.Log_Entry_Vectors.Vector :=
+                      Version.Reflog.Read_Entries (Repo, "HEAD");
+                  Seen : Natural := 0;
+                  Key  : constant String := "moving from ";
+               begin
+                  for K in reverse
+                    Entries.First_Index .. Entries.Last_Index
+                  loop
+                     declare
+                        M : constant String :=
+                          To_String (Entries.Element (K).Message);
+                        F : Natural := 0;
+                        T : Natural := 0;
+                     begin
+                        for P in M'First .. M'Last - Key'Length + 1 loop
+                           if M (P .. P + Key'Length - 1) = Key then
+                              F := P + Key'Length;
+                              exit;
+                           end if;
+                        end loop;
+                        if F /= 0 then
+                           for P in reverse F .. M'Last - 3 loop
+                              if M (P .. P + 3) = " to " then
+                                 T := P;
+                                 exit;
+                              end if;
+                           end loop;
+                        end if;
+                        if F /= 0 and then T /= 0 then
+                           Seen := Seen + 1;
+                           if Seen = N then
+                              return M (F .. T - 1);
+                           end if;
+                        end if;
+                     end;
+                  end loop;
+                  raise Ada.IO_Exceptions.Data_Error
+                    with "check-ref-format: not that many branch switches";
+               end Nth_Prior_Branch;
+            begin
+               for I in 2 .. Count loop
+                  if Bad then
+                     null;
+                  elsif Arg (I) = "--allow-onelevel" then
+                     Allow_Onelevel := True;
+                  elsif Arg (I) = "--no-allow-onelevel" then
+                     Allow_Onelevel := False;
+                  elsif Arg (I) = "--refspec-pattern" then
+                     Refspec_Pattern := True;
+                  elsif Arg (I) = "--normalize" then
+                     Normalize := True;
+                  elsif Arg (I) = "--branch" then
+                     Branch_Mode := True;
+                  elsif Arg (I)'Length > 0
+                    and then Arg (I) (Arg (I)'First) = '-'
+                    and then Arg (I) /= "-"
+                  then
+                     Usage_Error
+                       ("unknown check-ref-format option: " & Arg (I), Usage);
+                     Bad := True;
+                  elsif Name_Idx = 0 then
+                     Name_Idx := I;
+                  else
+                     Usage_Error
+                       ("too many check-ref-format arguments", Usage);
+                     Bad := True;
+                  end if;
+               end loop;
+
+               if not Bad then
+                  if Name_Idx = 0 then
+                     Usage_Error
+                       ("check-ref-format requires a refname", Usage);
+                  elsif Branch_Mode then
+                     declare
+                        Raw : constant String := Arg (Name_Idx);
+                        Resolved : constant String :=
+                          (if Raw'Length >= 4
+                             and then Raw (Raw'First .. Raw'First + 2) = "@{-"
+                             and then Raw (Raw'Last) = '}'
+                           then Nth_Prior_Branch
+                                  (Positive'Value
+                                     (Raw (Raw'First + 3 .. Raw'Last - 1)))
+                           else Raw);
+                     begin
+                        if Version.Ref_Names.Is_Valid_Check_Ref_Format
+                             ("refs/heads/" & Resolved)
+                        then
+                           Success_Line (Resolved);
+                        else
+                           Error_Line
+                             ("'" & Resolved & "' is not a valid branch name");
+                           Set_Command_Failure;
+                        end if;
+                     end;
+                  else
+                     declare
+                        Raw  : constant String := Arg (Name_Idx);
+                        Name : constant String :=
+                          (if Normalize
+                           then Version.Ref_Names.Normalize_Ref_Format (Raw)
+                           else Raw);
+                     begin
+                        if Version.Ref_Names.Is_Valid_Check_Ref_Format
+                             (Name, Allow_Onelevel, Refspec_Pattern)
+                        then
+                           if Normalize then
+                              Success_Line (Name);
+                           end if;
+                        else
+                           Set_Command_Failure;
+                        end if;
+                     end;
+                  end if;
+               end if;
+            end;
+
+         elsif Command = "mktree" then
+            declare
+               Usage : constant String :=
+                 "version mktree [--missing]  (reads tree entries on stdin)";
+               Allow_Missing : Boolean := False;
+               Bad : Boolean := False;
+
+               function Read_Stdin return String is
+                  Buffer : aliased String (1 .. 65536);
+                  Acc    : Unbounded_String;
+               begin
+                  loop
+                     declare
+                        N : constant Interfaces.C.long :=
+                          Read
+                            (0, Buffer (Buffer'First)'Address,
+                             Interfaces.C.size_t (Buffer'Length));
+                     begin
+                        exit when N <= 0;
+                        Append
+                          (Acc,
+                           Buffer (Buffer'First ..
+                                     Buffer'First + Integer (N) - 1));
+                     end;
+                  end loop;
+                  return To_String (Acc);
+               end Read_Stdin;
+            begin
+               for I in 2 .. Count loop
+                  if Arg (I) = "--missing" then
+                     Allow_Missing := True;
+                  else
+                     Usage_Error ("unknown mktree option: " & Arg (I), Usage);
+                     Bad := True;
+                     exit;
+                  end if;
+               end loop;
+
+               if not Bad then
+                  declare
+                     Repo : constant Version.Repository.Repository_Handle :=
+                       Version.Repository.Open;
+                     Input   : constant String := Read_Stdin;
+                     Entries : Version.Objects.Tree_Entry_Vectors.Vector;
+                     Pos     : Positive := Input'First;
+                  begin
+                     --  Parse "<mode> SP <type> SP <sha> TAB <path>" per line.
+                     while Pos <= Input'Last loop
+                        declare
+                           Line_End : Natural := Pos;
+                        begin
+                           while Line_End <= Input'Last
+                             and then Input (Line_End) /= Character'Val (10)
+                           loop
+                              Line_End := Line_End + 1;
+                           end loop;
+
+                           declare
+                              Line : constant String :=
+                                Input (Pos .. Line_End - 1);
+                              S1, S2, Tab : Natural := 0;
+                           begin
+                              for K in Line'Range loop
+                                 if Line (K) = ' ' and then S1 = 0 then
+                                    S1 := K;
+                                 elsif Line (K) = ' ' and then S2 = 0
+                                   and then S1 /= 0
+                                 then
+                                    S2 := K;
+                                 elsif Line (K) = Character'Val (9) then
+                                    Tab := K;
+                                    exit;
+                                 end if;
+                              end loop;
+
+                              if Line'Length > 0
+                                and then S1 /= 0 and then S2 /= 0
+                                and then Tab /= 0
+                              then
+                                 declare
+                                    Mode : constant String :=
+                                      Line (Line'First .. S1 - 1);
+                                    Sha  : constant String :=
+                                      Line (S2 + 1 .. Tab - 1);
+                                    Path : constant String :=
+                                      Line (Tab + 1 .. Line'Last);
+                                    Id : constant Version.Objects.Hex_Object_Id
+                                      := Version.Objects.To_Object_Id (Sha);
+                                    Kind : constant Version.Objects
+                                             .Tree_Entry_Kind :=
+                                      (if Mode = "40000" or else Mode = "040000"
+                                       then Version.Objects.Tree_Directory
+                                       elsif Mode = "160000"
+                                       then Version.Objects.Tree_Gitlink
+                                       else Version.Objects.Tree_Blob);
+                                 begin
+                                    if not Allow_Missing then
+                                       declare
+                                          Ignore : constant Version.Objects
+                                                     .Git_Object :=
+                                            Version.Objects.Read_Object
+                                              (Repo, Id);
+                                          pragma Unreferenced (Ignore);
+                                       begin
+                                          null;
+                                       end;
+                                    end if;
+
+                                    Entries.Append
+                                      (Version.Objects.Tree_Entry'
+                                         (Path =>
+                                            To_Unbounded_String (Path),
+                                          Id   => Id,
+                                          Kind => Kind,
+                                          Mode =>
+                                            To_Unbounded_String (Mode)));
+                                 end;
+                              end if;
+                           end;
+
+                           Pos := Line_End + 1;
+                        end;
+                     end loop;
+
+                     Success_Line
+                       (To_String (Version.Write.Write_Tree (Repo, Entries)));
+                  end;
+               end if;
+            end;
+
+         elsif Command = "mktag" then
+            declare
+               function Read_Stdin return String is
+                  Buffer : aliased String (1 .. 65536);
+                  Acc    : Unbounded_String;
+               begin
+                  loop
+                     declare
+                        N : constant Interfaces.C.long :=
+                          Read
+                            (0, Buffer (Buffer'First)'Address,
+                             Interfaces.C.size_t (Buffer'Length));
+                     begin
+                        exit when N <= 0;
+                        Append
+                          (Acc,
+                           Buffer (Buffer'First ..
+                                     Buffer'First + Integer (N) - 1));
+                     end;
+                  end loop;
+                  return To_String (Acc);
+               end Read_Stdin;
+
+               Content : constant String := Read_Stdin;
+
+               --  Return the header line starting at Pos and advance Pos past
+               --  its newline; empty when the header block has ended.
+               function Next_Line (Pos : in out Natural) return String is
+                  Start : constant Natural := Pos;
+                  Stop  : Natural := Pos;
+               begin
+                  while Stop <= Content'Last
+                    and then Content (Stop) /= Character'Val (10)
+                  loop
+                     Stop := Stop + 1;
+                  end loop;
+                  Pos := Stop + 1;
+                  return Content (Start .. Stop - 1);
+               end Next_Line;
+
+               function Starts (S, P : String) return Boolean is
+                 (S'Length >= P'Length
+                  and then S (S'First .. S'First + P'Length - 1) = P);
+            begin
+               declare
+                  Pos  : Natural := Content'First;
+                  L1   : constant String := Next_Line (Pos);
+                  L2   : constant String := Next_Line (Pos);
+                  L3   : constant String := Next_Line (Pos);
+                  L4   : constant String := Next_Line (Pos);
+               begin
+                  if not Starts (L1, "object ")
+                    or else not Starts (L2, "type ")
+                    or else not Starts (L3, "tag ")
+                    or else not Starts (L4, "tagger ")
+                  then
+                     Error_Line
+                       ("invalid tag object: expected object/type/tag/tagger"
+                        & " header lines");
+                     Set_Command_Failure;
+                  else
+                     declare
+                        Repo : constant Version.Repository.Repository_Handle :=
+                          Version.Repository.Open;
+                        Sha  : constant String := L1 (L1'First + 7 .. L1'Last);
+                        Declared : constant String :=
+                          L2 (L2'First + 5 .. L2'Last);
+                        Id  : constant Version.Objects.Hex_Object_Id :=
+                          Version.Objects.To_Object_Id (Sha);
+                        Obj : constant Version.Objects.Git_Object :=
+                          Version.Objects.Read_Object (Repo, Id);
+                        Actual : constant String :=
+                          (case Version.Objects.Kind (Obj) is
+                             when Blob_Object   => "blob",
+                             when Tree_Object   => "tree",
+                             when Commit_Object => "commit",
+                             when Tag_Object    => "tag",
+                             when others        => "unknown");
+                     begin
+                        if Actual /= Declared then
+                           Error_Line
+                             ("object " & Sha & " tagged as '" & Declared
+                              & "' but is a '" & Actual & "'");
+                           Set_Command_Failure;
+                        else
+                           Success_Line
+                             (To_String
+                                (Version.Write.Write_Object
+                                   (Repo, "tag", Content)));
+                        end if;
+                     end;
+                  end if;
+               end;
+            end;
+
+         elsif Command = "fmt-merge-msg" then
+            declare
+               Usage : constant String :=
+                 "version fmt-merge-msg [-F <file>]"
+                 & "  (reads FETCH_HEAD on stdin by default)";
+               File_Idx : Natural := 0;
+               Bad      : Boolean := False;
+
+               function Read_Stdin return String is
+                  Buffer : aliased String (1 .. 65536);
+                  Acc    : Unbounded_String;
+               begin
+                  loop
+                     declare
+                        N : constant Interfaces.C.long :=
+                          Read
+                            (0, Buffer (Buffer'First)'Address,
+                             Interfaces.C.size_t (Buffer'Length));
+                     begin
+                        exit when N <= 0;
+                        Append
+                          (Acc,
+                           Buffer (Buffer'First ..
+                                     Buffer'First + Integer (N) - 1));
+                     end;
+                  end loop;
+                  return To_String (Acc);
+               end Read_Stdin;
+
+               function Read_File (Path : String) return String is
+                  use Ada.Streams.Stream_IO;
+                  F   : File_Type;
+                  Acc : Unbounded_String;
+                  Buf : Ada.Streams.Stream_Element_Array (1 .. 65536);
+                  Lst : Ada.Streams.Stream_Element_Offset;
+                  use type Ada.Streams.Stream_Element_Offset;
+               begin
+                  Open (F, In_File, Path);
+                  while not End_Of_File (F) loop
+                     Ada.Streams.Stream_IO.Read (F, Buf, Lst);
+                     declare
+                        S : String (1 .. Natural (Lst));
+                     begin
+                        for K in 1 .. Lst loop
+                           S (Natural (K)) := Character'Val (Buf (K));
+                        end loop;
+                        Append (Acc, S);
+                     end;
+                  end loop;
+                  Close (F);
+                  return To_String (Acc);
+               end Read_File;
+            begin
+               for I in 2 .. Count loop
+                  if (Arg (I) = "-F" or else Arg (I) = "--file")
+                    and then I < Count
+                  then
+                     File_Idx := I + 1;
+                  elsif Arg (I) = "-F" or else Arg (I) = "--file" then
+                     Usage_Error ("-F requires a file", Usage);
+                     Bad := True;
+                  elsif I = File_Idx then
+                     null;  --  consumed as the -F argument
+                  else
+                     Usage_Error
+                       ("unknown fmt-merge-msg option: " & Arg (I), Usage);
+                     Bad := True;
+                     exit;
+                  end if;
+               end loop;
+
+               if not Bad then
+                  declare
+                     Repo : constant Version.Repository.Repository_Handle :=
+                       Version.Repository.Open;
+                     Input : constant String :=
+                       (if File_Idx /= 0 then Read_File (Arg (File_Idx))
+                        else Read_Stdin);
+                  begin
+                     Version.Console.Put
+                       (Version.Fmt_Merge_Msg.Format
+                          (Repo, Input, Version.Branch.Current_Branch_Name));
+                  end;
+               end if;
+            end;
+
+         elsif Command = "get-tar-commit-id" then
+            declare
+               function Read_Stdin return String is
+                  Buffer : aliased String (1 .. 65536);
+                  Acc    : Unbounded_String;
+               begin
+                  loop
+                     declare
+                        N : constant Interfaces.C.long :=
+                          Read
+                            (0, Buffer (Buffer'First)'Address,
+                             Interfaces.C.size_t (Buffer'Length));
+                     begin
+                        exit when N <= 0;
+                        Append
+                          (Acc,
+                           Buffer (Buffer'First ..
+                                     Buffer'First + Integer (N) - 1));
+                     end;
+                  end loop;
+                  return To_String (Acc);
+               end Read_Stdin;
+
+               Tar : constant String := Read_Stdin;
+               Found : Boolean := False;
+            begin
+               --  The commit id lives in the "comment=" record of a leading
+               --  pax global header (tar block: name "pax_global_header",
+               --  typeflag 'g' at offset 156, octal size at offset 124).
+               if Tar'Length >= 512
+                 and then Tar (Tar'First + 156) = 'g'
+                 and then Tar (Tar'First .. Tar'First + 16) = "pax_global_header"
+               then
+                  declare
+                     Size : Natural := 0;
+                  begin
+                     for K in Tar'First + 124 .. Tar'First + 135 loop
+                        exit when Tar (K) < '0' or else Tar (K) > '7';
+                        Size := Size * 8 + (Character'Pos (Tar (K)) - Character'Pos ('0'));
+                     end loop;
+
+                     if Tar'Length >= 512 + Size then
+                        declare
+                           Content : constant String :=
+                             Tar (Tar'First + 512 .. Tar'First + 512 + Size - 1);
+                           Key : constant String := "comment=";
+                        begin
+                           for P in Content'First ..
+                                      Content'Last - Key'Length + 1
+                           loop
+                              if Content (P .. P + Key'Length - 1) = Key then
+                                 declare
+                                    V : Natural := P + Key'Length;
+                                 begin
+                                    while V <= Content'Last
+                                      and then Content (V) /= Character'Val (10)
+                                    loop
+                                       V := V + 1;
+                                    end loop;
+                                    Success_Line
+                                      (Content (P + Key'Length .. V - 1));
+                                    Found := True;
+                                 end;
+                                 exit;
+                              end if;
+                           end loop;
+                        end;
+                     end if;
+                  end;
+               end if;
+
+               if not Found then
+                  Error_Line ("no commit id found in archive");
+                  Set_Command_Failure;
+               end if;
+            end;
+
+         elsif Command = "diff-tree" then
+            declare
+               Usage : constant String :=
+                 "version diff-tree [-r] [--root] (<tree> <tree> | <commit>)";
+               Recursive : Boolean := False;
+               Root_Diff : Boolean := False;
+               A1, A2 : Natural := 0;
+               Bad : Boolean := False;
+            begin
+               for I in 2 .. Count loop
+                  if Arg (I) = "-r" then
+                     Recursive := True;
+                  elsif Arg (I) = "--root" then
+                     Root_Diff := True;
+                  elsif Arg (I)'Length > 0 and then Arg (I) (Arg (I)'First) = '-'
+                  then
+                     Usage_Error ("unknown diff-tree option: " & Arg (I),
+                                  Usage);
+                     Bad := True;
+                     exit;
+                  elsif A1 = 0 then
+                     A1 := I;
+                  elsif A2 = 0 then
+                     A2 := I;
+                  else
+                     Usage_Error ("too many diff-tree arguments", Usage);
+                     Bad := True;
+                     exit;
+                  end if;
+               end loop;
+
+               if not Bad then
+                  if A1 = 0 then
+                     Usage_Error ("diff-tree requires a tree or commit", Usage);
+                  elsif A2 /= 0 then
+                     declare
+                        Repo : constant Version.Repository.Repository_Handle :=
+                          Version.Repository.Open;
+                        T1 : constant Version.Objects.Hex_Object_Id :=
+                          Version.Revisions.Resolve_Tree (Repo, Arg (A1));
+                        T2 : constant Version.Objects.Hex_Object_Id :=
+                          Version.Revisions.Resolve_Tree (Repo, Arg (A2));
+                     begin
+                        Version.Console.Put
+                          (Version.Diff.Raw_Diff_Trees
+                             (Repo, T1, True, T2, Recursive));
+                     end;
+                  else
+                     declare
+                        Repo : constant Version.Repository.Repository_Handle :=
+                          Version.Repository.Open;
+                        C : constant Version.Objects.Hex_Object_Id :=
+                          Version.Revisions.Resolve_Commit (Repo, Arg (A1));
+                        Obj : constant Version.Objects.Git_Object :=
+                          Version.Objects.Read_Object (Repo, C);
+                        Tree : constant Version.Objects.Hex_Object_Id :=
+                          Version.Objects.Commit_Tree_Id (Obj);
+                        Parents : constant Version.Objects.Object_Id_Vectors
+                                    .Vector :=
+                          Version.Objects.Commit_Parent_Ids (Obj);
+                     begin
+                        --  git prints the commit line only when it emits a
+                        --  diff: for a root commit without --root, nothing.
+                        if not Parents.Is_Empty then
+                           declare
+                              P_Obj : constant Version.Objects.Git_Object :=
+                                Version.Objects.Read_Object
+                                  (Repo, Parents.First_Element);
+                              P_Tree : constant Version.Objects.Hex_Object_Id :=
+                                Version.Objects.Commit_Tree_Id (P_Obj);
+                           begin
+                              Success_Line (To_String (C));
+                              Version.Console.Put
+                                (Version.Diff.Raw_Diff_Trees
+                                   (Repo, P_Tree, True, Tree, Recursive));
+                           end;
+                        elsif Root_Diff then
+                           Success_Line (To_String (C));
+                           Version.Console.Put
+                             (Version.Diff.Raw_Diff_Trees
+                                (Repo, Tree, False, Tree, Recursive));
+                        end if;
+                     end;
+                  end if;
+               end if;
+            end;
+
+         elsif Command = "diff-index" then
+            declare
+               Usage : constant String :=
+                 "version diff-index [--cached] <tree-ish>";
+               Cached : Boolean := False;
+               Tree_Idx : Natural := 0;
+               Bad : Boolean := False;
+            begin
+               for I in 2 .. Count loop
+                  if Arg (I) = "--cached" then
+                     Cached := True;
+                  elsif Arg (I) = "-p" or else Arg (I) = "--patch" then
+                     null;  --  raw output is the default; ignore patch request
+                  elsif Arg (I)'Length > 0 and then Arg (I) (Arg (I)'First) = '-'
+                  then
+                     Usage_Error ("unknown diff-index option: " & Arg (I),
+                                  Usage);
+                     Bad := True;
+                     exit;
+                  elsif Tree_Idx = 0 then
+                     Tree_Idx := I;
+                  else
+                     Usage_Error ("too many diff-index arguments", Usage);
+                     Bad := True;
+                     exit;
+                  end if;
+               end loop;
+
+               if not Bad then
+                  if Tree_Idx = 0 then
+                     Usage_Error ("diff-index requires a tree-ish", Usage);
+                  else
+                     declare
+                        Repo : constant Version.Repository.Repository_Handle :=
+                          Version.Repository.Open;
+                        Tree : constant Version.Objects.Hex_Object_Id :=
+                          Version.Revisions.Resolve_Tree (Repo, Arg (Tree_Idx));
+                     begin
+                        Version.Console.Put
+                          (Version.Diff.Raw_Diff_Index (Repo, Tree, Cached));
+                     end;
+                  end if;
+               end if;
+            end;
+
+         elsif Command = "diff-files" then
+            declare
+               Usage : constant String := "version diff-files";
+               Bad : Boolean := False;
+            begin
+               for I in 2 .. Count loop
+                  if Arg (I) = "--" then
+                     exit;
+                  elsif Arg (I)'Length > 0 and then Arg (I) (Arg (I)'First) = '-'
+                    and then Arg (I) /= "-p" and then Arg (I) /= "--patch"
+                  then
+                     Usage_Error ("unknown diff-files option: " & Arg (I),
+                                  Usage);
+                     Bad := True;
+                     exit;
+                  end if;
+               end loop;
+
+               if not Bad then
+                  declare
+                     Repo : constant Version.Repository.Repository_Handle :=
+                       Version.Repository.Open;
+                  begin
+                     Version.Console.Put
+                       (Version.Diff.Raw_Diff_Files (Repo));
+                  end;
+               end if;
+            end;
+
+         elsif Command = "replace" then
+            declare
+               Usage : constant String :=
+                 "version replace [-f] <object> <replacement>"
+                 & " | version replace -d <object>..."
+                 & " | version replace [-l] [--format=short|medium|long]"
+                 & " [<pattern>]";
+               Force   : Boolean := False;
+               Delete  : Boolean := False;
+               List    : Boolean := False;
+               Format  : Unbounded_String := To_Unbounded_String ("short");
+               Fmt_Pre : constant String := "--format=";
+               Ops     : Version.Trailers.String_Vectors.Vector;
+               Bad     : Boolean := False;
+
+               function Type_Name (Id : Version.Objects.Hex_Object_Id)
+                 return String
+               is
+                  Obj : constant Version.Objects.Git_Object :=
+                    Version.Objects.Read_Object (Repo => Version.Repository.Open,
+                                                 Id => Id);
+               begin
+                  return (case Version.Objects.Kind (Obj) is
+                            when Blob_Object => "blob",
+                            when Tree_Object => "tree",
+                            when Commit_Object => "commit",
+                            when Tag_Object => "tag",
+                            when others => "unknown");
+               end Type_Name;
+            begin
+               for I in 2 .. Count loop
+                  if Arg (I) = "-f" or else Arg (I) = "--force" then
+                     Force := True;
+                  elsif Arg (I) = "-d" or else Arg (I) = "--delete" then
+                     Delete := True;
+                  elsif Arg (I) = "-l" or else Arg (I) = "--list" then
+                     List := True;
+                  elsif Arg (I)'Length > Fmt_Pre'Length
+                    and then Arg (I) (Arg (I)'First ..
+                                        Arg (I)'First + Fmt_Pre'Length - 1)
+                             = Fmt_Pre
+                  then
+                     Format :=
+                       To_Unbounded_String
+                         (Arg (I) (Arg (I)'First + Fmt_Pre'Length ..
+                                     Arg (I)'Last));
+                     List := True;
+                  elsif Arg (I)'Length > 0 and then Arg (I) (Arg (I)'First) = '-'
+                  then
+                     Usage_Error ("unknown replace option: " & Arg (I), Usage);
+                     Bad := True;
+                     exit;
+                  else
+                     Ops.Append (Arg (I));
+                  end if;
+               end loop;
+
+               if not Bad then
+                  declare
+                     Repo : constant Version.Repository.Repository_Handle :=
+                       Version.Repository.Open;
+
+                     function Full (Rev : String)
+                       return Version.Objects.Hex_Object_Id
+                     is (Version.Revisions.Resolve (Repo, Rev));
+                  begin
+                     if Delete then
+                        for Op of Ops loop
+                           declare
+                              Oid : constant String := To_String (Full (Op));
+                              Ref : constant String := "refs/replace/" & Oid;
+                           begin
+                              if Version.Refs.Ref_Exists (Repo, Ref) then
+                                 declare
+                                    Tx : Version.Ref_Transaction.Transaction;
+                                 begin
+                                    Version.Ref_Transaction.Start (Tx, Repo);
+                                    Version.Ref_Transaction.Add_Delete
+                                      (Tx, Ref, "");
+                                    Version.Ref_Transaction.Commit (Tx);
+                                 end;
+                                 Success_Line
+                                   ("Deleted replace ref '" & Oid & "'");
+                              else
+                                 Error_Line
+                                   ("replace ref '" & Oid & "' not found");
+                                 Set_Command_Failure;
+                              end if;
+                           end;
+                        end loop;
+                     elsif not List and then Natural (Ops.Length) = 2 then
+                        declare
+                           Obj : constant String := To_String (Full (Ops (1)));
+                           Rep : constant Version.Objects.Hex_Object_Id :=
+                             Full (Ops (2));
+                           Ref : constant String := "refs/replace/" & Obj;
+                        begin
+                           if Version.Refs.Ref_Exists (Repo, Ref)
+                             and then not Force
+                           then
+                              Error_Line
+                                ("replace ref '" & Obj & "' already exists");
+                              Set_Command_Failure;
+                           else
+                              declare
+                                 Tx : Version.Ref_Transaction.Transaction;
+                              begin
+                                 Version.Ref_Transaction.Start (Tx, Repo);
+                                 Version.Ref_Transaction.Add_Update
+                                   (Tx, Ref, Rep, "");
+                                 Version.Ref_Transaction.Commit (Tx);
+                              end;
+                           end if;
+                        end;
+                     elsif not List and then not Ops.Is_Empty then
+                        Usage_Error
+                          ("replace requires <object> <replacement>", Usage);
+                     else
+                        --  List replace refs (optionally filtered), formatted.
+                        declare
+                           Patterns : Version.Ref_Format.String_Vectors.Vector;
+                           F : constant String := To_String (Format);
+                        begin
+                           Patterns.Append
+                             ("refs/replace/"
+                              & (if Ops.Is_Empty then "" else Ops (1)));
+                           for Line of Version.Ref_Format.For_Each_Ref
+                             (Repo, Patterns, Format => "%(refname)")
+                           loop
+                              declare
+                                 Ref : constant String := Line;
+                                 Oid : constant String :=
+                                   Ref (Ref'First + 13 .. Ref'Last);
+                              begin
+                                 if F = "short" then
+                                    Success_Line (Oid);
+                                 else
+                                    declare
+                                       Rep : constant String :=
+                                         To_String
+                                           (Version.Refs.Resolve_Ref
+                                              (Repo, Ref));
+                                    begin
+                                       if F = "long" then
+                                          Success_Line
+                                            (Oid & " ("
+                                             & Type_Name
+                                                 (Version.Objects.To_Object_Id
+                                                    (Oid))
+                                             & ") -> " & Rep & " ("
+                                             & Type_Name
+                                                 (Version.Objects.To_Object_Id
+                                                    (Rep))
+                                             & ")");
+                                       else
+                                          Success_Line (Oid & " -> " & Rep);
+                                       end if;
+                                    end;
+                                 end if;
+                              end;
+                           end loop;
+                        end;
+                     end if;
+                  end;
+               end if;
+            end;
+
+         elsif Command = "bisect" then
+            Run_Bisect_Command;
+
+         elsif Command = "subtree" then
+            Run_Subtree_Command;
+
+         elsif Command = "commit-graph" then
+            Run_Commit_Graph_Command;
+
+         elsif Command = "http-fetch" then
+            Run_Http_Fetch_Command;
+
+         elsif Command = "multi-pack-index" then
+            Run_Multi_Pack_Index_Command;
+
+         elsif Command = "repo" then
+            Run_Repo_Command;
+
+         elsif Command = "backfill" then
+            Run_Backfill_Command;
+
+         elsif Command = "filter-branch" then
+            Run_Filter_Branch_Command;
+
+         elsif Command = "last-modified" then
+            Run_Last_Modified_Command;
+
+         elsif Command = "refs" then
+            Run_Refs_Command;
+
+         elsif Command = "diff-pairs" then
+            Run_Diff_Pairs_Command;
+
+         elsif Command = "fetch-pack" then
+            Run_Fetch_Pack_Command;
+
+         elsif Command = "send-pack" then
+            Run_Send_Pack_Command;
+
+         elsif Command = "fast-export" then
+            Run_Fast_Export_Command;
+
+         elsif Command = "fast-import" then
+            Run_Fast_Import_Command;
+
+         elsif Command = "mailsplit" then
+            Run_Mailsplit_Command;
+
+         elsif Command = "mailinfo" then
+            Run_Mailinfo_Command;
+
+         elsif Command = "index-pack" then
+            Run_Index_Pack_Command;
+
+         elsif Command = "unpack-objects" then
+            Run_Unpack_Objects_Command;
+
+         elsif Command = "pack-objects" then
+            Run_Pack_Objects_Command;
+
+         elsif Command = "merge-tree" then
+            Run_Merge_Tree_Command;
+
+         elsif Command = "merge-ours" then
+            Run_Merge_Backend (Backend_Ours);
+
+         elsif Command = "merge-recursive" then
+            Run_Merge_Backend (Backend_Recursive);
+
+         elsif Command = "merge-recursive-ours" then
+            Run_Merge_Backend (Backend_Recursive_Ours);
+
+         elsif Command = "merge-recursive-theirs" then
+            Run_Merge_Backend (Backend_Recursive_Theirs);
+
+         elsif Command = "merge-subtree" then
+            Run_Merge_Backend (Backend_Subtree);
+
+         elsif Command = "merge-resolve" then
+            Run_Merge_Backend (Backend_Resolve);
+
+         elsif Command = "merge-octopus" then
+            Run_Merge_Backend (Backend_Octopus);
+
+         elsif Command = "merge-one-file" then
+            Run_Merge_One_File_Command;
+
+         elsif Command = "merge-index" then
+            Run_Merge_Index_Command;
+
+         elsif Command = "show-index" then
+            Run_Show_Index_Command;
+
+         elsif Command = "unpack-file" then
+            Run_Unpack_File_Command;
+
+         elsif Command = "prune-packed" then
+            Run_Prune_Packed_Command;
+
+         elsif Command = "ls-remote" then
+            Run_Ls_Remote_Command;
+
+         elsif Command = "check-attr" then
+            Run_Check_Attr_Command;
+
+         elsif Command = "check-mailmap" then
+            Run_Check_Mailmap_Command;
+
+         elsif Command = "for-each-repo" then
+            Run_For_Each_Repo_Command;
+
+         elsif Command = "show-branch" then
+            declare
+               List_Only : Boolean := False;
+               Branches  : Version.Show_Branch.Name_Vectors.Vector;
+               Bad       : Boolean := False;
+            begin
+               for I in 2 .. Count loop
+                  if Arg (I) = "--list" or else Arg (I) = "-l" then
+                     List_Only := True;
+                  elsif Arg (I)'Length > 0 and then Arg (I) (Arg (I)'First) = '-'
+                  then
+                     Usage_Error
+                       ("unknown show-branch option: " & Arg (I),
+                        "version show-branch [--list] [<branch>...]");
+                     Bad := True;
+                     exit;
+                  else
+                     Branches.Append (Arg (I));
+                  end if;
+               end loop;
+
+               if not Bad then
+                  declare
+                     Repo : constant Version.Repository.Repository_Handle :=
+                       Version.Repository.Open;
+                  begin
+                     --  No branch operands: every local branch, alphabetically.
+                     if Branches.Is_Empty then
+                        declare
+                           All_Branches :
+                             Version.Refs.Branch_Name_Vectors.Vector :=
+                               Version.Refs.List_Branches (Repo);
+                        begin
+                           Sort_Branches (All_Branches);
+                           for B of All_Branches loop
+                              Branches.Append (To_String (B));
+                           end loop;
+                        end;
+                     end if;
+
+                     if Branches.Is_Empty then
+                        Error_Line ("no revs to be shown.");
+                        Set_Command_Failure;
+                     else
+                        Version.Console.Put
+                          (Version.Show_Branch.Format
+                             (Repo, Branches, List_Only));
+                     end if;
+                  end;
+               end if;
+            end;
+
+         elsif Command = "merge-file" then
+            declare
+               Usage : constant String :=
+                 "version merge-file [-p] [-q] [--diff3|--zdiff3]"
+                 & " [--ours|--theirs|--union] [-L <label>]..."
+                 & " [--diff-algorithm=<algo>]"
+                 & " [--marker-size=<n>] <current> <base> <other>";
+               MS_Pre    : constant String := "--marker-size=";
+               DA_Pre    : constant String := "--diff-algorithm=";
+               To_Stdout : Boolean := False;
+               Opts      : Version.Merge.Merge_File_Options;
+               Labels    : Version.Trailers.String_Vectors.Vector;
+               Files     : Version.Trailers.String_Vectors.Vector;
+               Bad       : Boolean := False;
+               I         : Positive := 2;
+            begin
+               while I <= Count and then not Bad loop
+                  declare
+                     A : constant String := Arg (I);
+                  begin
+                     if A = "-p" or else A = "--stdout" then
+                        To_Stdout := True;
+                     elsif A = "-q" or else A = "--quiet" then
+                        null;  --  suppress warnings (version emits none)
+                     elsif A = "--diff3" then
+                        Opts.Style := Version.Merge.Conflict_Style_Diff3;
+                     elsif A = "--zdiff3" then
+                        Opts.Style := Version.Merge.Conflict_Style_ZDiff3;
+                     elsif A = "--ours" then
+                        Opts.Favor := Version.Merge.Favor_File_Ours;
+                     elsif A = "--theirs" then
+                        Opts.Favor := Version.Merge.Favor_File_Theirs;
+                     elsif A = "--union" then
+                        Opts.Favor := Version.Merge.Favor_Union;
+                     elsif A = "-L" and then I < Count then
+                        Labels.Append (Arg (I + 1));
+                        I := I + 1;
+                     elsif A'Length > MS_Pre'Length
+                       and then A (A'First .. A'First + MS_Pre'Length - 1)
+                                = MS_Pre
+                     then
+                        begin
+                           Opts.Marker_Size :=
+                             Positive'Value
+                               (A (A'First + MS_Pre'Length .. A'Last));
+                        exception
+                           when others =>
+                              Usage_Error ("invalid marker size", Usage);
+                              Bad := True;
+                        end;
+                     elsif A'Length > DA_Pre'Length
+                       and then A (A'First .. A'First + DA_Pre'Length - 1)
+                                = DA_Pre
+                     then
+                        declare
+                           Algo : constant String :=
+                             A (A'First + DA_Pre'Length .. A'Last);
+                        begin
+                           if Algo = "myers" or else Algo = "default" then
+                              Opts.Algorithm :=
+                                Version.Merge.Diff_Algorithm_Myers;
+                           elsif Algo = "minimal" then
+                              Opts.Algorithm :=
+                                Version.Merge.Diff_Algorithm_Minimal;
+                           elsif Algo = "patience" then
+                              Opts.Algorithm :=
+                                Version.Merge.Diff_Algorithm_Patience;
+                           elsif Algo = "histogram" then
+                              Opts.Algorithm :=
+                                Version.Merge.Diff_Algorithm_Histogram;
+                           else
+                              Usage_Error
+                                ("unknown diff algorithm: " & Algo, Usage);
+                              Bad := True;
+                           end if;
+                        end;
+                     elsif A'Length > 1 and then A (A'First) = '-' then
+                        Usage_Error ("unknown merge-file option: " & A, Usage);
+                        Bad := True;
+                     else
+                        Files.Append (A);
+                     end if;
+                     I := I + 1;
+                  end;
+               end loop;
+
+               if not Bad then
+                  if Natural (Files.Length) /= 3 then
+                     Usage_Error
+                       ("merge-file requires <current> <base> <other>", Usage);
+                  else
+                     declare
+                        Cur_P : constant String := Files (Files.First_Index);
+                        Bas_P : constant String := Files (Files.First_Index + 1);
+                        Oth_P : constant String := Files (Files.First_Index + 2);
+                        function Lbl (N : Natural; Default : String)
+                          return Unbounded_String
+                        is (if Natural (Labels.Length) >= N
+                            then To_Unbounded_String
+                                   (Labels (Labels.First_Index + N - 1))
+                            else To_Unbounded_String (Default));
+                        Merged    : Unbounded_String;
+                        Conflicts : Natural;
+                     begin
+                        Opts.Ours_Label   := Lbl (1, Cur_P);
+                        Opts.Base_Label   := Lbl (2, Bas_P);
+                        Opts.Theirs_Label := Lbl (3, Oth_P);
+                        Version.Merge.Merge_File
+                          (Ours_Text   => Version.Files.Read_Binary_File (Cur_P),
+                           Base_Text   => Version.Files.Read_Binary_File (Bas_P),
+                           Theirs_Text => Version.Files.Read_Binary_File (Oth_P),
+                           Options     => Opts,
+                           Merged      => Merged,
+                           Conflicts   => Conflicts);
+                        if To_Stdout then
+                           Version.Console.Put (To_String (Merged));
+                        else
+                           Version.Files.Write_Binary_File
+                             (Cur_P, To_String (Merged));
+                        end if;
+                        if Conflicts > 0 then
+                           Ada.Command_Line.Set_Exit_Status
+                             (Ada.Command_Line.Exit_Status
+                                (Integer'Min (Conflicts, 127)));
+                        end if;
+                     end;
+                  end if;
+               end if;
+            end;
+
+         elsif Command = "difftool" or else Command = "mergetool" then
+            declare
+               Is_Merge : constant Boolean := Command = "mergetool";
+               Usage : constant String :=
+                 (if Is_Merge
+                  then "version mergetool [--tool=<tool>] [-y|--no-prompt]"
+                  else "version difftool [--tool=<tool>] [-y|--no-prompt]"
+                       & " [--cached|--staged]");
+               Repo : constant Version.Repository.Repository_Handle :=
+                 Version.Repository.Open;
+               Tool   : Unbounded_String;
+               Cached : Boolean := False;
+               Bad    : Boolean := False;
+
+               function Has_Pfx (L, P : String) return Boolean is
+                 (L'Length >= P'Length
+                  and then L (L'First .. L'First + P'Length - 1) = P);
+
+               function Drop_Pfx (L, P : String) return String is
+                 (L (L'First + P'Length .. L'Last));
+
+               --  The blob at Path in HEAD, or "" when absent.
+               function Head_Blob (Path : String) return String is
+                  Items : constant Version.Objects.Tree_Entry_Vectors.Vector :=
+                    Version.Objects.Flatten_Tree
+                      (Repo,
+                       Version.Revisions.Resolve_Tree (Repo, "HEAD"));
+               begin
+                  for E of Items loop
+                     if To_String (E.Path) = Path then
+                        return Version.Objects.Content
+                          (Version.Objects.Read_Object (Repo, E.Id));
+                     end if;
+                  end loop;
+                  return "";
+               exception
+                  when others =>
+                     return "";
+               end Head_Blob;
+
+               function Cfg (Key : String) return String is
+                 (if Version.Config.Has_Key (Repo, Key)
+                  then Version.Config.Get_Value (Repo, Key) else "");
+
+               --  Write Content to a scratch file and return its path.
+               function Scratch (Name, Content : String) return String is
+                  Dir : constant String :=
+                    Version.Files.Join
+                      (Version.Repository.Git_Dir (Repo), "version-tool");
+                  Full : constant String := Version.Files.Join (Dir, Name);
+               begin
+                  Version.Files.Create_Directory_If_Missing (Dir);
+                  Version.Files.Write_Binary_File_Atomic (Full, Content);
+                  return Full;
+               end Scratch;
+
+               --  Run the configured tool with git's variables in the
+               --  environment: $LOCAL / $REMOTE / $BASE / $MERGED.
+               function Invoke
+                 (Cmd, Local, Remote, Base, Merged : String) return Integer
+               is
+                  Args   : GNAT.OS_Lib.Argument_List (1 .. 2);
+                  Status : Integer;
+               begin
+                  Ada.Environment_Variables.Set ("LOCAL", Local);
+                  Ada.Environment_Variables.Set ("REMOTE", Remote);
+                  Ada.Environment_Variables.Set ("BASE", Base);
+                  Ada.Environment_Variables.Set ("MERGED", Merged);
+                  Args (1) := new String'("-c");
+                  Args (2) := new String'(Cmd);
+                  Status :=
+                    GNAT.OS_Lib.Spawn (Program_Name => "/bin/sh", Args => Args);
+                  GNAT.OS_Lib.Free (Args (1));
+                  GNAT.OS_Lib.Free (Args (2));
+                  return Status;
+               end Invoke;
+            begin
+               for I in 2 .. Count loop
+                  if Has_Pfx (Arg (I), "--tool=") then
+                     Tool := To_Unbounded_String
+                       (Drop_Pfx (Arg (I), "--tool="));
+                  elsif Arg (I) = "-y" or else Arg (I) = "--no-prompt"
+                    or else Arg (I) = "--prompt"
+                  then
+                     null;   --  version never prompts
+                  elsif not Is_Merge
+                    and then (Arg (I) = "--cached" or else Arg (I) = "--staged")
+                  then
+                     Cached := True;
+                  else
+                     Usage_Error
+                       ("unknown " & Command & " option: " & Arg (I), Usage);
+                     Bad := True;
+                     exit;
+                  end if;
+               end loop;
+
+               if not Bad then
+                  if Length (Tool) = 0 then
+                     Tool := To_Unbounded_String
+                       (Cfg (if Is_Merge then "merge.tool" else "diff.tool"));
+                  end if;
+
+                  if Length (Tool) = 0 then
+                     Error_Line
+                       ("no tool configured: set "
+                        & (if Is_Merge then "merge.tool" else "diff.tool")
+                        & " or pass --tool=<tool>");
+                     Set_Command_Failure;
+                  else
+                     declare
+                        T   : constant String := To_String (Tool);
+                        Cmd : constant String :=
+                          Cfg ((if Is_Merge then "mergetool." else "difftool.")
+                               & T & ".cmd");
+                     begin
+                        if Cmd'Length = 0 then
+                           Error_Line
+                             ("no command configured for tool: " & T);
+                           Set_Command_Failure;
+                        elsif Is_Merge then
+                           --  One invocation per conflicted path; a tool that
+                           --  exits 0 means "resolved", so stage the result.
+                           declare
+                              St : constant Version.Status.Status_Result :=
+                                Version.Status.Current_Status;
+                              Root : constant String :=
+                                Version.Repository.Root_Path (Repo);
+                           begin
+                              for C of St.Conflicted loop
+                                 declare
+                                    Path : constant String :=
+                                      To_String (C.Path);
+                                    Full : constant String :=
+                                      Version.Files.Join (Root, Path);
+                                    Entries : constant
+                                      Version.Staging.Index_Entry_Vectors.Vector
+                                        := Version.Staging.Load (Repo);
+                                    function Stage_Blob
+                                      (N : Natural) return String is
+                                    begin
+                                       for E of Entries loop
+                                          if To_String (E.Path) = Path
+                                            and then E.Stage = N
+                                          then
+                                             return Version.Objects.Content
+                                               (Version.Objects.Read_Object
+                                                  (Repo, E.Id));
+                                          end if;
+                                       end loop;
+                                       return "";
+                                    end Stage_Blob;
+
+                                    Base_F : constant String :=
+                                      Scratch ("BASE", Stage_Blob (1));
+                                    Local_F : constant String :=
+                                      Scratch ("LOCAL", Stage_Blob (2));
+                                    Remote_F : constant String :=
+                                      Scratch ("REMOTE", Stage_Blob (3));
+                                    Status : Integer;
+
+                                    function Side (N : Natural) return String is
+                                    begin
+                                       for E of Entries loop
+                                          if To_String (E.Path) = Path
+                                            and then E.Stage = N
+                                          then
+                                             return "modified file";
+                                          end if;
+                                       end loop;
+                                       return "deleted file";
+                                    end Side;
+                                 begin
+                                    Success_Line ("Merging:");
+                                    Success_Line (Path);
+                                    Success_Line ("");
+                                    Success_Line
+                                      ("Normal merge conflict for '"
+                                       & Path & "':");
+                                    Success_Line
+                                      ("  {local}: " & Side (2));
+                                    Success_Line
+                                      ("  {remote}: " & Side (3));
+
+                                    --  git keeps the conflicted file as
+                                    --  <path>.orig (mergetool.keepBackup).
+                                    Version.Files.Write_Binary_File_Atomic
+                                      (Path    => Full & ".orig",
+                                       Content =>
+                                         Version.Files.Read_Binary_File (Full));
+
+                                    Status :=
+                                      Invoke (Cmd, Local_F, Remote_F,
+                                              Base_F, Full);
+                                    if Status = 0 then
+                                       Version.Stage.Stage_Path (Path);
+                                    else
+                                       Error_Line
+                                         ("merge of " & Path & " failed");
+                                       Set_Command_Failure;
+                                    end if;
+                                 end;
+                              end loop;
+                           end;
+                        else
+                           --  One invocation per changed path.
+                           declare
+                              St : constant Version.Status.Status_Result :=
+                                Version.Status.Current_Status;
+                              Root : constant String :=
+                                Version.Repository.Root_Path (Repo);
+                              List : constant
+                                Version.Status.File_Change_Vectors.Vector :=
+                                  (if Cached then St.Staged else St.Changes);
+                           begin
+                              for C of List loop
+                                 declare
+                                    Path : constant String :=
+                                      To_String (C.Path);
+                                    Full : constant String :=
+                                      Version.Files.Join (Root, Path);
+                                    Old  : constant String := Head_Blob (Path);
+                                    Local_F : constant String :=
+                                      Scratch ("LOCAL", Old);
+                                    Status : Integer;
+                                    pragma Unreferenced (Status);
+                                 begin
+                                    Status :=
+                                      Invoke (Cmd, Local_F, Full, Local_F,
+                                              Full);
+                                 end;
+                              end loop;
+                           end;
+                        end if;
+                     end;
+                  end if;
+               end if;
+            end;
+
+         elsif Command = "rerere" then
+            declare
+               Usage : constant String :=
+                 "version rerere [clear|forget <pathspec>|diff|remaining"
+                 & "|status|gc]";
+               Sub : constant String := (if Count >= 2 then Arg (2) else "");
+               Repo : constant Version.Repository.Repository_Handle :=
+                 Version.Repository.Open;
+               Common : constant String :=
+                 Version.Repository.Common_Git_Dir (Repo);
+               MR_Path : constant String :=
+                 Version.Files.Join (Common, "MERGE_RR");
+               RR_Dir  : constant String :=
+                 Version.Files.Join (Common, "rr-cache");
+
+               --  Parse MERGE_RR ("<key>\t<path>\0" entries) into parallel
+               --  key/path lists.
+               Keys  : Version.Trailers.String_Vectors.Vector;
+               Paths : Version.Trailers.String_Vectors.Vector;
+
+               procedure Load_Merge_RR is
+                  Text : constant String :=
+                    (if Ada.Directories.Exists (MR_Path)
+                     then Version.Files.Read_Binary_File (MR_Path) else "");
+                  I : Natural := Text'First;
+               begin
+                  while I <= Text'Last loop
+                     declare
+                        E : Natural := I;
+                        Tab : Natural := 0;
+                     begin
+                        while E <= Text'Last
+                          and then Text (E) /= Character'Val (0)
+                        loop
+                           if Text (E) = Character'Val (9) and then Tab = 0 then
+                              Tab := E;
+                           end if;
+                           E := E + 1;
+                        end loop;
+                        if Tab /= 0 then
+                           Keys.Append (Text (I .. Tab - 1));
+                           Paths.Append (Text (Tab + 1 .. E - 1));
+                        end if;
+                        I := E + 1;
+                     end;
+                  end loop;
+               end Load_Merge_RR;
+
+               function Preimage (Key : String) return String is
+                 (Version.Files.Join
+                    (Version.Files.Join (RR_Dir, Key), "preimage"));
+               function Postimage (Key : String) return String is
+                 (Version.Files.Join
+                    (Version.Files.Join (RR_Dir, Key), "postimage"));
+               function Work_Has_Markers (Path : String) return Boolean is
+                  Full : constant String :=
+                    Version.Files.Join
+                      (Version.Repository.Root_Path (Repo), Path);
+               begin
+                  return Ada.Directories.Exists (Full)
+                    and then Ada.Strings.Fixed.Index
+                               (Version.Files.Read_Binary_File (Full),
+                                "<<<<<<<") /= 0;
+               end Work_Has_Markers;
+            begin
+               Load_Merge_RR;
+               if Sub = "" or else Sub = "status" then
+                  for I in Keys.First_Index .. Keys.Last_Index loop
+                     if Ada.Directories.Exists (Preimage (Keys (I))) then
+                        Success_Line (Paths (I));
+                     end if;
+                  end loop;
+               elsif Sub = "remaining" then
+                  for I in Keys.First_Index .. Keys.Last_Index loop
+                     if not Ada.Directories.Exists (Postimage (Keys (I)))
+                       and then Work_Has_Markers (Paths (I))
+                     then
+                        Success_Line (Paths (I));
+                     end if;
+                  end loop;
+               elsif Sub = "clear" then
+                  --  Drop the preimages of still-unresolved entries and the map.
+                  for I in Keys.First_Index .. Keys.Last_Index loop
+                     if not Ada.Directories.Exists (Postimage (Keys (I))) then
+                        Version.Files.Delete_File_If_Exists (Preimage (Keys (I)));
+                     end if;
+                  end loop;
+                  Version.Files.Delete_File_If_Exists (MR_Path);
+               elsif Sub = "forget" then
+                  if Count < 3 then
+                     Usage_Error ("rerere forget requires a pathspec", Usage);
+                  else
+                     for J in 3 .. Count loop
+                        for I in Keys.First_Index .. Keys.Last_Index loop
+                           if Paths (I) = Arg (J) then
+                              Version.Files.Delete_File_If_Exists
+                                (Postimage (Keys (I)));
+                           end if;
+                        end loop;
+                     end loop;
+                  end if;
+               elsif Sub = "diff" then
+                  --  git diffs the recorded (normalized) preimage against the
+                  --  file as it stands now, so you can see how far the
+                  --  resolution has got.
+                  for I in Keys.First_Index .. Keys.Last_Index loop
+                     declare
+                        Pre  : constant String := Preimage (Keys (I));
+                        Work : constant String :=
+                          Version.Files.Join
+                            (Version.Repository.Root_Path (Repo), Paths (I));
+                     begin
+                        if Ada.Directories.Exists (Pre)
+                          and then Ada.Directories.Exists (Work)
+                        then
+                           Version.Console.Put
+                             (Version.Diff.Unified_Text_Diff
+                                (Path     => Paths (I),
+                                 Old_Text =>
+                                   Version.Files.Read_Binary_File (Pre),
+                                 New_Text =>
+                                   Version.Files.Read_Binary_File (Work)));
+                        end if;
+                     end;
+                  end loop;
+               elsif Sub = "gc" then
+                  null;  --  pruning is a no-op maintenance step (no output)
+               else
+                  Usage_Error ("unknown rerere subcommand: " & Sub, Usage);
                end if;
             end;
 

@@ -477,7 +477,7 @@ package body Version.CLI.Tests is
       Assert_Contains
         (Text, "version push [--no-verify] [--force] REMOTE BRANCH", "man page push no-verify reference");
       Assert_Contains
-        (Text, "version fetch [--depth N] REMOTE", "man page fetch depth reference");
+        (Text, "version fetch [--depth N|--deepen N|--unshallow] REMOTE [REF]", "man page fetch depth reference");
       Assert_Contains
         (Text, "version clone [--depth N] SOURCE TARGET", "man page clone depth reference");
       Assert_Contains
@@ -516,7 +516,8 @@ package body Version.CLI.Tests is
          "top-level completion commands");
       Assert_Contains
         (Text,
-         "revert stash sparse worktree submodule archive tag remote fetch",
+         "revert stash sparse sparse-checkout worktree submodule archive "
+         & "tag remote fetch",
          "top-level completion commands");
       Assert_Contains
         (Text,
@@ -827,29 +828,34 @@ package body Version.CLI.Tests is
       Result.Staged.Append
         (Version.Status.File_Change'
            (Path => Ada.Strings.Unbounded.To_Unbounded_String ("src/main.adb"),
-            Kind => Version.Status.New_File));
+            Kind => Version.Status.New_File,
+            Old_Path => Ada.Strings.Unbounded.Null_Unbounded_String));
       Result.Changes.Append
         (Version.Status.File_Change'
            (Path => Ada.Strings.Unbounded.To_Unbounded_String ("src/lib.adb"),
-            Kind => Version.Status.Modified_File));
+            Kind => Version.Status.Modified_File,
+            Old_Path => Ada.Strings.Unbounded.Null_Unbounded_String));
       Result.Untracked.Append
         (Version.Status.File_Change'
            (Path => Ada.Strings.Unbounded.To_Unbounded_String ("notes.txt"),
-            Kind => Version.Status.New_File));
+            Kind => Version.Status.New_File,
+            Old_Path => Ada.Strings.Unbounded.Null_Unbounded_String));
       Result.Ignored.Append
         (Version.Status.File_Change'
            (Path => Ada.Strings.Unbounded.To_Unbounded_String ("obj/main.o"),
-            Kind => Version.Status.Ignored_File));
+            Kind => Version.Status.Ignored_File,
+            Old_Path => Ada.Strings.Unbounded.Null_Unbounded_String));
 
       Assert
         (Version.Status.Porcelain_Status_Text (Result)
-         = "S A src/main.adb"
+         = " M src/lib.adb"
            & Character'Val (10)
-           & "W M src/lib.adb"
+           & "A  src/main.adb"
            & Character'Val (10)
-           & "? A notes.txt"
+           & "?? notes.txt"
            & Character'Val (10),
-         "porcelain status subset must remain stable");
+         "porcelain status must match git's XY format (tracked sorted, then "
+         & "untracked)");
       Assert
         (Version.Status.Short_Status_Text (Result)
          = Version.Status.Porcelain_Status_Text (Result),
@@ -858,7 +864,7 @@ package body Version.CLI.Tests is
         (Version.Status.Porcelain_Status_Text
            (Result, Include_Ignored => True)
          = Version.Status.Porcelain_Status_Text (Result)
-           & "! ! obj/main.o" & Character'Val (10),
+           & "!! obj/main.o" & Character'Val (10),
          "porcelain status ignored entries must remain stable when requested");
       Assert_Contains
         (Version.CLI.Help.Command_Text ("status"),
@@ -974,12 +980,12 @@ package body Version.CLI.Tests is
          "worktree current help");
       Assert_Contains
         (Version.CLI.Help.Command_Text ("sparse"),
-         "  version sparse set PATH...",
+         "  version sparse-checkout set [--cone|--no-cone] DIR...",
          "sparse help");
       Assert_Contains
-        (Version.CLI.Help.Command_Text ("sparse"),
-         "  version sparse status",
-         "sparse status help");
+        (Version.CLI.Help.Command_Text ("sparse-checkout"),
+         "  version sparse-checkout status",
+         "sparse-checkout status help");
    end CLI_Remote_And_Advanced_Command_Help_Is_Frozen;
 
    procedure CLI_Remote_And_Feature_Failure_Output_Is_Frozen
@@ -1311,7 +1317,7 @@ package body Version.CLI.Tests is
               (Text, " stat-topic.txt",
                "merge.stat config prints changed path");
             Assert_Contains
-              (Text, " 1 files changed",
+              (Text, " 1 file changed",
                "merge.stat config prints changed count");
             Assert_Contains
               (Text, "Merge made by the 'ort' strategy.",
@@ -1738,10 +1744,8 @@ package body Version.CLI.Tests is
 
       Old_Dir : constant String := Ada.Directories.Current_Directory;
    begin
-      Check_Usage_Failure
-        ("branch",
-         "missing branch subcommand",
-         "branch missing subcommand");
+      --  Bare `branch` now lists branches (like git) rather than being a parse
+      --  error; that behaviour is byte-oracled in Plumbing_Matches_Git.
       Check_Usage_Failure
         ("branch frobnicate",
          "unknown branch subcommand: frobnicate",
@@ -1838,14 +1842,17 @@ package body Version.CLI.Tests is
       Status_Usage : constant String :=
         "version status [--porcelain|--short|--branch] [--ignored[=MODE]] [--] [PATHSPEC...]";
       Diff_Usage : constant String :=
-        "version diff [--staged|--cached] [--] [PATHSPEC...] | version diff REV1 REV2";
+        "version diff [--stat|--name-only|--name-status]"
+        & " [--staged|--cached] [--] [PATHSPEC...]"
+        & " | version diff [--stat|--name-only|--name-status] REV1 REV2";
       Check_Ignore_Usage : constant String :=
         "version check-ignore [-q|--quiet] [-v|--verbose] "
         & "[--stdin] [-z] [-n|--non-matching] "
         & "[--index|--no-index] [--] PATH...";
       Log_Usage : constant String :=
-        "version log [--oneline] [--show-signature] [REV]";
-      Show_Usage : constant String := "version show [REV]";
+        "version log [--oneline] [--stat] [--show-signature]"
+        & " [--format=<fmt>] [-<n>|-n <count>|--max-count=<n>] [REV]";
+      Show_Usage : constant String := "version show [--stat] [REV]";
       History_Usage : constant String := "version history";
 
       procedure Check_Usage_Failure
@@ -1900,8 +1907,8 @@ package body Version.CLI.Tests is
          "status second mode rejected");
 
       Check_Usage_Failure
-        ("diff --name-only",
-         "unknown diff option: --name-only",
+        ("diff --frobnicate",
+         "unknown diff option: --frobnicate",
          Diff_Usage,
          "diff unknown option");
       Check_Usage_Failure
@@ -1963,8 +1970,8 @@ package body Version.CLI.Tests is
          "log oneline unknown option");
 
       Check_Usage_Failure
-        ("show --stat",
-         "unknown show option: --stat",
+        ("show --name-only",
+         "unknown show option: --name-only",
          Show_Usage,
          "show unknown option");
       Check_Usage_Failure
@@ -2010,9 +2017,21 @@ package body Version.CLI.Tests is
          "literal file",
          "log oneline revision");
       Check_Success
+        ("log -1",
+         "literal file",
+         "log commit-count limit");
+      Check_Success
+        ("diff --stat -- --literal",
+         "--literal",
+         "diff --stat pathspec");
+      Check_Success
         ("show HEAD",
          "literal file",
          "show revision");
+      Check_Success
+        ("show --stat HEAD",
+         "literal file",
+         "show --stat revision");
 
       Ada.Directories.Set_Directory (Old_Dir);
    exception
@@ -2081,10 +2100,10 @@ package body Version.CLI.Tests is
          Output : constant String := Run_CLI (Root, "status --short --ignored");
       begin
          Assert_Contains
-           (Output, "! ! build/generated.txt",
+           (Output, "!! build/generated.txt",
             "short ignored status reports ignored directory content");
          Assert_Contains
-           (Output, "! ! ignored.log",
+           (Output, "!! ignored.log",
             "short ignored status reports ignored file");
       end;
 
@@ -2093,10 +2112,10 @@ package body Version.CLI.Tests is
            Run_CLI (Root, "status --porcelain --ignored=matching");
       begin
          Assert_Contains
-           (Output, "! ! build/",
+           (Output, "!! build/",
             "matching ignored porcelain status reports ignored directory");
          Assert_Contains
-           (Output, "! ! ignored.log",
+           (Output, "!! ignored.log",
             "matching ignored porcelain status reports ignored file");
          Assert
            (Ada.Strings.Fixed.Index (Output, "build/generated.txt") = 0,
@@ -2107,7 +2126,7 @@ package body Version.CLI.Tests is
          Output : constant String := Run_CLI (Root, "status --branch --ignored=no");
       begin
          Assert
-           (Ada.Strings.Fixed.Index (Output, "! ! ignored.log") = 0,
+           (Ada.Strings.Fixed.Index (Output, "!! ignored.log") = 0,
             "ignored=no branch status omits ignored porcelain entries");
          Assert
            (Ada.Strings.Fixed.Index (Output, "Ignored:") = 0,
@@ -2348,23 +2367,38 @@ package body Version.CLI.Tests is
       Check_Usage_Failure
         ("fetch --depth",
          "--depth requires a value",
-         "version fetch [--depth N] REMOTE",
+         "version fetch [--depth N|--deepen N|--unshallow] REMOTE [REF]",
          "fetch missing depth");
       Check_Usage_Failure
-        ("fetch --depth 1 origin extra",
+        ("fetch --depth 1 origin extra more",
          "too many fetch arguments",
-         "version fetch [--depth N] REMOTE",
+         "version fetch [--depth N|--deepen N|--unshallow] REMOTE [REF]",
          "fetch extra operand");
       Check_Usage_Failure
         ("fetch --depth 1 --depth 2 origin",
          "duplicate option: --depth",
-         "version fetch [--depth N] REMOTE",
+         "version fetch [--depth N|--deepen N|--unshallow] REMOTE [REF]",
          "fetch duplicate depth");
       Check_Usage_Failure
         ("fetch --prune origin",
          "unknown fetch option: --prune",
-         "version fetch [--depth N] REMOTE",
+         "version fetch [--depth N|--deepen N|--unshallow] REMOTE [REF]",
          "fetch unknown option");
+      Check_Usage_Failure
+        ("fetch --deepen",
+         "--deepen requires a value",
+         "version fetch [--depth N|--deepen N|--unshallow] REMOTE [REF]",
+         "fetch missing deepen value");
+      Check_Usage_Failure
+        ("fetch --depth 1 --deepen 2 origin",
+         "--depth, --deepen, and --unshallow are mutually exclusive",
+         "version fetch [--depth N|--deepen N|--unshallow] REMOTE [REF]",
+         "fetch depth+deepen mutually exclusive");
+      Check_Usage_Failure
+        ("fetch --unshallow --depth 1 origin",
+         "--depth, --deepen, and --unshallow are mutually exclusive",
+         "version fetch [--depth N|--deepen N|--unshallow] REMOTE [REF]",
+         "fetch unshallow+depth mutually exclusive");
 
       Check_Usage_Failure
         ("clone source",
@@ -2485,7 +2519,8 @@ package body Version.CLI.Tests is
       Root : constant String :=
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Usage : constant String :=
-        "version save [--amend] [--no-verify] [-m] MESSAGE";
+        "version save [--amend] [--no-verify] [-S[<keyid>]]"
+        & " [--no-gpg-sign] [-m] MESSAGE";
 
       procedure Check_Usage_Failure
         (Command : String; Detail : String; Context : String)
@@ -2563,6 +2598,15 @@ package body Version.CLI.Tests is
       Check_Success
         ("save --no-verify --amend -m amended-order",
          "save amend mixed order");
+
+      --  --no-gpg-sign is accepted (and produces an unsigned commit) without a
+      --  configured key or gpg; -S/--gpg-sign are parsed as signing options
+      --  rather than rejected as unknown.
+      Write_File (Root, "a.txt", "three" & Character'Val (10));
+      Version.Git_Fixtures.Run (Root, "git add a.txt");
+      Check_Success
+        ("save --no-gpg-sign -m unsigned-explicit",
+         "save no-gpg-sign");
       Ada.Directories.Set_Directory (Old_Dir);
    exception
       when others =>
@@ -3599,32 +3643,29 @@ package body Version.CLI.Tests is
       Check_Usage_Failure
         ("sparse init extra",
          "too many sparse init arguments",
-         "version sparse init",
+         "version sparse init [--cone|--no-cone]",
          "sparse init extra operand");
+      --  A raw ("--no-cone") set still requires at least one pattern; cone
+      --  set with no directories is valid (top level only), matching git.
       Check_Usage_Failure
-        ("sparse set",
+        ("sparse set --no-cone",
          "missing sparse pathspec",
-         "version sparse set PATHSPEC...",
-         "sparse set missing pathspec");
+         "version sparse set [--cone|--no-cone] DIR...",
+         "sparse set --no-cone missing pathspec");
       Check_Usage_Failure
-        ("sparse set --",
-         "missing sparse pathspec",
-         "version sparse set PATHSPEC...",
-         "sparse set separator only");
-      Check_Usage_Failure
-        ("sparse set --cone src",
-         "unknown sparse set option: --cone",
-         "version sparse set PATHSPEC...",
+        ("sparse set --bogus src",
+         "unknown sparse set option: --bogus",
+         "version sparse set [--cone|--no-cone] DIR...",
          "sparse set unknown option");
       Check_Usage_Failure
         ("sparse add",
          "missing sparse pathspec",
-         "version sparse add PATHSPEC...",
+         "version sparse add [--cone|--no-cone] DIR...",
          "sparse add missing pathspec");
       Check_Usage_Failure
         ("sparse add --sparse docs",
          "unknown sparse add option: --sparse",
-         "version sparse add PATHSPEC...",
+         "version sparse add [--cone|--no-cone] DIR...",
          "sparse add unknown option");
 
       Version.Init.Init (Root);
@@ -4545,9 +4586,9 @@ package body Version.CLI.Tests is
            Run_CLI (Root, "stash show --patch stash@{0} a.txt");
       begin
          Assert_Contains
-           (Text, "diff --version a/a.txt b/a.txt", "stash show patch CLI output");
+           (Text, "diff --git a/a.txt b/a.txt", "stash show patch CLI output");
          Assert_Not_Contains
-           (Text, "diff --version a/b.txt b/b.txt", "stash show patch CLI output");
+           (Text, "diff --git a/b.txt b/b.txt", "stash show patch CLI output");
       end;
       Ada.Directories.Set_Directory (Old_Dir);
    exception
@@ -4948,13 +4989,13 @@ package body Version.CLI.Tests is
 
       Run_CLI_Capture
         (Root,
-         "status " & Shell_Quote (":(icase)a.txt"),
+         "status " & Shell_Quote (":(bogus)a.txt"),
          Output,
          Status);
-      Assert (Status /= 0, "status must reject unsupported icase pathspec magic");
+      Assert (Status /= 0, "status must reject unsupported pathspec magic");
       Assert_Contains
         (Ada.Strings.Unbounded.To_String (Output),
-         "error: " & Version.Pathspec.Unknown_Magic_Diagnostic ("icase"),
+         "error: " & Version.Pathspec.Unknown_Magic_Diagnostic ("bogus"),
          "status unsupported pathspec magic diagnostic");
 
       Run_CLI_Capture
@@ -5249,9 +5290,70 @@ package body Version.CLI.Tests is
          raise;
    end CLI_Stash_Store_Message_Routes_To_List;
 
+   procedure CLI_Ls_Files_Filters_By_Pathspec
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      LF      : constant Character := Character'Val (10);
+      Root    : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+   begin
+      Version.Init.Init (Root);
+      Configure_User (Root);
+      Ada.Directories.Set_Directory (Root);
+      Commit_File (Root, "README.md", "readme" & LF, "readme");
+      Commit_File (Root, "src/a.adb", "a" & LF, "a");
+      Commit_File (Root, "src/b.txt", "b" & LF, "b");
+
+      --  No pathspec: every tracked path is listed.
+      declare
+         Out_All : constant String := Run_CLI (Root, "ls-files");
+      begin
+         Assert_Contains
+           (Out_All, "README.md", "ls-files lists all tracked paths");
+         Assert_Contains
+           (Out_All, "src/a.adb", "ls-files lists nested tracked paths");
+      end;
+
+      --  A directory-prefix pathspec restricts the output to that subtree.
+      declare
+         Out_Src : constant String := Run_CLI (Root, "ls-files src");
+      begin
+         Assert_Contains
+           (Out_Src, "src/a.adb", "ls-files src includes src paths");
+         Assert_Contains
+           (Out_Src, "src/b.txt", "ls-files src includes every src path");
+         Assert_Not_Contains
+           (Out_Src, "README.md", "ls-files src excludes non-src paths");
+      end;
+
+      --  The :(icase) magic matches a path despite case differences.
+      declare
+         Out_Icase : constant String :=
+           Run_CLI (Root, "ls-files ':(icase)SRC/A.ADB'");
+      begin
+         Assert_Contains
+           (Out_Icase, "src/a.adb", ":(icase) matches case-insensitively");
+         Assert_Not_Contains
+           (Out_Icase, "src/b.txt", ":(icase) restricts to the matched path");
+      end;
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         if Ada.Directories.Current_Directory /= Old_Dir then
+            Ada.Directories.Set_Directory (Old_Dir);
+         end if;
+         raise;
+   end CLI_Ls_Files_Filters_By_Pathspec;
+
    overriding
    procedure Register_Tests (T : in out Test_Case) is
    begin
+      Register_Routine
+        (T,
+         CLI_Ls_Files_Filters_By_Pathspec'Access,
+         "CLI: ls-files filters by pathspec (prefix and :(icase))");
       Register_Routine
         (T,
          Help_Knows_Stable_Command_Surface'Access,

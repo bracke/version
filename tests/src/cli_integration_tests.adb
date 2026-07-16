@@ -1,4 +1,8 @@
 with Ada.Directories;
+with Ada.Streams;
+with Ada.Streams.Stream_IO;
+with Ada.Strings.Fixed;
+with Ada.Strings.Unbounded;
 with AUnit.Assertions;     use AUnit.Assertions;
 with AUnit.Test_Cases;     use AUnit.Test_Cases;
 
@@ -337,6 +341,830 @@ package body CLI_Integration_Tests is
          raise;
    end Pull_Without_Upstream_Fails;
 
+   --  Regression: `version shortlog` must match `git shortlog` byte-for-byte
+   --  across default, -s, -n, and bundled -sn -- exercising within-group
+   --  subject order (oldest first) and the -n count-then-name tie-break.
+   procedure Shortlog_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+
+      procedure Commit (Name, Subject : String) is
+      begin
+         Version.Git_Fixtures.Run
+           (Root,
+            "GIT_AUTHOR_NAME='" & Name & "' GIT_AUTHOR_EMAIL='"
+            & Name & "@x' GIT_COMMITTER_NAME='" & Name
+            & "' GIT_COMMITTER_EMAIL='" & Name & "@x'"
+            & " git commit -q --allow-empty -m '" & Subject & "'");
+      end Commit;
+   begin
+      Version.Init.Init (Root);
+      Configure_User (Root);
+      Ada.Directories.Set_Directory (Root);
+      --  Alice x2, Bob x2 (count tie), Carol x1 -> exercises the tie-break.
+      Commit ("Alice", "add feature");
+      Commit ("Bob", "fix bug");
+      Commit ("Alice", "another thing");
+      Commit ("Carol", "z last");
+      Commit ("Bob", "second bob");
+
+      declare
+         procedure Check (Opt : String) is
+         begin
+            Version.Git_Fixtures.Run
+              (Root,
+               "test ""$(" & CLI & " shortlog " & Opt & " HEAD)"""
+               & " = ""$(git shortlog " & Opt & " HEAD)""");
+         end Check;
+      begin
+         Check ("");
+         Check ("-s");
+         Check ("-n");
+         Check ("-sn");
+      end;
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Shortlog_Matches_Git;
+
+   --  Byte-oracle the remaining plumbing: var, count-objects, rev-parse @{n},
+   --  name-rev, and for-each-ref %(upstream).
+   procedure Extra_Plumbing_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+      procedure Oracle (Cmd : String) is
+      begin
+         Version.Git_Fixtures.Run
+           (Root,
+            "test ""$(" & CLI & " " & Cmd & ")"" = ""$(git " & Cmd & ")""");
+      end Oracle;
+   begin
+      Version.Init.Init (Root);
+      Configure_User (Root);
+      Ada.Directories.Set_Directory (Root);
+      Write_File (Root, "f.txt", "one" & LF);
+      Version.Git_Fixtures.Run (Root, "git add f.txt");
+      Version.Write.Save ("c1");
+      Version.Git_Fixtures.Run (Root, "git tag -a v1.0 -m rel");
+      Write_File (Root, "f.txt", "two" & LF);
+      Version.Git_Fixtures.Run (Root, "git add f.txt");
+      Version.Write.Save ("c2");
+      Write_File (Root, "f.txt", "three" & LF);
+      Version.Git_Fixtures.Run (Root, "git add f.txt");
+      Version.Write.Save ("c3");
+      --  An upstream for %(upstream).
+      Version.Git_Fixtures.Run (Root, "git remote add origin /tmp/x.git");
+      Version.Git_Fixtures.Run (Root, "git config branch.main.remote origin");
+      Version.Git_Fixtures.Run
+        (Root, "git config branch.main.merge refs/heads/main");
+
+      Oracle ("count-objects");
+      Oracle ("rev-parse HEAD@{0}");
+      Oracle ("rev-parse HEAD@{1}");
+      Oracle ("rev-parse @{2}");
+      Oracle ("name-rev HEAD");
+      Oracle ("name-rev v1.0");
+      Oracle ("name-rev --tags HEAD");
+      Oracle ("for-each-ref"
+              & " --format='%(refname:short) %(upstream) %(upstream:short)'"
+              & " refs/heads");
+      --  var with a fixed raw date so the identity is reproducible.
+      Version.Git_Fixtures.Run
+        (Root,
+         "test ""$(GIT_AUTHOR_DATE='1577836800 +0000' " & CLI
+         & " var GIT_AUTHOR_IDENT)"""
+         & " = ""$(GIT_AUTHOR_DATE='1577836800 +0000' git var"
+         & " GIT_AUTHOR_IDENT)""");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Extra_Plumbing_Matches_Git;
+
+   --  `diff --name-only`/`--name-status` (with add/delete/modify) match git.
+   procedure Diff_Name_Only_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Version.Init.Init (Root);
+      Configure_User (Root);
+      Ada.Directories.Set_Directory (Root);
+      Write_File (Root, "keep.txt", "l1" & LF & "l2" & LF);
+      Write_File (Root, "gone.txt", "x" & LF);
+      Version.Git_Fixtures.Run (Root, "git add keep.txt gone.txt");
+      Version.Write.Save ("c1");
+      Write_File (Root, "keep.txt", "l1" & LF & "CHG" & LF);  --  modify
+      Write_File (Root, "added.txt", "new" & LF);            --  add
+      Version.Git_Fixtures.Run (Root, "rm gone.txt");         --  delete
+      Version.Git_Fixtures.Run (Root, "git add -A");
+      Version.Write.Save ("c2");
+
+      Version.Git_Fixtures.Run
+        (Root,
+         "test ""$(" & CLI & " diff --name-only HEAD~1 HEAD)"""
+         & " = ""$(git diff --name-only HEAD~1 HEAD)""");
+      Version.Git_Fixtures.Run
+        (Root,
+         "test ""$(" & CLI & " diff --name-status HEAD~1 HEAD)"""
+         & " = ""$(git diff --name-status HEAD~1 HEAD)""");
+      --  The full unified diff must be byte-identical too: the LCS must keep
+      --  the unchanged middle line as context (minimal, Myers-like) rather
+      --  than deleting and re-adding it.
+      Version.Git_Fixtures.Run
+        (Root,
+         "test ""$(" & CLI & " diff HEAD~1 HEAD)"""
+         & " = ""$(git diff HEAD~1 HEAD)""");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Diff_Name_Only_Matches_Git;
+
+   --  `cat-file --batch-check --batch-all-objects` must enumerate every object
+   --  (loose AND packed) in git's oid order. Exercises the pack-index reader.
+   procedure Cat_File_Batch_All_Objects_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Version.Init.Init (Root);
+      Configure_User (Root);
+      Ada.Directories.Set_Directory (Root);
+      Write_File (Root, "a.txt", "hello" & LF);
+      Version.Git_Fixtures.Run (Root, "git add a.txt");
+      Version.Write.Save ("c1");
+      Version.Git_Fixtures.Run (Root, "git tag -a v1 -m rel");
+      Write_File (Root, "b.txt", "world" & LF);
+      Version.Git_Fixtures.Run (Root, "git add b.txt");
+      Version.Write.Save ("c2");
+      --  Pack everything, then add a loose object, so the enumeration must
+      --  merge packed and loose ids.
+      Version.Git_Fixtures.Run (Root, "git repack -adq");
+      Write_File (Root, "c.txt", "loose" & LF);
+      Version.Git_Fixtures.Run (Root, "git add c.txt");
+      Version.Write.Save ("c3");
+
+      Version.Git_Fixtures.Run
+        (Root,
+         "test ""$(" & CLI & " cat-file --batch-check --batch-all-objects)"""
+         & " = ""$(git cat-file --batch-check --batch-all-objects)""");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Cat_File_Batch_All_Objects_Matches_Git;
+
+   --  Regression: `mv FILE DIR/` (trailing slash) and `mv FILE DIR` (bare)
+   --  must both move the file into the directory, matching git. The trailing
+   --  slash previously produced a "DIR//FILE" path and moved nothing.
+   procedure Mv_Into_Directory_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Version.Init.Init (Root);
+      Configure_User (Root);
+      Ada.Directories.Set_Directory (Root);
+      Write_File (Root, "a.txt", "a" & LF);
+      Write_File (Root, "b.txt", "b" & LF);
+      Version.Git_Fixtures.Run (Root, "git add a.txt b.txt");
+      Version.Write.Save ("first");
+      Version.Git_Fixtures.Run (Root, "mkdir sub");
+
+      --  Trailing slash and bare directory forms.
+      Version.Git_Fixtures.Run (Root, CLI & " mv a.txt sub/");
+      Version.Git_Fixtures.Run (Root, CLI & " mv b.txt sub");
+
+      Version.Git_Fixtures.Run
+        (Root,
+         "test ""$(git ls-files)"" = ""$(printf 'sub/a.txt\nsub/b.txt')""");
+      Version.Git_Fixtures.Run
+        (Root,
+         "test ! -e a.txt && test ! -e b.txt"
+         & " && test -e sub/a.txt && test -e sub/b.txt");
+      Version.Git_Fixtures.Run (Root, "git fsck --strict");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Mv_Into_Directory_Matches_Git;
+
+   --  Regression: `version blame` default output must match `git blame`
+   --  byte-for-byte (boundary "^" marker, author/date columns, and padding).
+   procedure Blame_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Version.Init.Init (Root);
+      Configure_User (Root);
+      Ada.Directories.Set_Directory (Root);
+      --  Two authors across two commits, and >9 lines, exercise the author
+      --  column padding, the boundary caret, and line-number alignment.
+      Version.Git_Fixtures.Run (Root, "git config user.name alice");
+      Write_File
+        (Root, "f.txt",
+         "l1" & LF & "l2" & LF & "l3" & LF & "l4" & LF & "l5" & LF
+         & "l6" & LF & "l7" & LF & "l8" & LF & "l9" & LF & "l10" & LF);
+      Version.Git_Fixtures.Run (Root, "git add f.txt");
+      Version.Git_Fixtures.Run
+        (Root, "GIT_AUTHOR_DATE='2020-01-01T00:00:00 +0000' git commit -q -m c1");
+      Version.Git_Fixtures.Run (Root, "git config user.name bob");
+      Write_File
+        (Root, "f.txt",
+         "l1" & LF & "l2" & LF & "CHG" & LF & "l4" & LF & "l5" & LF
+         & "l6" & LF & "l7" & LF & "l8" & LF & "l9" & LF & "l10" & LF);
+      Version.Git_Fixtures.Run (Root, "git add f.txt");
+      Version.Git_Fixtures.Run
+        (Root, "GIT_AUTHOR_DATE='2021-06-15T12:30:45 +0200' git commit -q -m c2");
+
+      Version.Git_Fixtures.Run
+        (Root,
+         "test ""$(" & CLI & " blame f.txt)"" = ""$(git blame f.txt)""");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Blame_Matches_Git;
+
+   --  `switch` mutates HEAD, so it can't be diffed in place. Build two
+   --  byte-identical repos (fixed author + committer dates => identical
+   --  hashes), run the same switch sequence through git and through version,
+   --  and require the accumulated stdout to match exactly -- covering the new
+   --  branch, "-" previous-branch, existing branch, --detach, and the
+   --  "Previous HEAD position was" line emitted when leaving a detached HEAD.
+   procedure Switch_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Version.Init.Init (Root);
+      Configure_User (Root);
+      Ada.Directories.Set_Directory (Root);
+
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C; D=""$PWD""; "
+         & "export GIT_AUTHOR_DATE='2020-01-01T00:00:00 +0000' "
+         & "GIT_COMMITTER_DATE='2020-01-01T00:00:00 +0000'; "
+         & "build() { rm -rf ""$1""; mkdir ""$1""; cd ""$1""; "
+         & "git init -q -b main .; git config user.name T; "
+         & "git config user.email t@e; git config gc.auto 0; "
+         & "echo a > f; git add f; git commit -qm c1; "
+         & "echo b >> f; git commit -qam c2; cd ""$D""; }; "
+         & "runseq() { cd ""$1""; ""$2"" switch -c feature; ""$2"" switch -; "
+         & """$2"" switch feature; ""$2"" switch --detach HEAD~1; "
+         & """$2"" switch main; ""$2"" switch --detach HEAD; cd ""$D""; }; "
+         & "build g; build v; "
+         --  git writes these advisories to stderr, version to stdout; this
+         --  test asserts text parity, so fold both streams for the compare.
+         & "gout=""$(runseq g git 2>&1)""; "
+         & "vout=""$(runseq v " & CLI & " 2>&1)""; "
+         & "test ""$vout"" = ""$gout""");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Switch_Matches_Git;
+
+   --  `hook run` streams the hook's stdout/stderr and propagates its exit
+   --  code; a missing hook errors with exit 1 unless --ignore-missing. Assert
+   --  each against git in the same repo (hook run does not mutate state).
+   procedure Hook_Run_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Version.Init.Init (Root);
+      Configure_User (Root);
+      Ada.Directories.Set_Directory (Root);
+
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C; "
+         & "mkdir -p .git/hooks; "
+         & "printf '#!/bin/sh\necho ""hook out $@""\n"
+         & "echo err >&2\nexit 3\n' > .git/hooks/pre-commit; "
+         & "chmod +x .git/hooks/pre-commit; "
+         --  existing hook: merged output and exit code both match git
+         & "test ""$(" & CLI & " hook run pre-commit -- a b 2>&1)"" "
+         & "= ""$(git hook run pre-commit -- a b 2>&1)""; "
+         & CLI & " hook run pre-commit >/dev/null 2>&1 && ec=0 || ec=$?; "
+         & "test $ec -eq 3; "
+         --  missing hook: error text matches git and exit is 1
+         & "test ""$(" & CLI & " hook run post-commit 2>&1)"" "
+         & "= ""$(git hook run post-commit 2>&1)""; "
+         & "if " & CLI & " hook run post-commit >/dev/null 2>&1; "
+         & "then false; else test $? -eq 1; fi; "
+         --  --ignore-missing: silent success on a missing hook
+         & CLI & " hook run post-commit --ignore-missing; test $? -eq 0");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Hook_Run_Matches_Git;
+
+   --  `maintenance run` performs repository maintenance silently (like git),
+   --  leaving the repository git-valid; a bad --task errors as git does.
+   procedure Maintenance_Run_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Version.Init.Init (Root);
+      Configure_User (Root);
+      Ada.Directories.Set_Directory (Root);
+      Version.Git_Fixtures.Run (Root, "git config user.name T");
+      Version.Git_Fixtures.Run (Root, "git config user.email t@e");
+      Write_File (Root, "f", "l1" & LF);
+      Version.Git_Fixtures.Run (Root, "git add f");
+      Version.Git_Fixtures.Run (Root, "git commit -q -m c1");
+      Write_File (Root, "f", "l1" & LF & "l2" & LF);
+      Version.Git_Fixtures.Run (Root, "git add f");
+      Version.Git_Fixtures.Run (Root, "git commit -q -m c2");
+
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C; "
+         --  a maintenance run is silent, exits 0, and keeps the repo valid
+         & "out=""$(" & CLI & " maintenance run 2>&1)""; test -z ""$out""; "
+         & CLI & " maintenance run --task=gc --quiet; "
+         & "git fsck --strict >/dev/null 2>&1; "
+         & "test ""$(git log --oneline | wc -l)"" = 2; "
+         --  an unknown task is rejected with git's message and non-zero exit
+         & CLI & " maintenance run --task=bogus >/dev/null 2>&1 "
+         & "&& ec=0 || ec=$?; test $ec -ne 0; "
+         & "test ""$(" & CLI & " maintenance run --task=bogus 2>&1 "
+         & "| head -1)"" = ""error: 'bogus' is not a valid task""");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Maintenance_Run_Matches_Git;
+
+   --  `interpret-trailers` output must match git byte-for-byte across the
+   --  common shapes: appending to an existing trailer block, opening a new
+   --  block, --only-trailers extraction, --parse folding, and the empty-value
+   --  normalisation ("Fixes: ").
+   procedure Interpret_Trailers_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+
+      function Both (Input, Args : String) return String is
+        ("test ""$(printf '" & Input & "' | " & CLI
+         & " interpret-trailers " & Args & " 2>&1)"" = "
+         & """$(printf '" & Input & "' | git interpret-trailers "
+         & Args & " 2>&1)""; ");
+   begin
+      Version.Init.Init (Root);
+      Configure_User (Root);
+      Ada.Directories.Set_Directory (Root);
+
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C; "
+         & Both ("subject\n\nbody\n\nSigned-off-by: A <a@x>\n",
+                 "--trailer 'Reviewed-by: B <b@y>'")
+         & Both ("subject\n", "--trailer 'Helped-by: D'")
+         & Both ("subject\n\nSigned-off-by: A\n", "--trailer 'ack=E'")
+         & Both ("subject\n\nbody\n\nSigned-off-by: A\nAcked-by: B\n",
+                 "--only-trailers")
+         & Both ("subject\n\nbody\n\nSigned-off-by: A\nfold: a\n b\n",
+                 "--parse")
+         & Both ("subject\n\nSigned-off-by: A\n", "--where before --trailer 'X: 1'")
+         & Both ("subject\n\nSigned-off-by: A\n", "--trailer 'Fixes:'"));
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Interpret_Trailers_Matches_Git;
+
+   --  `stripspace` output must match git byte-for-byte for the default cleanup
+   --  and the -s/-c modes.
+   procedure Stripspace_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+
+      function Both (Input, Args : String) return String is
+        ("test ""$(printf '" & Input & "' | " & CLI
+         & " stripspace " & Args & " 2>&1 | cat -A)"" = "
+         & """$(printf '" & Input & "' | git stripspace "
+         & Args & " 2>&1 | cat -A)""; ");
+   begin
+      Version.Init.Init (Root);
+      Configure_User (Root);
+      Ada.Directories.Set_Directory (Root);
+
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C; "
+         & Both ("a  \n\n\n\nb\t\n\n\n", "")
+         & Both ("\n\n\nhello\n\n\n", "")
+         & Both ("x", "")
+         & Both ("# comment\ntext\n# another\n", "-s")
+         & Both ("hello\n\nworld\n", "-c")
+         & Both ("a  \n\n\n\nb\n\n", "-c")
+         & Both ("  # kept\ntext\n", "--strip-comments"));
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Stripspace_Matches_Git;
+
+   --  `check-ref-format` validity (exit code) and --normalize output must
+   --  match git across the refname grammar and the refspec-pattern glob.
+   procedure Check_Ref_Format_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+
+      --  Compare the exit code of version vs git for one refname + flags.
+      function Rc (Ref, Flags : String) return String is
+        (CLI & " check-ref-format " & Flags & " '" & Ref
+         & "' >/dev/null 2>&1 && a=0 || a=$?; "
+         & "git check-ref-format " & Flags & " '" & Ref
+         & "' >/dev/null 2>&1 && b=0 || b=$?; test ""$a"" = ""$b""; ");
+   begin
+      Version.Init.Init (Root);
+      Configure_User (Root);
+      Ada.Directories.Set_Directory (Root);
+
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C; "
+         & Rc ("heads/main", "")
+         & Rc ("main", "")
+         & Rc ("main", "--allow-onelevel")
+         & Rc ("refs/heads/.hidden", "")
+         & Rc ("refs/heads/foo..bar", "")
+         & Rc ("refs/heads/foo.lock", "")
+         & Rc ("refs/heads/foo.", "")
+         & Rc ("refs/heads./x", "")
+         & Rc ("refs/heads/foo~1", "")
+         & Rc ("refs/heads/@", "")
+         & Rc ("@", "")
+         & Rc ("refs/heads/*", "")
+         & Rc ("refs/heads/*", "--refspec-pattern")
+         & Rc ("refs/heads/**", "--refspec-pattern")
+         --  --normalize prints the collapsed name when valid
+         & "test ""$(" & CLI
+         & " check-ref-format --normalize 'refs/heads//foo' 2>&1)"" = "
+         & """$(git check-ref-format --normalize 'refs/heads//foo' 2>&1)""; "
+         & "test ""$(" & CLI
+         & " check-ref-format --branch main 2>&1)"" = "
+         & """$(git check-ref-format --branch main 2>&1)""");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Check_Ref_Format_Matches_Git;
+
+   --  `mktree` must produce the same tree oid as git for sorted, unsorted, and
+   --  mixed blob/subtree input (exercising git tree-order + serialisation).
+   procedure Mktree_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Version.Init.Init (Root);
+      Configure_User (Root);
+      Ada.Directories.Set_Directory (Root);
+
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C; "
+         & "H=$(printf hello | git hash-object --stdin -w); "
+         & "H2=$(printf world | git hash-object --stdin -w); "
+         & "SUB=$(printf '100644 blob '""$H""'\tinner\n' | git mktree); "
+         & "cmp() { "
+         & "test ""$(printf ""$1"" | " & CLI & " mktree 2>&1)"" "
+         & "= ""$(printf ""$1"" | git mktree 2>&1)""; }; "
+         & "cmp '100644 blob '""$H""'\tf\n'; "
+         & "cmp '100644 blob '""$H2""'\tb\n100644 blob '""$H""'\ta\n'; "
+         & "cmp '040000 tree '""$SUB""'\tfoo\n100644 blob '""$H""'\tfoo.txt\n'; "
+         & "cmp '0100644 blob '""$H""'\tz\n'");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Mktree_Matches_Git;
+
+   --  `mktag` writes a caller-supplied tag object; its oid must equal git's,
+   --  and a type mismatch must be rejected.
+   procedure Mktag_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Version.Init.Init (Root);
+      Configure_User (Root);
+      Ada.Directories.Set_Directory (Root);
+      Write_File (Root, "z", "z" & LF);
+      Version.Git_Fixtures.Run (Root, "git add z");
+      Version.Git_Fixtures.Run (Root, "git commit -q -m c1");
+
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C; C=$(git rev-parse HEAD); "
+         & "body=""object $C\ntype commit\ntag v1\n"
+         & "tagger T <t@e> 1600000000 +0000\n\nmsg\n""; "
+         --  the tag oid matches git mktag exactly
+         & "test ""$(printf ""$body"" | " & CLI & " mktag 2>/dev/null)"" "
+         & "= ""$(printf ""$body"" | git mktag 2>/dev/null)""; "
+         --  a wrong declared type is rejected (non-zero exit)
+         & "bad=""object $C\ntype blob\ntag v1\n"
+         & "tagger T <t@e> 1600000000 +0000\n\nmsg\n""; "
+         & "if printf ""$bad"" | " & CLI & " mktag >/dev/null 2>&1; "
+         & "then false; else true; fi");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Mktag_Matches_Git;
+
+   --  `fmt-merge-msg` must reproduce git's merge-message grouping across the
+   --  common FETCH_HEAD shapes: single/local branches, same/different source
+   --  grouping, an annotated tag (whose message is appended), and skipping
+   --  not-for-merge lines.
+   procedure Fmt_Merge_Msg_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+
+      function Both (Input : String) return String is
+        ("test ""$(printf '" & Input & "' | " & CLI
+         & " fmt-merge-msg 2>&1)"" = "
+         & """$(printf '" & Input & "' | git fmt-merge-msg 2>&1)""; ");
+   begin
+      Version.Init.Init (Root);
+      Configure_User (Root);
+      Ada.Directories.Set_Directory (Root);
+      Write_File (Root, "f", "a" & LF);
+      Version.Git_Fixtures.Run (Root, "git add f");
+      Version.Git_Fixtures.Run (Root, "git commit -q -m c1");
+      Version.Git_Fixtures.Run (Root, "git branch feature");
+      Version.Git_Fixtures.Run (Root, "git branch topic");
+      Version.Git_Fixtures.Run (Root, "git tag -a v1 -m 'tag one'");
+
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C; "
+         & "C=$(git rev-parse feature); D=$(git rev-parse topic); "
+         & "V=$(git rev-parse v1); "
+         & Both ("'""$C""'\t\tbranch '\''feature'\'' of ../repo\n")
+         & Both ("'""$C""'\t\tbranch '\''feature'\''\n")
+         & Both ("'""$C""'\t\tbranch '\''feature'\'' of ../repo\n"
+                 & "'""$D""'\t\tbranch '\''topic'\'' of ../repo\n")
+         & Both ("'""$C""'\t\tbranch '\''feature'\''\n"
+                 & "'""$D""'\t\tbranch '\''topic'\''\n")
+         & Both ("'""$C""'\t\tbranch '\''feature'\'' of ../repoA\n"
+                 & "'""$D""'\t\tbranch '\''topic'\'' of ../repoB\n")
+         & Both ("'""$V""'\t\ttag '\''v1'\''\n")
+         & Both ("'""$C""'\t\tbranch '\''feature'\''\n"
+                 & "'""$V""'\t\ttag '\''v1'\''\n")
+         & Both ("'""$C""'\tnot-for-merge\tbranch '\''feature'\''\n"
+                 & "'""$D""'\t\tbranch '\''topic'\''\n"));
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Fmt_Merge_Msg_Matches_Git;
+
+   --  version's `archive` now embeds git's pax global header, so both
+   --  `get-tar-commit-id` implementations recover the commit id from a
+   --  version-produced tar and from a git-produced tar alike.
+   procedure Get_Tar_Commit_Id_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Version.Init.Init (Root);
+      Configure_User (Root);
+      Ada.Directories.Set_Directory (Root);
+      Write_File (Root, "f", "a" & LF);
+      Version.Git_Fixtures.Run (Root, "git add f");
+      Version.Git_Fixtures.Run (Root, "git commit -q -m c1");
+
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C; C=$(git rev-parse HEAD); "
+         & "git archive --format=tar HEAD > g.tar; "
+         & CLI & " archive HEAD --output v.tar; "
+         --  the commit id is recovered from git's and version's tars, by
+         --  both tools, and equals HEAD
+         & "test ""$(" & CLI & " get-tar-commit-id < g.tar)"" = ""$C""; "
+         & "test ""$(" & CLI & " get-tar-commit-id < v.tar)"" = ""$C""; "
+         & "test ""$(git get-tar-commit-id < v.tar)"" = ""$C""; "
+         --  a tar with no pax header fails, like git
+         & "tar cf plain.tar f; "
+         & "if " & CLI & " get-tar-commit-id < plain.tar >/dev/null 2>&1; "
+         & "then false; else true; fi");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Get_Tar_Commit_Id_Matches_Git;
+
+   --  The raw-format diff plumbing (diff-tree/diff-index/diff-files) must
+   --  match git across tree/commit, --cached, and unstaged/staged working
+   --  changes, including nested paths.
+   procedure Diff_Plumbing_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+
+      function Both (Cmd : String) return String is
+        ("test ""$(" & CLI & " " & Cmd & " 2>&1)"" = "
+         & """$(git " & Cmd & " 2>&1)""; ");
+   begin
+      Version.Init.Init (Root);
+      Configure_User (Root);
+      Ada.Directories.Set_Directory (Root);
+      Write_File (Root, "f", "a" & LF);
+      Write_File (Root, "g", "x" & LF);
+      Ada.Directories.Create_Directory
+        (Version.Test_Support.Join (Root, "sub"));
+      Write_File (Root, "sub/n", "s" & LF);
+      Version.Git_Fixtures.Run (Root, "git add -A");
+      Version.Git_Fixtures.Run (Root, "git commit -q -m c1");
+      Write_File (Root, "f", "a" & LF & "b" & LF);
+      Version.Git_Fixtures.Run (Root, "git commit -q -am c2");
+
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C; "
+         & "T1=$(git rev-parse HEAD~1^{tree}); T2=$(git rev-parse HEAD^{tree}); "
+         & Both ("diff-tree -r $T1 $T2")
+         & Both ("diff-tree $T1 $T2")
+         & Both ("diff-tree -r HEAD")
+         & Both ("diff-tree -r --root HEAD~1")
+         & Both ("diff-index --cached HEAD")
+         & Both ("diff-files")
+         --  introduce unstaged and staged changes, then re-check each
+         & "printf 'a\nb\nc\n' > f; rm -f g; printf 'z\n' > h; "
+         & Both ("diff-files")
+         & Both ("diff-index HEAD")
+         & "git add -A; "
+         & Both ("diff-index --cached HEAD")
+         & Both ("diff-index HEAD"));
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Diff_Plumbing_Matches_Git;
+
+   --  `replace` manages refs/replace/* and, crucially, object reads honor the
+   --  replacement (unless GIT_NO_REPLACE_OBJECTS) -- all matching git.
+   procedure Replace_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Version.Init.Init (Root);
+      Configure_User (Root);
+      Ada.Directories.Set_Directory (Root);
+
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C; "
+         & "B1=$(printf 'AAA\n' | git hash-object -w --stdin); "
+         & "B2=$(printf 'BBB\n' | git hash-object -w --stdin); "
+         & CLI & " replace ""$B1"" ""$B2""; "
+         --  the replace ref and its listings match git
+         & "test ""$(" & CLI & " replace)"" = ""$(git replace)""; "
+         & "test ""$(" & CLI & " replace --format=medium)"" "
+         & "= ""$(git replace --format=medium)""; "
+         & "test ""$(" & CLI & " replace --format=long)"" "
+         & "= ""$(git replace --format=long)""; "
+         --  reads follow the replacement, and GIT_NO_REPLACE_OBJECTS disables
+         & "test ""$(" & CLI & " cat-file -p ""$B1"")"" = BBB; "
+         & "test ""$(GIT_NO_REPLACE_OBJECTS=1 " & CLI
+         & " cat-file -p ""$B1"")"" = AAA; "
+         --  delete matches git's message, and a missing delete exits non-zero
+         & "test ""$(" & CLI & " replace -d ""$B1"")"" "
+         & "= ""Deleted replace ref '""$B1""'""; "
+         & "if " & CLI & " replace -d ""$B1"" >/dev/null 2>&1; "
+         & "then false; else true; fi");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Replace_Matches_Git;
+
    procedure Plumbing_Matches_Git
      (T : in out AUnit.Test_Cases.Test_Case'Class)
    is
@@ -412,6 +1240,45 @@ package body CLI_Integration_Tests is
         (Root,
          "test ""$(" & CLI & " for-each-ref --count=1 --format='%(refname)')"""
          & " = ""$(git for-each-ref --count=1 --format='%(refname)')""");
+      --  Bare `branch`/`tag` list; show-ref with/without --tags/--heads;
+      --  ls-files -s; rev-list --max-count; cat-file -p <tree> (one level);
+      --  describe; for-each-ref --sort=creatordate -- all byte-exact vs git.
+      declare
+         procedure Oracle (Cmd : String) is
+         begin
+            Version.Git_Fixtures.Run
+              (Root,
+               "test ""$(" & CLI & " " & Cmd & ")"" = ""$(git " & Cmd & ")""");
+         end Oracle;
+      begin
+         Oracle ("branch");
+         Oracle ("tag");
+         Oracle ("tag -l");
+         Oracle ("show-ref");
+         Oracle ("show-ref --tags");
+         Oracle ("show-ref --heads");
+         Oracle ("ls-files -s");
+         Oracle ("rev-list --max-count=1 HEAD");
+         Oracle ("rev-list -n 1 HEAD");
+         Oracle ("cat-file -p HEAD^{tree}");
+         Oracle ("describe");
+         Oracle ("describe --tags");
+         Oracle ("for-each-ref --sort=creatordate");
+         Oracle ("rev-parse --short HEAD");
+         Oracle ("log --format=%H");
+         Oracle ("log --pretty=format:%h");
+         Oracle ("log --format=%an|%s");
+         Oracle ("grep hello");
+         Oracle ("grep -c hello");
+         Oracle ("grep -l hello");
+         Oracle ("merge-base HEAD HEAD");
+         Oracle ("branch -v");
+         Oracle ("branch -a");
+         Oracle ("rev-list --all --count");
+         Oracle ("tag --sort=-refname");
+         Oracle ("tag -l --sort=creatordate");
+         Oracle ("log --stat -1");
+      end;
       --  cat-file --batch-check and --batch match git (fed the same oid list).
       Version.Git_Fixtures.Run
         (Root,
@@ -582,9 +1449,2067 @@ package body CLI_Integration_Tests is
          raise;
    end Credential_Helper_Protocol_Matches_Git;
 
+   --  git lfs porcelain: track a pattern, stage an LFS file (caching the media
+   --  and pointer), confirm ls-files reports it cached, then round-trip through
+   --  the pointer and lfs checkout to restore the media.
+   procedure LFS_Porcelain_Round_Trip
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Version.Init.Init (Root);
+      Configure_User (Root);
+      Ada.Directories.Set_Directory (Root);
+
+      Version.Git_Fixtures.Run (Root, CLI & " lfs track '*.bin'");
+      Version.Git_Fixtures.Run (Root, "grep -q 'filter=lfs' .gitattributes");
+      Version.Git_Fixtures.Run (Root, "printf 'porcelain media\n' > big.bin");
+      Version.Git_Fixtures.Run (Root, CLI & " stage .gitattributes big.bin");
+      --  ls-files reports the staged pointer with the cached marker '*'.
+      Version.Git_Fixtures.Run
+        (Root, CLI & " lfs ls-files | grep -q '[*] big.bin'");
+      --  Replace the working file with its pointer, then restore via checkout.
+      Version.Git_Fixtures.Run
+        (Root, CLI & " lfs pointer --file=big.bin 2>/dev/null > big.bin");
+      Version.Git_Fixtures.Run (Root, "grep -q 'git-lfs' big.bin");
+      Version.Git_Fixtures.Run (Root, CLI & " lfs checkout big.bin");
+      Version.Git_Fixtures.Run
+        (Root, "test ""$(cat big.bin)"" = 'porcelain media'");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end LFS_Porcelain_Round_Trip;
+
+   --  git lfs maintenance/history: migrate a plain blob into LFS (rewriting
+   --  history), confirm ls-files/fsck see it, then prune (keeping the still-
+   --  referenced object) and export it back out.
+   procedure LFS_Migrate_And_Maintenance
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Version.Init.Init (Root);
+      Configure_User (Root);
+      Ada.Directories.Set_Directory (Root);
+
+      Version.Git_Fixtures.Run (Root, "printf 'plain media payload\n' > data.bin");
+      Version.Git_Fixtures.Run (Root, "git add data.bin");
+      Version.Git_Fixtures.Run (Root, "git commit -q -m c1");
+      --  Before migrate the blob is plain content, not a pointer.
+      Version.Git_Fixtures.Run
+        (Root, "git cat-file -p HEAD:data.bin | grep -qv 'git-lfs'");
+
+      Version.Git_Fixtures.Run (Root, CLI & " lfs migrate import --include='*.bin'");
+      --  After import the committed blob is an LFS pointer and .gitattributes
+      --  carries the rule.
+      Version.Git_Fixtures.Run
+        (Root, "git cat-file -p HEAD:data.bin | grep -q 'git-lfs'");
+      Version.Git_Fixtures.Run
+        (Root, "git cat-file -p HEAD:.gitattributes | grep -q 'filter=lfs'");
+      Version.Git_Fixtures.Run (Root, CLI & " lfs ls-files | grep -q data.bin");
+      Version.Git_Fixtures.Run
+        (Root, "test ""$(" & CLI & " lfs fsck)"" = 'Git LFS fsck OK'");
+      --  The migrated object is referenced by HEAD, so prune retains it.
+      Version.Git_Fixtures.Run
+        (Root, CLI & " lfs prune | grep -q '1 retained'");
+
+      Version.Git_Fixtures.Run (Root, CLI & " lfs migrate export --include='*.bin'");
+      Version.Git_Fixtures.Run
+        (Root, "git cat-file -p HEAD:data.bin | grep -qv 'git-lfs'");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end LFS_Migrate_And_Maintenance;
+
+   --  archive tar filter: a configured tar.<fmt>.command pipes the tar output
+   --  through the command (git's mechanism), and an unconfigured format errors.
+   procedure Archive_Tar_Filter_Command
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Version.Init.Init (Root);
+      Configure_User (Root);
+      Ada.Directories.Set_Directory (Root);
+      Version.Git_Fixtures.Run (Root, "printf 'hello\n' > a.txt");
+      Version.Git_Fixtures.Run (Root, "git add a.txt");
+      Version.Git_Fixtures.Run (Root, "git commit -q -m c1");
+
+      --  Identity filter (cat) exercises the pipe mechanism deterministically.
+      Version.Git_Fixtures.Run (Root, "git config tar.tar.cpy.command cat");
+      Version.Git_Fixtures.Run
+        (Root, CLI & " archive HEAD --format tar.cpy --output out.tar.cpy");
+      --  cat passes the tar through unchanged, so it lists the archived file.
+      Version.Git_Fixtures.Run (Root, "tar -tf out.tar.cpy | grep -q a.txt");
+
+      --  A format with no configured filter is rejected (git parity).
+      Version.Git_Fixtures.Run
+        (Root,
+         "! " & CLI & " archive HEAD --format tar.nofilter"
+         & " --output x 2>/dev/null");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Archive_Tar_Filter_Command;
+
+   function Read_Raw_Bytes (Path : String) return String is
+      use Ada.Streams.Stream_IO;
+      File   : File_Type;
+      Result : Ada.Strings.Unbounded.Unbounded_String;
+      Buffer : Ada.Streams.Stream_Element_Array (1 .. 4096);
+      Last   : Ada.Streams.Stream_Element_Offset;
+   begin
+      Open (File, In_File, Path);
+      while not End_Of_File (File) loop
+         Read (File, Buffer, Last);
+         for I in Buffer'First .. Last loop
+            Ada.Strings.Unbounded.Append
+              (Result, Character'Val (Integer (Buffer (I))));
+         end loop;
+      end loop;
+      Close (File);
+      return Ada.Strings.Unbounded.To_String (Result);
+   end Read_Raw_Bytes;
+
+   procedure Output_Is_Byte_Exact_Against_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+      LF : constant Character := Character'Val (10);
+   begin
+      Version.Init.Init (Root);
+      Configure_User (Root);
+      Ada.Directories.Set_Directory (Root);
+      --  A blob without a trailing newline, so cat-file byte-exactness is
+      --  observable; an untracked file drives a single porcelain line.
+      Version.Git_Fixtures.Run (Root, "printf 'no-newline' > nn.txt");
+      Version.Git_Fixtures.Run (Root, "git add nn.txt");
+      Version.Git_Fixtures.Run (Root, "git commit -q -m c1");
+      Version.Git_Fixtures.Run (Root, "printf 'x\n' > u.txt");
+
+      --  Capture outside the working tree so the redirect target does not
+      --  itself appear as an untracked entry in the status output.
+      Version.Git_Fixtures.Run
+        (Root, CLI & " status --porcelain > " & Root & ".st.out");
+      Assert
+        (Read_Raw_Bytes (Root & ".st.out") = "?? u.txt" & LF,
+         "status --porcelain must not append a spurious trailing newline");
+
+      Version.Git_Fixtures.Run
+        (Root, CLI & " cat-file -p HEAD:nn.txt > " & Root & ".cf.out");
+      Assert
+        (Read_Raw_Bytes (Root & ".cf.out") = "no-newline",
+         "cat-file must emit blob bytes without a forced trailing newline");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Output_Is_Byte_Exact_Against_Git;
+
+   procedure Rerere_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Base    : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI     : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+      GEnv : constant String :=
+        "LC_ALL=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null "
+        & "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=init.defaultBranch "
+        & "GIT_CONFIG_VALUE_0=main EDITOR=true";
+      Q : constant Character := '"';
+
+      --  Create a conflicting merge with TOOL, then run rerere status/remaining
+      --  (both list the conflicted path) and clear, capturing to Out_Path.
+      procedure Run_Flow (Dir, Tool, Script_Path, Out_Path : String) is
+         Script : constant String :=
+           "set -e" & LF
+           & "mkdir -p " & Q & Dir & Q & LF & "cd " & Q & Dir & Q & LF
+           & "export " & GEnv & LF
+           & "git init -q" & LF
+           & "git config rerere.enabled true" & LF
+           & "au() { git -c user.name=T -c user.email=t@t "
+           & "commit -q -m " & Q & "$1" & Q & "; }" & LF
+           & "printf 'a\nb\nc\n' > f; git add f; au base" & LF
+           & "git checkout -q -b feat" & LF
+           & "printf 'a\nFEAT\nc\n' > f; git add f; au feat" & LF
+           & "git checkout -q main" & LF
+           & "printf 'a\nMAIN\nc\n' > f; git add f; au main" & LF
+           & Tool & " merge feat > /dev/null 2>&1 || true" & LF
+           & "TF=" & Q & Out_Path & Q & LF & ": > " & Q & "$TF" & Q & LF
+           & "set +e" & LF
+           & "echo status: >> " & Q & "$TF" & Q & LF
+           & Tool & " rerere status >> " & Q & "$TF" & Q & " 2>&1" & LF
+           & "echo remaining: >> " & Q & "$TF" & Q & LF
+           & Tool & " rerere remaining >> " & Q & "$TF" & Q & " 2>&1" & LF
+           & Tool & " rerere clear >> " & Q & "$TF" & Q & " 2>&1" & LF
+           & "test -f .git/MERGE_RR && echo MERGE_RR-present >> " & Q & "$TF"
+           & Q & " || echo MERGE_RR-gone >> " & Q & "$TF" & Q & LF;
+      begin
+         Version.Test_Support.Write_Text_File (Script_Path, Script);
+         Version.Git_Fixtures.Run (Base, "bash " & Q & Script_Path & Q);
+      end Run_Flow;
+   begin
+      Run_Flow (Version.Test_Support.Join (Base, "g"), "git",
+                Version.Test_Support.Join (Base, "g.sh"),
+                Version.Test_Support.Join (Base, "g.T"));
+      Run_Flow (Version.Test_Support.Join (Base, "v"), CLI,
+                Version.Test_Support.Join (Base, "v.sh"),
+                Version.Test_Support.Join (Base, "v.T"));
+      declare
+         G : constant String :=
+           Read_Raw_Bytes (Version.Test_Support.Join (Base, "g.T"));
+         V : constant String :=
+           Read_Raw_Bytes (Version.Test_Support.Join (Base, "v.T"));
+      begin
+         Assert (G = V,
+                 "rerere status/remaining/clear must match git." & LF
+                 & "--- git ---" & LF & G & LF & "--- version ---" & LF & V);
+      end;
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Rerere_Matches_Git;
+
+   --  A real conflicted merge, end to end, against git: the conflicted file's
+   --  bytes (all three conflict styles), the unmerged index stages, the
+   --  rr-cache conflict id and its preimage, plus -Xours (which resolves the
+   --  conflicting hunk only -- the other side's clean hunk must survive).
+   --  Commit dates are pinned so both repositories produce identical commit
+   --  ids, which makes the diff3 base label (an abbreviated oid) comparable.
+   procedure Merge_Conflict_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Base    : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI     : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+      Q : constant Character := '"';
+      GEnv : constant String :=
+        "LC_ALL=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null "
+        & "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=init.defaultBranch "
+        & "GIT_CONFIG_VALUE_0=main EDITOR=true "
+        & "GIT_AUTHOR_DATE=" & Q & "2026-01-01T00:00:00 +0000" & Q & " "
+        & "GIT_COMMITTER_DATE=" & Q & "2026-01-01T00:00:00 +0000" & Q;
+
+      procedure Run_Flow (Dir, Tool, Script_Path, Out_Path : String) is
+         Script : constant String :=
+           "set -e" & LF
+           & "export " & GEnv & LF
+           & "TF=" & Q & Out_Path & Q & LF & ": > " & Q & "$TF" & Q & LF
+           & "au() { git -c user.name=T -c user.email=t@t "
+           & "commit -q -m " & Q & "$1" & Q & "; }" & LF
+           --  One repo per conflict style, plus -Xours and a CRLF file (whose
+           --  conflict markers must themselves end CR/LF, as git's do).
+           & "for style in merge diff3 zdiff3 ours crlf; do" & LF
+           & "  d=" & Q & Dir & Q & "/$style" & LF
+           & "  rm -rf " & Q & "$d" & Q & "; mkdir -p " & Q & "$d" & Q & LF
+           & "  cd " & Q & "$d" & Q & LF
+           & "  git init -q" & LF
+           & "  git config rerere.enabled true" & LF
+           & "  if [ $style = crlf ]; then N='\r\n'; else N='\n'; fi" & LF
+           & "  printf " & Q & "a${N}b${N}c${N}d${N}e${N}" & Q
+           & " > f; git add f; au base" & LF
+           & "  git checkout -q -b feat" & LF
+           & "  printf " & Q & "a${N}B2${N}c${N}d${N}E2${N}TAIL${N}" & Q
+           & " > f; git add f; au feat" & LF
+           & "  git checkout -q main" & LF
+           & "  printf " & Q & "a${N}B3${N}c${N}d${N}E2${N}" & Q
+           & " > f; git add f; au main" & LF
+           & "  set +e" & LF
+           & "  if [ $style = ours ]; then" & LF
+           & "    " & Tool & " merge -Xours feat > /dev/null 2>&1" & LF
+           & "  else" & LF
+           & "    if [ $style != crlf ]; then" & LF
+           & "      git config merge.conflictStyle $style" & LF
+           & "    fi" & LF
+           & "    " & Tool & " merge feat > /dev/null 2>&1" & LF
+           & "  fi" & LF
+           & "  set -e" & LF
+           & "  echo " & Q & "== $style file:" & Q & " >> " & Q & "$TF" & Q & LF
+           & "  cat f >> " & Q & "$TF" & Q & LF
+           & "  echo " & Q & "== $style stages:" & Q & " >> " & Q & "$TF"
+           & Q & LF
+           & "  git ls-files -u >> " & Q & "$TF" & Q & LF
+           & "  echo " & Q & "== $style rerere diff:" & Q & " >> " & Q & "$TF"
+           & Q & LF
+           & "  " & Tool & " rerere diff >> " & Q & "$TF" & Q & " 2>&1"
+           & " || true" & LF
+           & "  echo " & Q & "== $style rr-cache:" & Q & " >> " & Q & "$TF"
+           & Q & LF
+           --  A clean merge (-Xours) records nothing, so these may find no
+           --  files; that absence is itself part of what must match git.
+           & "  ls .git/rr-cache 2>/dev/null >> " & Q & "$TF" & Q
+           & " || true" & LF
+           & "  cat .git/rr-cache/*/preimage 2>/dev/null >> " & Q & "$TF"
+           & Q & " || true" & LF
+           & "  cd " & Q & Base & Q & LF
+           & "done" & LF;
+      begin
+         Version.Test_Support.Write_Text_File (Script_Path, Script);
+         Version.Git_Fixtures.Run (Base, "bash " & Q & Script_Path & Q);
+      end Run_Flow;
+   begin
+      Run_Flow (Version.Test_Support.Join (Base, "mg"), "git",
+                Version.Test_Support.Join (Base, "mg.sh"),
+                Version.Test_Support.Join (Base, "mg.T"));
+      Run_Flow (Version.Test_Support.Join (Base, "mv"), CLI,
+                Version.Test_Support.Join (Base, "mv.sh"),
+                Version.Test_Support.Join (Base, "mv.T"));
+      declare
+         G : constant String :=
+           Read_Raw_Bytes (Version.Test_Support.Join (Base, "mg.T"));
+         V : constant String :=
+           Read_Raw_Bytes (Version.Test_Support.Join (Base, "mv.T"));
+      begin
+         Assert (G = V,
+                 "conflicted merge must match git byte for byte." & LF
+                 & "--- git ---" & LF & G & LF & "--- version ---" & LF & V);
+      end;
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Merge_Conflict_Matches_Git;
+
+   --  A rename on one side makes git disambiguate the conflict markers with
+   --  each side's own path (`HEAD:old.txt` / `feature:new.txt`); renames to the
+   --  same path keep the plain labels.  Also covers -Xignore-space-change,
+   --  where a side whose only change is whitespace loses to the other side.
+   procedure Merge_Rename_And_Whitespace_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Base    : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI     : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+      Q : constant Character := '"';
+      GEnv : constant String :=
+        "LC_ALL=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null "
+        & "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=init.defaultBranch "
+        & "GIT_CONFIG_VALUE_0=main EDITOR=true";
+
+      procedure Run_Flow (Dir, Tool, Script_Path, Out_Path : String) is
+         Script : constant String :=
+           "set -e" & LF
+           & "export " & GEnv & LF
+           & "TF=" & Q & Out_Path & Q & LF & ": > " & Q & "$TF" & Q & LF
+           & "au() { git -c user.name=T -c user.email=t@t "
+           & "commit -q -m " & Q & "$1" & Q & "; }" & LF
+           --  ours-renames / theirs-renames / both-rename-same / whitespace
+           & "for case in oursren theirsren sameren ws; do" & LF
+           & "  d=" & Q & Dir & Q & "/$case" & LF
+           & "  rm -rf " & Q & "$d" & Q & "; mkdir -p " & Q & "$d" & Q & LF
+           & "  cd " & Q & "$d" & Q & LF
+           & "  git init -q" & LF
+           & "  printf 'alpha\nbeta\ngamma\ndelta\n' > old.txt" & LF
+           & "  git add old.txt; au base" & LF
+           & "  git checkout -q -b feature" & LF
+           & "  if [ $case = theirsren ] || [ $case = sameren ]; then" & LF
+           & "    git mv old.txt new.txt" & LF
+           & "    printf 'alpha\nbeta\ngamma-feature\ndelta\n' > new.txt" & LF
+           & "    git add new.txt" & LF
+           & "  elif [ $case = ws ]; then" & LF
+           & "    printf 'alpha\nbeta\ngamma\nDELTA2\n' > old.txt" & LF
+           & "    git add old.txt" & LF
+           & "  else" & LF
+           & "    printf 'alpha\nbeta\ngamma-feature\ndelta\n' > old.txt" & LF
+           & "    git add old.txt" & LF
+           & "  fi" & LF
+           & "  au feature" & LF
+           & "  git checkout -q main" & LF
+           & "  if [ $case = oursren ] || [ $case = sameren ]; then" & LF
+           & "    git mv old.txt new.txt" & LF
+           & "    printf 'alpha\nbeta-main\ngamma\ndelta\n' > new.txt" & LF
+           & "    git add new.txt" & LF
+           & "  elif [ $case = ws ]; then" & LF
+           --  a whitespace-only change: must count as no change at all
+           & "    printf 'alpha\nbeta   \t\ngamma\ndelta\n' > old.txt" & LF
+           & "    git add old.txt" & LF
+           & "  else" & LF
+           & "    printf 'alpha\nbeta-main\ngamma\ndelta\n' > old.txt" & LF
+           & "    git add old.txt" & LF
+           & "  fi" & LF
+           & "  au main" & LF
+           & "  set +e" & LF
+           & "  if [ $case = ws ]; then" & LF
+           & "    " & Tool & " merge -Xignore-space-change feature"
+           & " > /dev/null 2>&1" & LF
+           & "  else" & LF
+           & "    " & Tool & " merge feature > /dev/null 2>&1" & LF
+           & "  fi" & LF
+           & "  set -e" & LF
+           & "  echo " & Q & "== $case:" & Q & " >> " & Q & "$TF" & Q & LF
+           & "  cat new.txt old.txt 2>/dev/null >> " & Q & "$TF" & Q
+           & " || true" & LF
+           & "  git ls-files -u >> " & Q & "$TF" & Q & LF
+           & "  cd " & Q & Base & Q & LF
+           & "done" & LF;
+      begin
+         Version.Test_Support.Write_Text_File (Script_Path, Script);
+         Version.Git_Fixtures.Run (Base, "bash " & Q & Script_Path & Q);
+      end Run_Flow;
+   begin
+      Run_Flow (Version.Test_Support.Join (Base, "rg"), "git",
+                Version.Test_Support.Join (Base, "rg.sh"),
+                Version.Test_Support.Join (Base, "rg.T"));
+      Run_Flow (Version.Test_Support.Join (Base, "rv"), CLI,
+                Version.Test_Support.Join (Base, "rv.sh"),
+                Version.Test_Support.Join (Base, "rv.T"));
+      declare
+         G : constant String :=
+           Read_Raw_Bytes (Version.Test_Support.Join (Base, "rg.T"));
+         V : constant String :=
+           Read_Raw_Bytes (Version.Test_Support.Join (Base, "rv.T"));
+      begin
+         Assert (G = V,
+                 "rename labels and whitespace merges must match git." & LF
+                 & "--- git ---" & LF & G & LF & "--- version ---" & LF & V);
+      end;
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Merge_Rename_And_Whitespace_Matches_Git;
+
+   --  The merge classes that had gone unprobed: the "Auto-merging" line on a
+   --  cleanly content-merged path (and its ordering against a CONFLICT line),
+   --  a custom merge driver that exits non-zero (its output is the result),
+   --  and merge.renormalize (line-ending churn is not a change).
+   procedure Merge_Untested_Classes_Match_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Base    : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI     : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+      Q : constant Character := '"';
+      GEnv : constant String :=
+        "LC_ALL=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null "
+        & "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=init.defaultBranch "
+        & "GIT_CONFIG_VALUE_0=main EDITOR=true";
+
+      procedure Run_Flow (Dir, Tool, Script_Path, Out_Path : String) is
+         Script : constant String :=
+           "set -e" & LF
+           & "export " & GEnv & LF
+           & "TF=" & Q & Out_Path & Q & LF & ": > " & Q & "$TF" & Q & LF
+           --  -a: these fixtures edit tracked files in place.
+           & "au() { git -c user.name=T -c user.email=t@t "
+           & "commit -q -a -m " & Q & "$1" & Q & "; }" & LF
+           & "for kind in automerge driver renorm; do" & LF
+           & "  d=" & Q & Dir & Q & "/$kind" & LF
+           & "  rm -rf " & Q & "$d" & Q & "; mkdir -p " & Q & "$d" & Q & LF
+           & "  cd " & Q & "$d" & Q & LF
+           & "  git init -q" & LF
+           & "  if [ $kind = driver ]; then" & LF
+           --  resolves to *theirs* and reports conflicts: git keeps that
+           --  output instead of writing its own markers
+           & "    echo '* merge=custom' > .gitattributes" & LF
+           & "    git config merge.custom.driver "
+           & Q & "cp %B %A; exit 1" & Q & LF
+           & "    printf 'base\n' > f; git add f .gitattributes; au base" & LF
+           & "    git checkout -q -b feat" & LF
+           & "    printf 'theirs\n' > f; au feat" & LF
+           & "    git checkout -q main; printf 'ours\n' > f; au main" & LF
+           & "  elif [ $kind = renorm ]; then" & LF
+           & "    printf 'a\nb\nc\n' > f; git add f; au base" & LF
+           & "    git checkout -q -b feat" & LF
+           & "    printf 'a\r\nb2\r\nc\r\n' > f; au feat" & LF
+           & "    git checkout -q main; printf 'a\nb\nc2\n' > f; au main" & LF
+           & "    echo '* text=auto' > .gitattributes" & LF
+           & "    git add .gitattributes; au attrs" & LF
+           & "    git config merge.renormalize true" & LF
+           & "  else" & LF
+           --  f merges cleanly, g conflicts: pins the interleaving of the
+           --  "Auto-merging" lines with the CONFLICT line
+           & "    printf 'a\nb\nc\nd\ne\n' > f" & LF
+           & "    printf '1\n2\n3\n4\n5\n' > g" & LF
+           & "    git add f g; au base" & LF
+           & "    git checkout -q -b feat" & LF
+           & "    printf 'a\nb\nc\nd\nE2\n' > f" & LF
+           & "    printf '1\nT2\n3\n4\n5\n' > g; au feat" & LF
+           & "    git checkout -q main" & LF
+           & "    printf 'A2\nb\nc\nd\ne\n' > f" & LF
+           & "    printf '1\nO2\n3\n4\n5\n' > g; au main" & LF
+           & "  fi" & LF
+           & "  set +e" & LF
+           & "  echo " & Q & "== $kind:" & Q & " >> " & Q & "$TF" & Q & LF
+           & "  " & Tool & " merge feat >> " & Q & "$TF" & Q & " 2>&1" & LF
+           & "  echo " & Q & "rc=$?" & Q & " >> " & Q & "$TF" & Q & LF
+           & "  set -e" & LF
+           & "  cat f >> " & Q & "$TF" & Q & LF
+           & "  git ls-files -u >> " & Q & "$TF" & Q & LF
+           & "  cd " & Q & Base & Q & LF
+           & "done" & LF;
+      begin
+         Version.Test_Support.Write_Text_File (Script_Path, Script);
+         Version.Git_Fixtures.Run (Base, "bash " & Q & Script_Path & Q);
+      end Run_Flow;
+   begin
+      Run_Flow (Version.Test_Support.Join (Base, "ug"), "git",
+                Version.Test_Support.Join (Base, "ug.sh"),
+                Version.Test_Support.Join (Base, "ug.T"));
+      Run_Flow (Version.Test_Support.Join (Base, "uv"), CLI,
+                Version.Test_Support.Join (Base, "uv.sh"),
+                Version.Test_Support.Join (Base, "uv.T"));
+      declare
+         G : constant String :=
+           Read_Raw_Bytes (Version.Test_Support.Join (Base, "ug.T"));
+         V : constant String :=
+           Read_Raw_Bytes (Version.Test_Support.Join (Base, "uv.T"));
+      begin
+         Assert (G = V,
+                 "auto-merging / merge driver / renormalize must match git."
+                 & LF & "--- git ---" & LF & G
+                 & LF & "--- version ---" & LF & V);
+      end;
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Merge_Untested_Classes_Match_Git;
+
+   --  status/blame classes that had never been compared with git: a mode-only
+   --  change (chmod +x), an entirely-untracked directory (git collapses it to
+   --  `dir/`; -uall lists it out), and blame's line attribution.
+   procedure Status_And_Blame_Match_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Base    : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI     : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+      Q : constant Character := '"';
+      GEnv : constant String :=
+        "LC_ALL=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null "
+        & "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=init.defaultBranch "
+        & "GIT_CONFIG_VALUE_0=main EDITOR=true "
+        & "GIT_AUTHOR_DATE=" & Q & "2026-01-01T00:00:00 +0000" & Q & " "
+        & "GIT_COMMITTER_DATE=" & Q & "2026-01-01T00:00:00 +0000" & Q;
+
+      procedure Run_Flow (Dir, Tool, Script_Path, Out_Path : String) is
+         Script : constant String :=
+           "set -e" & LF
+           & "export " & GEnv & LF
+           & "TF=" & Q & Out_Path & Q & LF & ": > " & Q & "$TF" & Q & LF
+           & "rm -rf " & Q & Dir & Q & "; mkdir -p " & Q & Dir & Q & LF
+           & "cd " & Q & Dir & Q & LF
+           & "git init -q" & LF
+           & "ci() { git -c user.name=$1 -c user.email=u@u "
+           & "commit -q -a -m " & Q & "$2" & Q & "; }" & LF
+           --  blame: line 3 is never touched after the first commit
+           & "printf 'one\ntwo\nthree\n' > f" & LF
+           & "mkdir -p partial; printf 'p\n' > partial/tracked" & LF
+           & "git add f partial/tracked" & LF
+           & "git -c user.name=A -c user.email=u@u commit -q -m c1" & LF
+           & "printf 'one\nTWO\nthree\nfour\n' > f; ci B c2" & LF
+           & "printf 'one\nTWO\nthree\nfour\nfive\n' > f; ci C c3" & LF
+           --  status: mode-only change, wholly-untracked dir, partial dir
+           & "chmod +x f" & LF
+           & "mkdir -p ud/deep" & LF
+           & "printf 'a\n' > ud/f1; printf 'b\n' > ud/deep/f2" & LF
+           & "printf 'c\n' > loose; printf 'q\n' > partial/new" & LF
+           --  a staged rename (+ a worktree edit of its destination => RM),
+           --  and a low-similarity rewrite, which git does NOT call a rename
+           & "printf 'r0\nr1\nr2\nr3\nr4\nr5\nr6\nr7\n' > ren.txt" & LF
+           & "printf 'w0\nw1\nw2\nw3\nw4\nw5\nw6\nw7\n' > rw.txt" & LF
+           & "git add ren.txt rw.txt; ci A c4" & LF
+           & "git mv ren.txt ren_new.txt" & LF
+           & "printf 'dirty\n' >> ren_new.txt" & LF
+           & "git mv rw.txt rw_new.txt" & LF
+           & "printf 'zzz\nzzz\nzzz\n' > rw_new.txt; git add rw_new.txt" & LF
+           & "echo '== blame:' >> " & Q & "$TF" & Q & LF
+           & Tool & " blame f >> " & Q & "$TF" & Q & " 2>&1" & LF
+           & "echo '== porcelain:' >> " & Q & "$TF" & Q & LF
+           & Tool & " status --porcelain >> " & Q & "$TF" & Q & " 2>&1" & LF
+           & "echo '== porcelain -uall:' >> " & Q & "$TF" & Q & LF
+           & Tool & " status --porcelain -uall >> " & Q & "$TF" & Q
+           & " 2>&1" & LF;
+      begin
+         Version.Test_Support.Write_Text_File (Script_Path, Script);
+         Version.Git_Fixtures.Run (Base, "bash " & Q & Script_Path & Q);
+      end Run_Flow;
+   begin
+      Run_Flow (Version.Test_Support.Join (Base, "sg"), "git",
+                Version.Test_Support.Join (Base, "sg.sh"),
+                Version.Test_Support.Join (Base, "sg.T"));
+      Run_Flow (Version.Test_Support.Join (Base, "sv"), CLI,
+                Version.Test_Support.Join (Base, "sv.sh"),
+                Version.Test_Support.Join (Base, "sv.T"));
+      declare
+         G : constant String :=
+           Read_Raw_Bytes (Version.Test_Support.Join (Base, "sg.T"));
+         V : constant String :=
+           Read_Raw_Bytes (Version.Test_Support.Join (Base, "sv.T"));
+      begin
+         Assert (G = V,
+                 "status (mode change, untracked dirs) and blame must match"
+                 & " git." & LF & "--- git ---" & LF & G
+                 & LF & "--- version ---" & LF & V);
+      end;
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Status_And_Blame_Match_Git;
+
+   --  The diff engine is git's own (indent heuristic included), so hunks land
+   --  where git puts them; `log -p`, `show <rev>:<path>`, `-U<n>` and
+   --  `rev-parse --show-toplevel` are exercised alongside it.
+   procedure Diff_Engine_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Base    : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI     : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+      Q : constant Character := '"';
+      GEnv : constant String :=
+        "LC_ALL=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null "
+        & "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=init.defaultBranch "
+        & "GIT_CONFIG_VALUE_0=main EDITOR=true "
+        & "GIT_AUTHOR_DATE=" & Q & "2026-01-01T00:00:00 +0000" & Q & " "
+        & "GIT_COMMITTER_DATE=" & Q & "2026-01-01T00:00:00 +0000" & Q;
+
+      procedure Run_Flow (Dir, Tool, Script_Path, Out_Path : String) is
+         Script : constant String :=
+           "set -e" & LF
+           & "export " & GEnv & LF
+           & "TF=" & Q & Out_Path & Q & LF & ": > " & Q & "$TF" & Q & LF
+           & "rm -rf " & Q & Dir & Q & "; mkdir -p " & Q & Dir & Q & LF
+           & "cd " & Q & Dir & Q & LF
+           & "git init -q" & LF
+           --  indented, brace-y, blank-line-rich source: what the indent
+           --  heuristic exists for -- a plain LCS slides these hunks elsewhere
+           & "printf 'def a():\n    x = 1\n\n    if x:\n        return 1\n"
+           & "\n    return 0\n\ndef b():\n    y = 2\n\n    return y\n' > f"
+           & LF
+           & "mkdir -p d; printf 'inner\n' > d/g" & LF
+           & "git add f d/g" & LF
+           & "git -c user.name=A -c user.email=u@u commit -q -m c1" & LF
+           & "printf 'def a():\n    x = 1\n\n    if x:\n        return 1\n"
+           & "\n    return 0\n\ndef NEW():\n    z = 9\n\n    return z\n"
+           & "\ndef b():\n    y = 2\n\n    return y\n' > f" & LF
+           & "git -c user.name=B -c user.email=u@u commit -q -a -m c2" & LF
+           & "echo '== diff HEAD~1 HEAD:' >> " & Q & "$TF" & Q & LF
+           & Tool & " diff HEAD~1 HEAD >> " & Q & "$TF" & Q & " 2>&1" & LF
+           & "echo '== diff -U0:' >> " & Q & "$TF" & Q & LF
+           & Tool & " diff -U0 HEAD~1 HEAD >> " & Q & "$TF" & Q & " 2>&1" & LF
+           & "echo '== log -p:' >> " & Q & "$TF" & Q & LF
+           & Tool & " log -p >> " & Q & "$TF" & Q & " 2>&1" & LF
+           & "echo '== show rev:path:' >> " & Q & "$TF" & Q & LF
+           & Tool & " show HEAD:d/g >> " & Q & "$TF" & Q & " 2>&1" & LF
+           & Tool & " show HEAD:d >> " & Q & "$TF" & Q & " 2>&1" & LF
+           & "echo '== rev-parse:' >> " & Q & "$TF" & Q & LF
+           & Tool & " rev-parse --is-inside-work-tree >> " & Q & "$TF" & Q
+           & " 2>&1" & LF;
+      begin
+         Version.Test_Support.Write_Text_File (Script_Path, Script);
+         Version.Git_Fixtures.Run (Base, "bash " & Q & Script_Path & Q);
+      end Run_Flow;
+   begin
+      Run_Flow (Version.Test_Support.Join (Base, "dg"), "git",
+                Version.Test_Support.Join (Base, "dg.sh"),
+                Version.Test_Support.Join (Base, "dg.T"));
+      Run_Flow (Version.Test_Support.Join (Base, "dv"), CLI,
+                Version.Test_Support.Join (Base, "dv.sh"),
+                Version.Test_Support.Join (Base, "dv.T"));
+      declare
+         G : constant String :=
+           Read_Raw_Bytes (Version.Test_Support.Join (Base, "dg.T"));
+         V : constant String :=
+           Read_Raw_Bytes (Version.Test_Support.Join (Base, "dv.T"));
+      begin
+         Assert (G = V,
+                 "diff hunks / log -p / show rev:path must match git." & LF
+                 & "--- git ---" & LF & G & LF & "--- version ---" & LF & V);
+      end;
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Diff_Engine_Matches_Git;
+
+   --  bisect run (verdict from exit status: 0 good / 125 skip / 1..127 bad)
+   --  and patch-id, both byte-compared with git.  bisect run also proves an
+   --  untracked file (its own test script!) no longer blocks the checkouts.
+   procedure Bisect_Run_And_Patch_Id_Match_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Base    : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI     : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+      Q : constant Character := '"';
+      GEnv : constant String :=
+        "LC_ALL=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null "
+        & "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=init.defaultBranch "
+        & "GIT_CONFIG_VALUE_0=main EDITOR=true";
+
+      procedure Run_Flow (Dir, Tool, Script_Path, Out_Path : String) is
+         Script : constant String :=
+           "set -e" & LF
+           & "export " & GEnv & LF
+           & "TF=" & Q & Out_Path & Q & LF & ": > " & Q & "$TF" & Q & LF
+           & "rm -rf " & Q & Dir & Q & "; mkdir -p " & Q & Dir & Q & LF
+           & "cd " & Q & Dir & Q & LF
+           & "git init -q" & LF
+           & "for i in 1 2 3 4 5 6 7; do" & LF
+           & "  printf 'v%s\n' $i > f; git add f" & LF
+           & "  GIT_COMMITTER_DATE=" & Q & "2026-01-0$i 00:00:00 +0000" & Q
+           & " GIT_AUTHOR_DATE=" & Q & "2026-01-0$i 00:00:00 +0000" & Q
+           & " git -c user.name=U -c user.email=u@u commit -q -m c$i" & LF
+           & "done" & LF
+           --  t.sh stays untracked: git checks out fine around it, and so
+           --  must version (it used to refuse any untracked file).
+           & "printf '#!/bin/sh\ngrep -q " & Q & "v[1-4]$" & Q
+           & " f && exit 0 || exit 1\n' > t.sh; chmod +x t.sh" & LF
+           & "set +e" & LF
+           & "echo '== bisect run:' >> " & Q & "$TF" & Q & LF
+           & Tool & " bisect start HEAD HEAD~6 > /dev/null 2>&1" & LF
+           & Tool & " bisect run ./t.sh >> " & Q & "$TF" & Q & " 2>&1" & LF
+           & Tool & " bisect reset > /dev/null 2>&1" & LF
+           & "echo '== patch-id:' >> " & Q & "$TF" & Q & LF
+           & "git log -p | " & Tool & " patch-id >> " & Q & "$TF" & Q
+           & " 2>&1" & LF;
+      begin
+         Version.Test_Support.Write_Text_File (Script_Path, Script);
+         Version.Git_Fixtures.Run (Base, "bash " & Q & Script_Path & Q);
+      end Run_Flow;
+   begin
+      Run_Flow (Version.Test_Support.Join (Base, "bg"), "git",
+                Version.Test_Support.Join (Base, "bg.sh"),
+                Version.Test_Support.Join (Base, "bg.T"));
+      Run_Flow (Version.Test_Support.Join (Base, "bv"), CLI,
+                Version.Test_Support.Join (Base, "bv.sh"),
+                Version.Test_Support.Join (Base, "bv.T"));
+      declare
+         G : constant String :=
+           Read_Raw_Bytes (Version.Test_Support.Join (Base, "bg.T"));
+         V : constant String :=
+           Read_Raw_Bytes (Version.Test_Support.Join (Base, "bv.T"));
+      begin
+         Assert (G = V,
+                 "bisect run and patch-id must match git." & LF
+                 & "--- git ---" & LF & G & LF & "--- version ---" & LF & V);
+      end;
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Bisect_Run_And_Patch_Id_Match_Git;
+
+   --  `subtree add` grafts a foreign history in as a merge; `subtree split`
+   --  lifts the prefix back out as a standalone lineage, reusing the foreign
+   --  commits and copying the rest with their identities intact.  Both the
+   --  resulting commit ids and the printed output must be git's.
+   procedure Subtree_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Base    : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI     : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+      Q : constant Character := '"';
+      GEnv : constant String :=
+        "LC_ALL=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null "
+        & "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=init.defaultBranch "
+        & "GIT_CONFIG_VALUE_0=main EDITOR=true";
+
+      procedure Run_Flow (Dir, Tool, Script_Path, Out_Path : String) is
+         Script : constant String :=
+           "set -e" & LF
+           & "export " & GEnv & LF
+           & "export GIT_AUTHOR_DATE='1000000000 +0000'" & LF
+           & "export GIT_COMMITTER_DATE='1000000000 +0000'" & LF
+           & "TF=" & Q & Out_Path & Q & LF & ": > " & Q & "$TF" & Q & LF
+           & "rm -rf " & Q & Dir & Q & "; mkdir -p " & Q & Dir & Q & LF
+           & "cd " & Q & Dir & Q & LF
+           & "git init -q lib && cd lib" & LF
+           & "git config user.name U; git config user.email u@u" & LF
+           & "echo one > f.txt; git add -A; git commit -q -m 'lib c1'" & LF
+           & "echo two > f.txt; git commit -q -a -m 'lib c2'" & LF
+           & "cd .. && git init -q main && cd main" & LF
+           & "git config user.name U; git config user.email u@u" & LF
+           & "echo app > app.txt; git add -A; git commit -q -m 'app c1'" & LF
+           & "set +e" & LF
+           & "echo '== add:' >> " & Q & "$TF" & Q & LF
+           --  The fetch chatter belongs to `fetch`, not to `subtree`.
+           & Tool & " subtree add --prefix=v/lib ../lib main 2>&1 "
+           & "| grep -v -e '^From ' -e 'FETCH_HEAD' >> " & Q & "$TF" & Q & LF
+           & "echo three > v/lib/f.txt; git commit -q -a -m 'local edit'" & LF
+           & "echo app2 > app.txt; git commit -q -a -m 'app c2'" & LF
+           & "echo '== split:' >> " & Q & "$TF" & Q & LF
+           --  git's split writes a CR-updated progress counter to stderr;
+           --  only the "Created branch" line it ends with is output.
+           & Tool & " subtree split --prefix=v/lib -b out > sha.txt 2> err.txt"
+           & LF
+           & "cat sha.txt >> " & Q & "$TF" & Q & LF
+           & "grep -o " & Q & "Created branch 'out'" & Q & " err.txt >> "
+           & Q & "$TF" & Q & LF
+           & "echo '== split history:' >> " & Q & "$TF" & Q & LF
+           & "git log --format='%H %T %P %an %ae %ad %cn %ce %cd %s' out >> "
+           & Q & "$TF" & Q & " 2>&1" & LF
+           & "echo '== main history:' >> " & Q & "$TF" & Q & LF
+           & "git log --format='%H %T %P %s%n%b' >> " & Q & "$TF" & Q
+           & " 2>&1" & LF
+           & "echo '== second split is idempotent:' >> " & Q & "$TF" & Q & LF
+           & Tool & " subtree split --prefix=v/lib 2> /dev/null >> "
+           & Q & "$TF" & Q & LF
+           & "echo '== refs:' >> " & Q & "$TF" & Q & LF
+           & "git show-ref >> " & Q & "$TF" & Q & " 2>&1" & LF;
+      begin
+         Version.Test_Support.Write_Text_File (Script_Path, Script);
+         Version.Git_Fixtures.Run (Base, "bash " & Q & Script_Path & Q);
+      end Run_Flow;
+   begin
+      Run_Flow (Version.Test_Support.Join (Base, "sg"), "git",
+                Version.Test_Support.Join (Base, "sg.sh"),
+                Version.Test_Support.Join (Base, "sg.T"));
+      Run_Flow (Version.Test_Support.Join (Base, "sv"), CLI,
+                Version.Test_Support.Join (Base, "sv.sh"),
+                Version.Test_Support.Join (Base, "sv.T"));
+      declare
+         G : constant String :=
+           Read_Raw_Bytes (Version.Test_Support.Join (Base, "sg.T"));
+         V : constant String :=
+           Read_Raw_Bytes (Version.Test_Support.Join (Base, "sv.T"));
+      begin
+         Assert (G = V,
+                 "subtree add/split must match git." & LF
+                 & "--- git ---" & LF & G & LF & "--- version ---" & LF & V);
+      end;
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Subtree_Matches_Git;
+
+   --  `ls-remote`, `check-attr` (macros, negation, precedence, `-a` ordering),
+   --  `check-mailmap` and `for-each-repo`.
+   procedure Plumbing_Queries_Match_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Base    : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI     : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+      Q : constant Character := '"';
+      GEnv : constant String :=
+        "LC_ALL=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null "
+        & "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=init.defaultBranch "
+        & "GIT_CONFIG_VALUE_0=main EDITOR=true";
+
+      procedure Run_Flow (Dir, Tool, Script_Path, Out_Path : String) is
+         Script : constant String :=
+           "set -e" & LF
+           & "export " & GEnv & LF
+           & "export GIT_AUTHOR_DATE='1000000000 +0000'" & LF
+           & "export GIT_COMMITTER_DATE='1000000000 +0000'" & LF
+           & "TF=" & Q & Out_Path & Q & LF & ": > " & Q & "$TF" & Q & LF
+           & "rm -rf " & Q & Dir & Q & "; mkdir -p " & Q & Dir & Q & LF
+           & "cd " & Q & Dir & Q & LF
+           & "git init -q up && cd up" & LF
+           & "git config user.name U; git config user.email u@u" & LF
+           & "printf a > a; git add -A; git commit -q -m a" & LF
+           & "git tag -a v1 -m t1; git tag light; git branch dev" & LF
+           & "cd .. && git init -q w && cd w" & LF
+           & "git config user.name U; git config user.email u@u" & LF
+           & "mkdir -p sub" & LF
+           & "printf 'x\n' > f.txt; printf 'y\n' > sub/g.txt" & LF
+           & "printf 'z\n' > sub/h.bin" & LF
+           & "printf '*.txt text -diff foo=bar\n*.bin binary\n"
+           & "[attr]mymacro text merge=custom\n' > .gitattributes" & LF
+           & "printf 'sub/*.txt eol=lf other\nh.bin mymacro !diff\n'"
+           & " > sub/.gitattributes" & LF
+           & "printf 'Real Name <real@x> <old@x>\nOnly <only@x>\n"
+           & "Named <n@x> Old Named <on@x>\n' > .mailmap" & LF
+           & "git add -A; git commit -q -m w" & LF
+           & "set +e" & LF
+           & "echo '== ls-remote:' >> " & Q & "$TF" & Q & LF
+           & Tool & " ls-remote ../up >> " & Q & "$TF" & Q & " 2>&1" & LF
+           & "echo '== ls-remote --heads/--tags:' >> " & Q & "$TF" & Q & LF
+           & Tool & " ls-remote --heads ../up >> " & Q & "$TF" & Q & " 2>&1"
+           & LF
+           & Tool & " ls-remote --tags ../up >> " & Q & "$TF" & Q & " 2>&1" & LF
+           & "echo '== check-attr:' >> " & Q & "$TF" & Q & LF
+           & Tool & " check-attr text diff foo -- f.txt sub/g.txt sub/h.bin "
+           & "nofile.txt >> " & Q & "$TF" & Q & " 2>&1" & LF
+           & "echo '== check-attr -a:' >> " & Q & "$TF" & Q & LF
+           & Tool & " check-attr -a f.txt sub/h.bin sub/g.txt >> "
+           & Q & "$TF" & Q & " 2>&1" & LF
+           & "echo '== check-mailmap:' >> " & Q & "$TF" & Q & LF
+           & Tool & " check-mailmap 'Old <old@x>' 'Whoever <only@x>' "
+           & "'Old Named <on@x>' 'Other <on@x>' 'Nobody <nb@x>' >> "
+           & Q & "$TF" & Q & " 2>&1" & LF
+           & "echo '== for-each-repo:' >> " & Q & "$TF" & Q & LF
+           & "git config --add my.repos " & Q & "$PWD" & Q & LF
+           & Tool & " for-each-repo --config=my.repos rev-parse "
+           & "--abbrev-ref HEAD >> " & Q & "$TF" & Q & " 2>&1" & LF;
+      begin
+         Version.Test_Support.Write_Text_File (Script_Path, Script);
+         Version.Git_Fixtures.Run (Base, "bash " & Q & Script_Path & Q);
+      end Run_Flow;
+   begin
+      Run_Flow (Version.Test_Support.Join (Base, "pg"), "git",
+                Version.Test_Support.Join (Base, "pg.sh"),
+                Version.Test_Support.Join (Base, "pg.T"));
+      Run_Flow (Version.Test_Support.Join (Base, "pv"), CLI,
+                Version.Test_Support.Join (Base, "pv.sh"),
+                Version.Test_Support.Join (Base, "pv.T"));
+      declare
+         G : constant String :=
+           Read_Raw_Bytes (Version.Test_Support.Join (Base, "pg.T"));
+         V : constant String :=
+           Read_Raw_Bytes (Version.Test_Support.Join (Base, "pv.T"));
+      begin
+         Assert (G = V,
+                 "ls-remote/check-attr/check-mailmap/for-each-repo must match "
+                 & "git." & LF
+                 & "--- git ---" & LF & G & LF & "--- version ---" & LF & V);
+      end;
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Plumbing_Queries_Match_Git;
+
+   --  `merge-tree --write-tree`: the merged tree (conflicted paths carrying the
+   --  marked-up blob), the stage 1/2/3 entries, the messages, and the exit
+   --  code -- plus `show-index`, `unpack-file` and `prune-packed`.
+   procedure Merge_Tree_And_Pack_Plumbing_Match_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Base    : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI     : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+      Q : constant Character := '"';
+      GEnv : constant String :=
+        "LC_ALL=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null "
+        & "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=init.defaultBranch "
+        & "GIT_CONFIG_VALUE_0=main EDITOR=true";
+
+      procedure Run_Flow (Dir, Tool, Script_Path, Out_Path : String) is
+         Script : constant String :=
+           "set -e" & LF
+           & "export " & GEnv & LF
+           & "export GIT_AUTHOR_DATE='1000000000 +0000'" & LF
+           & "export GIT_COMMITTER_DATE='1000000000 +0000'" & LF
+           & "TF=" & Q & Out_Path & Q & LF & ": > " & Q & "$TF" & Q & LF
+           & "rm -rf " & Q & Dir & Q & "; mkdir -p " & Q & Dir & Q & LF
+           & "cd " & Q & Dir & Q & LF
+           & "git init -q ." & LF
+           & "git config user.name U; git config user.email u@u" & LF
+           & "printf 'a\nb\nc\nd\ne\nf\ng\n' > f; printf 'x\n' > g" & LF
+           & "git add -A; git commit -q -m base" & LF
+           & "git checkout -q -b feat" & LF
+           & "printf 'A\nb\nc\nd\ne\nf\ng\n' > f; printf 'n\n' > h" & LF
+           & "git add -A; git commit -q -m feat" & LF
+           & "git checkout -q main" & LF
+           & "printf 'a\nb\nc\nd\ne\nf\nG\n' > f" & LF
+           & "git commit -q -a -m main" & LF
+           & "set +e" & LF
+           & "echo '== clean:' >> " & Q & "$TF" & Q & LF
+           & Tool & " merge-tree --write-tree feat main >> " & Q & "$TF" & Q
+           & " 2>&1; echo " & Q & "(exit $?)" & Q & " >> " & Q & "$TF" & Q & LF
+           & "git checkout -q -b conf main" & LF
+           & "printf 'ZZZ\nb\nc\nd\ne\nf\ng\n' > f" & LF
+           & "git commit -q -a -m conf" & LF
+           & "echo '== conflict:' >> " & Q & "$TF" & Q & LF
+           & Tool & " merge-tree --write-tree feat conf >> " & Q & "$TF" & Q
+           & " 2>&1; echo " & Q & "(exit $?)" & Q & " >> " & Q & "$TF" & Q & LF
+           & "echo '== conflicted blob:' >> " & Q & "$TF" & Q & LF
+           & "TREE=$(" & Tool & " merge-tree --write-tree feat conf | head -1)"
+           & LF
+           & "git cat-file -p $TREE:f >> " & Q & "$TF" & Q & " 2>&1" & LF
+           & "echo '== name-only:' >> " & Q & "$TF" & Q & LF
+           & Tool & " merge-tree --write-tree --name-only feat conf >> "
+           & Q & "$TF" & Q & " 2>&1" & LF
+           & "git gc -q 2>/dev/null" & LF
+           & "echo '== show-index:' >> " & Q & "$TF" & Q & LF
+           & Tool & " show-index < $(ls .git/objects/pack/*.idx | head -1) >> "
+           & Q & "$TF" & Q & " 2>&1" & LF
+           & "echo '== unpack-file:' >> " & Q & "$TF" & Q & LF
+           & "N=$(" & Tool & " unpack-file $(git rev-parse HEAD:f))" & LF
+           & "cat " & Q & "$N" & Q & " >> " & Q & "$TF" & Q & "; rm -f "
+           & Q & "$N" & Q & LF
+           & "printf 'loose\n' | git hash-object -w --stdin > /dev/null" & LF
+           & "echo '== prune-packed:' >> " & Q & "$TF" & Q & LF
+           & "find .git/objects -type f -not -path '*pack*' | wc -l >> "
+           & Q & "$TF" & Q & LF
+           & Tool & " prune-packed" & LF
+           & "find .git/objects -type f -not -path '*pack*' | wc -l >> "
+           & Q & "$TF" & Q & LF;
+      begin
+         Version.Test_Support.Write_Text_File (Script_Path, Script);
+         Version.Git_Fixtures.Run (Base, "bash " & Q & Script_Path & Q);
+      end Run_Flow;
+   begin
+      Run_Flow (Version.Test_Support.Join (Base, "tg"), "git",
+                Version.Test_Support.Join (Base, "tg.sh"),
+                Version.Test_Support.Join (Base, "tg.T"));
+      Run_Flow (Version.Test_Support.Join (Base, "tv"), CLI,
+                Version.Test_Support.Join (Base, "tv.sh"),
+                Version.Test_Support.Join (Base, "tv.T"));
+      declare
+         G : constant String :=
+           Read_Raw_Bytes (Version.Test_Support.Join (Base, "tg.T"));
+         V : constant String :=
+           Read_Raw_Bytes (Version.Test_Support.Join (Base, "tv.T"));
+      begin
+         Assert (G = V,
+                 "merge-tree and the pack plumbing must match git." & LF
+                 & "--- git ---" & LF & G & LF & "--- version ---" & LF & V);
+      end;
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Merge_Tree_And_Pack_Plumbing_Match_Git;
+
+   --  The merge plumbing: `merge-index` driving `merge-one-file` (clean and
+   --  conflicted), and the strategy backends.  The conflict-marker labels are
+   --  the temporary files' names, which git randomizes, so they are folded
+   --  away before comparing.
+   procedure Merge_Plumbing_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Base    : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI     : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+      Q : constant Character := '"';
+      GEnv : constant String :=
+        "LC_ALL=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null "
+        & "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=init.defaultBranch "
+        & "GIT_CONFIG_VALUE_0=main EDITOR=true";
+
+      procedure Run_Flow
+        (Dir, Tool, One_File, Script_Path, Out_Path : String)
+      is
+         Script : constant String :=
+           "set -e" & LF
+           & "export " & GEnv & LF
+           & "export GIT_AUTHOR_DATE='1000000000 +0000'" & LF
+           & "export GIT_COMMITTER_DATE='1000000000 +0000'" & LF
+           & "TF=" & Q & Out_Path & Q & LF & ": > " & Q & "$TF" & Q & LF
+           & "rm -rf " & Q & Dir & Q & "; mkdir -p " & Q & Dir & Q & LF
+           & "cd " & Q & Dir & Q & LF
+           & "git init -q ." & LF
+           & "git config user.name U; git config user.email u@u" & LF
+           & "printf 'a\nb\nc\nd\ne\n' > f; printf 'k\n' > k" & LF
+           & "git add -A; git commit -q -m base" & LF
+           & "git checkout -q -b feat" & LF
+           & "printf 'A\nb\nc\nd\ne\n' > f; printf 'n\n' > n" & LF
+           & "git add -A; git commit -q -m feat" & LF
+           & "git checkout -q main" & LF
+           & "printf 'a\nb\nc\nd\nE\n' > f; git rm -q k" & LF
+           & "git commit -q -a -m main" & LF
+           & "set +e" & LF
+           & "B=$(git merge-base main feat)" & LF
+           --  merge-index + merge-one-file over a git-staged 3-way index.
+           & "git read-tree -m $B HEAD feat" & LF
+           & "echo '== merge-index clean:' >> " & Q & "$TF" & Q & LF
+           & Tool & " merge-index " & One_File & " -a >> " & Q & "$TF" & Q
+           & " 2>&1; echo " & Q & "(exit $?)" & Q & " >> " & Q & "$TF" & Q & LF
+           & "git ls-files -s >> " & Q & "$TF" & Q & LF
+           & "cat f >> " & Q & "$TF" & Q & LF
+           & "ls >> " & Q & "$TF" & Q & LF
+           & "git reset -q --hard; git clean -qfd" & LF
+           --  A real content conflict.
+           & "git checkout -q -b c1 main" & LF
+           & "printf 'a\nXXX\nc\nd\ne\n' > f; git commit -q -a -m c1" & LF
+           & "git checkout -q -b c2 feat" & LF
+           & "printf 'a\nYYY\nc\nd\ne\n' > f; git commit -q -a -m c2" & LF
+           & "git checkout -q c1; B2=$(git merge-base c1 c2)" & LF
+           & "git read-tree -m $B2 c1 c2" & LF
+           & "echo '== merge-index conflict:' >> " & Q & "$TF" & Q & LF
+           & Tool & " merge-index " & One_File & " -a >> " & Q & "$TF" & Q
+           & " 2>&1; echo " & Q & "(exit $?)" & Q & " >> " & Q & "$TF" & Q & LF
+           & "sed -E 's/\.merge_file_[A-Za-z0-9]+/LABEL/' f >> "
+           & Q & "$TF" & Q & LF
+           & "git ls-files -s f >> " & Q & "$TF" & Q & LF
+           & "git reset -q --hard; git clean -qfd" & LF
+           --  The strategy backends.
+           & "echo '== merge-ours:' >> " & Q & "$TF" & Q & LF
+           & Tool & " merge-ours $B2 -- HEAD c2 >> " & Q & "$TF" & Q
+           & " 2>&1; echo " & Q & "(exit $?)" & Q & " >> " & Q & "$TF" & Q & LF
+           & "echo '== merge-recursive (conflict):' >> " & Q & "$TF" & Q & LF
+           & Tool & " merge-recursive $B2 -- HEAD c2 >> " & Q & "$TF" & Q
+           & " 2>&1; echo " & Q & "(exit $?)" & Q & " >> " & Q & "$TF" & Q & LF
+           & "git ls-files -s f >> " & Q & "$TF" & Q & LF
+           & "git reset -q --hard; git clean -qfd" & LF
+           & "echo '== merge-resolve (clean):' >> " & Q & "$TF" & Q & LF
+           & "git checkout -q main" & LF
+           & Tool & " merge-resolve $B -- HEAD feat >> " & Q & "$TF" & Q
+           & " 2>&1; echo " & Q & "(exit $?)" & Q & " >> " & Q & "$TF" & Q & LF
+           & "cat f >> " & Q & "$TF" & Q & LF
+           & "git reset -q --hard; git clean -qfd" & LF
+           & "echo '== merge-octopus (one remote is not an octopus):' >> "
+           & Q & "$TF" & Q & LF
+           & Tool & " merge-octopus $B -- HEAD feat >> " & Q & "$TF" & Q
+           & " 2>&1; echo " & Q & "(exit $?)" & Q & " >> " & Q & "$TF" & Q & LF;
+      begin
+         Version.Test_Support.Write_Text_File (Script_Path, Script);
+         Version.Git_Fixtures.Run (Base, "bash " & Q & Script_Path & Q);
+      end Run_Flow;
+   begin
+      Run_Flow (Version.Test_Support.Join (Base, "mg"), "git",
+                "git-merge-one-file",
+                Version.Test_Support.Join (Base, "mg.sh"),
+                Version.Test_Support.Join (Base, "mg.T"));
+      Run_Flow (Version.Test_Support.Join (Base, "mv"), CLI,
+                "version-merge-one-file",
+                Version.Test_Support.Join (Base, "mv.sh"),
+                Version.Test_Support.Join (Base, "mv.T"));
+      declare
+         G : constant String :=
+           Read_Raw_Bytes (Version.Test_Support.Join (Base, "mg.T"));
+         V : constant String :=
+           Read_Raw_Bytes (Version.Test_Support.Join (Base, "mv.T"));
+      begin
+         Assert (G = V,
+                 "the merge plumbing must match git." & LF
+                 & "--- git ---" & LF & G & LF & "--- version ---" & LF & V);
+      end;
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Merge_Plumbing_Matches_Git;
+
+   --  `commit-graph write` (byte-identical, including the EDGE chunk an
+   --  octopus merge needs), `filter-branch` over its four filters, and a
+   --  `fast-export`/`fast-import` round-trip through git.
+   procedure History_Tools_Match_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Base    : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI     : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+      Q : constant Character := '"';
+      GEnv : constant String :=
+        "LC_ALL=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null "
+        & "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=init.defaultBranch "
+        & "GIT_CONFIG_VALUE_0=main EDITOR=true FILTER_BRANCH_SQUELCH_WARNING=1";
+
+      procedure Run_Flow (Dir, Tool, Script_Path, Out_Path : String) is
+         Script : constant String :=
+           "set -e" & LF
+           & "export " & GEnv & LF
+           & "export GIT_AUTHOR_DATE='1000000000 +0000'" & LF
+           & "export GIT_COMMITTER_DATE='1000000000 +0000'" & LF
+           & "TF=" & Q & Out_Path & Q & LF & ": > " & Q & "$TF" & Q & LF
+           & "rm -rf " & Q & Dir & Q & "; mkdir -p " & Q & Dir & Q & LF
+           & "cd " & Q & Dir & Q & LF
+           & "git init -q ." & LF
+           & "git config user.name U; git config user.email u@u" & LF
+           & "printf 'base\n' > f; printf 's\n' > secret.txt" & LF
+           & "git add -A; git commit -q -m base" & LF
+           --  Three branches and an octopus merge: the EDGE chunk.
+           & "for b in x y z; do" & LF
+           & "  git checkout -q -b $b main" & LF
+           & "  echo $b > $b.txt; git add -A; git commit -q -m $b" & LF
+           & "done" & LF
+           & "git checkout -q main" & LF
+           & "printf 'main2\n' > m.txt; git add -A; git commit -q -m main2"
+           & LF
+           & "git merge -q --no-ff -m octopus x y z > /dev/null 2>&1" & LF
+           & "set +e" & LF
+           & "echo '== commit-graph:' >> " & Q & "$TF" & Q & LF
+           & Tool & " commit-graph write --reachable >> " & Q & "$TF" & Q
+           & " 2>&1" & LF
+           --  The file itself is what must match; hash it.
+           & "sha1sum < .git/objects/info/commit-graph >> " & Q & "$TF" & Q & LF
+           & "git commit-graph verify >> " & Q & "$TF" & Q & " 2>&1; echo "
+           & Q & "(verify $?)" & Q & " >> " & Q & "$TF" & Q & LF
+           & "echo '== fast-export round-trip through git:' >> "
+           & Q & "$TF" & Q & LF
+           & Tool & " fast-export --all > stream" & LF
+           & "mkdir rt && (cd rt && git init -q . && "
+           & "git fast-import --quiet < ../stream)" & LF
+           & "(cd rt && git log --all --format='%H %T %P %s' | sort) >> "
+           & Q & "$TF" & Q & " 2>&1" & LF
+           & "echo '== filter-branch --index-filter:' >> " & Q & "$TF" & Q & LF
+           & Tool & " filter-branch -f --index-filter "
+           & Q & "git rm -q --cached --ignore-unmatch secret.txt" & Q
+           --  git's progress counter is one CR-updated physical line.
+           & " HEAD 2>&1 | grep -v Rewrite >> " & Q & "$TF" & Q & LF
+           & "git log --format='%H %T %s' >> " & Q & "$TF" & Q & LF
+           & "git ls-tree -r HEAD --name-only >> " & Q & "$TF" & Q & LF
+           & "git show-ref | grep original >> " & Q & "$TF" & Q & LF
+           & "echo '== filter-branch --msg-filter:' >> " & Q & "$TF" & Q & LF
+           & Tool & " filter-branch -f --msg-filter 'sed s/base/BASE/' HEAD"
+           & " 2>&1 | grep -v Rewrite >> " & Q & "$TF" & Q & LF
+           & "git log --format='%s' >> " & Q & "$TF" & Q & LF;
+      begin
+         Version.Test_Support.Write_Text_File (Script_Path, Script);
+         Version.Git_Fixtures.Run (Base, "bash " & Q & Script_Path & Q);
+      end Run_Flow;
+   begin
+      Run_Flow (Version.Test_Support.Join (Base, "hg"), "git",
+                Version.Test_Support.Join (Base, "hg.sh"),
+                Version.Test_Support.Join (Base, "hg.T"));
+      Run_Flow (Version.Test_Support.Join (Base, "hv"), CLI,
+                Version.Test_Support.Join (Base, "hv.sh"),
+                Version.Test_Support.Join (Base, "hv.T"));
+      declare
+         G : constant String :=
+           Read_Raw_Bytes (Version.Test_Support.Join (Base, "hg.T"));
+         V : constant String :=
+           Read_Raw_Bytes (Version.Test_Support.Join (Base, "hv.T"));
+      begin
+         Assert (G = V,
+                 "commit-graph, fast-export and filter-branch must match git."
+                 & LF
+                 & "--- git ---" & LF & G & LF & "--- version ---" & LF & V);
+      end;
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end History_Tools_Match_Git;
+
+   procedure Merge_File_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Base    : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI     : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+      Q : constant Character := '"';
+
+      --  Runs an identical set of merge-file invocations (with -p, so output
+      --  goes to stdout) through TOOL over several base/ours/theirs fixtures
+      --  and records stdout+rc per case.
+      procedure Run_Flow (Dir, Tool, Script_Path, Out_Path : String) is
+         Steps : constant String :=
+           "-p o1 b1 t1;"                     --  clean, non-overlapping
+           & "-p o2 b2 t2;"                   --  simple conflict
+           & "-p -L mine -L orig -L yours o2 b2 t2;"
+           & "-p --diff3 o2 b2 t2;"
+           & "-p --ours o2 b2 t2;-p --theirs o2 b2 t2;-p --union o2 b2 t2;"
+           & "-p --marker-size=5 o2 b2 t2;"
+           & "-p o3 b3 t3";                   --  two conflicts combined (gap 3)
+         Script : constant String :=
+           "set -e" & LF
+           & "mkdir -p " & Q & Dir & Q & LF & "cd " & Q & Dir & Q & LF
+           --  fixture 1: clean (ours changes l2, theirs changes l4)
+           & "printf 'l1\nl2\nl3\nl4\nl5\n' > b1" & LF
+           & "printf 'l1\nO2\nl3\nl4\nl5\n' > o1" & LF
+           & "printf 'l1\nl2\nl3\nT4\nl5\n' > t1" & LF
+           --  fixture 2: conflict (both change l2)
+           & "printf 'l1\nl2\nl3\nl4\nl5\n' > b2" & LF
+           & "printf 'l1\nO2\nl3\nl4\nl5\n' > o2" & LF
+           & "printf 'l1\nT2\nl3\nl4\nl5\n' > t2" & LF
+           --  fixture 3: both change l1 and l5 (3 common between) -> combined
+           & "printf 'A\nc1\nc2\nc3\nZ\n' > b3" & LF
+           & "printf 'OA\nc1\nc2\nc3\nOZ\n' > o3" & LF
+           & "printf 'TA\nc1\nc2\nc3\nTZ\n' > t3" & LF
+           & "TF=" & Q & Out_Path & Q & LF & ": > " & Q & "$TF" & Q & LF
+           & "set +e" & LF
+           & "S='" & Steps & "'" & LF
+           & "OLDIFS=" & Q & "$IFS" & Q & LF & "IFS=';'" & LF
+           & "set -- $S" & LF & "IFS=" & Q & "$OLDIFS" & Q & LF
+           & "for c in " & Q & "$@" & Q & "; do" & LF
+           & "  echo " & Q & "\$ merge-file $c" & Q & " >> " & Q & "$TF" & Q & LF
+           & "  " & Tool & " merge-file $c >> " & Q & "$TF" & Q & " 2>&1" & LF
+           & "  echo " & Q & "[rc=$?]" & Q & " >> " & Q & "$TF" & Q & LF
+           & "done" & LF;
+      begin
+         Version.Test_Support.Write_Text_File (Script_Path, Script);
+         Version.Git_Fixtures.Run (Base, "bash " & Q & Script_Path & Q);
+      end Run_Flow;
+   begin
+      Run_Flow (Version.Test_Support.Join (Base, "g"), "git",
+                Version.Test_Support.Join (Base, "g.sh"),
+                Version.Test_Support.Join (Base, "g.T"));
+      Run_Flow (Version.Test_Support.Join (Base, "v"), CLI,
+                Version.Test_Support.Join (Base, "v.sh"),
+                Version.Test_Support.Join (Base, "v.T"));
+      declare
+         G : constant String :=
+           Read_Raw_Bytes (Version.Test_Support.Join (Base, "g.T"));
+         V : constant String :=
+           Read_Raw_Bytes (Version.Test_Support.Join (Base, "v.T"));
+      begin
+         Assert (G = V,
+                 "merge-file must match git byte-for-byte." & LF
+                 & "--- git ---" & LF & G & LF & "--- version ---" & LF & V);
+      end;
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Merge_File_Matches_Git;
+
+   procedure Merge_Output_Matches_Git_Stat
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+
+      procedure Assert_In (Hay, Needle, Ctx : String) is
+      begin
+         Assert (Ada.Strings.Fixed.Index (Hay, Needle) /= 0,
+                 Ctx & " (missing """ & Needle & """)");
+      end Assert_In;
+   begin
+      Version.Init.Init (Root);
+      Configure_User (Root);
+      Ada.Directories.Set_Directory (Root);
+      Version.Git_Fixtures.Run (Root, "printf 'a\n' > f.txt");
+      Version.Git_Fixtures.Run (Root, "git add f.txt && git commit -q -m c1");
+      Version.Git_Fixtures.Run (Root, "git checkout -q -b feat");
+      Version.Git_Fixtures.Run (Root, "printf 'x\n' > g.txt");
+      Version.Git_Fixtures.Run (Root, "git add g.txt && git commit -q -m c2");
+      Version.Git_Fixtures.Run (Root, "git checkout -q -");
+
+      --  Fast-forward: Updating <o>..<n> / Fast-forward / stat / create mode.
+      Version.Git_Fixtures.Run
+        (Root, "LC_ALL=C " & CLI & " merge feat > " & Root & ".ff 2>&1");
+      declare
+         Out_Text : constant String := Read_Raw_Bytes (Root & ".ff");
+      begin
+         Assert_In (Out_Text, "Updating ", "ff updating line");
+         Assert_In (Out_Text, "Fast-forward", "ff headline");
+         Assert_In (Out_Text, " g.txt | 1 +", "ff stat line");
+         Assert_In (Out_Text, " 1 file changed, 1 insertion(+)", "ff footer");
+         Assert_In (Out_Text, " create mode 100644 g.txt", "ff summary");
+      end;
+
+      --  Diverge, then a real merge commit: "Merge made by ..." + stat.
+      Version.Git_Fixtures.Run (Root, "git checkout -q -b other HEAD~1");
+      Version.Git_Fixtures.Run (Root, "printf 'y\n' > h.txt");
+      Version.Git_Fixtures.Run (Root, "git add h.txt && git commit -q -m c3");
+      Version.Git_Fixtures.Run
+        (Root, "LC_ALL=C " & CLI & " merge -m m feat > " & Root & ".mc 2>&1");
+      declare
+         Out_Text : constant String := Read_Raw_Bytes (Root & ".mc");
+      begin
+         Assert_In (Out_Text, "Merge made by the 'ort' strategy.", "mc headline");
+         Assert_In (Out_Text, " g.txt | 1 +", "mc stat line");
+         Assert_In (Out_Text, " 1 file changed, 1 insertion(+)", "mc footer");
+         Assert_In (Out_Text, " create mode 100644 g.txt", "mc summary");
+      end;
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Merge_Output_Matches_Git_Stat;
+
+   procedure Bisect_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Base    : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI     : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+
+      --  Deterministic git: C locale, no user/global config, default branch
+      --  main, non-interactive editor.
+      GEnv : constant String :=
+        "LC_ALL=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null "
+        & "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=init.defaultBranch "
+        & "GIT_CONFIG_VALUE_0=main EDITOR=true";
+
+      --  Build a linear repo of 7 commits with fixed, increasing dates so the
+      --  bisection commit selection is unambiguous, then run an identical
+      --  bisect sequence with TOOL, capturing stdout+stderr+rc per step into
+      --  <Dir>/T. The script is written to a file to avoid nested-quote hell.
+      Q : constant Character := '"';
+      procedure Run_Flow (Dir, Tool, Script_Path, Out_Path : String) is
+         Steps : constant String :=
+           "bisect start;bisect bad;bisect good HEAD~6;bisect good;"
+           & "bisect bad;bisect bad;bisect log;bisect terms;bisect reset;"
+           & "bisect start --term-old old --term-new new HEAD HEAD~6;"
+           & "bisect terms;bisect log;bisect reset";
+         Script : constant String :=
+           "set -e" & LF
+           & "mkdir -p " & Q & Dir & Q & LF
+           & "cd " & Q & Dir & Q & LF
+           & "export " & GEnv & LF
+           & "git init -q" & LF
+           & "t=1000000000" & LF
+           & "for i in $(seq 1 7); do" & LF
+           & "  echo l$i >> f; git add f" & LF
+           & "  GIT_AUTHOR_DATE=" & Q & "$t +0000" & Q
+           & " GIT_COMMITTER_DATE=" & Q & "$t +0000" & Q
+           & " git -c user.name=T -c user.email=t@t commit -q -m "
+           & Q & "commit $i" & Q & LF
+           & "  t=$((t+60))" & LF
+           & "done" & LF
+           --  Capture outside the working tree so the transcript file does
+           --  not itself become an untracked entry blocking bisect checkouts.
+           & "TF=" & Q & Out_Path & Q & LF
+           & ": > " & Q & "$TF" & Q & LF
+           & "set +e" & LF
+           & "S='" & Steps & "'" & LF
+           & "OLDIFS=" & Q & "$IFS" & Q & LF
+           & "IFS=';'" & LF
+           & "set -- $S" & LF
+           & "IFS=" & Q & "$OLDIFS" & Q & LF
+           & "for c in " & Q & "$@" & Q & "; do" & LF
+           & "  echo " & Q & "\$ $c" & Q & " >> " & Q & "$TF" & Q & LF
+           & "  " & Tool & " $c >> " & Q & "$TF" & Q & " 2>&1" & LF
+           & "  echo " & Q & "[rc=$?]" & Q & " >> " & Q & "$TF" & Q & LF
+           & "done" & LF;
+      begin
+         Version.Test_Support.Write_Text_File (Script_Path, Script);
+         Version.Git_Fixtures.Run (Base, "bash " & Q & Script_Path & Q);
+      end Run_Flow;
+   begin
+      Run_Flow (Version.Test_Support.Join (Base, "g"), "git",
+                Version.Test_Support.Join (Base, "g.sh"),
+                Version.Test_Support.Join (Base, "g.T"));
+      Run_Flow (Version.Test_Support.Join (Base, "v"), CLI,
+                Version.Test_Support.Join (Base, "v.sh"),
+                Version.Test_Support.Join (Base, "v.T"));
+      declare
+         G : constant String :=
+           Read_Raw_Bytes (Version.Test_Support.Join (Base, "g.T"));
+         V : constant String :=
+           Read_Raw_Bytes (Version.Test_Support.Join (Base, "v.T"));
+      begin
+         Assert (G = V,
+                 "bisect transcript must match git byte-for-byte." & LF
+                 & "--- git ---" & LF & G & LF & "--- version ---" & LF & V);
+      end;
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Bisect_Matches_Git;
+
+   procedure Show_Branch_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Base    : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI     : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+      GEnv : constant String :=
+        "LC_ALL=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null "
+        & "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=init.defaultBranch "
+        & "GIT_CONFIG_VALUE_0=main EDITOR=true";
+      Q : constant Character := '"';
+
+      --  Three branches diverging from a common base (no merges in range),
+      --  fixed dates so the matrix ordering and naming are unambiguous.
+      procedure Run_Flow (Dir, Tool, Script_Path, Out_Path : String) is
+         Steps : constant String :=
+           "show-branch main feature topic;show-branch topic feature main;"
+           & "show-branch feature main;show-branch main;show-branch;"
+           & "show-branch --list;show-branch --list main feature";
+         Script : constant String :=
+           "set -e" & LF
+           & "mkdir -p " & Q & Dir & Q & LF & "cd " & Q & Dir & Q & LF
+           & "export " & GEnv & LF
+           & "git init -q" & LF
+           & "t=1000000000" & LF
+           & "commit() { echo $1 >> f; git add f; "
+           & "GIT_AUTHOR_DATE=" & Q & "$t +0000" & Q
+           & " GIT_COMMITTER_DATE=" & Q & "$t +0000" & Q
+           & " git -c user.name=T -c user.email=t@t commit -q -m " & Q & "$1"
+           & Q & "; t=$((t+60)); }" & LF
+           & "commit b1; commit b2" & LF
+           & "git branch feature; git branch topic" & LF
+           & "commit m3" & LF
+           & "git checkout -q feature; commit f3; commit f4; commit f5" & LF
+           & "git checkout -q topic; commit t3" & LF
+           & "git checkout -q main" & LF
+           & "TF=" & Q & Out_Path & Q & LF & ": > " & Q & "$TF" & Q & LF
+           & "S='" & Steps & "'" & LF
+           & "OLDIFS=" & Q & "$IFS" & Q & LF & "IFS=';'" & LF
+           & "set -- $S" & LF & "IFS=" & Q & "$OLDIFS" & Q & LF
+           & "for c in " & Q & "$@" & Q & "; do" & LF
+           & "  echo " & Q & "\$ $c" & Q & " >> " & Q & "$TF" & Q & LF
+           & "  " & Tool & " $c >> " & Q & "$TF" & Q & " 2>&1" & LF
+           & "  echo " & Q & "[rc=$?]" & Q & " >> " & Q & "$TF" & Q & LF
+           & "done" & LF;
+      begin
+         Version.Test_Support.Write_Text_File (Script_Path, Script);
+         Version.Git_Fixtures.Run (Base, "bash " & Q & Script_Path & Q);
+      end Run_Flow;
+   begin
+      Run_Flow (Version.Test_Support.Join (Base, "g"), "git",
+                Version.Test_Support.Join (Base, "g.sh"),
+                Version.Test_Support.Join (Base, "g.T"));
+      Run_Flow (Version.Test_Support.Join (Base, "v"), CLI,
+                Version.Test_Support.Join (Base, "v.sh"),
+                Version.Test_Support.Join (Base, "v.T"));
+      declare
+         G : constant String :=
+           Read_Raw_Bytes (Version.Test_Support.Join (Base, "g.T"));
+         V : constant String :=
+           Read_Raw_Bytes (Version.Test_Support.Join (Base, "v.T"));
+      begin
+         Assert (G = V,
+                 "show-branch must match git byte-for-byte." & LF
+                 & "--- git ---" & LF & G & LF & "--- version ---" & LF & V);
+      end;
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Show_Branch_Matches_Git;
+
+   procedure Fetch_Summary_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Base    : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI     : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+      Up      : constant String := Version.Test_Support.Join (Base, "up.git");
+      Work    : constant String := Version.Test_Support.Join (Base, "work");
+      Clone   : constant String := Version.Test_Support.Join (Base, "clone");
+
+      procedure Assert_In (Hay, Needle, Ctx : String) is
+      begin
+         Assert (Ada.Strings.Fixed.Index (Hay, Needle) /= 0,
+                 Ctx & " (missing """ & Needle & """)");
+      end Assert_In;
+   begin
+      --  Create the bare upstream with an explicit default branch so the test
+      --  is hermetic (does not depend on the ambient init.defaultBranch) and
+      --  the pushed `main` matches the remote HEAD.
+      Version.Git_Fixtures.Run (Old_Dir, "git init -q --bare -b main " & Up);
+      Version.Init.Init (Work);
+      Configure_User (Work);
+      Version.Git_Fixtures.Run (Work, "printf 'a\n' > f.txt");
+      Version.Git_Fixtures.Run (Work, "git add f.txt && git commit -q -m c1");
+      Version.Git_Fixtures.Run (Work, "git branch -M main");
+      Version.Git_Fixtures.Run (Work, "git remote add origin " & Up);
+      Version.Git_Fixtures.Run (Work, "git push -q -u origin main");
+
+      Version.Git_Fixtures.Run (Old_Dir, CLI & " clone " & Up & " " & Clone);
+      --  Advance upstream so the clone has one branch update to report.
+      Version.Git_Fixtures.Run (Work, "printf 'x\n' > g.txt");
+      Version.Git_Fixtures.Run (Work, "git add g.txt && git commit -q -m c2");
+      Version.Git_Fixtures.Run (Work, "git push -q origin main");
+
+      Version.Git_Fixtures.Run
+        (Clone,
+         "LC_ALL=C " & CLI & " fetch origin > " & Base & ".fs 2>&1");
+      declare
+         Out_Text : constant String := Read_Raw_Bytes (Base & ".fs");
+      begin
+         Assert_In (Out_Text, "From ", "fetch From line");
+         Assert_In (Out_Text, "  main       -> origin/main", "fetch update line");
+      end;
+
+      --  Clone records refs/remotes/origin/HEAD (git parity, drives ordering).
+      Assert
+        (Ada.Strings.Fixed.Index
+           (Read_Raw_Bytes
+              (Version.Test_Support.Join
+                 (Clone, ".git/refs/remotes/origin/HEAD")),
+            "ref: refs/remotes/origin/main") /= 0,
+         "clone writes origin/HEAD symref");
+
+      --  A trailing-slash for-each-ref pattern lists refs (not an error), even
+      --  with the origin/HEAD symref present.
+      Version.Git_Fixtures.Run
+        (Clone,
+         CLI & " for-each-ref --format='%(refname)' refs/remotes/ > "
+         & Base & ".fe 2>&1");
+      declare
+         Out_Text : constant String := Read_Raw_Bytes (Base & ".fe");
+      begin
+         Assert_In (Out_Text, "refs/remotes/origin/main", "for-each-ref match");
+         Assert
+           (Ada.Strings.Fixed.Index (Out_Text, "error:") = 0,
+            "for-each-ref trailing-slash pattern must not error");
+      end;
+
+      --  Explicit `pull <remote> <branch>` reports git's FETCH_HEAD form.
+      Version.Git_Fixtures.Run
+        (Clone,
+         "LC_ALL=C " & CLI & " pull origin main > " & Base & ".ph 2>&1");
+      declare
+         Out_Text : constant String := Read_Raw_Bytes (Base & ".ph");
+      begin
+         Assert_In (Out_Text, " * branch", "pull explicit FETCH_HEAD kind");
+         Assert_In (Out_Text, "-> FETCH_HEAD", "pull explicit FETCH_HEAD target");
+      end;
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Fetch_Summary_Matches_Git;
+
+   procedure Merge_Conflict_Diagnostics_Match_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root    : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+
+      procedure Assert_In (Hay, Needle, Ctx : String) is
+      begin
+         Assert (Ada.Strings.Fixed.Index (Hay, Needle) /= 0,
+                 Ctx & " (missing """ & Needle & """)");
+      end Assert_In;
+      procedure Assert_Out (Hay, Needle, Ctx : String) is
+      begin
+         Assert (Ada.Strings.Fixed.Index (Hay, Needle) = 0,
+                 Ctx & " (unexpected """ & Needle & """)");
+      end Assert_Out;
+   begin
+      Version.Init.Init (Root);
+      Configure_User (Root);
+      Ada.Directories.Set_Directory (Root);
+      --  modify/delete: git prints no "Auto-merging" (no content merge).
+      Version.Git_Fixtures.Run (Root, "printf 'a\nb\n' > f.txt");
+      Version.Git_Fixtures.Run (Root, "git add f.txt && git commit -q -m c1");
+      Version.Git_Fixtures.Run (Root, "git checkout -q -b feat");
+      Version.Git_Fixtures.Run (Root, "git rm -q f.txt && git commit -q -m del");
+      Version.Git_Fixtures.Run (Root, "git checkout -q -");
+      Version.Git_Fixtures.Run (Root, "printf 'a\nM\n' > f.txt");
+      Version.Git_Fixtures.Run (Root, "git add f.txt && git commit -q -m c3");
+      Version.Git_Fixtures.Run
+        (Root, "LC_ALL=C " & CLI & " merge feat > " & Root & ".md 2>&1 || true");
+      declare
+         Out_Text : constant String := Read_Raw_Bytes (Root & ".md");
+      begin
+         Assert_In
+           (Out_Text, "CONFLICT (modify/delete): f.txt deleted in feat",
+            "modify/delete conflict line");
+         Assert_Out (Out_Text, "Auto-merging", "modify/delete has no Auto-merging");
+      end;
+
+      --  file/directory: git renames the losing file to <path>~<branch>.
+      declare
+         DF : constant String := Version.Test_Support.Join (Root, "df");
+      begin
+         Version.Init.Init (DF);
+         Configure_User (DF);
+         Version.Git_Fixtures.Run (DF, "printf 'x\n' > base.txt");
+         Version.Git_Fixtures.Run (DF, "git add . && git commit -q -m c1");
+         Version.Git_Fixtures.Run (DF, "git checkout -q -b feat");
+         Version.Git_Fixtures.Run (DF, "printf 'FILE\n' > thing");
+         Version.Git_Fixtures.Run (DF, "git add thing && git commit -q -m c2");
+         Version.Git_Fixtures.Run (DF, "git checkout -q -");
+         Version.Git_Fixtures.Run
+           (DF, "mkdir -p thing && printf 'DIR\n' > thing/inner.txt");
+         Version.Git_Fixtures.Run
+           (DF, "git add thing/inner.txt && git commit -q -m c3");
+         Version.Git_Fixtures.Run
+           (DF, "LC_ALL=C " & CLI & " merge feat > " & Root & ".df 2>&1 || true");
+         declare
+            Out_Text : constant String := Read_Raw_Bytes (Root & ".df");
+         begin
+            Assert_In
+              (Out_Text,
+               "CONFLICT (file/directory): directory in the way of thing "
+               & "from feat; moving it to thing~feat instead.",
+               "file/directory conflict message");
+         end;
+         Assert
+           (Ada.Directories.Exists (Version.Test_Support.Join (DF, "thing~feat")),
+            "file/directory moves the losing file to thing~feat");
+      end;
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Merge_Conflict_Diagnostics_Match_Git;
+
+   procedure Cone_Sparse_Index_Is_Operable
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Version.Init.Init (Root);
+      Configure_User (Root);
+      Ada.Directories.Set_Directory (Root);
+      Version.Git_Fixtures.Run (Root, "printf 'r\n' > root.txt");
+      Version.Git_Fixtures.Run
+        (Root, "mkdir -p keep drop && printf 'a\n' > keep/a.txt"
+         & " && printf 'x\n' > drop/x.txt");
+      Version.Git_Fixtures.Run (Root, "git add -A && git commit -q -m c1");
+      --  Put git into cone-mode sparse checkout with a sparse (v3) index.
+      Version.Git_Fixtures.Run (Root, "git sparse-checkout init --cone");
+      Version.Git_Fixtures.Run (Root, "git config index.sparse true");
+      Version.Git_Fixtures.Run (Root, "git sparse-checkout set keep");
+
+      --  version must operate on git's v3 sparse index (not error), and treat
+      --  the sparse-excluded drop/ as absent-by-design (clean, not deleted).
+      Version.Git_Fixtures.Run
+        (Root,
+         "LC_ALL=C " & CLI & " status --porcelain > " & Root & ".cs 2>&1");
+      Assert
+        (Read_Raw_Bytes (Root & ".cs") = "",
+         "cone sparse status is clean (drop/ not reported deleted)");
+
+      Version.Git_Fixtures.Run
+        (Root, "LC_ALL=C " & CLI & " ls-files > " & Root & ".cl 2>&1");
+      declare
+         Out_Text : constant String := Read_Raw_Bytes (Root & ".cl");
+      begin
+         Assert
+           (Ada.Strings.Fixed.Index (Out_Text, "keep/a.txt") /= 0
+            and then Ada.Strings.Fixed.Index (Out_Text, "drop/x.txt") /= 0
+            and then Ada.Strings.Fixed.Index (Out_Text, "error") = 0,
+            "cone sparse ls-files reads the v3 index");
+      end;
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Cone_Sparse_Index_Is_Operable;
+
+   procedure Sparse_Checkout_Set_Round_Trips_With_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root    : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI     : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Version.Init.Init (Root);
+      Configure_User (Root);
+      Ada.Directories.Set_Directory (Root);
+      Version.Git_Fixtures.Run (Root, "printf 't\n' > top.txt");
+      Version.Git_Fixtures.Run
+        (Root, "mkdir -p src docs && printf 's\n' > src/s.txt"
+         & " && printf 'd\n' > docs/d.txt");
+      Version.Git_Fixtures.Run (Root, "git add -A && git commit -q -m c1");
+
+      --  version sets a cone-mode sparse checkout ...
+      Version.Git_Fixtures.Run
+        (Root, "LC_ALL=C " & CLI & " sparse-checkout set src > /dev/null 2>&1");
+
+      --  ... whose pattern file matches git byte-for-byte ...
+      Version.Git_Fixtures.Run
+        (Root, "printf '/*\n!/*/\n/src/\n' > " & Root & ".expect");
+      Assert
+        (Read_Raw_Bytes (Version.Test_Support.Join (Root, ".git/info/sparse-checkout"))
+           = Read_Raw_Bytes (Root & ".expect"),
+         "version writes git's cone patterns");
+
+      --  ... and real git reads it: the excluded path is skip-worktree (not
+      --  deleted), so status is clean and ls-files -t marks it 'S'.
+      Version.Git_Fixtures.Run
+        (Root, "LC_ALL=C git status --porcelain > " & Root & ".st 2>&1");
+      Assert
+        (Read_Raw_Bytes (Root & ".st") = "",
+         "git sees a version-made sparse checkout as clean");
+
+      Version.Git_Fixtures.Run
+        (Root, "LC_ALL=C git ls-files -t > " & Root & ".t 2>&1");
+      declare
+         Out_Text : constant String := Read_Raw_Bytes (Root & ".t");
+      begin
+         Assert
+           (Ada.Strings.Fixed.Index (Out_Text, "S docs/d.txt") /= 0,
+            "git marks the excluded path skip-worktree");
+         Assert
+           (Ada.Strings.Fixed.Index (Out_Text, "H src/s.txt") /= 0,
+            "git marks the included path present");
+      end;
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Sparse_Checkout_Set_Round_Trips_With_Git;
+
+   procedure Submodule_Foreach_Sync_Deinit_Match_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Base    : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI     : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+      Super   : constant String := Version.Test_Support.Join (Base, "super");
+   begin
+      --  A submodule upstream and a superproject that embeds it (set up with
+      --  real git; version's foreach/sync/deinit then operate on it).
+      Version.Git_Fixtures.Run
+        (Base,
+         "git init -q dep.up && cd dep.up && git config user.email a@b.c"
+         & " && git config user.name t && echo d > f && git add f"
+         & " && git commit -q -m dep");
+      Version.Git_Fixtures.Run
+        (Base,
+         "git init -q super && cd super && git config user.email a@b.c"
+         & " && git config user.name t && echo top > top.txt && git add top.txt"
+         & " && git -c protocol.file.allow=always submodule add -q file://"
+         & Base & "/dep.up vendor/dep && git commit -q -m add");
+
+      --  foreach exposes $sm_path and prints the Entering banner.
+      Version.Git_Fixtures.Run
+        (Super,
+         "LC_ALL=C " & CLI & " submodule foreach 'echo P=$sm_path' > "
+         & Base & ".fe 2>&1");
+      declare
+         Out_Text : constant String := Read_Raw_Bytes (Base & ".fe");
+      begin
+         Assert
+           (Ada.Strings.Fixed.Index (Out_Text, "Entering 'vendor/dep'") /= 0
+            and then Ada.Strings.Fixed.Index (Out_Text, "P=vendor/dep") /= 0,
+            "submodule foreach runs the command with $sm_path in each submodule");
+      end;
+
+      --  sync copies the .gitmodules URL into .git/config.
+      Version.Git_Fixtures.Run
+        (Super,
+         "LC_ALL=C " & CLI & " submodule sync > " & Base & ".sy 2>&1");
+      Assert
+        (Ada.Strings.Fixed.Index
+           (Read_Raw_Bytes (Base & ".sy"),
+            "Synchronizing submodule url for 'vendor/dep'") /= 0,
+         "submodule sync reports each synchronized submodule");
+      Version.Git_Fixtures.Run
+        (Super, "test -n ""$(git config submodule.vendor/dep.url)""");
+
+      --  deinit empties the worktree and drops the config, keeping .gitmodules.
+      Version.Git_Fixtures.Run
+        (Super,
+         "LC_ALL=C " & CLI & " submodule deinit vendor/dep > "
+         & Base & ".di 2>&1");
+      declare
+         Out_Text : constant String := Read_Raw_Bytes (Base & ".di");
+      begin
+         Assert
+           (Ada.Strings.Fixed.Index (Out_Text, "Cleared directory 'vendor/dep'")
+            /= 0
+            and then Ada.Strings.Fixed.Index
+                       (Out_Text, "unregistered for path 'vendor/dep'") /= 0,
+            "submodule deinit clears the directory and unregisters the path");
+      end;
+      Version.Git_Fixtures.Run
+        (Super, "test -z ""$(ls -A vendor/dep)""");
+      Version.Git_Fixtures.Run
+        (Super, "test -z ""$(git config submodule.vendor/dep.url || true)""");
+      Version.Git_Fixtures.Run (Super, "grep -q vendor/dep .gitmodules");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Submodule_Foreach_Sync_Deinit_Match_Git;
+
    overriding procedure Register_Tests (T : in out Test_Case) is
       use AUnit.Test_Cases.Registration;
    begin
+      Register_Routine
+        (T, Submodule_Foreach_Sync_Deinit_Match_Git'Access,
+         "Submodule: foreach/sync/deinit match git");
+      Register_Routine
+        (T, Sparse_Checkout_Set_Round_Trips_With_Git'Access,
+         "Sparse: version sparse-checkout set round-trips with git");
+      Register_Routine
+        (T, Archive_Tar_Filter_Command'Access,
+         "Archive: configured tar.<fmt>.command filters, unknown format errors");
+      Register_Routine
+        (T, Cone_Sparse_Index_Is_Operable'Access,
+         "Sparse: version operates on git cone-mode sparse (v3) index");
+      Register_Routine
+        (T, Merge_Conflict_Diagnostics_Match_Git'Access,
+         "Merge: modify/delete conflict has no spurious Auto-merging");
+      Register_Routine
+        (T, Fetch_Summary_Matches_Git'Access,
+         "Fetch: prints git's From/<old>..<new> -> origin/<branch> summary");
+      Register_Routine
+        (T, Merge_Output_Matches_Git_Stat'Access,
+         "Merge: fast-forward/merge-commit emit git's Updating + --stat/summary");
+      Register_Routine
+        (T, Output_Is_Byte_Exact_Against_Git'Access,
+         "Output: status/cat-file emit git-exact bytes (no spurious newline)");
+      Register_Routine
+        (T, LFS_Porcelain_Round_Trip'Access,
+         "LFS porcelain: track/stage/ls-files/pointer/checkout round-trip");
+      Register_Routine
+        (T, LFS_Migrate_And_Maintenance'Access,
+         "LFS: migrate import/export + ls-files/fsck/prune maintenance");
+      Register_Routine
+        (T, Mv_Into_Directory_Matches_Git'Access,
+         "Mv: FILE DIR/ and FILE DIR both move into the directory");
+      Register_Routine
+        (T, Blame_Matches_Git'Access,
+         "Blame: default annotation matches git byte-for-byte");
+      Register_Routine
+        (T, Switch_Matches_Git'Access,
+         "Switch: -c/-/branch/--detach output matches git byte-for-byte");
+      Register_Routine
+        (T, Bisect_Matches_Git'Access,
+         "Bisect: start/good/bad/log/terms/reset match git byte-for-byte");
+      Register_Routine
+        (T, Show_Branch_Matches_Git'Access,
+         "Show-branch: matrix/naming/list match git byte-for-byte");
+      Register_Routine
+        (T, Merge_File_Matches_Git'Access,
+         "Merge-file: clean/conflict/diff3/favor/marker/combine match git");
+      Register_Routine
+        (T, Rerere_Matches_Git'Access,
+         "Rerere: status/remaining/clear match git");
+      Register_Routine
+        (T, Merge_Conflict_Matches_Git'Access,
+         "Merge: conflict file/stages/rr-cache/-Xours match git");
+      Register_Routine
+        (T, Merge_Rename_And_Whitespace_Matches_Git'Access,
+         "Merge: rename labels and -Xignore-space-change match git");
+      Register_Routine
+        (T, Merge_Untested_Classes_Match_Git'Access,
+         "Merge: auto-merging line, merge driver, renormalize match git");
+      Register_Routine
+        (T, Status_And_Blame_Match_Git'Access,
+         "Status/blame: mode change, untracked dirs, attribution match git");
+      Register_Routine
+        (T, Diff_Engine_Matches_Git'Access,
+         "Diff: hunks (indent heuristic), log -p, show rev:path match git");
+      Register_Routine
+        (T, History_Tools_Match_Git'Access,
+         "CLI Integration: commit-graph/fast-export/filter-branch match git");
+      Register_Routine
+        (T, Merge_Plumbing_Matches_Git'Access,
+         "CLI Integration: merge-index/merge-one-file + strategy backends "
+         & "match git");
+      Register_Routine
+        (T, Merge_Tree_And_Pack_Plumbing_Match_Git'Access,
+         "CLI Integration: merge-tree + show-index/unpack-file/prune-packed "
+         & "match git");
+      Register_Routine
+        (T, Plumbing_Queries_Match_Git'Access,
+         "CLI Integration: ls-remote/check-attr/check-mailmap/for-each-repo "
+         & "match git");
+      Register_Routine
+        (T, Subtree_Matches_Git'Access,
+         "CLI Integration: subtree add/split match git");
+      Register_Routine
+        (T, Bisect_Run_And_Patch_Id_Match_Git'Access,
+         "Bisect run and patch-id match git");
+      Register_Routine
+        (T, Hook_Run_Matches_Git'Access,
+         "Hook: run output and exit codes match git");
+      Register_Routine
+        (T, Maintenance_Run_Matches_Git'Access,
+         "Maintenance: run is silent, valid, and rejects bad tasks like git");
+      Register_Routine
+        (T, Interpret_Trailers_Matches_Git'Access,
+         "Interpret-trailers: output matches git byte-for-byte");
+      Register_Routine
+        (T, Stripspace_Matches_Git'Access,
+         "Stripspace: default/-s/-c output matches git byte-for-byte");
+      Register_Routine
+        (T, Check_Ref_Format_Matches_Git'Access,
+         "Check-ref-format: validity and --normalize match git");
+      Register_Routine
+        (T, Mktree_Matches_Git'Access,
+         "Mktree: tree oid matches git across sort/subtree/mode cases");
+      Register_Routine
+        (T, Mktag_Matches_Git'Access,
+         "Mktag: tag oid matches git and rejects a type mismatch");
+      Register_Routine
+        (T, Fmt_Merge_Msg_Matches_Git'Access,
+         "Fmt-merge-msg: merge message matches git across grouping cases");
+      Register_Routine
+        (T, Get_Tar_Commit_Id_Matches_Git'Access,
+         "Get-tar-commit-id: recovers the commit id from git and version tars");
+      Register_Routine
+        (T, Diff_Plumbing_Matches_Git'Access,
+         "Diff plumbing: diff-tree/diff-index/diff-files match git raw output");
+      Register_Routine
+        (T, Replace_Matches_Git'Access,
+         "Replace: ref management and read-path honoring match git");
+      Register_Routine
+        (T, Shortlog_Matches_Git'Access,
+         "Shortlog: -s/-n/-sn output matches git byte-for-byte");
+      Register_Routine
+        (T, Diff_Name_Only_Matches_Git'Access,
+         "Diff: --name-only/--name-status match git (A/D/M)");
+      Register_Routine
+        (T, Extra_Plumbing_Matches_Git'Access,
+         "Plumbing: var/count-objects/@{n}/name-rev/%(upstream) match git");
+      Register_Routine
+        (T, Cat_File_Batch_All_Objects_Matches_Git'Access,
+         "Cat-file: --batch-all-objects enumerates loose+packed like git");
       Register_Routine
         (T, Plumbing_Matches_Git'Access,
          "Plumbing: rev-parse/write-tree/ls-files/hash-object match git");
