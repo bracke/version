@@ -15867,6 +15867,10 @@ package body Version.CLI is
                            "warning: " & Arg (Base) & " has multiple values");
                         Ada.Command_Line.Set_Exit_Status
                           (Ada.Command_Line.Exit_Status (5));
+                     when Version.Config.Key_Absent =>
+                        --  git exits 5 with no diagnostic: nothing to unset.
+                        Ada.Command_Line.Set_Exit_Status
+                          (Ada.Command_Line.Exit_Status (5));
                   end;
 
                elsif Is_Option (Subcommand) then

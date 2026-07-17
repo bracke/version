@@ -1085,6 +1085,69 @@ package body CLI_Integration_Tests is
          raise;
    end Merge_Backends_Match_Git;
 
+   --  Regression: assorted correctness fixes -- describe no longer aborts on a
+   --  merge commit, init --bare drops core.logallrefupdates, notes writes
+   --  git's commit message, and config unset of a missing key exits 5 silent.
+   procedure Correctness_Batch_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Ada.Directories.Set_Directory (Root);
+
+      --  describe on a history with a merge commit: byte-identical to git.
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C GIT_CONFIG_NOSYSTEM=1"
+         & " GIT_AUTHOR_DATE='1700000000 +0000'"
+         & " GIT_COMMITTER_DATE='1700000000 +0000'; rm -rf r; mkdir r; cd r;"
+         & " git init -q -b main; git config user.email t@e;"
+         & " git config user.name T; printf 'a\n' > f; git add f;"
+         & " git commit -qm c1; git tag -a v1 -m v1;"
+         & " git checkout -q -b feat; printf 'b\n' > g; git add g;"
+         & " git commit -qm c2; git checkout -q main;"
+         & " git merge -q --no-ff feat -m merge;"
+         & " test ""$(git describe)"" = ""$(" & CLI & " describe)""");
+
+      --  init --bare omits core.logallrefupdates, as git does.
+      Version.Git_Fixtures.Run
+        (Root,
+         "export LC_ALL=C GIT_CONFIG_NOSYSTEM=1; rm -rf b;"
+         & " " & CLI & " init --bare b >/dev/null 2>&1;"
+         & " test -z ""$(git config -f b/config core.logallrefupdates"
+         & "   || true)""");
+
+      --  notes add writes git's exact notes-commit message.
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C GIT_CONFIG_NOSYSTEM=1"
+         & " GIT_AUTHOR_DATE='1700000000 +0000'"
+         & " GIT_COMMITTER_DATE='1700000000 +0000'; rm -rf n; mkdir n; cd n;"
+         & " git init -q; git config user.email t@e; git config user.name T;"
+         & " printf x > f; git add f; git commit -qm c;"
+         & " " & CLI & " notes add -m hello >/dev/null;"
+         & " test ""$(git log --format=%s -1 refs/notes/commits)"""
+         & "   = ""Notes added by 'git notes add'""");
+
+      --  config unset of a missing key: exit 5, no output.
+      Version.Git_Fixtures.Run
+        (Root,
+         "export LC_ALL=C GIT_CONFIG_NOSYSTEM=1; rm -rf c; mkdir c; cd c;"
+         & " git init -q;"
+         & " e=0; o=$(" & CLI & " config unset no.such 2>&1) || e=$?;"
+         & " test $e -eq 5 && test -z ""$o""");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Correctness_Batch_Matches_Git;
+
    --  Byte-oracle the remaining plumbing: var, count-objects, rev-parse @{n},
    --  name-rev, and for-each-ref %(upstream).
    procedure Extra_Plumbing_Matches_Git
@@ -4263,6 +4326,9 @@ package body CLI_Integration_Tests is
       Register_Routine
         (T, Merge_Backends_Match_Git'Access,
          "merge-recursive virtual base and merge-resolve precondition");
+      Register_Routine
+        (T, Correctness_Batch_Matches_Git'Access,
+         "describe/init--bare/notes/config-unset correctness match git");
    end Register_Tests;
 
    overriding function Name (T : Test_Case) return AUnit.Message_String is
