@@ -1307,6 +1307,64 @@ package body CLI_Integration_Tests is
          raise;
    end Ls_Files_Raw_Diff_Mode_Match_Git;
 
+   --  Regression: bisect refuses when a good rev is not an ancestor of the bad
+   --  rev (was silently reporting a bogus first-bad-commit); cat-file honours
+   --  -z, reading NUL-separated requests (was one malformed object name).
+   procedure Bisect_Catfile_Z_Match_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Ada.Directories.Set_Directory (Root);
+
+      --  Swapped good/bad: version and git both refuse with the same message
+      --  and exit 1; a normal bisect still starts.
+      Version.Git_Fixtures.Run
+        (Root,
+         "export LC_ALL=C GIT_CONFIG_NOSYSTEM=1"
+         & " GIT_AUTHOR_DATE='1700000000 +0000'"
+         & " GIT_COMMITTER_DATE='1700000000 +0000'; rm -rf r; mkdir r;"
+         & " ( cd r; git init -q -b main; git config user.email t@e;"
+         & "   git config user.name T;"
+         & "   for i in 1 2 3 4 5; do printf '%s\n' $i >> f; git add f;"
+         & "     git commit -qm c$i; done;"
+         & "   OLD=$(git rev-parse HEAD~3); NEW=$(git rev-parse HEAD);"
+         & "   ge=0; go=$( ( git bisect start; git bisect bad $OLD;"
+         & "     git bisect good $NEW ) 2>&1 ) || ge=$?; git bisect reset"
+         & "     >/dev/null 2>&1;"
+         & "   ve=0; vo=$( ( " & CLI & " bisect start; " & CLI
+         & " bisect bad $OLD; " & CLI & " bisect good $NEW ) 2>&1 ) || ve=$?;"
+         & "   " & CLI & " bisect reset >/dev/null 2>&1;"
+         & "   test $ge -eq 1 && test $ve -eq 1 &&"
+         & "   printf '%s\n' ""$vo"" |"
+         & "     grep -q 'not ancestors of the bad rev' )");
+
+      --  cat-file --batch-check -z: NUL-separated requests, output matches git.
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C GIT_CONFIG_NOSYSTEM=1"
+         & " GIT_AUTHOR_DATE='1700000000 +0000'"
+         & " GIT_COMMITTER_DATE='1700000000 +0000'; rm -rf c; mkdir c;"
+         & " ( cd c; git init -q; git config user.email t@e;"
+         & "   git config user.name T; printf 'hi\n' > f; git add f;"
+         & "   git commit -qm c; H=$(git rev-parse HEAD);"
+         & "   B=$(git rev-parse HEAD:f);"
+         & "   test ""$(printf '%s\0%s\0' ""$H"" ""$B"" |"
+         & "     git cat-file --batch-check -z)"""
+         & "     = ""$(printf '%s\0%s\0' ""$H"" ""$B"" | " & CLI
+         & " cat-file --batch-check -z)"" )");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Bisect_Catfile_Z_Match_Git;
+
    --  Byte-oracle the remaining plumbing: var, count-objects, rev-parse @{n},
    --  name-rev, and for-each-ref %(upstream).
    procedure Extra_Plumbing_Matches_Git
@@ -4497,6 +4555,9 @@ package body CLI_Integration_Tests is
       Register_Routine
         (T, Ls_Files_Raw_Diff_Mode_Match_Git'Access,
          "ls-files -m deletes; diff-files/diff-index raw mode match git");
+      Register_Routine
+        (T, Bisect_Catfile_Z_Match_Git'Access,
+         "bisect good-ancestor check; cat-file -z NUL input match git");
    end Register_Tests;
 
    overriding function Name (T : Test_Case) return AUnit.Message_String is

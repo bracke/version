@@ -6587,27 +6587,63 @@ package body Version.CLI is
          Version.Console.Put (Version.Show.Show_Commit (Repo, B.Rev, Opts));
       end Emit_Found;
 
+      --  git's sanity check before bisecting: every good rev must be an
+      --  ancestor of the bad rev. Otherwise good/bad were likely swapped, and
+      --  continuing would report a meaningless "first bad commit".
+      function Good_Ancestors_Of_Bad return Boolean is
+      begin
+         if not Version.Bisect.Has_Bad (Repo)
+           or else Version.Bisect.Good_Count (Repo) = 0
+         then
+            return True;
+         end if;
+         declare
+            Bad : constant Version.Objects.Hex_Object_Id :=
+              Version.Bisect.Bad_Id (Repo);
+         begin
+            for G of Version.Bisect.Good_Ids (Repo) loop
+               if not Version.History.Is_Ancestor
+                        (Repo, Base_Id => G, Derived_Id => Bad)
+               then
+                  return False;
+               end if;
+            end loop;
+         end;
+         return True;
+      end Good_Ancestors_Of_Bad;
+
       --  Recompute the bisection and render / act on the result.
       procedure Advance is
-         B : constant Version.Bisect.Bisection := Compute (Repo);
       begin
-         case B.Kind is
-            when Need_Both | Need_Good | Need_Bad =>
-               declare
-                  T : constant String := Status_Text (Repo, B.Kind);
-               begin
-                  Append_Log (Repo, "# status: " & T);
-                  Success_Line ("status: " & T);
-               end;
-            when Continue =>
-               Emit_Continue (B);
-            when Found =>
-               Emit_Found (B);
-            when Only_Skipped =>
-               Error_Line
-                 ("There are only 'skip'ped commits left to test.");
-               Set_Command_Failure;
-         end case;
+         if not Good_Ancestors_Of_Bad then
+            Stderr_Line ("Some good revs are not ancestors of the bad rev.");
+            Stderr_Line ("git bisect cannot work properly in this case.");
+            Stderr_Line ("Maybe you mistook good and bad revs?");
+            Set_Command_Failure;
+            return;
+         end if;
+
+         declare
+            B : constant Version.Bisect.Bisection := Compute (Repo);
+         begin
+            case B.Kind is
+               when Need_Both | Need_Good | Need_Bad =>
+                  declare
+                     T : constant String := Status_Text (Repo, B.Kind);
+                  begin
+                     Append_Log (Repo, "# status: " & T);
+                     Success_Line ("status: " & T);
+                  end;
+               when Continue =>
+                  Emit_Continue (B);
+               when Found =>
+                  Emit_Found (B);
+               when Only_Skipped =>
+                  Error_Line
+                    ("There are only 'skip'ped commits left to test.");
+                  Set_Command_Failure;
+            end case;
+         end;
       end Advance;
 
       --  Record marks (comment + command lines) for a good/bad/skip verb.
@@ -13819,6 +13855,12 @@ package body Version.CLI is
                                       = "--batch-check="));
                All_Objects : constant Boolean :=
                  (for some J in 2 .. Count => Arg (J) = "--batch-all-objects");
+               --  -z / -Z read the request list NUL-separated instead of
+               --  newline-separated (git also NUL-terminates -Z output, not
+               --  handled here).
+               Nul_In : constant Boolean :=
+                 (for some J in 2 .. Count => Arg (J) = "-z"
+                    or else Arg (J) = "-Z");
             begin
                if Is_Batch or else Is_Batch_Check then
                   declare
@@ -13937,9 +13979,8 @@ package body Version.CLI is
                            end loop;
                         end;
                      else
-                        while not Ada.Text_IO.End_Of_File loop
-                           declare
-                              Line  : constant String := Ada.Text_IO.Get_Line;
+                        declare
+                           procedure Process (Line : String) is
                               Sp    : constant Natural :=
                                 Ada.Strings.Fixed.Index (Line, " ");
                               Token : constant String :=
@@ -13950,8 +13991,30 @@ package body Version.CLI is
                                  else Line (Sp + 1 .. Line'Last));
                            begin
                               Emit (Token, Rest);
-                           end;
-                        end loop;
+                           end Process;
+                        begin
+                           if Nul_In then
+                              --  Requests are NUL-separated (-z/-Z).
+                              declare
+                                 Data  : constant String := Read_All_Stdin;
+                                 Start : Positive := Data'First;
+                              begin
+                                 for I in Data'Range loop
+                                    if Data (I) = Character'Val (0) then
+                                       Process (Data (Start .. I - 1));
+                                       Start := I + 1;
+                                    end if;
+                                 end loop;
+                                 if Start <= Data'Last then
+                                    Process (Data (Start .. Data'Last));
+                                 end if;
+                              end;
+                           else
+                              while not Ada.Text_IO.End_Of_File loop
+                                 Process (Ada.Text_IO.Get_Line);
+                              end loop;
+                           end if;
+                        end;
                      end if;
                   end;
                elsif Count /= 3 then
