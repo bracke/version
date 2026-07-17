@@ -13459,16 +13459,32 @@ package body Version.CLI is
                            Flush;
                         end;
                      else
-                        for M of Matches loop
-                           if Show_Lines then
-                              Success_Line
-                                (To_String (M.Path) & ":" & Img (M.Line_No)
-                                 & ":" & To_String (M.Text));
-                           else
-                              Success_Line
-                                (To_String (M.Path) & ":" & To_String (M.Text));
-                           end if;
-                        end loop;
+                        declare
+                           Prev_Bin : Unbounded_String;
+                           Bin_Seen : Boolean := False;
+                        begin
+                           for M of Matches loop
+                              if M.Binary then
+                                 --  git prints one "Binary file <p> matches"
+                                 --  per binary file, never the line content.
+                                 if not Bin_Seen or else M.Path /= Prev_Bin then
+                                    Success_Line
+                                      ("Binary file " & To_String (M.Path)
+                                       & " matches");
+                                    Prev_Bin := M.Path;
+                                    Bin_Seen := True;
+                                 end if;
+                              elsif Show_Lines then
+                                 Success_Line
+                                   (To_String (M.Path) & ":" & Img (M.Line_No)
+                                    & ":" & To_String (M.Text));
+                              else
+                                 Success_Line
+                                   (To_String (M.Path) & ":"
+                                    & To_String (M.Text));
+                              end if;
+                           end loop;
+                        end;
                      end if;
                      if Matches.Is_Empty then
                         Set_Command_Failure;
@@ -18281,6 +18297,40 @@ package body Version.CLI is
                      Success_Line ("prune-packable: 0");
                      Success_Line ("garbage: 0");
                      Success_Line ("size-garbage: 0");
+                  end;
+               elsif Count >= 2 and then (Arg (2) = "-H"
+                                          or else Arg (2) = "--human-readable")
+               then
+                  --  git's -H humanises the on-disk byte total the way
+                  --  strbuf_humanise_bytes does: "<n> bytes", else "X.XX KiB",
+                  --  "X.XX MiB", "X.XX GiB" (two decimals, /1024 each step).
+                  declare
+                     Bytes : constant Long_Long_Integer := KiB * 1024;
+
+                     function Fmt2
+                       (Value, Divisor : Long_Long_Integer) return String
+                     is
+                        Hundredths : constant Long_Long_Integer :=
+                          (Value * 100 + Divisor / 2) / Divisor;
+                        Frac : constant Long_Long_Integer := Hundredths mod 100;
+                        Frac_Img : constant String :=
+                          (if Frac < 10 then "0" else "")
+                          & Img (Frac);
+                     begin
+                        return Img (Hundredths / 100) & "." & Frac_Img;
+                     end Fmt2;
+
+                     Human : constant String :=
+                       (if Bytes < 1024 then Img (Bytes) & " bytes"
+                        elsif Bytes < 1024 * 1024
+                        then Fmt2 (Bytes, 1024) & " KiB"
+                        elsif Bytes < 1024 * 1024 * 1024
+                        then Fmt2 (Bytes, 1024 * 1024) & " MiB"
+                        else Fmt2 (Bytes, 1024 * 1024 * 1024) & " GiB");
+                  begin
+                     Success_Line
+                       (Img (Long_Long_Integer (Count_N)) & " objects, "
+                        & Human);
                   end;
                else
                   Success_Line

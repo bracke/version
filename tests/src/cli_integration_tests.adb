@@ -1203,6 +1203,60 @@ package body CLI_Integration_Tests is
          raise;
    end Mktag_Fsck_Matches_Git;
 
+   --  Regression: grep collapses a binary file to "Binary file <p> matches"
+   --  (was dumping raw NUL bytes); count-objects -H humanises the size (was
+   --  "N kilobytes"); diff shows mode changes for a chmod, worktree and
+   --  --cached, pure and alongside content (was empty / missing headers).
+   procedure Grep_Count_Diff_Match_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Ada.Directories.Set_Directory (Root);
+
+      --  grep on a binary + a text file: default/-n/-c/-l all match git.
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C GIT_CONFIG_NOSYSTEM=1"
+         & " GIT_AUTHOR_DATE='1700000000 +0000'"
+         & " GIT_COMMITTER_DATE='1700000000 +0000'; rm -rf r; mkdir r; cd r;"
+         & " git init -q; git config user.email t@e; git config user.name T;"
+         & " printf 'match\0x match\nmatch two\n' > b;"
+         & " printf 'plain match\n' > t; git add b t; git commit -qm c;"
+         & " for o in '' '-n' '-c' '-l'; do"
+         & "   test ""$(git grep $o match)"" = ""$(" & CLI & " grep $o match)"";"
+         & " done;"
+         & " test ""$(git count-objects -H)"" = ""$(" & CLI
+         & " count-objects -H)""");
+
+      --  diff mode changes: pure chmod (worktree and staged) and chmod with
+      --  content, each byte-identical to git.
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C GIT_CONFIG_NOSYSTEM=1"
+         & " GIT_AUTHOR_DATE='1700000000 +0000'"
+         & " GIT_COMMITTER_DATE='1700000000 +0000'; rm -rf d; mkdir d; cd d;"
+         & " git init -q; git config user.email t@e; git config user.name T;"
+         & " printf 'x\ny\n' > f; git add f; git commit -qm c;"
+         & " chmod +x f;"
+         & " test ""$(git diff)"" = ""$(" & CLI & " diff)"";"      --  worktree
+         & " git add f;"
+         & " test ""$(git diff --cached)"" = ""$(" & CLI
+         & " diff --cached)"";"                                     --  staged
+         & " git commit -qm chmod; printf 'x\nY\n' > f;"
+         & " test ""$(git diff)"" = ""$(" & CLI & " diff)""");      --  +content
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Grep_Count_Diff_Match_Git;
+
    --  Byte-oracle the remaining plumbing: var, count-objects, rev-parse @{n},
    --  name-rev, and for-each-ref %(upstream).
    procedure Extra_Plumbing_Matches_Git
@@ -4387,6 +4441,9 @@ package body CLI_Integration_Tests is
       Register_Routine
         (T, Mktag_Fsck_Matches_Git'Access,
          "mktag runs git's strict fsck (email/date/tz/name/extra-header)");
+      Register_Routine
+        (T, Grep_Count_Diff_Match_Git'Access,
+         "grep binary / count-objects -H / diff mode-change match git");
    end Register_Tests;
 
    overriding function Name (T : Test_Case) return AUnit.Message_String is
