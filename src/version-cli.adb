@@ -14213,12 +14213,11 @@ package body Version.CLI is
                         end if;
                      end if;
                      if Modified then
+                        --  git's -m is every tracked path that differs from
+                        --  the index in the working tree -- content changes
+                        --  AND worktree deletions, not just modifications.
                         for E of St.Changes loop
-                           if not Version.Status."="
-                                (E.Kind, Version.Status.Deleted_File)
-                           then
-                              Emit (To_String (E.Path));
-                           end if;
+                           Emit (To_String (E.Path));
                         end loop;
                      end if;
                      if Deleted then

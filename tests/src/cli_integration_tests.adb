@@ -1257,6 +1257,56 @@ package body CLI_Integration_Tests is
          raise;
    end Grep_Count_Diff_Match_Git;
 
+   --  Regression: ls-files -m now includes worktree-deleted files, and the raw
+   --  diff-files/diff-index plumbing reports a working-tree mode change (chmod)
+   --  with git's exact record (they saw only content changes before).
+   procedure Ls_Files_Raw_Diff_Mode_Match_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Ada.Directories.Set_Directory (Root);
+
+      --  ls-files -m lists a worktree-modified AND a worktree-deleted file.
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C GIT_CONFIG_NOSYSTEM=1"
+         & " GIT_AUTHOR_DATE='1700000000 +0000'"
+         & " GIT_COMMITTER_DATE='1700000000 +0000'; rm -rf r; mkdir r; cd r;"
+         & " git init -q; git config user.email t@e; git config user.name T;"
+         & " printf 'a\n' > f1; printf 'b\n' > f2; git add f1 f2;"
+         & " git commit -qm c; rm -f f2; printf 'X\n' > f1;"
+         & " test ""$(git ls-files -m)"" = ""$(" & CLI & " ls-files -m)""");
+
+      --  Raw diff-files and diff-index report the chmod (pure and with
+      --  content) exactly as git, and don't regress content-only/deletion.
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C GIT_CONFIG_NOSYSTEM=1"
+         & " GIT_AUTHOR_DATE='1700000000 +0000'"
+         & " GIT_COMMITTER_DATE='1700000000 +0000';"
+         & " case_() { rm -rf d; mkdir d; ( cd d; git init -q;"
+         & "   git config user.email t@e; git config user.name T;"
+         & "   printf 'x\n' > f; git add f; git commit -qm c; eval ""$1"";"
+         & "   test ""$(git diff-files)"" = ""$(" & CLI & " diff-files)"";"
+         & "   test ""$(git diff-index HEAD)"""
+         & "     = ""$(" & CLI & " diff-index HEAD)"" ); };"
+         & " case_ 'chmod +x f';"                        --  pure mode
+         & " case_ 'chmod +x f; printf Y > f';"          --  content+mode
+         & " case_ 'printf Y > f';"                       --  content only
+         & " case_ 'rm -f f'");                            --  deletion
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Ls_Files_Raw_Diff_Mode_Match_Git;
+
    --  Byte-oracle the remaining plumbing: var, count-objects, rev-parse @{n},
    --  name-rev, and for-each-ref %(upstream).
    procedure Extra_Plumbing_Matches_Git
@@ -4444,6 +4494,9 @@ package body CLI_Integration_Tests is
       Register_Routine
         (T, Grep_Count_Diff_Match_Git'Access,
          "grep binary / count-objects -H / diff mode-change match git");
+      Register_Routine
+        (T, Ls_Files_Raw_Diff_Mode_Match_Git'Access,
+         "ls-files -m deletes; diff-files/diff-index raw mode match git");
    end Register_Tests;
 
    overriding function Name (T : Test_Case) return AUnit.Message_String is
