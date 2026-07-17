@@ -14847,33 +14847,45 @@ package body Version.CLI is
                                & To_String (Bad_Text), Usage);
                elsif not Stdin and then File_Idx = 0 then
                   Usage_Error ("hash-object requires --stdin or a file", Usage);
-               elsif not Stdin
-                 and then not Version.Files.Is_Ordinary_File (Arg (File_Idx))
-               then
-                  --  git dies (exit 128) rather than the generic error/exit 1
-                  --  when the named file cannot be opened for reading.
-                  Ada.Text_IO.Put_Line
-                    (Ada.Text_IO.Standard_Error,
-                     "fatal: could not open '" & Arg (File_Idx)
-                     & "' for reading: No such file or directory");
-                  Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
                else
                   declare
                      Repo : constant Version.Repository.Repository_Handle :=
                        Version.Repository.Open;
-                     Content : constant String :=
-                       (if Stdin then Read_Stdin
-                        else Version.Files.Read_Binary_File (Arg (File_Idx)));
+
+                     procedure Emit (Content : String) is
+                     begin
+                        if Write_It then
+                           Success_Line
+                             (To_String
+                                (Version.Write.Write_Blob (Repo, Content)));
+                        else
+                           Success_Line
+                             (Version.Objects.To_String
+                                (Version.Objects.Compute_Object_Id
+                                   (Version.Repository.Algorithm (Repo),
+                                    "blob", Content)));
+                        end if;
+                     end Emit;
                   begin
-                     if Write_It then
-                        Success_Line
-                          (To_String (Version.Write.Write_Blob (Repo, Content)));
+                     if Stdin then
+                        Emit (Read_Stdin);
                      else
-                        Success_Line
-                          (Version.Objects.To_String
-                             (Version.Objects.Compute_Object_Id
-                                (Version.Repository.Algorithm (Repo),
-                                 "blob", Content)));
+                        --  git hashes every file operand in order, one id per
+                        --  line, and dies (exit 128) at the first file it
+                        --  cannot open for reading, without processing the
+                        --  rest.  We only handled Arg (File_Idx) before.
+                        for J in File_Idx .. Count loop
+                           if not Version.Files.Is_Ordinary_File (Arg (J)) then
+                              Ada.Text_IO.Put_Line
+                                (Ada.Text_IO.Standard_Error,
+                                 "fatal: could not open '" & Arg (J)
+                                 & "' for reading: No such file or directory");
+                              Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                              exit;
+                           else
+                              Emit (Version.Files.Read_Binary_File (Arg (J)));
+                           end if;
+                        end loop;
                      end if;
                   end;
                end if;

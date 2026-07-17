@@ -1400,6 +1400,21 @@ package body CLI_Integration_Tests is
          & " test ""$vo"" = ""fatal: git get-tar-commit-id: EOF before"
          & " reading tar header: No such file or directory""");
 
+      --  hash-object hashes EVERY file operand (one id per line), not just the
+      --  first, and dies (exit 128) at the first unopenable file after emitting
+      --  the ids of the files before it -- matching git.
+      Version.Git_Fixtures.Run
+        (Root,
+         "export LC_ALL=C GIT_CONFIG_NOSYSTEM=1; rm -rf h; mkdir h; cd h;"
+         & " git init -q; printf 'aaa\n' > a; printf 'bbb\n' > b;"
+         & " printf 'ccc\n' > c;"
+         & " test ""$(" & CLI & " hash-object a b c)"""
+         & "   = ""$(git hash-object a b c)"" &&"
+         & " ve=0; vo=$(" & CLI & " hash-object a nope c 2>/dev/null)"
+         & "   || ve=$?;"
+         & " test $ve -eq 128 &&"
+         & " test ""$vo"" = ""$(git hash-object a 2>/dev/null)""");
+
       --  init is idempotent: a second init succeeds (exit 0) and leaves the
       --  repo intact.
       Version.Git_Fixtures.Run
