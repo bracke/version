@@ -19213,9 +19213,16 @@ package body Version.CLI is
                           (if Normalize
                            then Version.Ref_Names.Normalize_Ref_Format (Raw)
                            else Raw);
+                        --  git normalises leading and repeated slashes, but a
+                        --  trailing slash leaves an empty last component and is
+                        --  invalid -- version's normalize used to silently drop
+                        --  it and accept the ref.
+                        Trailing_Slash : constant Boolean :=
+                          Raw'Length > 0 and then Raw (Raw'Last) = '/';
                      begin
-                        if Version.Ref_Names.Is_Valid_Check_Ref_Format
-                             (Name, Allow_Onelevel, Refspec_Pattern)
+                        if not Trailing_Slash
+                          and then Version.Ref_Names.Is_Valid_Check_Ref_Format
+                                     (Name, Allow_Onelevel, Refspec_Pattern)
                         then
                            if Normalize then
                               Success_Line (Name);

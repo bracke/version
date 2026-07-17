@@ -1502,6 +1502,15 @@ package body CLI_Integration_Tests is
          & "   ve=0; " & CLI & " check-ref-format --branch ""$b"" >/dev/null"
          & "     2>&1 || ve=$?;"
          & "   test $ge -eq $ve || exit 1;"
+         & " done;"
+         --  --normalize: a trailing slash is invalid; leading/repeated
+         --  slashes normalize. Compare full output + exit code.
+         & " for n in 'refs/heads/x/' '/refs/heads/x' 'refs/heads//x'"
+         & "   'refs/heads/x'; do"
+         & "   go=$(git check-ref-format --normalize ""$n"" 2>&1); ge=$?;"
+         & "   vo=$(" & CLI & " check-ref-format --normalize ""$n"" 2>&1);"
+         & "   ve=$?;"
+         & "   test ""$go"" = ""$vo"" && test $ge -eq $ve || exit 1;"
          & " done");
 
       --  diff-tree on a merge commit prints nothing by default, like git.
