@@ -42,6 +42,9 @@ jobs:
       - name: Build tool binaries
         working-directory: version
         run: alr exec -- gprbuild -P tools/tools.gpr
+      - name: Generate tests-crate config
+        working-directory: version/tests
+        run: alr --non-interactive build
       - name: Run POSIX platform gate
         working-directory: version
         env:
@@ -89,6 +92,10 @@ jobs:
         working-directory: version
         shell: bash
         run: alr exec -- gprbuild -P tools/tools.gpr
+      - name: Generate tests-crate config
+        working-directory: version/tests
+        shell: bash
+        run: alr --non-interactive build
       - name: Run Windows platform gate
         working-directory: version
         shell: bash
