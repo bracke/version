@@ -11,13 +11,39 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install Alire
-        uses: alire-project/setup-alire@v2
-      - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y git tar
+        with: { path: version }
+      - uses: actions/checkout@v4
+        with: { repository: "${{ github.repository_owner }}/versionlib", path: versionlib }
+      - uses: actions/checkout@v4
+        with: { repository: "${{ github.repository_owner }}/project_tools", path: project_tools }
+      - uses: actions/checkout@v4
+        with: { repository: "${{ github.repository_owner }}/httpclient", path: httpclient }
+      - uses: actions/checkout@v4
+        with: { repository: "${{ github.repository_owner }}/zlib", path: zlib }
+      - uses: actions/checkout@v4
+        with: { repository: "${{ github.repository_owner }}/cryptolib", path: cryptolib }
+      - uses: actions/checkout@v4
+        with: { repository: "${{ github.repository_owner }}/regexp", path: regexp }
+      - uses: actions/checkout@v4
+        with: { repository: "${{ github.repository_owner }}/i18n", path: i18n }
+      - uses: actions/checkout@v4
+        with: { repository: "${{ github.repository_owner }}/sshlib", path: sshlib }
+      - uses: actions/checkout@v4
+        with: { repository: "${{ github.repository_owner }}/hostkit", path: hostkit }
+      - name: Set up Alire
+        uses: alire-project/setup-alire@v5
+        with:
+          toolchain: gnat_native=15.2.1 gprbuild
+      - name: Install OpenSSL headers
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev
+      - name: Build version (generates configs, compiles the sibling graph)
+        working-directory: version
+        run: alr --non-interactive build
       - name: Build tool binaries
+        working-directory: version
         run: alr exec -- gprbuild -P tools/tools.gpr
       - name: Run POSIX platform gate
+        working-directory: version
         env:
           VERSION_PLATFORM_CI_EVIDENCE_DIR: .release/platform-ci-evidence
         run: tools/bin/check_platform_ci_matrix posix
@@ -25,19 +51,46 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: platform-posix-evidence
-          path: .release/platform-ci-evidence/platform-posix.txt
+          path: version/.release/platform-ci-evidence/platform-posix.txt
 
   windows:
     name: Windows platform confirmation
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install Alire
-        uses: alire-project/setup-alire@v2
+        with: { path: version }
+      - uses: actions/checkout@v4
+        with: { repository: "${{ github.repository_owner }}/versionlib", path: versionlib }
+      - uses: actions/checkout@v4
+        with: { repository: "${{ github.repository_owner }}/project_tools", path: project_tools }
+      - uses: actions/checkout@v4
+        with: { repository: "${{ github.repository_owner }}/httpclient", path: httpclient }
+      - uses: actions/checkout@v4
+        with: { repository: "${{ github.repository_owner }}/zlib", path: zlib }
+      - uses: actions/checkout@v4
+        with: { repository: "${{ github.repository_owner }}/cryptolib", path: cryptolib }
+      - uses: actions/checkout@v4
+        with: { repository: "${{ github.repository_owner }}/regexp", path: regexp }
+      - uses: actions/checkout@v4
+        with: { repository: "${{ github.repository_owner }}/i18n", path: i18n }
+      - uses: actions/checkout@v4
+        with: { repository: "${{ github.repository_owner }}/sshlib", path: sshlib }
+      - uses: actions/checkout@v4
+        with: { repository: "${{ github.repository_owner }}/hostkit", path: hostkit }
+      - name: Set up Alire
+        uses: alire-project/setup-alire@v5
+        with:
+          toolchain: gnat_native=15.2.1 gprbuild
+      - name: Build version
+        working-directory: version
+        shell: bash
+        run: alr --non-interactive build
       - name: Build tool binaries
+        working-directory: version
         shell: bash
         run: alr exec -- gprbuild -P tools/tools.gpr
       - name: Run Windows platform gate
+        working-directory: version
         shell: bash
         env:
           VERSION_PLATFORM_CI_EVIDENCE_DIR: .release/platform-ci-evidence
@@ -46,7 +99,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: platform-windows-evidence
-          path: .release/platform-ci-evidence/platform-windows.txt
+          path: version/.release/platform-ci-evidence/platform-windows.txt
 
   verify-platform-evidence:
     name: Verify platform evidence
@@ -54,11 +107,41 @@ jobs:
     needs: [posix, windows]
     steps:
       - uses: actions/checkout@v4
+        with: { path: version }
+      - uses: actions/checkout@v4
+        with: { repository: "${{ github.repository_owner }}/versionlib", path: versionlib }
+      - uses: actions/checkout@v4
+        with: { repository: "${{ github.repository_owner }}/project_tools", path: project_tools }
+      - uses: actions/checkout@v4
+        with: { repository: "${{ github.repository_owner }}/httpclient", path: httpclient }
+      - uses: actions/checkout@v4
+        with: { repository: "${{ github.repository_owner }}/zlib", path: zlib }
+      - uses: actions/checkout@v4
+        with: { repository: "${{ github.repository_owner }}/cryptolib", path: cryptolib }
+      - uses: actions/checkout@v4
+        with: { repository: "${{ github.repository_owner }}/regexp", path: regexp }
+      - uses: actions/checkout@v4
+        with: { repository: "${{ github.repository_owner }}/i18n", path: i18n }
+      - uses: actions/checkout@v4
+        with: { repository: "${{ github.repository_owner }}/sshlib", path: sshlib }
+      - uses: actions/checkout@v4
+        with: { repository: "${{ github.repository_owner }}/hostkit", path: hostkit }
+      - name: Set up Alire
+        uses: alire-project/setup-alire@v5
+        with:
+          toolchain: gnat_native=15.2.1 gprbuild
+      - name: Install OpenSSL headers
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev
       - name: Download platform evidence
         uses: actions/download-artifact@v4
         with:
-          path: .release/platform-ci-evidence
+          path: version/.release/platform-ci-evidence
+      - name: Build version
+        working-directory: version
+        run: alr --non-interactive build
       - name: Build tool binaries
+        working-directory: version
         run: alr exec -- gprbuild -P tools/tools.gpr
       - name: Verify POSIX and Windows evidence match the source tree
+        working-directory: version
         run: tools/bin/check_platform_ci_evidence .release/platform-ci-evidence
