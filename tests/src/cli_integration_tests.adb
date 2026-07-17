@@ -395,6 +395,351 @@ package body CLI_Integration_Tests is
          raise;
    end Shortlog_Matches_Git;
 
+   --  Regression: `log` must be a full reachability walk over ALL parents in
+   --  commit-date order, not a first-parent-only follow (which silently
+   --  dropped every commit reachable only through a merge's later parent).
+   --  Also covers the "Merge: <p1> <p2>" header and git's rule that merge
+   --  commits emit no diff under --stat/-p by default.
+   procedure Log_Merge_History_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+      D : constant String :=
+        "GIT_AUTHOR_DATE='1700000000 +0000'"
+        & " GIT_COMMITTER_DATE='1700000000 +0000' ";
+      procedure Oracle (Cmd : String) is
+      begin
+         Version.Git_Fixtures.Run
+           (Root,
+            "test ""$(" & CLI & " " & Cmd & ")"" = ""$(git " & Cmd & ")""");
+      end Oracle;
+   begin
+      Version.Init.Init (Root);
+      Configure_User (Root);
+      Ada.Directories.Set_Directory (Root);
+      Write_File (Root, "a", "1" & LF);
+      Version.Git_Fixtures.Run (Root, "git add a && " & D & "git commit -q -m c1");
+      Write_File (Root, "a", "2" & LF);
+      Version.Git_Fixtures.Run (Root, D & "git commit -qam c2");
+      --  Branch off c1 and add a commit reachable ONLY via the merge's
+      --  second parent.
+      Version.Git_Fixtures.Run (Root, "git checkout -q -B topic HEAD~1");
+      Write_File (Root, "btopic", "t" & LF);
+      Version.Git_Fixtures.Run
+        (Root, "git add btopic && " & D & "git commit -q -m t1_on_topic");
+      Version.Git_Fixtures.Run (Root, "git checkout -q main");
+      Version.Git_Fixtures.Run (Root, D & "git merge -q --no-ff topic -m M_merge");
+      Write_File (Root, "a", "3" & LF);
+      Version.Git_Fixtures.Run (Root, D & "git commit -qam after_merge");
+
+      Oracle ("log --oneline");
+      Oracle ("log");
+      Oracle ("log --stat");
+      Oracle ("log -p");
+      Oracle ("log --format='%H|%P|%s'");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Log_Merge_History_Matches_Git;
+
+   --  Regression: `apply --index` must honour git's precondition that the
+   --  working-tree file already matches the index -- on a dirty worktree git
+   --  refuses (exit 1) and changes nothing; version used to apply and stage
+   --  anyway, silently clobbering the worktree/index. --cached is exempt.
+   procedure Apply_Index_Precondition_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Version.Init.Init (Root);
+      Configure_User (Root);
+      Ada.Directories.Set_Directory (Root);
+      Write_File (Root, "f", "a" & LF & "b" & LF & "c" & LF);
+      Version.Git_Fixtures.Run (Root, "git add f && git commit -qm c1");
+      --  A patch that changes b -> B, saved to a file; restore f afterward.
+      Version.Git_Fixtures.Run
+        (Root,
+         "printf 'a\nB\nc\n' > f && git diff > pf.diff && git checkout -q -- f");
+
+      --  Dirty worktree: version must REFUSE (non-zero), leave nothing staged,
+      --  and leave the working tree untouched.
+      Version.Git_Fixtures.Run
+        (Root,
+         "printf 'a\nb\nc\nDIRTY\n' > f; "
+         & "if " & CLI & " apply --index pf.diff >/dev/null 2>&1;"
+         & " then exit 1; fi; "
+         & "test -z ""$(git diff --cached --name-only)""; "
+         & "test ""$(cat f)"" = ""$(printf 'a\nb\nc\nDIRTY\n')""");
+
+      --  Clean worktree: the same patch must apply and stage (exit 0).
+      Version.Git_Fixtures.Run
+        (Root,
+         "git checkout -q -- f && " & CLI & " apply --index pf.diff && "
+         & "test -n ""$(git diff --cached --name-only)""");
+
+      --  --cached is exempt from the precondition even on a dirty worktree.
+      Version.Git_Fixtures.Run
+        (Root,
+         "git reset -q && printf 'a\nb\nc\nDIRTY2\n' > f && "
+         & CLI & " apply --cached pf.diff && "
+         & "test -n ""$(git diff --cached --name-only)""");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Apply_Index_Precondition_Matches_Git;
+
+   --  Regression: `clean -fd` must NOT delete a nested git repository (a
+   --  directory holding a `.git`); git preserves it and needs -ff. version
+   --  used to remove it -- silent data loss of a whole embedded repo.
+   procedure Clean_Nested_Repo_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+      procedure Rebuild is
+      begin
+         Version.Git_Fixtures.Run
+           (Root,
+            "rm -rf sub plain && mkdir sub && ( cd sub && git init -q"
+            & " && printf y > inner ) && mkdir plain && printf z > plain/u");
+      end Rebuild;
+   begin
+      Version.Init.Init (Root);
+      Configure_User (Root);
+      Ada.Directories.Set_Directory (Root);
+      Write_File (Root, "tracked", "x" & LF);
+      Version.Git_Fixtures.Run (Root, "git add tracked && git commit -qm c1");
+
+      --  Dry-run output must match git byte-for-byte (nested repo absent).
+      --  git localizes "Would remove", so pin the locale for the comparison.
+      Rebuild;
+      Version.Git_Fixtures.Run
+        (Root,
+         "export LC_ALL=C; test ""$(" & CLI & " clean -fdn)"""
+         & " = ""$(git clean -fdn)""");
+
+      --  A real -fd preserves the nested repo, removing only the plain dir.
+      Rebuild;
+      Version.Git_Fixtures.Run
+        (Root,
+         CLI & " clean -fd >/dev/null && test -d sub/.git && test ! -d plain");
+
+      --  Doubled force (-ff) does remove the nested repo, as git does.
+      Rebuild;
+      Version.Git_Fixtures.Run
+        (Root, CLI & " clean -ffd >/dev/null && test ! -e sub");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Clean_Nested_Repo_Matches_Git;
+
+   --  Regression: `archive` streams the tar to stdout (git parity) instead of
+   --  writing an archive.tar file, and the tar is byte-identical to git's --
+   --  entry order (recursive tree order, not dirs-first), mode (tar.umask),
+   --  mtime (commit time), owner (root), and 20-block padding all match.
+   procedure Archive_Byte_Identical_To_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Version.Init.Init (Root);
+      Configure_User (Root);
+      Ada.Directories.Set_Directory (Root);
+      --  A tree exercising nested dirs, an executable, and a symlink.
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C; mkdir -p d/e sub; printf 'r\n' > r;"
+         & " printf 'x\n' > d/e/z; printf 'y\n' > d/nested;"
+         & " printf '#!/bin/sh\n' > ex; chmod +x ex; ln -s r lnk;"
+         & " printf q > sub/a; git add -A; git update-index --chmod=+x ex;"
+         & " git commit -qm c1");
+
+      --  Streamed (no --output): byte-identical to git, and no stray file.
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; " & CLI & " archive HEAD > v.tar; git archive HEAD > g.tar;"
+         & " cmp -s g.tar v.tar; test ! -e archive.tar");
+
+      --  With a multi-level --prefix, also byte-identical.
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; " & CLI & " archive HEAD --prefix p/q/ > v2.tar;"
+         & " git archive --prefix=p/q/ HEAD > g2.tar; cmp -s g2.tar v2.tar");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Archive_Byte_Identical_To_Git;
+
+   --  Regression: `notes add` must not clobber an existing note. git errors
+   --  (exit 1) and keeps the old note unless -f is given, and announces the
+   --  overwrite on stderr when it is. version had no -f and silently replaced.
+   procedure Notes_Add_Overwrite_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Ada.Directories.Set_Directory (Root);
+      --  Identical content and pinned dates give both repos the same commit
+      --  id, so the two tools' messages compare byte-for-byte. git localizes
+      --  them, hence LC_ALL=C throughout.
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C; for r in g v; do mkdir -p $r; ( cd $r;"
+         & " git init -q .; git config user.email test@example.com;"
+         & " git config user.name Test; printf 'x\n' > f; git add f;"
+         & " GIT_AUTHOR_DATE='1700000000 +0000'"
+         & " GIT_COMMITTER_DATE='1700000000 +0000'"
+         & " git commit -qm c1 ); done;"
+         & " test ""$(git -C g rev-parse HEAD)"""
+         & " = ""$(git -C v rev-parse HEAD)""");
+
+      --  Adding over an existing note: same stderr, same exit 1, note intact.
+      Version.Git_Fixtures.Run
+        (Root,
+         "export LC_ALL=C; ( cd g && git notes add -m first ) &&"
+         & " ( cd v && " & CLI & " notes add -m first ) && { "
+         & " ge=0; ( cd g; git notes add -m second ) 2> g.err || ge=$?;"
+         & " ve=0; ( cd v; " & CLI & " notes add -m second ) 2> v.err || ve=$?;"
+         & " test $ge -eq 1 && test $ve -eq 1 && cmp -s g.err v.err &&"
+         & " test ""$(git -C g notes show)"" = first &&"
+         & " test ""$(git -C v notes show)"" = first; }");
+
+      --  With -f both overwrite, exit 0, and report the clobber identically.
+      Version.Git_Fixtures.Run
+        (Root,
+         "export LC_ALL=C; { "
+         & " gf=0; ( cd g; git notes add -f -m third ) 2> gf.err || gf=$?;"
+         & " vf=0; ( cd v; " & CLI & " notes add -f -m third ) 2> vf.err"
+         & " || vf=$?;"
+         & " test $gf -eq 0 && test $vf -eq 0 && cmp -s gf.err vf.err &&"
+         & " test ""$(git -C g notes show)"" = third &&"
+         & " test ""$(git -C v notes show)"" = third; }");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Notes_Add_Overwrite_Matches_Git;
+
+   --  Regression: fast-import stream parity. A commit that omits `author`
+   --  defaults it to the committer (version wrote a literal empty `author `
+   --  line -> corrupt commit), and an `M` line's short octal modes (644/755)
+   --  mean regular files -- version read them as gitlinks (160000), silently
+   --  importing every file as a broken submodule.
+   procedure Fast_Import_Stream_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+      --  No `author` line, and the short mode spellings git documents.
+      Stream : constant String :=
+        "printf 'blob\nmark :1\ndata 2\nx\n\nblob\nmark :2\ndata 2\ny\n\n"
+        & "commit refs/heads/master\nmark :3\n"
+        & "committer Test <test@example.com> 1700000000 +0000\n"
+        & "data 3\nc1\nM 644 :1 f\nM 755 :2 s\n\n' > s.fi;";
+      procedure Import (Dir, Tool : String) is
+      begin
+         Version.Git_Fixtures.Run
+           (Root,
+            "set -e; export LC_ALL=C; rm -rf " & Dir & "; mkdir " & Dir
+            & "; ( cd " & Dir & "; git init -q .;"
+            & " git config user.email test@example.com;"
+            & " git config user.name Test; " & Tool & " < ../s.fi >/dev/null )");
+      end Import;
+   begin
+      Ada.Directories.Set_Directory (Root);
+      Version.Git_Fixtures.Run (Root, "set -e; " & Stream);
+      Import ("g", "git fast-import --quiet");
+      Import ("v", CLI & " fast-import");
+
+      --  The whole commit must be byte-identical: same modes, same tree,
+      --  same author-defaulted-to-committer, therefore the same commit id.
+      Version.Git_Fixtures.Run
+        (Root,
+         "export LC_ALL=C;"
+         & " test ""$(git -C g ls-tree refs/heads/master)"""
+         & " = ""$(git -C v ls-tree refs/heads/master)"" &&"
+         & " test ""$(git -C g cat-file -p refs/heads/master)"""
+         & " = ""$(git -C v cat-file -p refs/heads/master)"" &&"
+         & " test ""$(git -C g rev-parse refs/heads/master)"""
+         & " = ""$(git -C v rev-parse refs/heads/master)""");
+
+      --  The author line is really the committer, not an empty `author `.
+      Version.Git_Fixtures.Run
+        (Root,
+         "git -C v cat-file -p refs/heads/master |"
+         & " grep -qx 'author Test <test@example.com> 1700000000 +0000'");
+
+      --  A mode outside the set git accepts is refused, not imported.
+      Version.Git_Fixtures.Run
+        (Root,
+         "export LC_ALL=C;"
+         & " sed 's/M 644 :1 f/M 999 :1 f/' s.fi > bad.fi;"
+         & " rm -rf b; mkdir b; ( cd b; git init -q .;"
+         & " if " & CLI & " fast-import < ../bad.fi >/dev/null 2>&1;"
+         & " then exit 1; fi;"
+         & " test -z ""$(git rev-parse --quiet --verify refs/heads/master)"" )");
+
+      --  `inline` file data (content in the stream, no mark) imports to the
+      --  same commit as git's; version used to read `inline` as an object id.
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; printf 'commit refs/heads/master\n"
+         & "committer Test <test@example.com> 1700000000 +0000\n"
+         & "data 3\nc1\nM 644 inline f\ndata 2\nx\n"
+         & "M 755 inline s\ndata 2\ny\n\n' > s.fi");
+      Import ("gi", "git fast-import --quiet");
+      Import ("vi", CLI & " fast-import");
+      Version.Git_Fixtures.Run
+        (Root,
+         "export LC_ALL=C;"
+         & " test ""$(git -C gi ls-tree refs/heads/master)"""
+         & " = ""$(git -C vi ls-tree refs/heads/master)"" &&"
+         & " test ""$(git -C gi rev-parse refs/heads/master)"""
+         & " = ""$(git -C vi rev-parse refs/heads/master)""");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Fast_Import_Stream_Matches_Git;
+
    --  Byte-oracle the remaining plumbing: var, count-objects, rev-parse @{n},
    --  name-rev, and for-each-ref %(upstream).
    procedure Extra_Plumbing_Matches_Git
@@ -3537,6 +3882,24 @@ package body CLI_Integration_Tests is
       Register_Routine
         (T, Revert_CLI_Invalid_Mainline_No_Mutation'Access,
          "Revert CLI: invalid mainline rejects without mutation");
+      Register_Routine
+        (T, Log_Merge_History_Matches_Git'Access,
+         "Log: merge history walks all parents (git parity)");
+      Register_Routine
+        (T, Apply_Index_Precondition_Matches_Git'Access,
+         "Apply: --index honours the worktree-matches-index precondition");
+      Register_Routine
+        (T, Clean_Nested_Repo_Matches_Git'Access,
+         "Clean: -fd preserves a nested git repo (needs -ff)");
+      Register_Routine
+        (T, Archive_Byte_Identical_To_Git'Access,
+         "Archive: streams to stdout, tar byte-identical to git");
+      Register_Routine
+        (T, Notes_Add_Overwrite_Matches_Git'Access,
+         "Notes: add refuses to clobber an existing note without -f");
+      Register_Routine
+        (T, Fast_Import_Stream_Matches_Git'Access,
+         "Fast-import: author defaults to committer, short modes are files");
    end Register_Tests;
 
    overriding function Name (T : Test_Case) return AUnit.Message_String is

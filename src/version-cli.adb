@@ -1187,12 +1187,45 @@ package body Version.CLI is
          end if;
 
          if Length (Output) = 0 then
-            Output :=
-              To_Unbounded_String
-                ((case Format is
-                  when Version.Archive.Zip_Format    => "archive.zip",
-                  when Version.Archive.Tar_Gz_Format => "archive.tar.gz",
-                  when Version.Archive.Tar_Format    => "archive.tar"));
+            --  No --output: git streams the archive to standard output. Build
+            --  it into a temporary file, copy the bytes to stdout verbatim,
+            --  then remove the temporary. The temp name carries the format's
+            --  extension so archive output validation accepts it.
+            declare
+               Ext : constant String :=
+                 (case Format is
+                  when Version.Archive.Zip_Format    => ".zip",
+                  when Version.Archive.Tar_Gz_Format  => ".tar.gz",
+                  when Version.Archive.Tar_Format     => ".tar");
+               FD   : GNAT.OS_Lib.File_Descriptor;
+               Name : GNAT.OS_Lib.Temp_File_Name;
+               Last : Natural;
+            begin
+               GNAT.OS_Lib.Create_Temp_File (FD, Name);
+               GNAT.OS_Lib.Close (FD);
+               Last := Name'Last;
+               for I in Name'Range loop
+                  if Name (I) = ASCII.NUL then
+                     Last := I - 1;
+                     exit;
+                  end if;
+               end loop;
+               declare
+                  Temp : constant String := Name (Name'First .. Last) & Ext;
+               begin
+                  Version.Files.Delete_File_If_Exists (Name (Name'First .. Last));
+                  Version.Archive.Create
+                    (Repository => Repo,
+                     Revision   => Arg (2),
+                     Output     => Temp,
+                     Format     => Format,
+                     Pathspecs  => Specs,
+                     Prefix     => To_String (Prefix));
+                  Version.Console.Put (Version.Files.Read_Binary_File (Temp));
+                  Version.Files.Delete_File_If_Exists (Temp);
+               end;
+            end;
+            return;
          end if;
 
          Version.Archive.Create
@@ -3310,6 +3343,30 @@ package body Version.CLI is
          raise;
    end Write_Ref_To;
 
+   --  An `M` line's mode, in git's canonical six-digit form. The stream format
+   --  also allows the short octal spellings, which git maps onto the regular
+   --  file and tree bits (`644` -> S_IFREG or 0644); anything outside the set
+   --  git accepts is a corrupt mode, reported against the whole line as git
+   --  reports it.
+   function Fast_Import_Mode (Text, Line : String) return String is
+   begin
+      if Text = "644" then
+         return "100644";
+      elsif Text = "755" then
+         return "100755";
+      elsif Text = "40000" then
+         return "040000";
+      elsif Text = "100644" or else Text = "100755"
+        or else Text = "120000" or else Text = "160000"
+        or else Text = "040000"
+      then
+         return Text;
+      else
+         raise Ada.IO_Exceptions.Data_Error
+           with "corrupt mode: " & Line;
+      end if;
+   end Fast_Import_Mode;
+
    --  `fast-import` -- build history from a fast-import stream on stdin.
    --  Understands the commands git's own `fast-export` emits: blob/mark/data,
    --  commit (author/committer/data/from/merge, then M and D changes), reset,
@@ -3600,7 +3657,26 @@ package body Version.CLI is
                               Path  : constant String :=
                                 Rest2 (S2 + 1 .. Rest2'Last);
                            begin
-                              Set_File (Path, Mode, Resolve_Mark (Ref_T));
+                              if Ref_T = "inline" then
+                                 --  `inline` carries the file's content in the
+                                 --  stream -- a data block on the next line --
+                                 --  instead of naming an earlier mark.
+                                 declare
+                                    Header : constant String := Next_Line;
+                                    Blob   : constant
+                                      Version.Objects.Hex_Object_Id :=
+                                        Version.Write.Write_Blob
+                                          (Repo, Read_Data (Header));
+                                 begin
+                                    Set_File
+                                      (Path, Fast_Import_Mode (Mode, Change),
+                                       Version.Objects.To_String (Blob));
+                                 end;
+                              else
+                                 Set_File
+                                   (Path, Fast_Import_Mode (Mode, Change),
+                                    Resolve_Mark (Ref_T));
+                              end if;
                            end;
                         elsif Change'Length > 2
                           and then Change (Change'First .. Change'First + 1)
@@ -3625,10 +3701,17 @@ package body Version.CLI is
                         then Slice (Message, 1, Length (Message) - 1)
                         else To_String (Message));
 
+                     --  git fast-import defaults a commit's author to its
+                     --  committer when the stream omits the author line.
+                     Author_Line : constant String :=
+                       (if Length (Author) = 0
+                        then To_String (Committer)
+                        else To_String (Author));
+
                      New_Commit : constant Version.Objects.Hex_Object_Id :=
                        Version.Write.Write_Commit_Raw
                          (Repo, Tree, Parents,
-                          To_String (Author), To_String (Committer),
+                          Author_Line, To_String (Committer),
                           Body_Text);
                   begin
                      if Mark /= "" then
@@ -12240,7 +12323,7 @@ package body Version.CLI is
                begin
                   case C is
                      when 'n' => Dry := True;
-                     when 'f' => Force := True;
+                     when 'f' => Force := True; Opts.Force := Opts.Force + 1;
                      when 'd' => Opts.Directories := True;
                      when 'x' => Opts.Ignored := True;
                      when others =>
@@ -12262,6 +12345,7 @@ package body Version.CLI is
                         Dry := True;
                      elsif A = "--force" then
                         Force := True;
+                        Opts.Force := Opts.Force + 1;
                      elsif A'Length >= 2 and then A (A'First + 1) /= '-' then
                         for K in A'First + 1 .. A'Last loop
                            Apply_Flag (A (K));
@@ -13197,7 +13281,8 @@ package body Version.CLI is
          elsif Command = "notes" then
             declare
                Usage : constant String :=
-                 "version notes add -m MSG [REV] | version notes show [REV]";
+                 "version notes add [-f] -m MSG [REV]"
+                 & " | version notes show [REV]";
             begin
                if Count < 2 then
                   Usage_Error ("notes requires a subcommand", Usage);
@@ -13205,6 +13290,7 @@ package body Version.CLI is
                   declare
                      Msg      : Unbounded_String;
                      Has_Msg  : Boolean := False;
+                     Force    : Boolean := False;
                      Bad_Opt  : Boolean := False;
                      Bad_Text : Unbounded_String;
                      Rev_Idx  : Natural := 0;
@@ -13223,6 +13309,8 @@ package body Version.CLI is
                               Msg := To_Unbounded_String (Arg (I + 1));
                               Has_Msg := True;
                               I := I + 1;
+                           elsif A = "-f" or else A = "--force" then
+                              Force := True;
                            elsif A'Length >= 1 and then A (A'First) = '-' then
                               Bad_Opt := True;
                               Bad_Text := To_Unbounded_String (A);
@@ -13255,7 +13343,30 @@ package body Version.CLI is
                                      (Repo, Arg (Rev_Idx))
                               else Version.Objects.To_Object_Id (Version.Refs.Current_Commit_Id (Repo)));
                         begin
-                           Version.Notes.Add (Repo, Commit, To_String (Msg));
+                           --  git refuses to add over an existing note unless
+                           --  -f/--force is given, and announces the clobber
+                           --  on stderr when it is.
+                           declare
+                              Existing : constant Boolean :=
+                                Version.Notes.Show (Repo, Commit) /= "";
+                           begin
+                              if Existing and then not Force then
+                                 Error_Line
+                                   ("Cannot add notes. Found existing notes "
+                                    & "for object "
+                                    & Version.Objects.To_String (Commit)
+                                    & ". Use '-f' to overwrite existing notes");
+                                 Set_Command_Failure;
+                              else
+                                 if Existing then
+                                    Stderr_Line
+                                      ("Overwriting existing notes for object "
+                                       & Version.Objects.To_String (Commit));
+                                 end if;
+                                 Version.Notes.Add
+                                   (Repo, Commit, To_String (Msg));
+                              end if;
+                           end;
                         end;
                      end if;
                   end;

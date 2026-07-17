@@ -363,9 +363,9 @@ Purpose: name REV (default HEAD) relative to the nearest reachable tag — the t
 
 ### notes
 
-Syntax: `version notes add -m MSG [REV]`, `version notes show [REV]`.
+Syntax: `version notes add [-f|--force] -m MSG [REV]`, `version notes show [REV]`.
 
-Purpose: attach or show a text note on a commit (default HEAD), stored in refs/notes/commits. Notes are written flat (one entry per commit id), which git reads.
+Purpose: attach or show a text note on a commit (default HEAD), stored in refs/notes/commits. Notes are written flat (one entry per commit id), which git reads. As git does, `add` refuses to replace an existing note unless `-f`/`--force` is given.
 
 ### blame
 
