@@ -1,3 +1,5 @@
+- Fix: `diff <rev>` (a single revision, e.g. `diff HEAD~1`) now shows the diff of that commit's tree against the working tree, matching git, instead of treating the revision as a pathspec and printing nothing. A single argument that does not resolve as a revision is still treated as a pathspec.
+- Fix: `diff-index -p`/`--patch` now prints the unified diff (of the tree against the working tree, or the index with `--cached`) instead of ignoring the flag and printing the raw record.
 - Fix: the `<rev>^0` revision suffix now resolves (peels to the commit, like `^{commit}`) instead of failing with `error: invalid parent index`, so `rev-parse HEAD^0`, `name-rev HEAD^0`, etc. work as in git.
 - Fix: `checkout-index` with named paths now reports a path that is not in the index as git does (`git checkout-index: <path> is not in the cache`, exit 1) while still checking out the paths that are present, instead of silently ignoring the missing path (exit 0).
 - Fix: `diff-files -p`/`--patch` now prints the unified diff between the index and the working tree (matching git) instead of ignoring the flag and printing the raw record.

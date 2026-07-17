@@ -7592,9 +7592,34 @@ package body Version.CLI is
                   Usage_Error ("unknown diff option: " & LArg (2), Usage);
                   return;
                elsif LCount = 2 then
-                  Version.Console.Put
-                    (Version.Diff.Diff_Working_Tree
-                       (Version.Repository.Open, LPathspecs (2), Opts));
+                  --  A single argument is a rev (diff <commit>: that tree
+                  --  against the working tree) if it resolves, otherwise a
+                  --  pathspec (diff <path>).  git's DWIM; we used to always
+                  --  treat it as a pathspec, so `diff HEAD~1` printed nothing.
+                  declare
+                     Repo : constant Version.Repository.Repository_Handle :=
+                       Version.Repository.Open;
+                     Tree   : Version.Objects.Hex_Object_Id :=
+                       Version.Objects.Zero_Object_Id;
+                     Is_Rev : Boolean := False;
+                  begin
+                     begin
+                        Tree := Version.Revisions.Resolve_Tree (Repo, LArg (2));
+                        Is_Rev := True;
+                     exception
+                        when Ada.IO_Exceptions.Data_Error | Constraint_Error =>
+                           Is_Rev := False;
+                     end;
+                     if Is_Rev then
+                        Version.Console.Put
+                          (Version.Diff.Diff_Tree_Vs_Working
+                             (Repo, Tree, Opts));
+                     else
+                        Version.Console.Put
+                          (Version.Diff.Diff_Working_Tree
+                             (Repo, LPathspecs (2), Opts));
+                     end if;
+                  end;
                elsif LCount = 3 then
                   declare
                      Repo               :
@@ -20104,16 +20129,19 @@ package body Version.CLI is
          elsif Command = "diff-index" then
             declare
                Usage : constant String :=
-                 "version diff-index [--cached] <tree-ish>";
+                 "version diff-index [--cached] [-p] <tree-ish>";
                Cached : Boolean := False;
+               Patch  : Boolean := False;
                Tree_Idx : Natural := 0;
                Bad : Boolean := False;
             begin
                for I in 2 .. Count loop
                   if Arg (I) = "--cached" then
                      Cached := True;
-                  elsif Arg (I) = "-p" or else Arg (I) = "--patch" then
-                     null;  --  raw output is the default; ignore patch request
+                  elsif Arg (I) = "-p" or else Arg (I) = "--patch"
+                    or else Arg (I) = "-u"
+                  then
+                     Patch := True;
                   elsif Arg (I)'Length > 0 and then Arg (I) (Arg (I)'First) = '-'
                   then
                      Usage_Error ("unknown diff-index option: " & Arg (I),
@@ -20139,8 +20167,22 @@ package body Version.CLI is
                         Tree : constant Version.Objects.Hex_Object_Id :=
                           Version.Revisions.Resolve_Tree (Repo, Arg (Tree_Idx));
                      begin
-                        Version.Console.Put
-                          (Version.Diff.Raw_Diff_Index (Repo, Tree, Cached));
+                        if Patch then
+                           --  -p prints the unified diff of the tree against
+                           --  the index (--cached) or the working tree, like
+                           --  git; without it the raw record is shown.
+                           if Cached then
+                              Version.Console.Put
+                                (Version.Diff.Diff_Tree_Vs_Index (Repo, Tree));
+                           else
+                              Version.Console.Put
+                                (Version.Diff.Diff_Tree_Vs_Working
+                                   (Repo, Tree));
+                           end if;
+                        else
+                           Version.Console.Put
+                             (Version.Diff.Raw_Diff_Index (Repo, Tree, Cached));
+                        end if;
                      end;
                   end if;
                end if;

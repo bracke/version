@@ -1652,6 +1652,53 @@ package body CLI_Integration_Tests is
          raise;
    end Rev_Zero_Checkout_Index_Diff_Files_Match_Git;
 
+   --  Regression: `diff <rev>` diffs that tree against the working tree (was
+   --  treated as a pathspec, printing nothing); `diff-index -p` prints the
+   --  unified diff against the working tree, and `-p --cached` against the
+   --  index.  All byte-compared with git.
+   procedure Diff_Rev_And_Diff_Index_Patch_Match_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Ada.Directories.Set_Directory (Root);
+
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C GIT_CONFIG_NOSYSTEM=1"
+         & " GIT_AUTHOR_DATE='1700000000 +0000'"
+         & " GIT_COMMITTER_DATE='1700000000 +0000';"
+         & " rm -rf r; mkdir r; ( cd r; git init -q -b main;"
+         & "   git config user.email t@e; git config user.name T;"
+         & "   printf 'l1\nl2\nl3\n' > a; printf 'del\n' > gone;"
+         & "   git add a gone; git commit -qm c1; git tag base;"
+         & "   printf 'l1\nCHANGED\nl3\n' > a; git add a; git commit -qm c2;"
+         --  worktree edits: unstaged content change, a deletion, an untracked
+         --  file (which diff <rev> must not show), and a staged change.
+         & "   printf 'l1\nCHANGED\nl3\nWORK\n' > a; rm -f gone;"
+         & "   printf 'new\n' > added; printf 's\n' > st; git add st;"
+         --  diff <rev>: base tree vs working tree
+         & "   test ""$(" & CLI & " diff base)"" = ""$(git diff base)"";"
+         --  diff-index -p: tree vs working tree
+         & "   test ""$(" & CLI & " diff-index -p HEAD)"""
+         & "     = ""$(git diff-index -p HEAD)"";"
+         --  diff-index -p --cached: tree vs index
+         & "   test ""$(" & CLI & " diff-index -p --cached HEAD)"""
+         & "     = ""$(git diff-index -p --cached HEAD)"";"
+         --  a non-rev single argument is still a pathspec
+         & "   test ""$(" & CLI & " diff a)"" = ""$(git diff -- a)"" )");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Diff_Rev_And_Diff_Index_Patch_Match_Git;
+
    --  Byte-oracle the remaining plumbing: var, count-objects, rev-parse @{n},
    --  name-rev, and for-each-ref %(upstream).
    procedure Extra_Plumbing_Matches_Git
@@ -4863,6 +4910,9 @@ package body CLI_Integration_Tests is
       Register_Routine
         (T, Rev_Zero_Checkout_Index_Diff_Files_Match_Git'Access,
          "rev^0 peels; checkout-index missing path; diff-files -p");
+      Register_Routine
+        (T, Diff_Rev_And_Diff_Index_Patch_Match_Git'Access,
+         "diff <rev> tree-vs-worktree; diff-index -p patch output");
    end Register_Tests;
 
    overriding function Name (T : Test_Case) return AUnit.Message_String is
