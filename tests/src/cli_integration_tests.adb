@@ -1476,6 +1476,58 @@ package body CLI_Integration_Tests is
          raise;
    end Check_Ignore_Path_Errors_Match_Git;
 
+   --  Regression: check-ref-format --branch rejects HEAD and a leading "-"
+   --  (exit 128) but accepts @ and ordinary names, matching git's exit codes;
+   --  diff-tree prints nothing for a merge commit by default.
+   procedure Check_Ref_Format_And_Diff_Tree_Match_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Ada.Directories.Set_Directory (Root);
+
+      --  --branch exit codes match git for a range of names (git localizes
+      --  the message text, so only the exit status is compared).
+      Version.Git_Fixtures.Run
+        (Root,
+         "export LC_ALL=C GIT_CONFIG_NOSYSTEM=1; rm -rf r; mkdir r; cd r;"
+         & " git init -q;"
+         & " for b in HEAD - @ main feat/x .bad; do"
+         & "   ge=0; git check-ref-format --branch ""$b"" >/dev/null 2>&1"
+         & "     || ge=$?;"
+         & "   ve=0; " & CLI & " check-ref-format --branch ""$b"" >/dev/null"
+         & "     2>&1 || ve=$?;"
+         & "   test $ge -eq $ve || exit 1;"
+         & " done");
+
+      --  diff-tree on a merge commit prints nothing by default, like git.
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C GIT_CONFIG_NOSYSTEM=1"
+         & " GIT_AUTHOR_DATE='1700000000 +0000'"
+         & " GIT_COMMITTER_DATE='1700000000 +0000'; rm -rf d; mkdir d;"
+         & " ( cd d; git init -q -b main; git config user.email t@e;"
+         & "   git config user.name T; printf a > f; git add f;"
+         & "   git commit -qm c; git checkout -q -b feat; printf b > g;"
+         & "   git add g; git commit -qm c2; git checkout -q main;"
+         & "   git merge -q --no-ff feat -m merge; M=$(git rev-parse HEAD);"
+         & "   test ""$(git diff-tree $M)"" = ""$(" & CLI
+         & " diff-tree $M)"" && test -z ""$(" & CLI & " diff-tree $M)"";"
+         & "   C=$(git rev-parse HEAD~1);"
+         & "   test ""$(git diff-tree $C)"" = ""$(" & CLI
+         & " diff-tree $C)"" )");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Check_Ref_Format_And_Diff_Tree_Match_Git;
+
    --  Byte-oracle the remaining plumbing: var, count-objects, rev-parse @{n},
    --  name-rev, and for-each-ref %(upstream).
    procedure Extra_Plumbing_Matches_Git
@@ -4675,6 +4727,9 @@ package body CLI_Integration_Tests is
       Register_Routine
         (T, Check_Ignore_Path_Errors_Match_Git'Access,
          "check-ignore rejects empty and outside-repo paths (exit 128)");
+      Register_Routine
+        (T, Check_Ref_Format_And_Diff_Tree_Match_Git'Access,
+         "check-ref-format --branch exits; diff-tree merge prints nothing");
    end Register_Tests;
 
    overriding function Name (T : Test_Case) return AUnit.Message_String is

@@ -19187,15 +19187,23 @@ package body Version.CLI is
                                   (Positive'Value
                                      (Raw (Raw'First + 3 .. Raw'Last - 1)))
                            else Raw);
+                        --  git also rejects the special form HEAD and a
+                        --  leading "-" for --branch, and dies (exit 128).
+                        Valid : constant Boolean :=
+                          Resolved /= "HEAD"
+                          and then not (Resolved'Length > 0
+                                        and then Resolved (Resolved'First) = '-')
+                          and then Version.Ref_Names.Is_Valid_Check_Ref_Format
+                                     ("refs/heads/" & Resolved);
                      begin
-                        if Version.Ref_Names.Is_Valid_Check_Ref_Format
-                             ("refs/heads/" & Resolved)
-                        then
+                        if Valid then
                            Success_Line (Resolved);
                         else
-                           Error_Line
-                             ("'" & Resolved & "' is not a valid branch name");
-                           Set_Command_Failure;
+                           Ada.Text_IO.Put_Line
+                             (Ada.Text_IO.Standard_Error,
+                              "fatal: '" & Resolved
+                              & "' is not a valid branch name");
+                           Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
                         end if;
                      end;
                   else
@@ -19840,8 +19848,10 @@ package body Version.CLI is
                           Version.Objects.Commit_Parent_Ids (Obj);
                      begin
                         --  git prints the commit line only when it emits a
-                        --  diff: for a root commit without --root, nothing.
-                        if not Parents.Is_Empty then
+                        --  diff: for a root commit without --root, nothing, and
+                        --  for a merge commit nothing by default (it needs
+                        --  -m/-c/--cc, which version does not implement).
+                        if Natural (Parents.Length) = 1 then
                            declare
                               P_Obj : constant Version.Objects.Git_Object :=
                                 Version.Objects.Read_Object
