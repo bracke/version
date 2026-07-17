@@ -18532,17 +18532,36 @@ package body Version.CLI is
                end loop;
 
                if not Bad then
-                  for E of Entries loop
-                     if All_Files then
+                  if All_Files then
+                     for E of Entries loop
                         Write_One (E);
-                     else
-                        for W of Wanted loop
-                           if W = To_String (E.Path) then
-                              Write_One (E);
+                     end loop;
+                  else
+                     --  Process each named path in order: check it out, or, if
+                     --  it is not in the index, report it like git and exit 1
+                     --  (the other paths are still checked out).
+                     for W of Wanted loop
+                        declare
+                           Found : Boolean := False;
+                        begin
+                           for E of Entries loop
+                              if W = To_String (E.Path)
+                                and then E.Stage = 0
+                              then
+                                 Write_One (E);
+                                 Found := True;
+                              end if;
+                           end loop;
+                           if not Found then
+                              Stderr_Line
+                                ("git checkout-index: " & W
+                                 & " is not in the cache");
+                              Ada.Command_Line.Set_Exit_Status
+                                (Command_Failure_Exit);
                            end if;
-                        end loop;
-                     end if;
-                  end loop;
+                        end;
+                     end loop;
+                  end if;
                end if;
             end;
 
@@ -20129,14 +20148,18 @@ package body Version.CLI is
 
          elsif Command = "diff-files" then
             declare
-               Usage : constant String := "version diff-files";
-               Bad : Boolean := False;
+               Usage : constant String := "version diff-files [-p]";
+               Bad   : Boolean := False;
+               Patch : Boolean := False;
             begin
                for I in 2 .. Count loop
                   if Arg (I) = "--" then
                      exit;
+                  elsif Arg (I) = "-p" or else Arg (I) = "--patch"
+                    or else Arg (I) = "-u"
+                  then
+                     Patch := True;
                   elsif Arg (I)'Length > 0 and then Arg (I) (Arg (I)'First) = '-'
-                    and then Arg (I) /= "-p" and then Arg (I) /= "--patch"
                   then
                      Usage_Error ("unknown diff-files option: " & Arg (I),
                                   Usage);
@@ -20150,8 +20173,16 @@ package body Version.CLI is
                      Repo : constant Version.Repository.Repository_Handle :=
                        Version.Repository.Open;
                   begin
-                     Version.Console.Put
-                       (Version.Diff.Raw_Diff_Files (Repo));
+                     if Patch then
+                        --  -p prints the unified diff between the index and the
+                        --  working tree (git's `diff-files -p`), same content as
+                        --  a plain `diff`; without it the raw record is shown.
+                        Version.Console.Put
+                          (Version.Diff.Diff_Working_Tree (Repo));
+                     else
+                        Version.Console.Put
+                          (Version.Diff.Raw_Diff_Files (Repo));
+                     end if;
                   end;
                end if;
             end;

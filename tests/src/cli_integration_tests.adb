@@ -1606,6 +1606,52 @@ package body CLI_Integration_Tests is
          raise;
    end Mv_Directory_Matches_Git;
 
+   --  Regression: <rev>^0 peels to the commit (rev-parse/name-rev);
+   --  checkout-index reports a path not in the index (exit 1) yet still
+   --  checks out the present paths; diff-files -p prints the unified diff.
+   procedure Rev_Zero_Checkout_Index_Diff_Files_Match_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Ada.Directories.Set_Directory (Root);
+
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C GIT_CONFIG_NOSYSTEM=1"
+         & " GIT_AUTHOR_DATE='1700000000 +0000'"
+         & " GIT_COMMITTER_DATE='1700000000 +0000';"
+         & " rm -rf r; mkdir r; ( cd r; git init -q; git config user.email t@e;"
+         & "   git config user.name T; printf 'A\n' > a; printf 'B\n' > b;"
+         & "   git add a b; git commit -qm c; git tag v1;"
+         --  ^0 peels to the commit (rev-parse and name-rev both match git)
+         & "   test ""$(" & CLI & " rev-parse HEAD^0)"""
+         & "     = ""$(git rev-parse HEAD^0)"";"
+         & "   test ""$(" & CLI & " name-rev HEAD^0)"""
+         & "     = ""$(git name-rev HEAD^0)"";"
+         --  checkout-index: present paths restored, missing path errors exit 1
+         & "   rm -f a b;"
+         & "   ve=0; vo=$(" & CLI & " checkout-index a nope b 2>&1) || ve=$?;"
+         & "   test $ve -eq 1;"
+         & "   test ""$vo"" ="
+         & "     'git checkout-index: nope is not in the cache';"
+         & "   test -f a && test -f b;"
+         --  diff-files -p prints the unified diff like git
+         & "   printf 'A\nX\n' > a;"
+         & "   test ""$(" & CLI & " diff-files -p)"""
+         & "     = ""$(git diff-files -p)"" )");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Rev_Zero_Checkout_Index_Diff_Files_Match_Git;
+
    --  Byte-oracle the remaining plumbing: var, count-objects, rev-parse @{n},
    --  name-rev, and for-each-ref %(upstream).
    procedure Extra_Plumbing_Matches_Git
@@ -4814,6 +4860,9 @@ package body CLI_Integration_Tests is
       Register_Routine
         (T, Mv_Directory_Matches_Git'Access,
          "mv renames a tracked directory (index + cleanup) like git");
+      Register_Routine
+        (T, Rev_Zero_Checkout_Index_Diff_Files_Match_Git'Access,
+         "rev^0 peels; checkout-index missing path; diff-files -p");
    end Register_Tests;
 
    overriding function Name (T : Test_Case) return AUnit.Message_String is
