@@ -740,6 +740,351 @@ package body CLI_Integration_Tests is
          raise;
    end Fast_Import_Stream_Matches_Git;
 
+   --  Regression: `checkout <branch>` must attach HEAD to the branch, not
+   --  detach at the raw commit. version used to always write the bare commit
+   --  id into HEAD, so any commit made after `checkout <branch>` was orphaned
+   --  (the branch never moved). A non-branch revision still detaches.
+   procedure Checkout_Branch_Attaches_Head_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Ada.Directories.Set_Directory (Root);
+      --  Two identical repos, each with two commits and a branch `feature`
+      --  at the first. Pinned dates keep the commit ids equal across g and v.
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C"
+         & " GIT_AUTHOR_DATE='1700000000 +0000'"
+         & " GIT_COMMITTER_DATE='1700000000 +0000'; for r in g v; do"
+         & " mkdir -p $r; ( cd $r; git init -q .;"
+         & " git config user.email test@example.com;"
+         & " git config user.name Test; printf 'a\n' > f; git add f;"
+         & " git commit -qm c1; printf 'b\n' >> f; git add f;"
+         & " git commit -qm c2; git branch feature HEAD~1 ); done;"
+         & " test ""$(git -C g rev-parse HEAD)"""
+         & " = ""$(git -C v rev-parse HEAD)""");
+
+      --  Checking out the branch attaches HEAD symbolically in both tools and
+      --  prints the same line.
+      Version.Git_Fixtures.Run
+        (Root,
+         "export LC_ALL=C;"
+         & " ( cd g && git checkout feature ) > g.out 2>&1;"
+         & " ( cd v && " & CLI & " checkout feature ) > v.out 2>&1;"
+         & " test ""$(cat g/.git/HEAD)"" = 'ref: refs/heads/feature' &&"
+         & " test ""$(cat v/.git/HEAD)"" = 'ref: refs/heads/feature' &&"
+         & " grep -q ""Switched to branch 'feature'"" v.out");
+
+      --  The data-loss guard: a commit made now lands on `feature`, and the
+      --  branch ref advances -- it is not orphaned. Both tools must agree.
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C"
+         & " GIT_AUTHOR_DATE='1700000100 +0000'"
+         & " GIT_COMMITTER_DATE='1700000100 +0000'; for r in g v; do"
+         & " ( cd $r; printf 'c\n' >> f; git add f; git commit -qm c3 ); done;"
+         & " test ""$(git -C g rev-parse feature)"" = ""$(git -C g rev-parse HEAD)"";"
+         & " test ""$(git -C v rev-parse feature)"" = ""$(git -C v rev-parse HEAD)"";"
+         & " test ""$(git -C g symbolic-ref HEAD)"" = refs/heads/feature;"
+         & " test ""$(git -C v symbolic-ref HEAD)"" = refs/heads/feature");
+
+      --  A non-branch revision (a raw commit id) still detaches, as git does.
+      Version.Git_Fixtures.Run
+        (Root,
+         "export LC_ALL=C;"
+         & " C=""$(git -C v rev-parse HEAD~1)"";"
+         & " ( cd v && " & CLI & " checkout ""$C"" ) >/dev/null 2>&1;"
+         & " test ""$(cat v/.git/HEAD)"" = ""$C"";"
+         & " ( cd v && git symbolic-ref -q HEAD ) && exit 1 || true");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Checkout_Branch_Attaches_Head_Matches_Git;
+
+   --  Regression: config value quoting/escaping and multivar unset. version
+   --  wrote values raw (a `#`, `;`, quote or edge whitespace corrupted the
+   --  value on the next read) and `unset` deleted every value of a multivar.
+   procedure Config_Quoting_And_Unset_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Ada.Directories.Set_Directory (Root);
+
+      --  For each awkward value, version's raw config bytes and the value git
+      --  reads back from version's file must both match git's own.
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C GIT_CONFIG_NOSYSTEM=1;"
+         & " for v in '  hp # x  ' 'tr ' ' ld' 'q""q' 'b\\s' 's;c' plain; do"
+         & "   rm -rf g v; mkdir g v;"
+         & "   ( cd g && git init -q && git config t.k ""$v"" );"
+         & "   ( cd v && git init -q && " & CLI & " config set t.k ""$v"" );"
+         & "   test ""$(grep -a 'k =' g/.git/config)"""
+         & "     = ""$(grep -a 'k =' v/.git/config)"";"
+         & "   test ""$(git -C g config t.k)"" = ""$(git -C v config t.k)"";"
+         & " done");
+
+      --  unset of a multivar: warn, exit 5, leave both values; single unset ok.
+      Version.Git_Fixtures.Run
+        (Root,
+         "export LC_ALL=C GIT_CONFIG_NOSYSTEM=1; rm -rf v; mkdir v;"
+         & " ( cd v && git init -q && git config --add m.k one"
+         & " && git config --add m.k two ) &&"
+         & " { ve=0; ( cd v && " & CLI & " config unset m.k ) || ve=$?;"
+         & "   test $ve -eq 5 &&"
+         & "   test ""$(git -C v config --get-all m.k | tr '\n' ',')"""
+         & "     = 'one,two,' ; } &&"
+         & " ( cd v && git config single.k solo &&"
+         & "   " & CLI & " config unset single.k ) &&"
+         & " test -z ""$(git -C v config --get-all single.k || true)""");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Config_Quoting_And_Unset_Matches_Git;
+
+   --  Regression: commit-tree joined repeated -m as paragraphs (was dropping
+   --  all but the last); mktree rejects malformed / type-mismatched input
+   --  (was silently dropping lines and coercing types into a corrupt tree).
+   procedure Commit_Tree_And_Mktree_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Ada.Directories.Set_Directory (Root);
+
+      --  commit-tree with two -m: same commit id as git (identical body).
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C GIT_CONFIG_NOSYSTEM=1"
+         & " GIT_AUTHOR_DATE='1700000000 +0000'"
+         & " GIT_COMMITTER_DATE='1700000000 +0000'"
+         & " GIT_AUTHOR_NAME=T GIT_AUTHOR_EMAIL=t@e"
+         & " GIT_COMMITTER_NAME=T GIT_COMMITTER_EMAIL=t@e;"
+         & " rm -rf r; mkdir r; cd r; git init -q; printf 'x\n' > f;"
+         & " git add f; TR=$(git write-tree);"
+         & " g=$(git commit-tree $TR -m one -m two);"
+         & " v=$(" & CLI & " commit-tree $TR -m one -m two);"
+         & " test ""$g"" = ""$v""");
+
+      --  mktree: a malformed line and a type/mode mismatch each abort with
+      --  git's message and exit 128; a valid line yields git's tree id.
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C GIT_CONFIG_NOSYSTEM=1;"
+         & " rm -rf r; mkdir r; cd r; git init -q;"
+         & " B=$(printf 'hello\n' | git hash-object -w --stdin);"
+         & " ge=0; printf 'garbage line\n' | git mktree 2>g.e || ge=$?;"
+         & " ve=0; printf 'garbage line\n' | " & CLI & " mktree 2>v.e || ve=$?;"
+         & " test $ge -eq 128 && test $ve -eq 128 && cmp -s g.e v.e;"
+         & " printf '100644 tree %s\tf\n' $B | git mktree 2>g2.e"
+         & "   && false || true;"
+         & " printf '100644 tree %s\tf\n' $B | " & CLI & " mktree 2>v2.e"
+         & "   && false || true; cmp -s g2.e v2.e;"
+         & " gt=$(printf '100644 blob %s\tf\n' $B | git mktree);"
+         & " vt=$(printf '100644 blob %s\tf\n' $B | " & CLI & " mktree);"
+         & " test ""$gt"" = ""$vt""");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Commit_Tree_And_Mktree_Matches_Git;
+
+   --  Regression: fast-export/fast-import parity. fast-export dropped
+   --  lightweight tags and emitted short refs verbatim; fast-import, on a
+   --  second `commit` with no `from`, orphaned history and dropped files.
+   procedure Fast_Export_Import_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Ada.Directories.Set_Directory (Root);
+
+      --  fast-export --all (lightweight + annotated tags) and a short ref
+      --  must be byte-identical to git.
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C GIT_CONFIG_NOSYSTEM=1"
+         & " GIT_AUTHOR_DATE='1700000000 +0000'"
+         & " GIT_COMMITTER_DATE='1700000000 +0000'; rm -rf r; mkdir r; cd r;"
+         & " git init -q -b main; git config user.email t@e;"
+         & " git config user.name T; printf 'a\n' > f; git add f;"
+         & " git commit -qm c1; git tag light; git tag -a annot -m msg;"
+         & " test ""$(git fast-export --all)"" = ""$(" & CLI
+         & " fast-export --all)"";"
+         & " test ""$(git fast-export main)"" = ""$(" & CLI
+         & " fast-export main)""");
+
+      --  fast-import: a second commit with no `from` inherits the ref tip as
+      --  parent and keeps earlier files -- same head oid as git.
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C GIT_CONFIG_NOSYSTEM=1;"
+         & " printf 'blob\nmark :1\ndata 2\na\n\ncommit refs/heads/m\n"
+         & "mark :2\ncommitter T <t@e> 1700000000 +0000\ndata 3\nc1\n"
+         & "M 644 :1 a\n\nblob\nmark :3\ndata 2\nb\n\ncommit refs/heads/m\n"
+         & "mark :4\ncommitter T <t@e> 1700000000 +0000\ndata 3\nc2\n"
+         & "M 644 :3 b\n\n' > s.fi;"
+         & " rm -rf g v; mkdir g v;"
+         & " ( cd g && git init -q && git fast-import --quiet < ../s.fi );"
+         & " ( cd v && git init -q && " & CLI & " fast-import < ../s.fi );"
+         & " test ""$(git -C g rev-parse refs/heads/m)"""
+         & "   = ""$(git -C v rev-parse refs/heads/m)"";"
+         & " test ""$(git -C v ls-tree --name-only refs/heads/m"
+         & " | tr '\n' ',')"" = 'a,b,'");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Fast_Export_Import_Matches_Git;
+
+   --  Regression: index-pack --keep writes the .keep file; merge-file refuses
+   --  binary content (both were silent no-ops / data corruption before).
+   procedure Index_Pack_Keep_And_Merge_File_Binary
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Ada.Directories.Set_Directory (Root);
+
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C GIT_CONFIG_NOSYSTEM=1; rm -rf r; mkdir r;"
+         & " cd r; git init -q;"
+         & " B=$(printf 'data\n' | git hash-object -w --stdin);"
+         & " printf '%s\n' ""$B"" | git pack-objects --stdout > p.pack"
+         & "   2>/dev/null;"
+         & " " & CLI & " index-pack --stdin --keep < p.pack >/dev/null 2>&1;"
+         & " test -f .git/objects/pack/*.keep;"
+         & " test -z ""$(cat .git/objects/pack/*.keep)"";"
+         & " rm -f .git/objects/pack/*;"
+         & " " & CLI & " index-pack --stdin --keep=why < p.pack"
+         & "   >/dev/null 2>&1;"
+         & " test ""$(cat .git/objects/pack/*.keep)"" = why");
+
+      --  merge-file on binary content: git and version agree byte-for-byte
+      --  (message + exit) and leave the current file untouched.
+      Version.Git_Fixtures.Run
+        (Root,
+         "export LC_ALL=C; rm -rf r; mkdir r; cd r;"
+         & " printf 'x\0z\n' > cur; printf 'x\nb\n' > base;"
+         & " printf 'x\no\n' > oth; cp cur cur.bak;"
+         & " ge=0; go=$(git merge-file -p cur base oth 2>&1) || ge=$?;"
+         & " ve=0; vo=$(" & CLI & " merge-file -p cur base oth 2>&1) || ve=$?;"
+         & " test ""$go"" = ""$vo"" && test $ge -eq $ve &&"
+         & " cmp -s cur cur.bak");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Index_Pack_Keep_And_Merge_File_Binary;
+
+   --  Regression: merge-resolve refuses a dirty index; merge-recursive folds
+   --  multiple bases into a virtual ancestor so the conflicted index (stage-1
+   --  virtual-base blob included) byte-matches git on a criss-cross history.
+   procedure Merge_Backends_Match_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Ada.Directories.Set_Directory (Root);
+
+      --  merge-recursive on a criss-cross (two-merge-base) history: the
+      --  conflicted index -- including the stage-1 virtual-ancestor blob --
+      --  must be identical between git and version. `build` takes a target
+      --  directory and the merge-recursive tool to exercise.
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C GIT_CONFIG_NOSYSTEM=1"
+         & " GIT_AUTHOR_DATE='1700000000 +0000'"
+         & " GIT_COMMITTER_DATE='1700000000 +0000';"
+         & " build() { git init -q -b main ""$1""; ( cd ""$1"";"
+         & " git config user.email t@e; git config user.name T;"
+         & " printf '1\n2\n3\n4\n5\n' > f; git add f; git commit -qm O;"
+         & " git checkout -q -b x; printf '1\n2\n3\n4\n5x\n' > f; git add f;"
+         & " git commit -qm a; A=$(git rev-parse HEAD);"
+         & " git checkout -q -b y main; printf '1x\n2\n3\n4\n5\n' > f;"
+         & " git add f; git commit -qm b; B=$(git rev-parse HEAD);"
+         & " git checkout -q x; git merge -q --no-ff ""$B"" -m m1;"
+         & " git checkout -q y; git merge -q --no-ff ""$A"" -m m2;"
+         & " git checkout -q x; printf '1\n2\n3M1\n4\n5x\n' > f; git add f;"
+         & " git commit -qm c1; X=$(git rev-parse HEAD);"
+         & " git checkout -q y; printf '1x\n2\n3M2\n4\n5\n' > f; git add f;"
+         & " git commit -qm c2; Y=$(git rev-parse HEAD);"
+         & " git checkout -q -f x;"
+         & " P1=$(git merge-base --all ""$X"" ""$Y"" | sort | head -1);"
+         & " P2=$(git merge-base --all ""$X"" ""$Y"" | sort | tail -1);"
+         & " ""$2"" merge-recursive ""$P1"" ""$P2"" -- ""$X"" ""$Y"""
+         & "   >/dev/null 2>&1 || true; git ls-files -s > ../""$1"".idx ); };"
+         & " rm -rf g v; build g git; build v " & CLI & ";"
+         & " cmp -s g.idx v.idx");
+
+      --  merge-resolve with a staged change refuses (exit 2, git's message)
+      --  and preserves the staged file.
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C GIT_CONFIG_NOSYSTEM=1"
+         & " GIT_AUTHOR_DATE='1700000000 +0000'"
+         & " GIT_COMMITTER_DATE='1700000000 +0000'; rm -rf mr; mkdir mr;"
+         & " cd mr; git init -q -b main; git config user.email t@e;"
+         & " git config user.name T; printf 'a\n' > f; git add f;"
+         & " git commit -qm base; git branch other;"
+         & " printf 'ours\n' > f; git add f; git commit -qm ours;"
+         & " git checkout -q other; printf 'theirs\n' > f; git add f;"
+         & " git commit -qm theirs; git checkout -q main;"
+         & " printf 'DIRTY\n' > staged; git add staged;"
+         & " Bs=$(git merge-base main other);"
+         & " ve=0; vo=$(" & CLI & " merge-resolve $Bs -- main other 2>&1)"
+         & "   || ve=$?;"
+         & " test $ve -eq 2 &&"
+         & " printf '%s\n' ""$vo"" | head -1 |"
+         & "   grep -q 'would be overwritten by merge' &&"
+         & " test ""$(git diff --cached --name-only)"" = staged");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Merge_Backends_Match_Git;
+
    --  Byte-oracle the remaining plumbing: var, count-objects, rev-parse @{n},
    --  name-rev, and for-each-ref %(upstream).
    procedure Extra_Plumbing_Matches_Git
@@ -3900,6 +4245,24 @@ package body CLI_Integration_Tests is
       Register_Routine
         (T, Fast_Import_Stream_Matches_Git'Access,
          "Fast-import: author defaults to committer, short modes are files");
+      Register_Routine
+        (T, Checkout_Branch_Attaches_Head_Matches_Git'Access,
+         "Checkout: <branch> attaches HEAD, non-branch detaches");
+      Register_Routine
+        (T, Config_Quoting_And_Unset_Matches_Git'Access,
+         "Config: value quoting/escaping and multivar unset match git");
+      Register_Routine
+        (T, Commit_Tree_And_Mktree_Matches_Git'Access,
+         "Commit-tree joins -m; mktree rejects malformed/type-mismatch");
+      Register_Routine
+        (T, Fast_Export_Import_Matches_Git'Access,
+         "Fast-export tags/short-ref and fast-import no-from match git");
+      Register_Routine
+        (T, Index_Pack_Keep_And_Merge_File_Binary'Access,
+         "index-pack --keep writes .keep; merge-file refuses binary");
+      Register_Routine
+        (T, Merge_Backends_Match_Git'Access,
+         "merge-recursive virtual base and merge-resolve precondition");
    end Register_Tests;
 
    overriding function Name (T : Test_Case) return AUnit.Message_String is

@@ -2553,6 +2553,8 @@ package body Version.CLI is
       From_Stdin : Boolean := False;
       Pack_Arg   : Unbounded_String;
       Idx_Out    : Unbounded_String;
+      Keep       : Boolean := False;
+      Keep_Reason : Unbounded_String;
 
       Pack_Dir : constant String :=
         Version.Files.Join
@@ -2568,7 +2570,15 @@ package body Version.CLI is
          begin
             if A = "--stdin" then
                From_Stdin := True;
-            elsif A = "-v" or else A = "--verify" or else A = "--keep"
+            elsif A = "--keep" then
+               Keep := True;
+            elsif A'Length >= 7
+              and then A (A'First .. A'First + 6) = "--keep="
+            then
+               Keep := True;
+               Keep_Reason :=
+                 To_Unbounded_String (A (A'First + 7 .. A'Last));
+            elsif A = "-v" or else A = "--verify"
               or else A = "--fix-thin" or else A = "-q"
             then
                null;
@@ -2616,6 +2626,19 @@ package body Version.CLI is
 
          Version.Pack.Index_Pack
            (Repo, To_String (Pack_Path), Canonicalize => From_Stdin);
+
+         --  --keep writes pack-<sha>.keep next to the pack (empty, or the
+         --  reason for --keep=<reason>), marking it exempt from gc/repack.
+         if Keep then
+            declare
+               P : constant String := To_String (Pack_Path);
+               Keep_Path : constant String :=
+                 P (P'First .. P'Last - 5) & ".keep";
+            begin
+               Version.Files.Write_Binary_File
+                 (Keep_Path, To_String (Keep_Reason));
+            end;
+         end if;
 
          if Idx_Out /= "" then
             declare
@@ -2950,6 +2973,36 @@ package body Version.CLI is
       end Ensure_Blob;
 
       Exported : Version.Trailers.String_Vectors.Vector;
+
+      --  Resolve an explicit ref argument to its fully-qualified name, in
+      --  git's rev-parse DWIM order (tags before heads), so `reset`/`commit`
+      --  lines name refs/heads|tags/* and the stream recreates the ref. A
+      --  short name left as-is creates no ref on reimport.
+      function Canonical_Ref (A : String) return String is
+      begin
+         if A = "HEAD" then
+            declare
+               H : constant Version.Refs.Head_Info :=
+                 Version.Refs.Read_Head (Repo);
+            begin
+               return (if Version.Refs.Is_Attached (H)
+                       then "refs/heads/" & Version.Refs.Branch_Name (H)
+                       else A);
+            end;
+         elsif A'Length >= 5
+           and then A (A'First .. A'First + 4) = "refs/"
+         then
+            return A;
+         elsif Version.Refs.Ref_Exists (Repo, "refs/tags/" & A) then
+            return "refs/tags/" & A;
+         elsif Version.Refs.Ref_Exists (Repo, "refs/heads/" & A) then
+            return "refs/heads/" & A;
+         elsif Version.Refs.Ref_Exists (Repo, "refs/remotes/" & A) then
+            return "refs/remotes/" & A;
+         else
+            return A;
+         end if;
+      end Canonical_Ref;
    begin
       for I in 2 .. Count loop
          declare
@@ -2966,7 +3019,7 @@ package body Version.CLI is
             elsif A'Length > 0 and then A (A'First) = '-' then
                null;
             else
-               Refs.Append (A);
+               Refs.Append (Canonical_Ref (A));
             end if;
          end;
       end loop;
@@ -2975,11 +3028,56 @@ package body Version.CLI is
          return;
       end if;
 
+      --  git emits annotated tags after every commit/branch and lightweight
+      --  tag, as `tag` commands at the end of the stream. Defer any ref that
+      --  resolves to a tag object so its `from :<mark>` can name an
+      --  already-emitted commit and the ordering matches git.
+      declare
+         package Ref_Sort is new
+           Version.Trailers.String_Vectors.Generic_Sorting;
+         Head_Refs : Version.Trailers.String_Vectors.Vector;
+         Tag_Refs  : Version.Trailers.String_Vectors.Vector;
+      begin
+         for R of Refs loop
+            if R'Length > 10
+              and then R (R'First .. R'First + 9) = "refs/tags/"
+              and then Version.Objects.Kind
+                         (Version.Objects.Read_Object
+                            (Repo, Version.Revisions.Resolve (Repo, R)))
+                       = Version.Objects.Tag_Object
+            then
+               Tag_Refs.Append (R);
+            else
+               Head_Refs.Append (R);
+            end if;
+         end loop;
+
+         --  git walks refs in sorted order regardless of how they were named.
+         Ref_Sort.Sort (Head_Refs);
+         Ref_Sort.Sort (Tag_Refs);
+
+         Refs := Head_Refs;
+         for R of Tag_Refs loop
+            Refs.Append (R);
+         end loop;
+      end;
+
       for Ref of Refs loop
          declare
             Is_Tag : constant Boolean :=
               Ref'Length > 10
               and then Ref (Ref'First .. Ref'First + 9) = "refs/tags/";
+
+            --  Only an annotated tag (a tag object) is emitted as a `tag`
+            --  command; a lightweight tag is just a ref at a commit and
+            --  flows through the normal commit/reset path, exactly as git
+            --  does -- otherwise `fast-export --all` drops it entirely.
+            Is_Annotated_Tag : constant Boolean :=
+              Is_Tag
+              and then Version.Objects.Kind
+                         (Version.Objects.Read_Object
+                            (Repo, Version.Revisions.Resolve (Repo, Ref)))
+                       = Version.Objects.Tag_Object;
 
             Tip : constant Version.Objects.Hex_Object_Id :=
               Version.Revisions.Resolve_Commit (Repo, Ref);
@@ -3055,7 +3153,7 @@ package body Version.CLI is
                end loop;
             end;
 
-            if Is_Tag then
+            if Is_Annotated_Tag then
                declare
                   Obj : constant Version.Objects.Git_Object :=
                     Version.Objects.Read_Object
@@ -3626,7 +3724,25 @@ package body Version.CLI is
                   end loop;
 
                   if not Started then
-                     Files.Clear;
+                     --  No explicit `from`: git implicitly parents the commit
+                     --  on the ref's current tip -- set earlier in this stream
+                     --  or already in the repo -- and builds on its tree.
+                     --  Only a brand-new ref starts from an empty tree.
+                     --  Clearing unconditionally (the old behaviour) dropped
+                     --  every previously committed file and orphaned history.
+                     if Version.Refs.Ref_Exists (Repo, Ref) then
+                        declare
+                           Tip : constant String :=
+                             Version.Objects.To_String
+                               (Version.Revisions.Resolve_Commit (Repo, Ref));
+                        begin
+                           Parents.Append
+                             (Version.Objects.To_Object_Id (Tip));
+                           Load_Files (Tip);
+                        end;
+                     else
+                        Files.Clear;
+                     end if;
                   end if;
 
                   --  The file changes, until the blank line.
@@ -5494,6 +5610,38 @@ package body Version.CLI is
          return;
       end if;
 
+      --  git-merge-resolve refuses to run when the index carries staged
+      --  changes not in HEAD -- read-tree -u -m would overwrite them -- and
+      --  aborts (exit 2) without touching anything. version used to merge
+      --  regardless, silently discarding the staged change.
+      if Backend = Backend_Resolve then
+         declare
+            St : constant Version.Status.Status_Result :=
+              Version.Status.Current_Status;
+            Paths : Version.Trailers.String_Vectors.Vector;
+
+            package Path_Sort is new
+              Version.Trailers.String_Vectors.Generic_Sorting;
+         begin
+            if not St.Staged.Is_Empty then
+               for C of St.Staged loop
+                  Paths.Append (To_String (C.Path));
+               end loop;
+               Path_Sort.Sort (Paths);
+
+               Stderr_Line
+                 ("Error: Your local changes to the following files"
+                  & " would be overwritten by merge");
+               for P of Paths loop
+                  Stderr_Line ("    " & P);
+               end loop;
+               Ada.Command_Line.Set_Exit_Status
+                 (Ada.Command_Line.Exit_Status (2));
+               return;
+            end if;
+         end;
+      end if;
+
       declare
          Head_Id : constant Version.Objects.Hex_Object_Id :=
            Version.Revisions.Resolve_Commit (Repo, To_String (Head));
@@ -5501,9 +5649,80 @@ package body Version.CLI is
          Remote_Id : constant Version.Objects.Hex_Object_Id :=
            Version.Revisions.Resolve_Commit (Repo, Remotes.First_Element);
 
+         --  The recursive backends synthesize a virtual ancestor from several
+         --  merge bases; resolve/octopus keep the single first base.
+         Is_Recursive : constant Boolean :=
+           Backend in Backend_Recursive | Backend_Recursive_Ours
+                    | Backend_Recursive_Theirs | Backend_Subtree;
+
+         --  Fold the given bases into one virtual ancestor as git's recursive
+         --  strategy does: merge base[0] with base[1] using their own merge
+         --  base, commit the result as a "virtual merge base", then repeat
+         --  against base[2], base[3]... Using only the first base (the old
+         --  behaviour) gives a wrong ancestor on a criss-cross history and can
+         --  silently drop a committed change.
+         function Virtual_Base_Id return Version.Objects.Hex_Object_Id is
+            Accum_Id : Version.Objects.Hex_Object_Id :=
+              Version.Revisions.Resolve_Commit (Repo, Bases.First_Element);
+         begin
+            for I in Bases.First_Index + 1 .. Bases.Last_Index loop
+               declare
+                  Next_Id : constant Version.Objects.Hex_Object_Id :=
+                    Version.Revisions.Resolve_Commit (Repo, Bases.Element (I));
+                  Pair_Base : constant Version.Objects.Hex_Object_Id :=
+                    Version.History.Merge_Base (Repo, Accum_Id, Next_Id);
+                  Pair_Items :
+                    constant Version.Objects.Tree_Entry_Vectors.Vector :=
+                      (if Version.Objects.Id_Length (Pair_Base) > 0
+                       then Tree_Of (Pair_Base)
+                       else Version.Objects.Tree_Entry_Vectors.Empty_Vector);
+                  Accum_Items :
+                    constant Version.Objects.Tree_Entry_Vectors.Vector :=
+                      Tree_Of (Accum_Id);
+                  Next_Items :
+                    constant Version.Objects.Tree_Entry_Vectors.Vector :=
+                      Tree_Of (Next_Id);
+                  Merged    : Version.Staging.Index_Entry_Vectors.Vector;
+                  Conflicts : Version.Merge.Conflict_Vectors.Vector;
+                  Behavior  : Version.Merge.Merge_Behavior;
+               begin
+                  Behavior.Update_Worktree := False;
+                  Behavior.Materialize_Virtual_Conflicts := True;
+                  Behavior.Base_Label :=
+                    To_Unbounded_String
+                      (Version.Merge.Base_Label_For (Repo, Pair_Base));
+
+                  Version.Merge.Merge_Trees
+                    (Repo          => Repo,
+                     Current_Name  => "Temporary merge branch 1",
+                     Target_Name   => "Temporary merge branch 2",
+                     Base_Items    => Pair_Items,
+                     Current_Items => Accum_Items,
+                     Target_Items  => Next_Items,
+                     Merged_Index  => Merged,
+                     Conflicts     => Conflicts,
+                     Behavior      => Behavior);
+
+                  declare
+                     Tree_Id : constant Version.Objects.Hex_Object_Id :=
+                       Version.Write.Write_Tree_From_Index (Repo, Merged);
+                     Parents : Version.Objects.Object_Id_Vectors.Vector;
+                  begin
+                     Parents.Append (Accum_Id);
+                     Parents.Append (Next_Id);
+                     Accum_Id := Version.Write.Write_Commit_With_Parents
+                       (Repo, Tree_Id, Parents, "virtual merge base");
+                  end;
+               end;
+            end loop;
+            return Accum_Id;
+         end Virtual_Base_Id;
+
          Base_Id : constant Version.Objects.Hex_Object_Id :=
            (if Bases.Is_Empty
             then Version.History.Merge_Base (Repo, Head_Id, Remote_Id)
+            elsif Natural (Bases.Length) > 1 and then Is_Recursive
+            then Virtual_Base_Id
             else Version.Revisions.Resolve_Commit (Repo, Bases.First_Element));
 
          Raw_Base    : constant Version.Objects.Tree_Entry_Vectors.Vector :=
@@ -11891,10 +12110,33 @@ package body Version.CLI is
                   declare
                      Repo : constant Version.Repository.Repository_Handle :=
                        Version.Repository.Open;
+                     Head : constant Version.Refs.Head_Info :=
+                       Version.Refs.Read_Head (Repo);
+                     --  `checkout <branch>` attaches HEAD to the branch; a
+                     --  commit, tag or other revision detaches it, as git does.
+                     Is_Branch : constant Boolean :=
+                       Version.Refs.Ref_Exists
+                         (Repo, "refs/heads/" & Arg (2));
+                     Already   : constant Boolean :=
+                       Is_Branch
+                         and then Version.Refs.Is_Attached (Head)
+                         and then Version.Refs.Branch_Name (Head) = Arg (2);
                   begin
-                     Version.Checkout.Checkout_Commit
-                       (Version.Revisions.Resolve_Commit (Repo, Arg (2)));
-                     Success_Line ("checked out " & Arg (2));
+                     if Is_Branch then
+                        Version.Checkout.Checkout_Commit
+                          (Version.Revisions.Resolve_Commit (Repo, Arg (2)),
+                           Branch => Arg (2));
+                        if Already then
+                           Success_Line ("Already on '" & Arg (2) & "'");
+                        else
+                           Success_Line
+                             ("Switched to branch '" & Arg (2) & "'");
+                        end if;
+                     else
+                        Version.Checkout.Checkout_Commit
+                          (Version.Revisions.Resolve_Commit (Repo, Arg (2)));
+                        Success_Line ("checked out " & Arg (2));
+                     end if;
                   end;
                elsif Arg (3) /= "--" then
                   if Arg (3)'Length > 0
@@ -14403,8 +14645,15 @@ package body Version.CLI is
                         Bad_Text := To_Unbounded_String ("-m");
                         exit;
                      end if;
-                     Msg := To_Unbounded_String (Arg (I + 1));
-                     Has_Msg := True;
+                     --  Repeated -m are joined as separate paragraphs
+                     --  (blank line between), as git's commit-tree does,
+                     --  not overwritten.
+                     if Has_Msg then
+                        Append (Msg, ASCII.LF & ASCII.LF & Arg (I + 1));
+                     else
+                        Msg := To_Unbounded_String (Arg (I + 1));
+                        Has_Msg := True;
+                     end if;
                      I := I + 1;
                   elsif Arg (I)'Length >= 1 and then Arg (I) (Arg (I)'First) = '-'
                   then
@@ -15610,6 +15859,14 @@ package body Version.CLI is
                           (Version.Repository.Open, Arg (Base));
                         Success_Line ("unset config " & Arg (Base));
                      end if;
+                  exception
+                     when Version.Config.Ambiguous_Key =>
+                        --  git warns and exits 5, leaving the values in place.
+                        Ada.Text_IO.Put_Line
+                          (Ada.Text_IO.Standard_Error,
+                           "warning: " & Arg (Base) & " has multiple values");
+                        Ada.Command_Line.Set_Exit_Status
+                          (Ada.Command_Line.Exit_Status (5));
                   end;
 
                elsif Is_Option (Subcommand) then
@@ -18790,12 +19047,24 @@ package body Version.CLI is
                   declare
                      Repo : constant Version.Repository.Repository_Handle :=
                        Version.Repository.Open;
-                     Input   : constant String := Read_Stdin;
-                     Entries : Version.Objects.Tree_Entry_Vectors.Vector;
-                     Pos     : Positive := Input'First;
+                     Input    : constant String := Read_Stdin;
+                     Entries  : Version.Objects.Tree_Entry_Vectors.Vector;
+                     Pos      : Positive := Input'First;
+                     Failed   : Boolean := False;
+                     Fail_Msg : Unbounded_String;
+
+                     function Type_Name
+                       (K : Version.Objects.Object_Kind) return String
+                     is
+                       (case K is
+                          when Version.Objects.Blob_Object   => "blob",
+                          when Version.Objects.Tree_Object   => "tree",
+                          when Version.Objects.Commit_Object => "commit",
+                          when Version.Objects.Tag_Object    => "tag",
+                          when Version.Objects.Unknown_Object => "unknown");
                   begin
                      --  Parse "<mode> SP <type> SP <sha> TAB <path>" per line.
-                     while Pos <= Input'Last loop
+                     while Pos <= Input'Last and then not Failed loop
                         declare
                            Line_End : Natural := Pos;
                         begin
@@ -18830,10 +19099,19 @@ package body Version.CLI is
                                  declare
                                     Mode : constant String :=
                                       Line (Line'First .. S1 - 1);
+                                    Decl : constant String :=
+                                      Line (S1 + 1 .. S2 - 1);
                                     Sha  : constant String :=
                                       Line (S2 + 1 .. Tab - 1);
                                     Path : constant String :=
                                       Line (Tab + 1 .. Line'Last);
+                                    --  The object type git infers from the
+                                    --  mode; the declared type must match it.
+                                    Mode_Type : constant String :=
+                                      (if Mode = "40000" or else Mode = "040000"
+                                       then "tree"
+                                       elsif Mode = "160000" then "commit"
+                                       else "blob");
                                     Id : constant Version.Objects.Hex_Object_Id
                                       := Version.Objects.To_Object_Id (Sha);
                                     Kind : constant Version.Objects
@@ -18844,27 +19122,55 @@ package body Version.CLI is
                                        then Version.Objects.Tree_Gitlink
                                        else Version.Objects.Tree_Blob);
                                  begin
-                                    if not Allow_Missing then
+                                    if Decl /= Mode_Type then
+                                       Failed := True;
+                                       Fail_Msg := To_Unbounded_String
+                                         ("entry '" & Path & "' object type ("
+                                          & Decl & ") doesn't match mode type ("
+                                          & Mode_Type & ")");
+                                    elsif not Allow_Missing then
+                                       --  Confirm the object exists and its
+                                       --  actual type matches the declaration,
+                                       --  as git does without --missing.
                                        declare
-                                          Ignore : constant Version.Objects
-                                                     .Git_Object :=
+                                          Obj : constant Version.Objects
+                                                  .Git_Object :=
                                             Version.Objects.Read_Object
                                               (Repo, Id);
-                                          pragma Unreferenced (Ignore);
+                                          Actual : constant String :=
+                                            Type_Name
+                                              (Version.Objects.Kind (Obj));
                                        begin
-                                          null;
+                                          if Actual /= Decl then
+                                             Failed := True;
+                                             Fail_Msg := To_Unbounded_String
+                                               ("entry '" & Path & "' object "
+                                                & Version.Objects.To_String (Id)
+                                                & " is a " & Actual
+                                                & " but specified type was ("
+                                                & Decl & ")");
+                                          end if;
                                        end;
                                     end if;
 
-                                    Entries.Append
-                                      (Version.Objects.Tree_Entry'
-                                         (Path =>
-                                            To_Unbounded_String (Path),
-                                          Id   => Id,
-                                          Kind => Kind,
-                                          Mode =>
-                                            To_Unbounded_String (Mode)));
+                                    if not Failed then
+                                       Entries.Append
+                                         (Version.Objects.Tree_Entry'
+                                            (Path =>
+                                               To_Unbounded_String (Path),
+                                             Id   => Id,
+                                             Kind => Kind,
+                                             Mode =>
+                                               To_Unbounded_String (Mode)));
+                                    end if;
                                  end;
+                              elsif Line'Length > 0 then
+                                 --  A non-empty line git cannot parse aborts the
+                                 --  whole command (no tree written), rather than
+                                 --  being silently dropped.
+                                 Failed   := True;
+                                 Fail_Msg := To_Unbounded_String
+                                   ("input format error: " & Line);
                               end if;
                            end;
 
@@ -18872,8 +19178,16 @@ package body Version.CLI is
                         end;
                      end loop;
 
-                     Success_Line
-                       (To_String (Version.Write.Write_Tree (Repo, Entries)));
+                     if Failed then
+                        Ada.Text_IO.Put_Line
+                          (Ada.Text_IO.Standard_Error,
+                           "fatal: " & To_String (Fail_Msg));
+                        Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                     else
+                        Success_Line
+                          (To_String
+                             (Version.Write.Write_Tree (Repo, Entries)));
+                     end if;
                   end;
                end if;
             end;
@@ -19730,27 +20044,63 @@ package body Version.CLI is
                             else To_Unbounded_String (Default));
                         Merged    : Unbounded_String;
                         Conflicts : Natural;
+                        Ours_C    : constant String :=
+                          Version.Files.Read_Binary_File (Cur_P);
+                        Base_C    : constant String :=
+                          Version.Files.Read_Binary_File (Bas_P);
+                        Theirs_C  : constant String :=
+                          Version.Files.Read_Binary_File (Oth_P);
+
+                        --  git's buffer_is_binary: a NUL byte in the first
+                        --  8000 bytes marks the content binary.
+                        function Is_Binary (S : String) return Boolean is
+                        begin
+                           for K in S'First ..
+                             Integer'Min (S'Last, S'First + 7999)
+                           loop
+                              if S (K) = Character'Val (0) then
+                                 return True;
+                              end if;
+                           end loop;
+                           return False;
+                        end Is_Binary;
                      begin
                         Opts.Ours_Label   := Lbl (1, Cur_P);
                         Opts.Base_Label   := Lbl (2, Bas_P);
                         Opts.Theirs_Label := Lbl (3, Oth_P);
-                        Version.Merge.Merge_File
-                          (Ours_Text   => Version.Files.Read_Binary_File (Cur_P),
-                           Base_Text   => Version.Files.Read_Binary_File (Bas_P),
-                           Theirs_Text => Version.Files.Read_Binary_File (Oth_P),
-                           Options     => Opts,
-                           Merged      => Merged,
-                           Conflicts   => Conflicts);
-                        if To_Stdout then
-                           Version.Console.Put (To_String (Merged));
-                        else
-                           Version.Files.Write_Binary_File
-                             (Cur_P, To_String (Merged));
-                        end if;
-                        if Conflicts > 0 then
+
+                        --  git refuses to merge binary content, naming the
+                        --  first binary file (ours, then base, then theirs)
+                        --  by path, and leaves the current file untouched.
+                        if Is_Binary (Ours_C) or else Is_Binary (Base_C)
+                          or else Is_Binary (Theirs_C)
+                        then
+                           Error_Line
+                             ("Cannot merge binary files: "
+                              & (if Is_Binary (Ours_C) then Cur_P
+                                 elsif Is_Binary (Base_C) then Bas_P
+                                 else Oth_P));
                            Ada.Command_Line.Set_Exit_Status
-                             (Ada.Command_Line.Exit_Status
-                                (Integer'Min (Conflicts, 127)));
+                             (Ada.Command_Line.Exit_Status (255));
+                        else
+                           Version.Merge.Merge_File
+                             (Ours_Text   => Ours_C,
+                              Base_Text   => Base_C,
+                              Theirs_Text => Theirs_C,
+                              Options     => Opts,
+                              Merged      => Merged,
+                              Conflicts   => Conflicts);
+                           if To_Stdout then
+                              Version.Console.Put (To_String (Merged));
+                           else
+                              Version.Files.Write_Binary_File
+                                (Cur_P, To_String (Merged));
+                           end if;
+                           if Conflicts > 0 then
+                              Ada.Command_Line.Set_Exit_Status
+                                (Ada.Command_Line.Exit_Status
+                                   (Integer'Min (Conflicts, 127)));
+                           end if;
                         end if;
                      end;
                   end if;
