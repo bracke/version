@@ -14042,11 +14042,14 @@ package body Version.CLI is
                All_Objects : constant Boolean :=
                  (for some J in 2 .. Count => Arg (J) = "--batch-all-objects");
                --  -z / -Z read the request list NUL-separated instead of
-               --  newline-separated (git also NUL-terminates -Z output, not
-               --  handled here).
+               --  newline-separated.  -Z additionally NUL-terminates the
+               --  output records (header and, for --batch, the content
+               --  record); -z leaves the output newline-terminated.
                Nul_In : constant Boolean :=
                  (for some J in 2 .. Count => Arg (J) = "-z"
                     or else Arg (J) = "-Z");
+               Nul_Out : constant Boolean :=
+                 (for some J in 2 .. Count => Arg (J) = "-Z");
             begin
                if Is_Batch or else Is_Batch_Check then
                   declare
@@ -14119,6 +14122,21 @@ package body Version.CLI is
                         end loop;
                         return To_String (Result);
                      end Expand;
+                     Nul : constant String := (1 => Character'Val (0));
+
+                     --  Header/record output.  With -Z every record is
+                     --  NUL-terminated and the whole stream is routed through
+                     --  Version.Console (byte-exact, no GNAT trailing
+                     --  terminator); otherwise the newline path is kept.
+                     procedure Out_Record (S : String) is
+                     begin
+                        if Nul_Out then
+                           Version.Console.Put (S & Nul);
+                        else
+                           Success_Line (S);
+                        end if;
+                     end Out_Record;
+
                      procedure Emit (Token, Rest : String) is
                      begin
                         if Token = "" then
@@ -14131,16 +14149,21 @@ package body Version.CLI is
                               Obj : constant Version.Objects.Git_Object
                                 := Version.Objects.Read_Object (Repo, Id);
                            begin
-                              Success_Line (Expand (Token, Rest, Id, Obj));
+                              Out_Record (Expand (Token, Rest, Id, Obj));
                               if Is_Batch then
-                                 Ada.Text_IO.Put
-                                   (Version.Objects.Content (Obj));
-                                 Ada.Text_IO.New_Line;
+                                 if Nul_Out then
+                                    Version.Console.Put
+                                      (Version.Objects.Content (Obj) & Nul);
+                                 else
+                                    Ada.Text_IO.Put
+                                      (Version.Objects.Content (Obj));
+                                    Ada.Text_IO.New_Line;
+                                 end if;
                               end if;
                            end;
                         exception
                            when others =>
-                              Success_Line (Token & " missing");
+                              Out_Record (Token & " missing");
                         end;
                      end Emit;
                   begin
@@ -14654,17 +14677,79 @@ package body Version.CLI is
                   return True;
                end Is_Hex_Oid;
 
+               --  --stable computes an order-independent id: git hashes each
+               --  file's diff separately and adds the 20-byte digests (with
+               --  carry) into a running accumulator, so reordering the files
+               --  in the patch leaves the id unchanged.  --unstable (the
+               --  default) hashes the whole patch as one stream (Buf below).
+               function Want_Stable return Boolean is
+                  S : Boolean := False;
+               begin
+                  for J in 2 .. Count loop
+                     if Arg (J) = "--stable" then
+                        S := True;
+                     elsif Arg (J) = "--unstable" then
+                        S := False;
+                     end if;
+                  end loop;
+                  return S;
+               end Want_Stable;
+               Stable : constant Boolean := Want_Stable;
+
+               Result : String (1 .. 20) := [others => Character'Val (0)];
+
+               function To_Hex (Raw : String) return String is
+                  Digits_Set : constant String := "0123456789abcdef";
+                  R : String (1 .. Raw'Length * 2);
+               begin
+                  for I in Raw'Range loop
+                     declare
+                        B : constant Natural := Character'Pos (Raw (I));
+                        K : constant Positive := (I - Raw'First) * 2 + 1;
+                     begin
+                        R (K) := Digits_Set (Digits_Set'First + B / 16);
+                        R (K + 1) := Digits_Set (Digits_Set'First + B mod 16);
+                     end;
+                  end loop;
+                  return R;
+               end To_Hex;
+
+               --  Finalize the current file's chunk (Buf) into Result by
+               --  20-byte little-endian addition, then reset Buf.  git's
+               --  flush_one_hunk.  Called at every file boundary and at the
+               --  end of the patch (stable only).
+               procedure Sub_Flush is
+                  Raw   : constant String :=
+                    Version.Hash.Sha1_Raw (To_String (Buf));
+                  Carry : Natural := 0;
+               begin
+                  for I in 1 .. 20 loop
+                     Carry := Carry + Character'Pos (Result (I))
+                       + Character'Pos (Raw (Raw'First + I - 1));
+                     Result (I) := Character'Val (Carry mod 256);
+                     Carry := Carry / 256;
+                  end loop;
+                  Buf := Null_Unbounded_String;
+               end Sub_Flush;
+
                procedure Flush is
                begin
                   if Len > 0 then
-                     Success_Line
-                       (Version.Hash.Sha1_Hex (To_String (Buf)) & " "
-                        & To_String (Commit_Oid));
+                     if Stable then
+                        Sub_Flush;   --  finalize the last file
+                        Success_Line
+                          (To_Hex (Result) & " " & To_String (Commit_Oid));
+                     else
+                        Success_Line
+                          (Version.Hash.Sha1_Hex (To_String (Buf)) & " "
+                           & To_String (Commit_Oid));
+                     end if;
                   end if;
                   Buf := Null_Unbounded_String;
                   Len := 0;
                   Before := -1;
                   After := -1;
+                  Result := [others => Character'Val (0)];
                end Flush;
 
                procedure Add (L : String) is
@@ -14767,6 +14852,12 @@ package body Version.CLI is
                            elsif not Starts (Line, "diff ") then
                               null;   --  end of the patch
                            else
+                              --  New file within the same patch: close the
+                              --  previous file's chunk before starting this
+                              --  one (stable id is a sum over files).
+                              if Stable then
+                                 Sub_Flush;
+                              end if;
                               Before := -1;
                               After := -1;
                               Add (Line);

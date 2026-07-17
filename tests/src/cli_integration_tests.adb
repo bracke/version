@@ -1356,7 +1356,15 @@ package body CLI_Integration_Tests is
          & "   test ""$(printf '%s\0%s\0' ""$H"" ""$B"" |"
          & "     git cat-file --batch-check -z)"""
          & "     = ""$(printf '%s\0%s\0' ""$H"" ""$B"" | " & CLI
-         & " cat-file --batch-check -z)"" )");
+         & " cat-file --batch-check -z)"";"
+         --  -Z NUL-terminates the output too; compare byte-exactly (command
+         --  substitution strips NULs) for both --batch-check and --batch.
+         & "   printf '%s\0nope\0' ""$B"" | git cat-file --batch-check -Z"
+         & "     > gc; printf '%s\0nope\0' ""$B"" | " & CLI
+         & " cat-file --batch-check -Z > vc; cmp gc vc;"
+         & "   printf '%s\0' ""$B"" | git cat-file --batch -Z > gb;"
+         & "   printf '%s\0' ""$B"" | " & CLI & " cat-file --batch -Z > vb;"
+         & "   cmp gb vb )");
 
       Ada.Directories.Set_Directory (Old_Dir);
    exception
@@ -3416,6 +3424,9 @@ package body CLI_Integration_Tests is
            & Tool & " bisect reset > /dev/null 2>&1" & LF
            & "echo '== patch-id:' >> " & Q & "$TF" & Q & LF
            & "git log -p | " & Tool & " patch-id >> " & Q & "$TF" & Q
+           & " 2>&1" & LF
+           & "echo '== patch-id --stable:' >> " & Q & "$TF" & Q & LF
+           & "git log -p | " & Tool & " patch-id --stable >> " & Q & "$TF" & Q
            & " 2>&1" & LF;
       begin
          Version.Test_Support.Write_Text_File (Script_Path, Script);
