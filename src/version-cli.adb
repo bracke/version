@@ -7389,7 +7389,55 @@ package body Version.CLI is
                   Paths := Check_Ignore_Stdin_Paths (Options);
                end if;
 
-               Run_Check_Ignore (Paths, Options);
+               --  git validates path operands before matching: an empty
+               --  string is not a valid pathspec, and a path that resolves
+               --  outside the repository is fatal (exit 128).
+               declare
+                  Repo : constant Version.Repository.Repository_Handle :=
+                    Version.Repository.Open;
+                  Root : constant String :=
+                    Version.Repository.Root_Path (Repo);
+                  Bad  : Boolean := False;
+
+                  function Outside (P : String) return Boolean is
+                     Abs_P : constant String := Ada.Directories.Full_Name (P);
+                  begin
+                     return Abs_P /= Root
+                       and then not (Abs_P'Length > Root'Length
+                                     and then Abs_P
+                                       (Abs_P'First
+                                        .. Abs_P'First + Root'Length)
+                                       = Root & "/");
+                  exception
+                     when others =>
+                        return False;
+                  end Outside;
+               begin
+                  for P of Paths loop
+                     if P = "" then
+                        Ada.Text_IO.Put_Line
+                          (Ada.Text_IO.Standard_Error,
+                           "fatal: empty string is not a valid pathspec."
+                           & " please use . instead if you meant to match"
+                           & " all paths");
+                        Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                        Bad := True;
+                        exit;
+                     elsif Outside (P) then
+                        Ada.Text_IO.Put_Line
+                          (Ada.Text_IO.Standard_Error,
+                           "fatal: " & P & ": '" & P
+                           & "' is outside repository at '" & Root & "'");
+                        Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                        Bad := True;
+                        exit;
+                     end if;
+                  end loop;
+
+                  if not Bad then
+                     Run_Check_Ignore (Paths, Options);
+                  end if;
+               end;
             end;
 
          elsif Command = "diff" then

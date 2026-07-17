@@ -1438,6 +1438,44 @@ package body CLI_Integration_Tests is
          raise;
    end Plumbing_Errors_And_Init_Match_Git;
 
+   --  Regression: check-ignore rejects an empty pathspec and a path resolving
+   --  outside the repository (git exit 128), instead of silently treating
+   --  them as not-ignored. version's messages are asserted in English (git
+   --  localizes them; we compare only git's exit code).
+   procedure Check_Ignore_Path_Errors_Match_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Ada.Directories.Set_Directory (Root);
+
+      Version.Git_Fixtures.Run
+        (Root,
+         "export LC_ALL=C GIT_CONFIG_NOSYSTEM=1; rm -rf r; mkdir r; cd r;"
+         & " git init -q;"
+         --  empty pathspec
+         & " ge=0; git check-ignore '' >/dev/null 2>&1 || ge=$?;"
+         & " ve=0; vo=$(" & CLI & " check-ignore '' 2>&1) || ve=$?;"
+         & " test $ge -eq 128 && test $ve -eq 128 &&"
+         & " printf '%s\n' ""$vo"" |"
+         & "   grep -q 'empty string is not a valid pathspec';"
+         --  absolute path outside the repository
+         & " ge=0; git check-ignore /etc/passwd >/dev/null 2>&1 || ge=$?;"
+         & " ve=0; vo=$(" & CLI & " check-ignore /etc/passwd 2>&1) || ve=$?;"
+         & " test $ge -eq 128 && test $ve -eq 128 &&"
+         & " printf '%s\n' ""$vo"" | grep -q 'is outside repository at'");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Check_Ignore_Path_Errors_Match_Git;
+
    --  Byte-oracle the remaining plumbing: var, count-objects, rev-parse @{n},
    --  name-rev, and for-each-ref %(upstream).
    procedure Extra_Plumbing_Matches_Git
@@ -4634,6 +4672,9 @@ package body CLI_Integration_Tests is
       Register_Routine
         (T, Plumbing_Errors_And_Init_Match_Git'Access,
          "hash-object/get-tar exit 128; init idempotent; merge-tree unrelated");
+      Register_Routine
+        (T, Check_Ignore_Path_Errors_Match_Git'Access,
+         "check-ignore rejects empty and outside-repo paths (exit 128)");
    end Register_Tests;
 
    overriding function Name (T : Test_Case) return AUnit.Message_String is
