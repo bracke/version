@@ -1365,6 +1365,79 @@ package body CLI_Integration_Tests is
          raise;
    end Bisect_Catfile_Z_Match_Git;
 
+   --  Regression: hash-object/get-tar-commit-id die (exit 128, git's message)
+   --  on bad input; init is idempotent (a second init succeeds); merge-tree
+   --  honours --allow-unrelated-histories and otherwise refuses like git.
+   procedure Plumbing_Errors_And_Init_Match_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Ada.Directories.Set_Directory (Root);
+
+      --  hash-object on a missing file and get-tar-commit-id on junk: version
+      --  prints git's exact (English) fatal message and exits 128, and git
+      --  exits 128 too. (git localizes the text; version does not, so we
+      --  assert version's literal output and only compare git's exit code.)
+      Version.Git_Fixtures.Run
+        (Root,
+         "export LC_ALL=C GIT_CONFIG_NOSYSTEM=1; rm -rf r; mkdir r; cd r;"
+         & " git init -q;"
+         & " ge=0; git hash-object nope >/dev/null 2>&1 || ge=$?;"
+         & " ve=0; vo=$(" & CLI & " hash-object nope 2>&1) || ve=$?;"
+         & " test $ge -eq 128 && test $ve -eq 128 &&"
+         & " test ""$vo"" = ""fatal: could not open 'nope' for reading:"
+         & " No such file or directory"";"
+         & " ge=0; printf junk | git get-tar-commit-id >/dev/null 2>&1"
+         & "   || ge=$?;"
+         & " ve=0; vo=$(printf junk | " & CLI
+         & " get-tar-commit-id 2>&1) || ve=$?;"
+         & " test $ge -eq 128 && test $ve -eq 128 &&"
+         & " test ""$vo"" = ""fatal: git get-tar-commit-id: EOF before"
+         & " reading tar header: No such file or directory""");
+
+      --  init is idempotent: a second init succeeds (exit 0) and leaves the
+      --  repo intact.
+      Version.Git_Fixtures.Run
+        (Root,
+         "export LC_ALL=C GIT_CONFIG_NOSYSTEM=1; rm -rf i; mkdir i; cd i;"
+         & " " & CLI & " init >/dev/null 2>&1 &&"
+         & " " & CLI & " init >/dev/null 2>&1 && test -d .git");
+
+      --  merge-tree refuses unrelated histories, matching git, and merges
+      --  with --allow-unrelated-histories to git's exact tree id.
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C GIT_CONFIG_NOSYSTEM=1"
+         & " GIT_AUTHOR_DATE='1700000000 +0000'"
+         & " GIT_COMMITTER_DATE='1700000000 +0000'; rm -rf m; mkdir m;"
+         & " ( cd m; git init -q -b main; git config user.email t@e;"
+         & "   git config user.name T; printf a > x; git add x;"
+         & "   git commit -qm a; A=$(git rev-parse HEAD);"
+         & "   git checkout -q --orphan other; git rm -q -rf .;"
+         & "   printf b > y; git add y; git commit -qm b;"
+         & "   B=$(git rev-parse HEAD);"
+         & "   ge=0; git merge-tree --write-tree $A $B >/dev/null 2>&1"
+         & "     || ge=$?;"
+         & "   ve=0; " & CLI & " merge-tree --write-tree $A $B >/dev/null"
+         & "     2>&1 || ve=$?;"
+         & "   test $ge -eq 128 && test $ve -eq 128;"
+         & "   test ""$(git merge-tree --write-tree"
+         & "     --allow-unrelated-histories $A $B)"""
+         & "     = ""$(" & CLI & " merge-tree --write-tree"
+         & "     --allow-unrelated-histories $A $B)"" )");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Plumbing_Errors_And_Init_Match_Git;
+
    --  Byte-oracle the remaining plumbing: var, count-objects, rev-parse @{n},
    --  name-rev, and for-each-ref %(upstream).
    procedure Extra_Plumbing_Matches_Git
@@ -4558,6 +4631,9 @@ package body CLI_Integration_Tests is
       Register_Routine
         (T, Bisect_Catfile_Z_Match_Git'Access,
          "bisect good-ancestor check; cat-file -z NUL input match git");
+      Register_Routine
+        (T, Plumbing_Errors_And_Init_Match_Git'Access,
+         "hash-object/get-tar exit 128; init idempotent; merge-tree unrelated");
    end Register_Tests;
 
    overriding function Name (T : Test_Case) return AUnit.Message_String is

@@ -5875,6 +5875,7 @@ package body Version.CLI is
       Name_Only : Boolean := False;
       Use_NUL   : Boolean := False;
       Messages  : Boolean := True;
+      Allow     : Boolean := False;
       Base_Spec : Unbounded_String;
       Operands  : Version.Trailers.String_Vectors.Vector;
 
@@ -5895,7 +5896,7 @@ package body Version.CLI is
             elsif A = "--no-messages" then
                Messages := False;
             elsif A = "--allow-unrelated-histories" then
-               null;
+               Allow := True;
             elsif A'Length > 13
               and then A (A'First .. A'First + 12) = "--merge-base="
             then
@@ -5927,10 +5928,22 @@ package body Version.CLI is
          Theirs_Id : constant Version.Objects.Hex_Object_Id :=
            Version.Revisions.Resolve_Commit (Repo, Theirs_Name);
 
+         --  Compute the base without raising on unrelated histories, so the
+         --  refusal below can be git's own message.
+         Auto_Bases :
+           constant Version.History.Commit_Id_Vectors.Vector :=
+             (if Base_Spec /= ""
+              then Version.History.Commit_Id_Vectors.Empty_Vector
+              else Version.History.Merge_Bases (Repo, Ours_Id, Theirs_Id));
+         Has_Base : constant Boolean :=
+           Base_Spec /= "" or else not Auto_Bases.Is_Empty;
+
          Base_Id : constant Version.Objects.Hex_Object_Id :=
            (if Base_Spec /= ""
             then Version.Revisions.Resolve_Commit (Repo, To_String (Base_Spec))
-            else Version.History.Merge_Base (Repo, Ours_Id, Theirs_Id));
+            elsif not Auto_Bases.Is_Empty
+            then Auto_Bases.First_Element
+            else Version.Objects.Zero_Object_Id);
 
          function Items (Commit : Version.Objects.Hex_Object_Id)
            return Version.Objects.Tree_Entry_Vectors.Vector
@@ -5940,7 +5953,8 @@ package body Version.CLI is
                   (Version.Objects.Read_Object (Repo, Commit))));
 
          Base_Items   : constant Version.Objects.Tree_Entry_Vectors.Vector :=
-           (if Version.Objects.Id_Length (Base_Id) > 0 then Items (Base_Id)
+           (if Has_Base and then Version.Objects.Id_Length (Base_Id) > 0
+            then Items (Base_Id)
             else Version.Objects.Tree_Entry_Vectors.Empty_Vector);
          Ours_Items   : constant Version.Objects.Tree_Entry_Vectors.Vector :=
            Items (Ours_Id);
@@ -5952,13 +5966,26 @@ package body Version.CLI is
 
          Behavior : Version.Merge.Merge_Behavior;
       begin
+         --  git refuses to merge histories with no common ancestor unless
+         --  --allow-unrelated-histories is given (then it merges against an
+         --  empty base).
+         if not Has_Base and then not Allow then
+            Ada.Text_IO.Put_Line
+              (Ada.Text_IO.Standard_Error,
+               "fatal: refusing to merge unrelated histories");
+            Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+            return;
+         end if;
+
          --  No worktree, no index: the conflicted content becomes a blob in
          --  the tree we hand back, which is what `merge-tree` means by it.
          Behavior.Update_Worktree := False;
          Behavior.Materialize_Virtual_Conflicts := True;
          Behavior.Base_Label :=
            To_Unbounded_String
-             (Version.Merge.Base_Label_For (Repo, Base_Id));
+             (if Has_Base
+              then Version.Merge.Base_Label_For (Repo, Base_Id)
+              else "");
 
          Version.Merge.Merge_Trees
            (Repo          => Repo,
@@ -8009,17 +8036,31 @@ package body Version.CLI is
                   return;
                end if;
 
-               if Bare then
-                  Version.Init.Init_Bare
-                    (To_String (Target), Object_Format, Ref_Storage);
-                  Success_Line
-                    ("initialized bare repository in " & To_String (Target));
-               else
-                  Version.Init.Init
-                    (To_String (Target), Object_Format, Ref_Storage);
-                  Success_Line
-                    ("initialized repository in " & To_String (Target));
-               end if;
+               declare
+                  --  git reports "Reinitialized" when the repository already
+                  --  exists; version keeps its own house wording but likewise
+                  --  distinguishes a fresh init from a reinit.
+                  Reinit : constant Boolean :=
+                    (if Bare
+                     then Version.Files.Is_Directory
+                            (Version.Files.Join (To_String (Target), "objects"))
+                     else Version.Files.Is_Directory
+                            (Version.Files.Join (To_String (Target), ".git")));
+                  Verb : constant String :=
+                    (if Reinit then "reinitialized" else "initialized");
+               begin
+                  if Bare then
+                     Version.Init.Init_Bare
+                       (To_String (Target), Object_Format, Ref_Storage);
+                     Success_Line
+                       (Verb & " bare repository in " & To_String (Target));
+                  else
+                     Version.Init.Init
+                       (To_String (Target), Object_Format, Ref_Storage);
+                     Success_Line
+                       (Verb & " repository in " & To_String (Target));
+                  end if;
+               end;
             end;
 
          elsif Command = "history" then
@@ -14661,6 +14702,16 @@ package body Version.CLI is
                                & To_String (Bad_Text), Usage);
                elsif not Stdin and then File_Idx = 0 then
                   Usage_Error ("hash-object requires --stdin or a file", Usage);
+               elsif not Stdin
+                 and then not Version.Files.Is_Ordinary_File (Arg (File_Idx))
+               then
+                  --  git dies (exit 128) rather than the generic error/exit 1
+                  --  when the named file cannot be opened for reading.
+                  Ada.Text_IO.Put_Line
+                    (Ada.Text_IO.Standard_Error,
+                     "fatal: could not open '" & Arg (File_Idx)
+                     & "' for reading: No such file or directory");
+                  Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
                else
                   declare
                      Repo : constant Version.Repository.Repository_Handle :=
@@ -19669,8 +19720,13 @@ package body Version.CLI is
                end if;
 
                if not Found then
-                  Error_Line ("no commit id found in archive");
-                  Set_Command_Failure;
+                  --  git dies (exit 128) on input that is not a well-formed
+                  --  archive carrying a commit id.
+                  Ada.Text_IO.Put_Line
+                    (Ada.Text_IO.Standard_Error,
+                     "fatal: git get-tar-commit-id: EOF before reading tar"
+                     & " header: No such file or directory");
+                  Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
                end if;
             end;
 
