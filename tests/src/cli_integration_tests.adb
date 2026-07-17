@@ -1537,6 +1537,52 @@ package body CLI_Integration_Tests is
          raise;
    end Check_Ref_Format_And_Diff_Tree_Match_Git;
 
+   --  Regression: mv accepts a directory source -- it renames every tracked
+   --  file under it (index byte-identical to git) and removes the emptied
+   --  directory, for both a plain rename and a move into an existing dir.
+   procedure Mv_Directory_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Ada.Directories.Set_Directory (Root);
+
+      --  `build` sets up an identical repo, runs the mv $1, and prints the
+      --  tracked file list plus whether the source dir still exists.
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C GIT_CONFIG_NOSYSTEM=1"
+         & " GIT_AUTHOR_DATE='1700000000 +0000'"
+         & " GIT_COMMITTER_DATE='1700000000 +0000';"
+         & " build() { rm -rf ""$1""; mkdir ""$1""; ( cd ""$1"";"
+         & "   git init -q; git config user.email t@e;"
+         & "   git config user.name T; mkdir -p d/sub; printf a > d/f;"
+         & "   printf b > d/sub/g; printf c > top; git add .;"
+         & "   git commit -qm c; eval ""$2"" >/dev/null 2>&1;"
+         & "   git ls-files | tr '\n' ',' > ../""$1"".files;"
+         & "   ([ -d d ] && echo Y || echo N) >> ../""$1"".files ); };"
+         --  plain directory rename
+         & " build g 'git mv d d2'; build v '" & CLI & " mv d d2';"
+         & " cmp -s g.files v.files;"
+         --  move directory into an existing directory
+         & " build g 'mkdir existing; git mv d existing';"
+         & " build v 'mkdir existing; " & CLI & " mv d existing';"
+         & " cmp -s g.files v.files;"
+         --  plain single-file mv still works
+         & " build g 'git mv top top2'; build v '" & CLI & " mv top top2';"
+         & " cmp -s g.files v.files");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Mv_Directory_Matches_Git;
+
    --  Byte-oracle the remaining plumbing: var, count-objects, rev-parse @{n},
    --  name-rev, and for-each-ref %(upstream).
    procedure Extra_Plumbing_Matches_Git
@@ -4739,6 +4785,9 @@ package body CLI_Integration_Tests is
       Register_Routine
         (T, Check_Ref_Format_And_Diff_Tree_Match_Git'Access,
          "check-ref-format --branch exits; diff-tree merge prints nothing");
+      Register_Routine
+        (T, Mv_Directory_Matches_Git'Access,
+         "mv renames a tracked directory (index + cleanup) like git");
    end Register_Tests;
 
    overriding function Name (T : Test_Case) return AUnit.Message_String is

@@ -12653,23 +12653,120 @@ package body Version.CLI is
                        Ada.Directories.Exists (Last)
                        and then Ada.Directories.Kind (Last)
                                 = Ada.Directories.Directory;
+
+                     --  Move a source to a destination. When the source is a
+                     --  tracked directory git renames every tracked file under
+                     --  it (to Dest/<rest>), removing the now-empty source
+                     --  directory; a file source moves as a single path.
+                     --  Remove Dir and its subdirectories if they hold no
+                     --  files after the move (git leaves no empty source
+                     --  directory behind); a directory with any leftover
+                     --  (untracked) content is kept.
+                     function Prune_Empty (Dir : String) return Boolean is
+                        Search   : Ada.Directories.Search_Type;
+                        Ent      : Ada.Directories.Directory_Entry_Type;
+                        Any_Left : Boolean := False;
+                     begin
+                        Ada.Directories.Start_Search
+                          (Search, Dir, "",
+                           [Ada.Directories.Directory => True,
+                            Ada.Directories.Ordinary_File => True,
+                            Ada.Directories.Special_File => True]);
+                        while Ada.Directories.More_Entries (Search) loop
+                           Ada.Directories.Get_Next_Entry (Search, Ent);
+                           declare
+                              Nm : constant String :=
+                                Ada.Directories.Simple_Name (Ent);
+                           begin
+                              if Nm /= "." and then Nm /= ".." then
+                                 if Ada.Directories.Kind (Ent)
+                                    = Ada.Directories.Directory
+                                   and then Prune_Empty
+                                              (Version.Files.Join (Dir, Nm))
+                                 then
+                                    null;  --  subdirectory removed
+                                 else
+                                    Any_Left := True;
+                                 end if;
+                              end if;
+                           end;
+                        end loop;
+                        Ada.Directories.End_Search (Search);
+
+                        if not Any_Left then
+                           Ada.Directories.Delete_Directory (Dir);
+                           return True;
+                        end if;
+                        return False;
+                     end Prune_Empty;
+
+                     procedure Move_Source (Src, Dest : String) is
+                        Src_Is_Dir : constant Boolean :=
+                          Ada.Directories.Exists (Src)
+                          and then Ada.Directories.Kind (Src)
+                                   = Ada.Directories.Directory;
+                     begin
+                        if Src_Is_Dir then
+                           declare
+                              Prefix  : constant String := Src & "/";
+                              Sources : Version.Trailers.String_Vectors.Vector;
+                           begin
+                              --  Snapshot first: Move_Path mutates the index.
+                              for E of Version.Staging.Load (Repo) loop
+                                 if E.Stage = 0 then
+                                    declare
+                                       P : constant String :=
+                                         To_String (E.Path);
+                                    begin
+                                       if P'Length > Prefix'Length
+                                         and then P (P'First ..
+                                                     P'First + Prefix'Length - 1)
+                                                  = Prefix
+                                       then
+                                          Sources.Append (P);
+                                       end if;
+                                    end;
+                                 end if;
+                              end loop;
+
+                              for P of Sources loop
+                                 Version.Move.Move_Path
+                                   (Repo, P,
+                                    Version.Files.Join
+                                      (Dest,
+                                       P (P'First + Prefix'Length .. P'Last)),
+                                    Force);
+                              end loop;
+
+                              --  Drop the emptied source directory tree.
+                              if Ada.Directories.Exists (Src) then
+                                 declare
+                                    Ignore : constant Boolean :=
+                                      Prune_Empty (Src);
+                                 begin
+                                    null;
+                                 end;
+                              end if;
+                           end;
+                        else
+                           Version.Move.Move_Path (Repo, Src, Dest, Force);
+                        end if;
+                     end Move_Source;
                   begin
                      if Count - I + 1 = 2 and then not Dst_Is_Dir then
-                        Version.Move.Move_Path
-                          (Repo, Arg (I), Arg (Count), Force);
+                        Move_Source (Arg (I), Arg (Count));
                      elsif not Dst_Is_Dir then
                         Usage_Error
                           ("destination must be a directory when moving "
                            & "multiple sources", Usage);
                      else
                         for J in I .. Count - 1 loop
-                           --  Join tolerates a trailing slash on the directory
-                           --  (git accepts `mv file dir/`).
-                           Version.Move.Move_Path
-                             (Repo, Arg (J),
+                           --  Into an existing directory: source keeps its
+                           --  own name under it (git moves `d` to `dir/d`).
+                           Move_Source
+                             (Arg (J),
                               Version.Files.Join
-                                (Last, Ada.Directories.Simple_Name (Arg (J))),
-                              Force);
+                                (Last, Ada.Directories.Simple_Name (Arg (J))));
                         end loop;
                      end if;
                   end;
