@@ -1148,6 +1148,61 @@ package body CLI_Integration_Tests is
          raise;
    end Correctness_Batch_Matches_Git;
 
+   --  Regression: mktag runs git's strict fsck. A well-formed tag writes the
+   --  same object id as git; each malformation is rejected with git's exact
+   --  two-line message and exit 128 (was silently written as a real tag).
+   procedure Mktag_Fsck_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Ada.Directories.Set_Directory (Root);
+
+      --  Each case: git and version must agree on stdout/stderr and exit.
+      --  $H is a valid tagger header line; the loop substitutes the tagger
+      --  and tag-name fields to exercise the five fsck failures plus valid.
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C GIT_CONFIG_NOSYSTEM=1"
+         & " GIT_AUTHOR_DATE='1700000000 +0000'"
+         & " GIT_COMMITTER_DATE='1700000000 +0000'; rm -rf r; mkdir r; cd r;"
+         & " git init -q; git config user.email t@e; git config user.name T;"
+         & " printf 'x\n' > f; git add f; git commit -qm c;"
+         & " C=$(git rev-parse HEAD);"
+         & " check() {"     --  $1 = tag name field, $2 = tagger field
+         & "   s=""object $C\ntype commit\ntag $1\ntagger $2\n"";"
+         & "   ge=0; go=$(printf ""$s"" | git mktag 2>&1) || ge=$?;"
+         & "   ve=0; vo=$(printf ""$s"" | " & CLI & " mktag 2>&1) || ve=$?;"
+         & "   test ""$go"" = ""$vo"" && test $ge -eq $ve; };"
+         & " check v1 'T <t@e> 1700000000 +0000';"     --  valid
+         & " check v1 'T 1700000000 +0000';"           --  missingEmail
+         & " check v1 'T <t@e> 1700000000 +9999x';"    --  badTimezone
+         & " check v1 'T <t@e> 1700000000';"           --  badDate
+         & " check 'v 1' 'T <t@e> 1700000000 +0000'"); --  badTagName
+
+      --  Valid mktag writes git's exact object id.
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C GIT_CONFIG_NOSYSTEM=1"
+         & " GIT_AUTHOR_DATE='1700000000 +0000'"
+         & " GIT_COMMITTER_DATE='1700000000 +0000'; cd r; C=$(git rev-parse"
+         & " HEAD);"
+         & " s=""object $C\ntype commit\ntag v1\n"
+         & "tagger T <t@e> 1700000000 +0000\n"";"
+         & " test ""$(printf ""$s"" | git mktag)"""
+         & "   = ""$(printf ""$s"" | " & CLI & " mktag)""");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Mktag_Fsck_Matches_Git;
+
    --  Byte-oracle the remaining plumbing: var, count-objects, rev-parse @{n},
    --  name-rev, and for-each-ref %(upstream).
    procedure Extra_Plumbing_Matches_Git
@@ -4329,6 +4384,9 @@ package body CLI_Integration_Tests is
       Register_Routine
         (T, Correctness_Batch_Matches_Git'Access,
          "describe/init--bare/notes/config-unset correctness match git");
+      Register_Routine
+        (T, Mktag_Fsck_Matches_Git'Access,
+         "mktag runs git's strict fsck (email/date/tz/name/extra-header)");
    end Register_Tests;
 
    overriding function Name (T : Test_Case) return AUnit.Message_String is

@@ -19239,6 +19239,91 @@ package body Version.CLI is
                function Starts (S, P : String) return Boolean is
                  (S'Length >= P'Length
                   and then S (S'First .. S'First + P'Length - 1) = P);
+
+               --  git's check_refname_component rules for a one-level tag
+               --  name: no space/control/~^:?*[\, no ".."/"@{", no leading or
+               --  trailing dot or slash, no ".lock" suffix, not empty.
+               function Valid_Tag_Name (S : String) return Boolean is
+               begin
+                  if S'Length = 0
+                    or else S (S'First) = '.' or else S (S'Last) = '.'
+                    or else S (S'First) = '/' or else S (S'Last) = '/'
+                    or else (S'Length >= 5
+                             and then S (S'Last - 4 .. S'Last) = ".lock")
+                  then
+                     return False;
+                  end if;
+                  for I in S'Range loop
+                     if S (I) <= ' ' or else S (I) = Character'Val (127)
+                       or else S (I) in '~' | '^' | ':' | '?' | '*' | '['
+                                      | '\'
+                       or else (I < S'Last and then S (I) = '.'
+                                and then S (I + 1) = '.')
+                       or else (I < S'Last and then S (I) = '@'
+                                and then S (I + 1) = '{')
+                     then
+                        return False;
+                     end if;
+                  end loop;
+                  return True;
+               end Valid_Tag_Name;
+
+               --  git's fsck_ident detail for a bad "tagger" identity line, or
+               --  "" when it is well-formed: "<name> <<email>> <time> <tz>".
+               function Ident_Fsck (Line : String) return String is
+                  Lt : constant Natural :=
+                    Ada.Strings.Fixed.Index (Line, "<");
+                  Gt : constant Natural :=
+                    Ada.Strings.Fixed.Index (Line, ">");
+               begin
+                  if Lt = 0 or else Gt = 0 or else Gt < Lt then
+                     return "missingEmail: invalid author/committer line"
+                       & " - missing email";
+                  end if;
+
+                  declare
+                     Rest : constant String :=
+                       Ada.Strings.Fixed.Trim
+                         (Line (Gt + 1 .. Line'Last), Ada.Strings.Both);
+                     Sp   : constant Natural :=
+                       Ada.Strings.Fixed.Index (Rest, " ");
+                  begin
+                     --  Need "<unixtime> <tz>": a space separating the two.
+                     if Sp = 0 then
+                        return "badDate: invalid author/committer line"
+                          & " - bad date";
+                     end if;
+
+                     declare
+                        Time_S : constant String := Rest (Rest'First .. Sp - 1);
+                        Tz_S   : constant String := Rest (Sp + 1 .. Rest'Last);
+                        Digits_Only : Boolean := Time_S'Length > 0;
+                     begin
+                        for C of Time_S loop
+                           if C not in '0' .. '9' then
+                              Digits_Only := False;
+                           end if;
+                        end loop;
+                        if not Digits_Only then
+                           return "badDate: invalid author/committer line"
+                             & " - bad date";
+                        end if;
+
+                        --  Timezone must be [+-]HHMM (sign then four digits).
+                        if Tz_S'Length /= 5
+                          or else (Tz_S (Tz_S'First) /= '+'
+                                   and then Tz_S (Tz_S'First) /= '-')
+                          or else (for some K in Tz_S'First + 1 .. Tz_S'Last =>
+                                     Tz_S (K) not in '0' .. '9')
+                        then
+                           return "badTimezone: invalid author/committer line"
+                             & " - bad time zone";
+                        end if;
+                     end;
+                  end;
+
+                  return "";
+               end Ident_Fsck;
             begin
                declare
                   Pos  : Natural := Content'First;
@@ -19246,6 +19331,23 @@ package body Version.CLI is
                   L2   : constant String := Next_Line (Pos);
                   L3   : constant String := Next_Line (Pos);
                   L4   : constant String := Next_Line (Pos);
+                  L5   : constant String := Next_Line (Pos);
+
+                  --  git runs its strict fsck before writing: tag name, then
+                  --  the tagger identity, then a ban on any header after
+                  --  tagger. The first failure is reported.
+                  Fsck : constant String :=
+                    (if Starts (L3, "tag ")
+                       and then not Valid_Tag_Name (L3 (L3'First + 4 .. L3'Last))
+                     then "badTagName: invalid 'tag' name: "
+                          & L3 (L3'First + 4 .. L3'Last)
+                     elsif Starts (L4, "tagger ")
+                       and then Ident_Fsck (L4 (L4'First + 7 .. L4'Last)) /= ""
+                     then Ident_Fsck (L4 (L4'First + 7 .. L4'Last))
+                     elsif L5'Length > 0
+                     then "extraHeaderEntry: invalid format"
+                          & " - extra header(s) after 'tagger'"
+                     else "");
                begin
                   if not Starts (L1, "object ")
                     or else not Starts (L2, "type ")
@@ -19256,6 +19358,12 @@ package body Version.CLI is
                        ("invalid tag object: expected object/type/tag/tagger"
                         & " header lines");
                      Set_Command_Failure;
+                  elsif Fsck /= "" then
+                     Error_Line ("tag input does not pass fsck: " & Fsck);
+                     Stderr_Line
+                       ("fatal: tag on stdin did not pass our strict"
+                        & " fsck check");
+                     Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
                   else
                      declare
                         Repo : constant Version.Repository.Repository_Handle :=
