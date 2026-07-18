@@ -2791,11 +2791,22 @@ package body Version.CLI is
             begin
                if Made /= To_String (Idx_Out) then
                   Ada.Directories.Copy_File (Made, To_String (Idx_Out));
+                  --  git writes only the index it was asked for; the one
+                  --  beside the pack would be a stray leftover.
+                  Version.Files.Delete_File_If_Exists (Made);
                end if;
             end;
          end if;
 
-         Success_Line (Pack_Checksum (To_String (Pack_Path)));
+         --  git prefixes the checksum with "pack\t" when the pack arrived on
+         --  standard input, since the caller cannot know its name otherwise.
+         if From_Stdin then
+            Success_Line
+              ("pack" & Character'Val (9)
+               & Pack_Checksum (To_String (Pack_Path)));
+         else
+            Success_Line (Pack_Checksum (To_String (Pack_Path)));
+         end if;
       end;
    exception
       when E : Ada.IO_Exceptions.Data_Error | Ada.IO_Exceptions.Name_Error
