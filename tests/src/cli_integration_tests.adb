@@ -2821,6 +2821,61 @@ package body CLI_Integration_Tests is
          raise;
    end For_Each_Repo_Stops_On_Failure;
 
+   --  Regression: fmt-merge-msg wrote "of <url>" once per kind and joined the
+   --  kinds with "; ", so a branch and a tag from one remote read
+   --  "branch 'a' of U; tag 't' of U" where git writes
+   --  "branch 'a', tag 't' of U". A description that is just a URL (a HEAD
+   --  fetch) produced no output at all.
+   procedure Fmt_Merge_Msg_Grouping_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Ada.Directories.Set_Directory (Root);
+
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C GIT_CONFIG_NOSYSTEM=1"
+         & " GIT_AUTHOR_DATE='1700000000 +0000'"
+         & " GIT_COMMITTER_DATE='1700000000 +0000';"
+         & " rm -rf r; mkdir r; ( cd r; git init -q -b main;"
+         & "   git config user.email t@e; git config user.name T;"
+         & "   printf 'a\n' > f; git add -A; git commit -qm c1;"
+         & "   s=$(git rev-parse HEAD);"
+         --  one FETCH_HEAD shape per case, compared with git
+         & "   run () {"
+         & "     printf ""$1"" > fh.txt;"
+         & "     git fmt-merge-msg -F fh.txt > g.out 2>&1 || true;"
+         & "     " & CLI & " fmt-merge-msg -F fh.txt > v.out 2>&1 || true;"
+         & "     cmp -s g.out v.out || { echo ""case: $2""; exit 1; };"
+         & "   };"
+         & "   run ""$s\t\tbranch 'a' of U\n"" one-branch;"
+         & "   run ""$s\t\tbranch 'a' of U\n$s\t\tbranch 'b' of U\n"""
+         & "     two-branches;"
+         & "   run ""$s\t\tbranch 'a' of U\n$s\t\tbranch 'b' of U\n"
+         & "$s\t\tbranch 'c' of U\n"" three-branches;"
+         & "   run ""$s\t\tbranch 'a' of U\n$s\t\ttag 't1' of U\n"""
+         & "     branch-and-tag;"
+         & "   run ""$s\t\tbranch 'a' of U\n$s\t\ttag 't1' of U\n"
+         & "$s\t\ttag 't2' of U\n"" branch-and-two-tags;"
+         & "   run ""$s\t\tbranch 'a' of U1\n$s\t\tbranch 'b' of U2\n"""
+         & "     two-urls;"
+         & "   run ""$s\t\tU\n"" url-only;"
+         & "   run ""$s\t\tU\n$s\t\tbranch 'a' of U\n"" url-and-branch;"
+         & "   run ""$s\t\tbranch 'a'\n"" local-branch;"
+         & "   run ""$s\tnot-for-merge\tbranch 'a' of U\n"" not-for-merge )");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Fmt_Merge_Msg_Grouping_Matches_Git;
+
    --  Byte-oracle the remaining plumbing: var, count-objects, rev-parse @{n},
    --  name-rev, and for-each-ref %(upstream).
    procedure Extra_Plumbing_Matches_Git
@@ -6098,6 +6153,9 @@ package body CLI_Integration_Tests is
       Register_Routine
         (T, For_Each_Repo_Stops_On_Failure'Access,
          "for-each-repo stops at the first failing repository");
+      Register_Routine
+        (T, Fmt_Merge_Msg_Grouping_Matches_Git'Access,
+         "fmt-merge-msg groups refs per source like git");
       Register_Routine
         (T, Format_Patch_Mbox_Matches_Git'Access,
          "format-patch mbox (diffstat, -<n>, separators) matches git");
