@@ -6077,16 +6077,54 @@ package body Version.CLI is
             end loop;
 
             for C of Conflicts loop
-               case C.Kind is
-                  when Version.Merge.Binary_Conflict =>
-                     Success_Line
-                       ("CONFLICT (binary): Merge conflict in "
-                        & To_String (C.Path));
-                  when others =>
-                     Success_Line
-                       ("CONFLICT (content): Merge conflict in "
-                        & To_String (C.Path));
-               end case;
+               declare
+                  Path : constant String := To_String (C.Path);
+
+                  --  A path that survives on only one side is a
+                  --  modify/delete, which git names precisely rather than
+                  --  calling it a content conflict.
+                  function Side_Has
+                    (Items : Version.Objects.Tree_Entry_Vectors.Vector)
+                     return Boolean is
+                  begin
+                     for E of Items loop
+                        if To_String (E.Path) = Path then
+                           return True;
+                        end if;
+                     end loop;
+                     return False;
+                  end Side_Has;
+
+                  In_Ours   : constant Boolean := Side_Has (Ours_Items);
+                  In_Theirs : constant Boolean := Side_Has (Theirs_Items);
+                  Ours_Label   : constant String := To_String (Head);
+                  Theirs_Label : constant String := Remotes.First_Element;
+               begin
+                  case C.Kind is
+                     when Version.Merge.Binary_Conflict =>
+                        Success_Line
+                          ("CONFLICT (binary): Merge conflict in " & Path);
+                     when others =>
+                        if In_Ours and then not In_Theirs then
+                           Success_Line
+                             ("CONFLICT (modify/delete): " & Path
+                              & " deleted in " & Theirs_Label
+                              & " and modified in " & Ours_Label
+                              & ".  Version " & Ours_Label & " of " & Path
+                              & " left in tree.");
+                        elsif In_Theirs and then not In_Ours then
+                           Success_Line
+                             ("CONFLICT (modify/delete): " & Path
+                              & " deleted in " & Ours_Label
+                              & " and modified in " & Theirs_Label
+                              & ".  Version " & Theirs_Label & " of " & Path
+                              & " left in tree.");
+                        else
+                           Success_Line
+                             ("CONFLICT (content): Merge conflict in " & Path);
+                        end if;
+                  end case;
+               end;
             end loop;
 
             if not Conflicts.Is_Empty then
@@ -6159,6 +6197,20 @@ package body Version.CLI is
       declare
          Ours_Name   : constant String := Operands.Element (1);
          Theirs_Name : constant String := Operands.Element (2);
+
+         --  Which side still holds a path, for classifying a modify/delete
+         --  conflict the way git reports it.
+         function Has_Path
+           (Items : Version.Objects.Tree_Entry_Vectors.Vector;
+            Path  : String) return Boolean is
+         begin
+            for E of Items loop
+               if To_String (E.Path) = Path then
+                  return True;
+               end if;
+            end loop;
+            return False;
+         end Has_Path;
 
          Ours_Id : constant Version.Objects.Hex_Object_Id :=
            Version.Revisions.Resolve_Commit (Repo, Ours_Name);
@@ -6300,11 +6352,37 @@ package body Version.CLI is
                           ("CONFLICT (binary): Merge conflict in " & Path
                            & ASCII.LF);
                      when others =>
-                        Version.Console.Put
-                          ("Auto-merging " & Path & ASCII.LF);
-                        Version.Console.Put
-                          ("CONFLICT (content): Merge conflict in " & Path
-                           & ASCII.LF);
+                        --  A path that survives on only one side is a
+                        --  modify/delete, which git names precisely rather
+                        --  than calling it a content conflict.
+                        declare
+                           Has_Ours : constant Boolean :=
+                             Has_Path (Ours_Items, Path);
+                           Has_Theirs : constant Boolean :=
+                             Has_Path (Theirs_Items, Path);
+                        begin
+                           if Has_Ours and then not Has_Theirs then
+                              Version.Console.Put
+                                ("CONFLICT (modify/delete): " & Path
+                                 & " deleted in " & Theirs_Name
+                                 & " and modified in " & Ours_Name
+                                 & ".  Version " & Ours_Name & " of " & Path
+                                 & " left in tree." & ASCII.LF);
+                           elsif Has_Theirs and then not Has_Ours then
+                              Version.Console.Put
+                                ("CONFLICT (modify/delete): " & Path
+                                 & " deleted in " & Ours_Name
+                                 & " and modified in " & Theirs_Name
+                                 & ".  Version " & Theirs_Name & " of " & Path
+                                 & " left in tree." & ASCII.LF);
+                           else
+                              Version.Console.Put
+                                ("Auto-merging " & Path & ASCII.LF);
+                              Version.Console.Put
+                                ("CONFLICT (content): Merge conflict in "
+                                 & Path & ASCII.LF);
+                           end if;
+                        end;
                   end case;
                end;
             end loop;

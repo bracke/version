@@ -2178,6 +2178,68 @@ package body CLI_Integration_Tests is
          raise;
    end Cherry_Pick_Conflict_State_Matches_Git;
 
+   --  Regression: two merge behaviours. `merge --no-commit` cannot stop a
+   --  fast-forward -- there is no merge commit to withhold, so git moves the
+   --  branch; we used to leave HEAD put, write MERGE_HEAD and stage the
+   --  change. And the merge-recursive/merge-tree backends reported a path
+   --  deleted on one side as a content conflict instead of naming the
+   --  modify/delete.
+   procedure Merge_No_Commit_And_Modify_Delete_Match_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Ada.Directories.Set_Directory (Root);
+
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C GIT_CONFIG_NOSYSTEM=1"
+         & " GIT_AUTHOR_DATE='1700000000 +0000'"
+         & " GIT_COMMITTER_DATE='1700000000 +0000';"
+         --  fast-forwardable: --no-commit must still fast-forward
+         & " rm -rf ff nf md; mkdir ff; ( cd ff; git init -q -b main;"
+         & "   git config user.email t@e; git config user.name T;"
+         & "   printf 'a\n' > f.txt; git add -A; git commit -qm c1;"
+         & "   git checkout -qb feature;"
+         & "   printf 'a\nb\n' > f.txt; git add -A; git commit -qm c2;"
+         & "   git checkout -q main;"
+         & "   " & CLI & " merge --no-commit feature > /dev/null;"
+         & "   test ""$(git rev-parse HEAD)"" = ""$(git rev-parse feature)"";"
+         & "   test ! -f .git/MERGE_HEAD;"
+         & "   test -z ""$(git status --short)"" );"
+         --  --no-ff --no-commit is a real merge and must still pause
+         & " cp -a ff nf; ( cd nf; git reset -q --hard main@{1} 2>/dev/null"
+         & "     || git reset -q --hard HEAD~1;"
+         & "   " & CLI & " merge --no-ff --no-commit feature > /dev/null;"
+         & "   test -f .git/MERGE_HEAD );"
+         --  a path deleted on one side is a modify/delete, named as git names it
+         & " mkdir md; ( cd md; git init -q -b main;"
+         & "   git config user.email t@e; git config user.name T;"
+         & "   seq 1 20 | sed 's/$/ line/' > f.txt;"
+         & "   git add -A; git commit -qm base;"
+         & "   git checkout -qb side; git rm -q f.txt;"
+         & "   printf 'diff\n' > g.txt; git add -A; git commit -qm replace;"
+         & "   git checkout -q main; sed -i '3s/.*/EDIT/' f.txt;"
+         & "   git add -A; git commit -qm modify;"
+         & "   b=$(git merge-base main side);"
+         & "   git merge-recursive $b -- main side > g.out 2>&1 || true;"
+         & "   git reset -q --hard main;"
+         & "   " & CLI & " merge-recursive $b -- main side > v.out 2>&1"
+         & "     || true;"
+         & "   grep -q 'CONFLICT (modify/delete): f.txt deleted in side' v.out;"
+         & "   cmp -s g.out v.out )");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Merge_No_Commit_And_Modify_Delete_Match_Git;
+
    --  Byte-oracle the remaining plumbing: var, count-objects, rev-parse @{n},
    --  name-rev, and for-each-ref %(upstream).
    procedure Extra_Plumbing_Matches_Git
@@ -5416,6 +5478,9 @@ package body CLI_Integration_Tests is
       Register_Routine
         (T, Cherry_Pick_Conflict_State_Matches_Git'Access,
          "cherry-pick conflict/empty state is git-readable");
+      Register_Routine
+        (T, Merge_No_Commit_And_Modify_Delete_Match_Git'Access,
+         "merge --no-commit fast-forwards; modify/delete named like git");
       Register_Routine
         (T, Format_Patch_Mbox_Matches_Git'Access,
          "format-patch mbox (diffstat, -<n>, separators) matches git");
