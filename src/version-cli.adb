@@ -13520,18 +13520,39 @@ package body Version.CLI is
                                     A : constant String := Arg (J);
                                  begin
                                     if A = "--all" then
-                                       for B of
-                                         Version.Refs.List_Branches (Repo)
-                                       loop
-                                          Refs.Append
-                                            (Version.Bundle.Ref_Entry'
-                                               (Id =>
-                                                Version.Branch.Resolve_Branch
-                                                  (To_String (B)),
-                                              Name => To_Unbounded_String
-                                                ("refs/heads/"
-                                                 & To_String (B))));
-                                       end loop;
+                                       --  git's --all is every ref, not just
+                                       --  the branches: tags and remotes go
+                                       --  in too, and HEAD last.
+                                       declare
+                                          Patterns :
+                                            Version.Ref_Format
+                                              .String_Vectors.Vector;
+                                       begin
+                                          Patterns.Append ("refs/");
+                                          for Name of
+                                            Version.Ref_Format.For_Each_Ref
+                                              (Repo, Patterns,
+                                               Format => "%(refname)")
+                                          loop
+                                             Refs.Append
+                                               (Version.Bundle.Ref_Entry'
+                                                  (Id =>
+                                                     Version.Refs.Resolve_Ref
+                                                       (Repo, Name),
+                                                   Name =>
+                                                     To_Unbounded_String
+                                                       (Name)));
+                                          end loop;
+                                       end;
+
+                                       Refs.Append
+                                         (Version.Bundle.Ref_Entry'
+                                            (Id =>
+                                             Version.Objects.To_Object_Id
+                                               (Version.Refs.Current_Commit_Id
+                                                  (Repo)),
+                                           Name =>
+                                             To_Unbounded_String ("HEAD")));
                                     elsif A = "HEAD" then
                                        Refs.Append
                                          (Version.Bundle.Ref_Entry'
@@ -13548,6 +13569,14 @@ package body Version.CLI is
                                              Version.Branch.Resolve_Branch (A),
                                            Name => To_Unbounded_String
                                              ("refs/heads/" & A)));
+                                    elsif Version.Refs.Ref_Exists (Repo, A) then
+                                       --  A full refname (refs/tags/x, ...)
+                                       --  is just as valid an operand.
+                                       Refs.Append
+                                         (Version.Bundle.Ref_Entry'
+                                            (Id =>
+                                             Version.Refs.Resolve_Ref (Repo, A),
+                                           Name => To_Unbounded_String (A)));
                                     else
                                        raise Ada.IO_Exceptions.Data_Error with
                                          "unrecognized ref: " & A;

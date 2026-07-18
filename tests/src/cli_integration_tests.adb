@@ -3040,6 +3040,78 @@ package body CLI_Integration_Tests is
          raise;
    end Lfs_Pointer_And_Status_Match_Git_Lfs;
 
+   --  Regression: `multi-pack-index verify` checked only the trailing
+   --  checksum, so a structurally corrupt file whose hash had been recomputed
+   --  passed silently -- exactly the shape a broken writer produces. It also
+   --  covers `bundle create --all`, which bundled only the branches and left
+   --  every tag (and HEAD) out.
+   procedure Midx_Verify_And_Bundle_All_Match_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Ada.Directories.Set_Directory (Root);
+
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C GIT_CONFIG_NOSYSTEM=1"
+         & " GIT_AUTHOR_DATE='1700000000 +0000'"
+         & " GIT_COMMITTER_DATE='1700000000 +0000';"
+         --  bundle --all must carry tags and HEAD, like git
+         & " rm -rf b; mkdir b; ( cd b; git init -q -b main;"
+         & "   git config user.email t@e; git config user.name T;"
+         & "   printf 'a\n' > f; git add -A; git commit -qm c1;"
+         & "   git tag light; git tag -a annot -m msg; git branch feature;"
+         & "   git bundle create g.bundle --all > /dev/null 2>&1;"
+         & "   " & CLI & " bundle create v.bundle --all > /dev/null 2>&1;"
+         & "   git bundle list-heads g.bundle > g.heads 2>/dev/null;"
+         & "   git bundle list-heads v.bundle > v.heads 2>/dev/null;"
+         & "   cmp -s g.heads v.heads;"
+         --  and git must accept what we wrote
+         & "   git bundle verify v.bundle > /dev/null 2>&1 );"
+         --  a re-checksummed structural corruption must still be caught
+         & " rm -rf m; mkdir m; ( cd m; git init -q -b main;"
+         & "   git config user.email t@e; git config user.name T;"
+         & "   printf 'l1\n' > f.txt; git add -A; git commit -qm c1;"
+         & "   printf 'l2\n' >> f.txt; git add -A; git commit -qm c2;"
+         & "   git repack -ad > /dev/null 2>&1;"
+         & "   git multi-pack-index write > /dev/null 2>&1;"
+         & "   test -f .git/objects/pack/multi-pack-index || exit 0;"
+         --  healthy file is accepted
+         & "   " & CLI & " multi-pack-index verify > /dev/null 2>&1;"
+         --  Corrupt the fanout and recompute the trailer, so only a
+         --  structural check can notice. The script is written through a
+         --  quoted here-doc and uses single quotes throughout, so nothing
+         --  needs escaping on the way through Ada or the shell.
+         & "   cat > corrupt.py <<'PYEOF'" & ASCII.LF
+         & "import struct,hashlib" & ASCII.LF
+         & "p='.git/objects/pack/multi-pack-index'" & ASCII.LF
+         & "d=bytearray(open(p,'rb').read())" & ASCII.LF
+         & "n=d[6]; o=12; c={}" & ASCII.LF
+         & "for i in range(n+1):" & ASCII.LF
+         & "    c[bytes(d[o:o+4])]=struct.unpack('>Q',d[o+4:o+12])[0]"
+         & ASCII.LF
+         & "    o+=12" & ASCII.LF
+         & "struct.pack_into('>I',d,c[b'OIDF']+512,1000)" & ASCII.LF
+         & "d[-20:]=hashlib.sha1(bytes(d[:-20])).digest()" & ASCII.LF
+         & "open(p,'wb').write(bytes(d))" & ASCII.LF
+         & "PYEOF" & ASCII.LF
+         & "   python3 corrupt.py;"
+         & "   rc=0;"
+         & "   " & CLI & " multi-pack-index verify > /dev/null 2>&1 || rc=$?;"
+         & "   test $rc -ne 0 )");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Midx_Verify_And_Bundle_All_Match_Git;
+
    --  Byte-oracle the remaining plumbing: var, count-objects, rev-parse @{n},
    --  name-rev, and for-each-ref %(upstream).
    procedure Extra_Plumbing_Matches_Git
@@ -6329,6 +6401,9 @@ package body CLI_Integration_Tests is
       Register_Routine
         (T, Lfs_Pointer_And_Status_Match_Git_Lfs'Access,
          "lfs pointer bytes and status --porcelain match git-lfs");
+      Register_Routine
+        (T, Midx_Verify_And_Bundle_All_Match_Git'Access,
+         "midx verify catches structural corruption; bundle --all is complete");
       Register_Routine
         (T, Format_Patch_Mbox_Matches_Git'Access,
          "format-patch mbox (diffstat, -<n>, separators) matches git");
