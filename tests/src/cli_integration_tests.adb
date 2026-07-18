@@ -2774,6 +2774,53 @@ package body CLI_Integration_Tests is
          raise;
    end Check_Attr_Operands_Match_Git;
 
+   --  Regression: for-each-repo ran the command in every configured
+   --  repository even after one failed. git stops at the first failure and
+   --  exits with that command's status, so a scripted sweep does not keep
+   --  going after something has already gone wrong.
+   procedure For_Each_Repo_Stops_On_Failure
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Ada.Directories.Set_Directory (Root);
+
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C GIT_CONFIG_NOSYSTEM=1"
+         & " GIT_AUTHOR_DATE='1700000000 +0000'"
+         & " GIT_COMMITTER_DATE='1700000000 +0000';"
+         & " rm -rf r1 r2 cfg;"
+         & " for r in r1 r2; do git init -q -b main $r;"
+         & "   ( cd $r; git config user.email t@e; git config user.name T;"
+         & "     printf 'a\n' > f; git add -A; git commit -qm c1 );"
+         & " done;"
+         & " git init -q -b main cfg; ( cd cfg;"
+         & "   git config user.email t@e; git config user.name T;"
+         & "   git config --add for-each.k ../r1;"
+         & "   git config --add for-each.k ../r2;"
+         --  success: the command runs in both repositories
+         & "   " & CLI & " for-each-repo --config=for-each.k --"
+         & "     rev-parse HEAD > ok.out 2>&1;"
+         & "   test ""$(wc -l < ok.out)"" = 2;"
+         --  failure: it stops after the first, so only one error is reported
+         & "   rc=0;"
+         & "   " & CLI & " for-each-repo --config=for-each.k --"
+         & "     rev-parse refs/heads/nope > /dev/null 2> bad.err || rc=$?;"
+         & "   test $rc -ne 0;"
+         & "   test ""$(wc -l < bad.err)"" = 1 )");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end For_Each_Repo_Stops_On_Failure;
+
    --  Byte-oracle the remaining plumbing: var, count-objects, rev-parse @{n},
    --  name-rev, and for-each-ref %(upstream).
    procedure Extra_Plumbing_Matches_Git
@@ -6048,6 +6095,9 @@ package body CLI_Integration_Tests is
       Register_Routine
         (T, Check_Attr_Operands_Match_Git'Access,
          "check-attr attribute/path operand split matches git");
+      Register_Routine
+        (T, For_Each_Repo_Stops_On_Failure'Access,
+         "for-each-repo stops at the first failing repository");
       Register_Routine
         (T, Format_Patch_Mbox_Matches_Git'Access,
          "format-patch mbox (diffstat, -<n>, separators) matches git");

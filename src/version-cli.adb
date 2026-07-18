@@ -6881,8 +6881,12 @@ package body Version.CLI is
                      Ada.Directories.Set_Directory (Old_Dir);
 
                      if Status /= 0 then
+                        --  git stops at the first repository whose command
+                        --  fails and exits with that command's status, rather
+                        --  than running the command everywhere.
                         Ada.Command_Line.Set_Exit_Status
                           (Ada.Command_Line.Exit_Status (Status));
+                        return;
                      end if;
                   exception
                      when others =>
