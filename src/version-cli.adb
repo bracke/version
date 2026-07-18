@@ -19776,6 +19776,84 @@ package body Version.CLI is
                                  end loop;
                               end if;
 
+                              --  git also runs hooks declared in config --
+                              --  every hook.<id>.command whose
+                              --  hook.<id>.event names this hook -- in config
+                              --  order, before the one in .git/hooks. A
+                              --  failing config hook stops the run and
+                              --  supplies the exit status.
+                              declare
+                                 Event  : constant String := Arg (Name_Idx);
+                                 Failed : Boolean := False;
+                              begin
+                                 for Item of Version.Config.Read_All (Repo) loop
+                                    declare
+                                       Name : constant String :=
+                                         Version.Config.Config_Entry_Name
+                                           (Item);
+                                       Pfx  : constant String := "hook.";
+                                       Sfx  : constant String := ".event";
+                                    begin
+                                       if not Failed
+                                         and then Name'Length
+                                                  > Pfx'Length + Sfx'Length
+                                         and then Name (Name'First
+                                                        .. Name'First
+                                                           + Pfx'Length - 1)
+                                                  = Pfx
+                                         and then Name (Name'Last
+                                                        - Sfx'Length + 1
+                                                        .. Name'Last) = Sfx
+                                         and then To_String (Item.Value) = Event
+                                       then
+                                          declare
+                                             Cmd_Key : constant String :=
+                                               Name (Name'First
+                                                     .. Name'Last
+                                                        - Sfx'Length)
+                                               & ".command";
+                                          begin
+                                             if Version.Config.Has_Key
+                                                  (Repo, Cmd_Key)
+                                             then
+                                                declare
+                                                   Cmd : constant String :=
+                                                     Version.Config.Get_Value
+                                                       (Repo, Cmd_Key);
+                                                   Sh : GNAT.OS_Lib
+                                                          .Argument_List
+                                                            (1 .. 2);
+                                                   St : Integer;
+                                                begin
+                                                   Sh (1) := new String'("-c");
+                                                   Sh (2) := new String'(Cmd);
+                                                   St :=
+                                                     GNAT.OS_Lib.Spawn
+                                                       (Program_Name =>
+                                                          "/bin/sh",
+                                                        Args => Sh);
+                                                   GNAT.OS_Lib.Free (Sh (1));
+                                                   GNAT.OS_Lib.Free (Sh (2));
+
+                                                   if St /= 0 then
+                                                      Ada.Command_Line
+                                                        .Set_Exit_Status
+                                                          (Ada.Command_Line
+                                                             .Exit_Status (St));
+                                                      Failed := True;
+                                                   end if;
+                                                end;
+                                             end if;
+                                          end;
+                                       end if;
+                                    end;
+                                 end loop;
+
+                                 if Failed then
+                                    return;
+                                 end if;
+                              end;
+
                               --  Run_Hook (Blocking) inherits stdout/stderr, so
                               --  the hook's output streams through exactly as
                               --  git's `hook run` does; propagate its exit code.
@@ -20263,6 +20341,19 @@ package body Version.CLI is
                                 Input (Pos .. Line_End - 1);
                               S1, S2, Tab : Natural := 0;
                            begin
+                              --  A blank line ends one tree in batch mode;
+                              --  outside it, git rejects the input rather
+                              --  than quietly writing a tree.
+                              if Line'Length = 0 then
+                                 Failed := True;
+                                 Fail_Msg :=
+                                   To_Unbounded_String
+                                     ("input format error:"
+                                      & " (blank line only valid in batch"
+                                      & " mode)");
+                                 exit;
+                              end if;
+
                               for K in Line'Range loop
                                  if Line (K) = ' ' and then S1 = 0 then
                                     S1 := K;

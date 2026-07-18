@@ -2928,6 +2928,66 @@ package body CLI_Integration_Tests is
          raise;
    end Commit_Graph_And_Maintenance_Match_Git;
 
+   --  Regression: `hook run` only looked in .git/hooks, so hooks declared in
+   --  configuration (hook.<id>.event / hook.<id>.command) never ran -- git
+   --  runs those first, in config order, then the hookdir hook, and a failing
+   --  one supplies the exit status. `mktree` also accepted a blank line
+   --  outside batch mode and wrote a tree, where git rejects the input.
+   procedure Hook_Run_And_Mktree_Match_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Ada.Directories.Set_Directory (Root);
+
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C GIT_CONFIG_NOSYSTEM=1"
+         & " GIT_AUTHOR_DATE='1700000000 +0000'"
+         & " GIT_COMMITTER_DATE='1700000000 +0000';"
+         & " rm -rf h; mkdir h; ( cd h; git init -q -b main;"
+         & "   git config user.email t@e; git config user.name T;"
+         & "   git config hook.a.event pre-commit;"
+         & "   git config hook.a.command 'echo CONFIG-A';"
+         & "   git config hook.b.event pre-commit;"
+         & "   git config hook.b.command 'echo CONFIG-B';"
+         & "   mkdir -p .git/hooks;"
+         & "   printf '#!/bin/sh\necho FILE-HOOK\n' > .git/hooks/pre-commit;"
+         & "   chmod +x .git/hooks/pre-commit;"
+         --  config hooks run in order, then the hookdir hook
+         & "   git hook run pre-commit > g.out 2>&1;"
+         & "   " & CLI & " hook run pre-commit > v.out 2>&1;"
+         & "   cmp -s g.out v.out;"
+         --  a failing config hook stops the run and sets the status
+         & "   git config hook.c.event pre-commit;"
+         & "   git config hook.c.command 'exit 3';"
+         & "   rc=0; " & CLI & " hook run pre-commit > /dev/null 2>&1 || rc=$?;"
+         & "   test $rc -eq 3 );"
+         --  mktree rejects a blank line outside batch mode
+         & " rm -rf m; mkdir m; ( cd m; git init -q -b main;"
+         & "   git config user.email t@e; git config user.name T;"
+         & "   b=$(printf 'x\n' | git hash-object -w --stdin);"
+         & "   printf '100644 blob %s\ta.txt\n\n' ""$b"" > blank.in;"
+         & "   printf '100644 blob %s\ta.txt\n' ""$b"" > ok.in;"
+         & "   rc=0; " & CLI & " mktree < blank.in > /dev/null 2> e || rc=$?;"
+         & "   test $rc -eq 128;"
+         & "   grep -q 'blank line only valid in batch mode' e;"
+         --  a well-formed input still produces git's tree id
+         & "   git mktree < ok.in > g.id;"
+         & "   " & CLI & " mktree < ok.in > v.id;"
+         & "   cmp -s g.id v.id )");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Hook_Run_And_Mktree_Match_Git;
+
    --  Byte-oracle the remaining plumbing: var, count-objects, rev-parse @{n},
    --  name-rev, and for-each-ref %(upstream).
    procedure Extra_Plumbing_Matches_Git
@@ -6211,6 +6271,9 @@ package body CLI_Integration_Tests is
       Register_Routine
         (T, Commit_Graph_And_Maintenance_Match_Git'Access,
          "commit-graph write gating and maintenance tasks match git");
+      Register_Routine
+        (T, Hook_Run_And_Mktree_Match_Git'Access,
+         "hook run honours config hooks; mktree rejects blank lines");
       Register_Routine
         (T, Format_Patch_Mbox_Matches_Git'Access,
          "format-patch mbox (diffstat, -<n>, separators) matches git");
