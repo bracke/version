@@ -1919,6 +1919,51 @@ package body CLI_Integration_Tests is
          raise;
    end Commit_Timestamp_Is_Unix_Time;
 
+   --  Regression: a repo-local config write must not drag the user's global
+   --  config into the repository. Replace_Section/Remove_Section read the
+   --  MERGED config (system + global + local) and wrote it back to the local
+   --  file, so `clone` (which sets remote.origin.* and branch.*) copied the
+   --  whole of ~/.gitconfig -- identity, credential helpers and all -- into
+   --  every clone, twice. Also checks git's section framing (no blank line).
+   procedure Clone_Config_Excludes_Global
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Ada.Directories.Set_Directory (Root);
+
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C GIT_CONFIG_NOSYSTEM=1;"
+         --  a HOME with a global config carrying a distinctive marker
+         & " rm -rf home src dst gdst; mkdir home;"
+         & " printf '[user]\n\tname = Global Person\n"
+         & "\temail = global@example.invalid\n' > home/.gitconfig;"
+         & " printf '[secretsection]\n\tmarker = LEAKED\n' >> home/.gitconfig;"
+         & " export HOME=$PWD/home;"
+         & " git init -q -b main src; ( cd src;"
+         & "   git config user.email t@e; git config user.name T;"
+         & "   printf 'a\n' > f.txt; git add -A; git commit -qm c1 );"
+         & " " & CLI & " clone src dst >/dev/null;"
+         --  nothing from the global config may appear in the clone
+         & " ! grep -q LEAKED dst/.git/config;"
+         & " ! grep -q 'Global Person' dst/.git/config;"
+         & " ! grep -q secretsection dst/.git/config;"
+         --  and the file matches what git itself writes, byte for byte
+         & " git clone -q src gdst;"
+         & " cmp -s dst/.git/config gdst/.git/config");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Clone_Config_Excludes_Global;
+
    --  Byte-oracle the remaining plumbing: var, count-objects, rev-parse @{n},
    --  name-rev, and for-each-ref %(upstream).
    procedure Extra_Plumbing_Matches_Git
@@ -5142,6 +5187,9 @@ package body CLI_Integration_Tests is
       Register_Routine
         (T, Commit_Timestamp_Is_Unix_Time'Access,
          "commit/reflog/var timestamps are real Unix time (not local-epoch)");
+      Register_Routine
+        (T, Clone_Config_Excludes_Global'Access,
+         "clone config excludes the global config and matches git");
       Register_Routine
         (T, Format_Patch_Mbox_Matches_Git'Access,
          "format-patch mbox (diffstat, -<n>, separators) matches git");
