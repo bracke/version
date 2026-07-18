@@ -109,6 +109,7 @@ with Version.Worktrees;
 with Version.Submodules;
 with Version.Timestamps;
 with Version.Name_Rev;
+with Version.Path_Quoting;
 
 package body Version.CLI is
    use Ada.Strings.Unbounded;
@@ -14785,7 +14786,10 @@ package body Version.CLI is
                   if Specs.Is_Empty
                     or else Version.Pathspec.Matches_Any (Specs, Path)
                   then
-                     Success_Line (Path);
+                     --  git C-quotes a path holding control characters or
+                     --  high-bit bytes.
+                     Success_Line
+                       (Version.Path_Quoting.Quote_C_Style (Path));
                   end if;
                end Emit;
             begin
@@ -14880,9 +14884,13 @@ package body Version.CLI is
                         Success_Line
                           (To_String (E.Mode) & " " & To_String (E.Id)
                            & " " & Img (E.Stage)
-                           & Character'Val (9) & To_String (E.Path));
+                           & Character'Val (9)
+                           & Version.Path_Quoting.Quote_C_Style
+                               (To_String (E.Path)));
                      else
-                        Success_Line (To_String (E.Path));
+                        Success_Line
+                          (Version.Path_Quoting.Quote_C_Style
+                             (To_String (E.Path)));
                      end if;
                   end if;
                end loop;

@@ -2072,6 +2072,51 @@ package body CLI_Integration_Tests is
          raise;
    end Name_Rev_Matches_Git;
 
+   --  Regression: a filename holding a control character. Reading a tree that
+   --  contained one raised "path contains control character" (a write-side
+   --  safety check applied to a read path), so ls-files -m failed outright
+   --  with exit 1 where git lists normally. git also C-quotes such a path on
+   --  output; we printed the raw bytes.
+   procedure Ls_Files_Control_Chars_Match_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Ada.Directories.Set_Directory (Root);
+
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C GIT_CONFIG_NOSYSTEM=1;"
+         & " rm -rf r; mkdir r; ( cd r; git init -q -b main;"
+         & "   git config user.email t@e; git config user.name T;"
+         --  a tab, a high-bit byte and a DEL in tracked names
+         & "   printf 'x' > ""$(printf 'tab\there.txt')"";"
+         & "   printf 'x' > ""$(printf 'hi\303\251.txt')"";"
+         & "   printf 'x' > ""$(printf 'del\177.txt')"";"
+         & "   printf 'y' > normal.txt;"
+         & "   git add -A; git commit -qm c1;"
+         --  listing matches git byte for byte, including the C-quoting
+         & "   git ls-files > g.out; " & CLI & " ls-files > v.out;"
+         & "   cmp -s g.out v.out;"
+         & "   git ls-files -s > gs.out; " & CLI & " ls-files -s > vs.out;"
+         & "   cmp -s gs.out vs.out;"
+         --  and reading the tree for -m no longer fails
+         & "   printf 'z' > normal.txt;"
+         & "   git ls-files -m > gm.out;"
+         & "   " & CLI & " ls-files -m > vm.out;"
+         & "   cmp -s gm.out vm.out )");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Ls_Files_Control_Chars_Match_Git;
+
    --  Byte-oracle the remaining plumbing: var, count-objects, rev-parse @{n},
    --  name-rev, and for-each-ref %(upstream).
    procedure Extra_Plumbing_Matches_Git
@@ -5304,6 +5349,9 @@ package body CLI_Integration_Tests is
       Register_Routine
         (T, Name_Rev_Matches_Git'Access,
          "name-rev walks all parents and matches git (incl. <tip>^2)");
+      Register_Routine
+        (T, Ls_Files_Control_Chars_Match_Git'Access,
+         "ls-files lists and C-quotes control-character paths like git");
       Register_Routine
         (T, Format_Patch_Mbox_Matches_Git'Access,
          "format-patch mbox (diffstat, -<n>, separators) matches git");
