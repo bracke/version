@@ -2482,6 +2482,69 @@ package body CLI_Integration_Tests is
          raise;
    end Credential_Fill_Validation_Matches_Git;
 
+   --  Regression: merge-index exit statuses. git dies (128) at the first
+   --  failing merge program, but under -q exits 1 silently; with -o it runs
+   --  every path and then dies, or under -q exits with the failure count. It
+   --  also refuses a named path that is not unmerged. version exited 128 for
+   --  -q, 1 for -o, and silently succeeded on a missing path.
+   procedure Merge_Index_Exit_Codes_Match_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Ada.Directories.Set_Directory (Root);
+
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C GIT_CONFIG_NOSYSTEM=1"
+         & " GIT_AUTHOR_DATE='1700000000 +0000'"
+         & " GIT_COMMITTER_DATE='1700000000 +0000';"
+         & " rm -rf r; printf '#!/bin/sh\nexit 1\n' > fail.sh;"
+         & " chmod +x fail.sh;"
+         & " mkdir r; ( cd r; git init -q -b main;"
+         & "   git config user.email t@e; git config user.name T;"
+         & "   printf 'base\n' > a.txt; printf 'base\n' > b.txt;"
+         & "   git add -A; git commit -qm base;"
+         & "   git checkout -qb side;"
+         & "   printf 's\n' > a.txt; printf 's\n' > b.txt;"
+         & "   git add -A; git commit -qm s;"
+         & "   git checkout -q main;"
+         & "   printf 'm\n' > a.txt; printf 'm\n' > b.txt;"
+         & "   git add -A; git commit -qm m;"
+         & "   git merge side > /dev/null 2>&1 || true;"
+         --  plain: dies with git's message and 128
+         & "   rc=0; " & CLI & " merge-index ../fail.sh -a > /dev/null"
+         & "     2> e1 || rc=$?;"
+         & "   test $rc -eq 128; grep -q '^fatal: merge program failed$' e1;"
+         --  -q: exit 1, no message
+         & "   rc=0; " & CLI & " merge-index -q ../fail.sh -a > /dev/null"
+         & "     2> e2 || rc=$?;"
+         & "   test $rc -eq 1; test ! -s e2;"
+         --  -o: every path attempted, then the same fatal
+         & "   rc=0; " & CLI & " merge-index -o ../fail.sh -a > /dev/null"
+         & "     2> e3 || rc=$?;"
+         & "   test $rc -eq 128; grep -q '^fatal: merge program failed$' e3;"
+         --  -o -q: exit status is the failure count (two conflicted paths)
+         & "   rc=0; " & CLI & " merge-index -o -q ../fail.sh -a > /dev/null"
+         & "     2> e4 || rc=$?;"
+         & "   test $rc -eq 2; test ! -s e4;"
+         --  a path that is not unmerged is fatal
+         & "   rc=0; " & CLI & " merge-index ../fail.sh nope.txt > /dev/null"
+         & "     2> e5 || rc=$?;"
+         & "   test $rc -eq 128;"
+         & "   grep -q 'not in the cache' e5 )");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Merge_Index_Exit_Codes_Match_Git;
+
    --  Byte-oracle the remaining plumbing: var, count-objects, rev-parse @{n},
    --  name-rev, and for-each-ref %(upstream).
    procedure Extra_Plumbing_Matches_Git
@@ -5738,6 +5801,9 @@ package body CLI_Integration_Tests is
       Register_Routine
         (T, Credential_Fill_Validation_Matches_Git'Access,
          "credential fill rejects a record missing host/protocol");
+      Register_Routine
+        (T, Merge_Index_Exit_Codes_Match_Git'Access,
+         "merge-index exit codes and missing-path error match git");
       Register_Routine
         (T, Format_Patch_Mbox_Matches_Git'Access,
          "format-patch mbox (diffstat, -<n>, separators) matches git");
