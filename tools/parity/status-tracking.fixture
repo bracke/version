@@ -1,0 +1,6 @@
+# The bare remote lives under .git/ so it never shows up as untracked.
+git init -q --bare .git/origin.git
+printf 'a\n' > f.txt
+git add -A && git commit -qm one
+git remote add origin .git/origin.git
+git push -q -u origin main

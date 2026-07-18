@@ -1,0 +1,11 @@
+printf 'base\n' > c.txt
+git add -A && git commit -qm base
+git checkout -q -b side
+printf 'side\n' > c.txt
+printf 'newside\n' > both.txt
+git add -A && git commit -qm side
+git checkout -q main
+printf 'main\n' > c.txt
+printf 'newmain\n' > both.txt
+git add -A && git commit -qm main
+git merge side >/dev/null 2>&1 || true

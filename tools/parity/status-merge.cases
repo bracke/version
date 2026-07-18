@@ -1,0 +1,4 @@
+status
+status --porcelain
+status --short
+status -uno

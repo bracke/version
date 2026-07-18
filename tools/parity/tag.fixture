@@ -1,0 +1,7 @@
+printf 'a\n' > f.txt && git add -A && git commit -qm "first commit"
+git tag light1
+git tag -a annot1 -m "annotated one"
+printf 'b\n' >> f.txt && git add -A && git commit -qm "second commit"
+git tag light2
+git tag -a annot2 -m "annotated two"
+git branch feature

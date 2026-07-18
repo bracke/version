@@ -1,0 +1,32 @@
+tag
+tag --list
+tag -l
+tag -l "light*"
+tag -l "annot*"
+tag --sort=refname
+tag --sort=-refname
+tag -n
+tag -n1
+tag --contains HEAD
+tag --contains HEAD~1
+tag --points-at HEAD
+tag --merged HEAD
+tag -d light1
+tag newtag
+tag newtag HEAD~1
+tag -a newannot -m message
+tag -f light1 HEAD~1
+tag --verify annot1
+tag -f light1 HEAD
+tag -n --contains HEAD
+tag -n2 annot1
+tag -l "annot?"
+tag --list
+tag --points-at HEAD~1
+tag -d light1 light2
+tag -d nosuchtag
+tag -v light1
+tag -a newannot HEAD~1 -m message
+tag --sort=-refname -l "annot*"
+tag light1
+tag newtag nosuchrev

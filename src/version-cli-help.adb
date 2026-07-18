@@ -442,6 +442,14 @@ package body Version.CLI.Help is
             "remote prune reports stale remote-tracking refs.");
       elsif Name = "tag" then
          Append_Line (Text, "Usage:");
+         Append_Line (Text, "  version tag [-a|-s|-u KEY] [-f] [-m MSG] NAME [REV]");
+         Append_Line (Text, "  version tag -d NAME...");
+         Append_Line (Text, "  version tag -v NAME...");
+         Append_Line (Text, "  version tag [-n[NUM]] [-l] [PATTERN...]");
+         Append_Line (Text, "  version tag --contains REV");
+         Append_Line (Text, "  version tag --merged REV");
+         Append_Line (Text, "  version tag --points-at REV");
+         Append_Line (Text, "  version tag --sort=KEY");
          Append_Line (Text, "  version tag create NAME");
          Append_Line (Text, "  version tag create NAME REV");
          Append_Line (Text, "  version tag create -a NAME -m MESSAGE");
@@ -461,6 +469,15 @@ package body Version.CLI.Help is
            (Text,
             "Create, delete, list, test, resolve, or inspect lightweight and annotated tags.");
          Append_Line (Text, "tag create defaults to HEAD when REV is omitted.");
+         Append_Line
+           (Text,
+            "-n[NUM] lists each tag with the first NUM lines of its message.");
+         Append_Line
+           (Text,
+            "-f moves an existing tag; -d deletes and -v verifies signatures.");
+         Append_Line
+           (Text,
+            "List filters and --sort combine, as they do in git.");
          Append_Line
            (Text,
             "tag list --points-at REV prints tags whose peeled target is REV.");

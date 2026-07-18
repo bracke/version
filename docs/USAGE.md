@@ -161,6 +161,14 @@ version log --oneline [REV]
 version show [REV]
 version checkout REV
 version checkout REV -- PATHSPEC...
+version tag [-a|-s|-u KEY] [-f] [-m MSG] NAME [REV]
+version tag -d NAME...
+version tag -v NAME...
+version tag [-n[NUM]] [-l] [PATTERN...]
+version tag --contains REV
+version tag --merged REV
+version tag --points-at REV
+version tag --sort=KEY
 version tag create NAME
 version tag create NAME REV
 version tag create -a NAME -m MESSAGE
@@ -177,8 +185,10 @@ version tag peel NAME
 version tag show NAME
 ```
 
-`version tag create NAME` creates a lightweight tag at `HEAD`; `version tag create NAME REV` creates a lightweight tag at a resolved revision. `version tag create -a NAME -m MESSAGE` creates an annotated tag object at `HEAD`; `version tag create -a NAME REV -m MESSAGE` creates an annotated tag object at a resolved revision. `version tag list --points-at REV` prints tags whose peeled target is the resolved revision. `version tag list --contains REV` prints tags whose peeled commit contains the resolved commit revision. `version tag exists NAME` prints nothing and reports tag existence by exit status. `version tag resolve NAME` prints the object id stored in a tag ref and does not mutate repository state. `version tag peel NAME` prints the peeled target id for lightweight or annotated tags. `version tag show NAME` prints stable tag details without mutation; annotated tags include target and message details. Tag rename moves a tag ref without rewriting the target object. Tag deletion reports the deleted tag ref object id.
+`version tag create NAME` creates a lightweight tag at `HEAD`; `version tag create NAME REV` creates a lightweight tag at a resolved revision. `version tag create -a NAME -m MESSAGE` creates an annotated tag object at `HEAD`; `version tag create -a NAME REV -m MESSAGE` creates an annotated tag object at a resolved revision. `version tag list --points-at REV` prints tags whose peeled target is the resolved revision. `version tag list --contains REV` prints tags whose peeled commit contains the resolved commit revision. `version tag exists NAME` prints nothing and reports tag existence by exit status. `version tag resolve NAME` prints the object id stored in a tag ref and does not mutate repository state. `version tag peel NAME` prints the peeled target id for lightweight or annotated tags. `version tag show NAME` prints stable tag details without mutation; annotated tags include target and message details. Tag rename moves a tag ref without rewriting the target object. Tag deletion reports the deleted tag and its abbreviated old target, as git does.
 `version tag remove NAME` is retained as a compatibility alias for `version tag delete NAME`.
+
+`version tag` also accepts git's own grammar: `version tag NAME [REV]` creates, `-a`/`-s`/`-u KEY` annotate or sign, `-m MSG` supplies the message and implies `-a`, `-f` moves an existing tag, `-d` deletes, and `-v` verifies. Listing takes shell-glob patterns and combines its filters, so `version tag -n --contains REV` and `version tag -l 'v1.*' --sort=-refname` behave as in git. `-n[NUM]` prints the tag name in a 15-column field followed by the first `NUM` lines of its message -- the annotation for an annotated tag, the commit message for a lightweight one. Creating is silent; `-f` reports `Updated tag` only when the ref actually moves.
 `version remote remove NAME` is retained as a compatibility alias for `version remote delete NAME`. `version remote exists NAME` is quiet and reports existence by exit status for scripts.
 `version branch upstream [BRANCH]` is read-only and prints the configured upstream as `remote/branch`, using the current branch when BRANCH is omitted.
 

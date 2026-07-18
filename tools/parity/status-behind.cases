@@ -1,0 +1,3 @@
+status
+status --short --branch
+status --porcelain --branch

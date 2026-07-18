@@ -1,0 +1,5 @@
+printf 'staged\n' > staged.txt
+printf 'untracked\n' > untracked.txt
+printf 'ign\n' > skip.log
+printf '*.log\n' > .gitignore
+git add staged.txt .gitignore

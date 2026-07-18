@@ -1,0 +1,17 @@
+git init -q --bare .git/origin.git
+printf 'a\n' > f.txt
+git add -A && git commit -qm one
+git remote add origin .git/origin.git
+git push -q -u origin main
+# Advance the remote by two commits behind our back, then diverge locally.
+git clone -q .git/origin.git .git/other
+git -C .git/other config user.email t@e
+git -C .git/other config user.name T
+printf 'r1\n' > .git/other/r1.txt
+git -C .git/other add -A && git -C .git/other commit -qm remote1
+printf 'r2\n' > .git/other/r2.txt
+git -C .git/other add -A && git -C .git/other commit -qm remote2
+git -C .git/other push -q origin main
+git fetch -q origin
+printf 'local\n' > loc.txt
+git add -A && git commit -qm local

@@ -1,3 +1,4 @@
+with Ada.Characters.Latin_1;
 with Ada.Command_Line; use Ada.Command_Line;
 with Ada.Containers; use Ada.Containers;
 with Ada.Directories;
@@ -774,30 +775,37 @@ package body Version.CLI.Tests is
    is
       pragma Unreferenced (T);
    begin
+      --  The long format is git's, so these seams freeze git's wording:
+      --  a tab, the label padded to column 12 (17 when unmerged), the path.
       Assert
         (Version.Status.Clean_Status_Line
-         = "nothing to save, working tree clean",
+         = "nothing to commit, working tree clean",
          "clean status line must remain stable");
       Assert
-        (Version.Status.Change_Output_Line
+        (Version.Status.Long_Status_Line
            (Version.Status.New_File, "src/main.adb")
-         = "  added: src/main.adb",
+         = Ada.Characters.Latin_1.HT & "new file:   src/main.adb",
          "new-file status line must remain stable");
       Assert
-        (Version.Status.Change_Output_Line
+        (Version.Status.Long_Status_Line
            (Version.Status.Modified_File, "src/main.adb")
-         = "  modified: src/main.adb",
+         = Ada.Characters.Latin_1.HT & "modified:   src/main.adb",
          "modified status line must remain stable");
       Assert
-        (Version.Status.Change_Output_Line
+        (Version.Status.Long_Status_Line
            (Version.Status.Deleted_File, "src/main.adb")
-         = "  deleted: src/main.adb",
+         = Ada.Characters.Latin_1.HT & "deleted:    src/main.adb",
          "deleted status line must remain stable");
       Assert
-        (Version.Status.Change_Output_Line
-           (Version.Status.Ignored_File, "obj/main.o")
-         = "  ignored: obj/main.o",
-         "ignored status line must remain stable");
+        (Version.Status.Long_Status_Line
+           (Version.Status.Renamed_File, "old.adb -> new.adb")
+         = Ada.Characters.Latin_1.HT & "renamed:    old.adb -> new.adb",
+         "renamed status line must remain stable");
+      Assert
+        (Version.Status.Long_Status_Line
+           (Version.Status.Both_Added_File, "c.txt", Unmerged => True)
+         = Ada.Characters.Latin_1.HT & "both added:      c.txt",
+         "unmerged status line must remain stable");
    end CLI_Status_Output_Fragments_Are_Frozen;
 
    procedure CLI_Status_Porcelain_Output_Is_Frozen
@@ -2070,18 +2078,20 @@ package body Version.CLI.Tests is
       declare
          Output : constant String := Run_CLI (Root, "status --ignored");
       begin
-         Assert_Contains (Output, "Ignored:", "ignored status section");
+         Assert_Contains
+           (Output, "Ignored files:", "ignored status section");
          Assert_Contains
            (Output,
-            "  ignored: build/generated.txt",
+            Ada.Characters.Latin_1.HT & "build/generated.txt",
             "ignored status reports ignored directory content");
          Assert_Contains
            (Output,
-            "  ignored: ignored.log",
+            Ada.Characters.Latin_1.HT & "ignored.log",
             "ignored status reports ignored file");
-         Assert_Contains (Output, "Untracked:", "ordinary untracked section remains");
          Assert_Contains
-           (Output, "  added: visible.txt",
+           (Output, "Untracked files:", "ordinary untracked section remains");
+         Assert_Contains
+           (Output, Ada.Characters.Latin_1.HT & "visible.txt",
             "ignored status still reports ordinary untracked file");
       end;
 
@@ -2090,7 +2100,7 @@ package body Version.CLI.Tests is
            Run_CLI (Root, "status --ignored -- ignored.log");
       begin
          Assert_Contains
-           (Output, "  ignored: ignored.log",
+           (Output, Ada.Characters.Latin_1.HT & "ignored.log",
             "ignored status pathspec keeps matching ignored file");
          Assert
            (Ada.Strings.Fixed.Index (Output, "build/generated.txt") = 0,
@@ -2133,7 +2143,7 @@ package body Version.CLI.Tests is
            (Ada.Strings.Fixed.Index (Output, "!! ignored.log") = 0,
             "ignored=no branch status omits ignored porcelain entries");
          Assert
-           (Ada.Strings.Fixed.Index (Output, "Ignored:") = 0,
+           (Ada.Strings.Fixed.Index (Output, "Ignored files:") = 0,
             "ignored=no branch status omits ignored long section");
       end;
 
@@ -2141,7 +2151,7 @@ package body Version.CLI.Tests is
          Output : constant String := Run_CLI (Root, "status --ignored=matching");
       begin
          Assert_Contains
-           (Output, "  ignored: build/",
+           (Output, Ada.Characters.Latin_1.HT & "build/",
             "matching ignored long status reports ignored directory");
          Assert
            (Ada.Strings.Fixed.Index (Output, "build/generated.txt") = 0,
