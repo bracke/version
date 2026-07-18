@@ -14985,6 +14985,9 @@ package body Version.CLI is
                Tree_Idx  : Natural := 0;
                Sep       : Boolean := False;
                Specs     : Version.Pathspec.Pathspec_Vectors.Vector;
+               --  git's ls-tree matches path operands literally, not as
+               --  globs, so keep the raw text alongside the parsed specs.
+               Raw_Specs : Version.Trailers.String_Vectors.Vector;
                I         : Positive := 2;
 
                --  git renders modes as six zero-padded octal digits.
@@ -14996,6 +14999,7 @@ package body Version.CLI is
                      Sep := True;
                   elsif Sep then
                      Version.Pathspec.Append_Parse (Specs, Arg (I));
+                     Raw_Specs.Append (Arg (I));
                   elsif Arg (I) = "-r" then
                      Recursive := True;
                   elsif Arg (I) = "--name-only" then
@@ -15010,6 +15014,7 @@ package body Version.CLI is
                   else
                      --  git also takes bare paths after the tree-ish.
                      Version.Pathspec.Append_Parse (Specs, Arg (I));
+                     Raw_Specs.Append (Arg (I));
                   end if;
                   I := I + 1;
                end loop;
@@ -15025,19 +15030,118 @@ package body Version.CLI is
                        Version.Repository.Open;
                      Tree : constant Version.Objects.Hex_Object_Id :=
                        Version.Revisions.Resolve_Tree (Repo, Arg (Tree_Idx));
+                     --  Without -r git still resolves a nested path operand
+                     --  ("d/sub") by walking down the tree; a plain top-level
+                     --  listing would never contain it.
+                     function Listing
+                       return Version.Objects.Tree_Entry_Vectors.Vector
+                     is
+                        Result : Version.Objects.Tree_Entry_Vectors.Vector :=
+                          Version.Objects.Tree_Entries (Repo, Tree);
+                     begin
+                        for Spec of Raw_Specs loop
+                           if (for some C of Spec => C = '/') then
+                              declare
+                                 Sub : Version.Objects.Hex_Object_Id := Tree;
+                                 From : Positive := Spec'First;
+                              begin
+                                 --  Descend one component at a time, adding
+                                 --  each level's entries so the named one is
+                                 --  present to be matched below.
+                                 for K in Spec'Range loop
+                                    if Spec (K) = '/' then
+                                       declare
+                                          Part : constant String :=
+                                            Spec (From .. K - 1);
+                                       begin
+                                          for E of Version.Objects.Tree_Entries
+                                                     (Repo, Sub)
+                                          loop
+                                             if To_String (E.Path) = Part
+                                               and then E.Kind
+                                                        = Tree_Directory
+                                             then
+                                                Sub := E.Id;
+                                             end if;
+                                          end loop;
+                                          From := K + 1;
+                                       end;
+                                    end if;
+                                 end loop;
+
+                                 declare
+                                    Prefix : constant String :=
+                                      Spec (Spec'First .. From - 1);
+                                 begin
+                                    for E of Version.Objects.Tree_Entries
+                                               (Repo, Sub)
+                                    loop
+                                       Result.Append
+                                         (Version.Objects.Tree_Entry'
+                                            (Path =>
+                                               To_Unbounded_String
+                                                 (Prefix & To_String (E.Path)),
+                                             Id   => E.Id,
+                                             Mode => E.Mode,
+                                             Kind => E.Kind));
+                                    end loop;
+                                 end;
+                              exception
+                                 when others =>
+                                    null;   --  no such path in this tree
+                              end;
+                           end if;
+                        end loop;
+                        return Result;
+                     end Listing;
+
                      Entries : constant
                        Version.Objects.Tree_Entry_Vectors.Vector :=
                          (if Recursive
                           then Version.Objects.Flatten_Tree (Repo, Tree)
-                          else Version.Objects.Tree_Entries (Repo, Tree));
+                          else Listing);
+
+                     --  Literal match: the path itself, or -- for a spec
+                     --  naming a directory -- something below it. Without -r
+                     --  only the directory's immediate children count.
+                     function Selected (Path : String) return Boolean is
+                     begin
+                        if Raw_Specs.Is_Empty then
+                           return True;
+                        end if;
+
+                        for Spec of Raw_Specs loop
+                           declare
+                              Slashed : constant Boolean :=
+                                Spec'Length > 0
+                                and then Spec (Spec'Last) = '/';
+                              Base : constant String :=
+                                (if Slashed
+                                 then Spec (Spec'First .. Spec'Last - 1)
+                                 else Spec);
+                              Under : constant String := Base & "/";
+                           begin
+                              if not Slashed and then Path = Base then
+                                 return True;
+                              end if;
+
+                              if Path'Length > Under'Length
+                                and then Path (Path'First
+                                               .. Path'First + Under'Length - 1)
+                                         = Under
+                              then
+                                 if Recursive then
+                                    return True;
+                                 end if;
+                              end if;
+                           end;
+                        end loop;
+
+                        return False;
+                     end Selected;
                   begin
                      for E of Entries loop
-                        --  A pathspec selects entries; git matches a directory
-                        --  entry by its own name as well as by what is under it.
-                        if Specs.Is_Empty
-                          or else Version.Pathspec.Matches_Any
-                                    (Specs, To_String (E.Path))
-                        then
+                        if Selected (To_String (E.Path)) then
                            if Name_Only then
                               Success_Line (To_String (E.Path));
                            else
@@ -20514,23 +20618,32 @@ package body Version.CLI is
 
          elsif Command = "diff-files" then
             declare
-               Usage : constant String := "version diff-files [-p]";
+               Usage : constant String :=
+                 "version diff-files [-p] [--] [PATHSPEC...]";
                Bad   : Boolean := False;
                Patch : Boolean := False;
+               Specs : Version.Pathspec.Pathspec_Vectors.Vector;
+               Seen_Separator : Boolean := False;
             begin
                for I in 2 .. Count loop
                   if Arg (I) = "--" then
-                     exit;
-                  elsif Arg (I) = "-p" or else Arg (I) = "--patch"
-                    or else Arg (I) = "-u"
+                     Seen_Separator := True;
+                  elsif not Seen_Separator
+                    and then (Arg (I) = "-p" or else Arg (I) = "--patch"
+                              or else Arg (I) = "-u")
                   then
                      Patch := True;
-                  elsif Arg (I)'Length > 0 and then Arg (I) (Arg (I)'First) = '-'
+                  elsif not Seen_Separator
+                    and then Arg (I)'Length > 0
+                    and then Arg (I) (Arg (I)'First) = '-'
                   then
                      Usage_Error ("unknown diff-files option: " & Arg (I),
                                   Usage);
                      Bad := True;
                      exit;
+                  else
+                     --  git filters the report by the pathspec operands.
+                     Version.Pathspec.Append_Parse (Specs, Arg (I));
                   end if;
                end loop;
 
@@ -20543,11 +20656,16 @@ package body Version.CLI is
                         --  -p prints the unified diff between the index and the
                         --  working tree (git's `diff-files -p`), same content as
                         --  a plain `diff`; without it the raw record is shown.
-                        Version.Console.Put
-                          (Version.Diff.Diff_Working_Tree (Repo));
+                        if Specs.Is_Empty then
+                           Version.Console.Put
+                             (Version.Diff.Diff_Working_Tree (Repo));
+                        else
+                           Version.Console.Put
+                             (Version.Diff.Diff_Working_Tree (Repo, Specs));
+                        end if;
                      else
                         Version.Console.Put
-                          (Version.Diff.Raw_Diff_Files (Repo));
+                          (Version.Diff.Raw_Diff_Files (Repo, Specs));
                      end if;
                   end;
                end if;

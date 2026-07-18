@@ -2340,6 +2340,59 @@ package body CLI_Integration_Tests is
          raise;
    end Interpret_Trailers_Edge_Cases_Match_Git;
 
+   --  Regression: pathspec handling in two plumbing commands. `diff-files`
+   --  ignored its pathspec operands entirely and reported every changed file.
+   --  `ls-tree` matched path operands as globs, so `*.txt` listed files git
+   --  does not, and could not resolve a nested path like `d/sub` without -r
+   --  because it only ever enumerated the top level.
+   procedure Diff_Files_And_Ls_Tree_Pathspecs_Match_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Ada.Directories.Set_Directory (Root);
+
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C GIT_CONFIG_NOSYSTEM=1"
+         & " GIT_AUTHOR_DATE='1700000000 +0000'"
+         & " GIT_COMMITTER_DATE='1700000000 +0000';"
+         & " rm -rf r; mkdir r; ( cd r; git init -q -b main;"
+         & "   git config user.email t@e; git config user.name T;"
+         & "   mkdir -p d/sub;"
+         & "   printf 'a\n' > a.txt; printf 'x\n' > d/x.txt;"
+         & "   printf 'y\n' > d/sub/y.txt; printf 'z\n' > z.md;"
+         & "   git add -A; git commit -qm c1;"
+         --  ls-tree: literal paths, nested paths, and no glob expansion
+         & "   for p in a.txt d d/sub d/x.txt d/sub/y.txt z.md nope '*.txt'; do"
+         & "     git ls-tree HEAD ""$p"" > g.out;"
+         & "     " & CLI & " ls-tree HEAD ""$p"" > v.out;"
+         & "     cmp -s g.out v.out || { echo ""ls-tree $p""; exit 1; };"
+         & "     git ls-tree -r HEAD ""$p"" > g.out;"
+         & "     " & CLI & " ls-tree -r HEAD ""$p"" > v.out;"
+         & "     cmp -s g.out v.out || { echo ""ls-tree -r $p""; exit 1; };"
+         & "   done;"
+         --  diff-files: the pathspec must actually filter
+         & "   printf 'a2\n' > a.txt; printf 'x2\n' > d/x.txt;"
+         & "   for p in a.txt d/x.txt nope; do"
+         & "     git diff-files -- ""$p"" > g.out;"
+         & "     " & CLI & " diff-files -- ""$p"" > v.out;"
+         & "     cmp -s g.out v.out || { echo ""diff-files $p""; exit 1; };"
+         & "   done;"
+         & "   git diff-files > g.out; " & CLI & " diff-files > v.out;"
+         & "   cmp -s g.out v.out )");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Diff_Files_And_Ls_Tree_Pathspecs_Match_Git;
+
    --  Byte-oracle the remaining plumbing: var, count-objects, rev-parse @{n},
    --  name-rev, and for-each-ref %(upstream).
    procedure Extra_Plumbing_Matches_Git
@@ -5587,6 +5640,9 @@ package body CLI_Integration_Tests is
       Register_Routine
         (T, Interpret_Trailers_Edge_Cases_Match_Git'Access,
          "interpret-trailers: divider, unfold and separator match git");
+      Register_Routine
+        (T, Diff_Files_And_Ls_Tree_Pathspecs_Match_Git'Access,
+         "diff-files/ls-tree pathspec operands match git");
       Register_Routine
         (T, Format_Patch_Mbox_Matches_Git'Access,
          "format-patch mbox (diffstat, -<n>, separators) matches git");
