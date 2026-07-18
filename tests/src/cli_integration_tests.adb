@@ -2545,6 +2545,48 @@ package body CLI_Integration_Tests is
          raise;
    end Merge_Index_Exit_Codes_Match_Git;
 
+   --  Regression: a plain `fetch <remote>` never wrote .git/FETCH_HEAD, so
+   --  anything reading it (fmt-merge-msg, scripted merges, `merge FETCH_HEAD`)
+   --  saw nothing. Only the explicit-ref form recorded it. git writes one line
+   --  per fetched branch, marking the current branch's upstream for-merge and
+   --  listing it first.
+   procedure Fetch_Head_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Ada.Directories.Set_Directory (Root);
+
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C GIT_CONFIG_NOSYSTEM=1"
+         & " GIT_AUTHOR_DATE='1700000000 +0000'"
+         & " GIT_COMMITTER_DATE='1700000000 +0000';"
+         & " rm -rf src g o; mkdir src; ( cd src; git init -q -b main;"
+         & "   git config user.email t@e; git config user.name T;"
+         & "   printf 'a\n' > f; git add -A; git commit -qm c1;"
+         & "   git branch feature; git branch other );"
+         & " git clone -q src g; git clone -q src o;"
+         & " ( cd src; printf 'b\n' >> f; git add -A; git commit -qm c2 );"
+         & " ( cd g; git config user.email t@e; git config user.name T;"
+         & "   git fetch origin > /dev/null 2>&1 );"
+         & " ( cd o; git config user.email t@e; git config user.name T;"
+         & "   " & CLI & " fetch origin > /dev/null 2>&1 );"
+         & " test -f o/.git/FETCH_HEAD;"
+         --  same lines, same order, same for-merge marking
+         & " cmp -s g/.git/FETCH_HEAD o/.git/FETCH_HEAD");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Fetch_Head_Matches_Git;
+
    --  Byte-oracle the remaining plumbing: var, count-objects, rev-parse @{n},
    --  name-rev, and for-each-ref %(upstream).
    procedure Extra_Plumbing_Matches_Git
@@ -5804,6 +5846,9 @@ package body CLI_Integration_Tests is
       Register_Routine
         (T, Merge_Index_Exit_Codes_Match_Git'Access,
          "merge-index exit codes and missing-path error match git");
+      Register_Routine
+        (T, Fetch_Head_Matches_Git'Access,
+         "fetch records FETCH_HEAD like git");
       Register_Routine
         (T, Format_Patch_Mbox_Matches_Git'Access,
          "format-patch mbox (diffstat, -<n>, separators) matches git");

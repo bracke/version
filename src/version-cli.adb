@@ -1573,6 +1573,109 @@ package body Version.CLI is
    end Print_Fetch_Summary;
 
    --  git's summary for an explicit `fetch/pull <remote> <ref>`: the named ref
+   --  git records every fetched branch in .git/FETCH_HEAD, one line per ref:
+   --  "<id>\t<not-for-merge>\tbranch '<name>' of <url>". The branch the
+   --  current one would merge is marked for-merge (an empty middle field) and
+   --  comes first; everything else is "not-for-merge".
+   procedure Write_Fetch_Head_All
+     (Repo   : Version.Repository.Repository_Handle;
+      Remote : String)
+   is
+      Prefix : constant String := "refs/remotes/" & Remote & "/";
+      Merge_Branch : Unbounded_String;
+      For_Merge : Unbounded_String;
+      Others_Text : Unbounded_String;
+      Raw_URL : Unbounded_String;
+   begin
+      begin
+         Raw_URL := To_Unbounded_String
+           (Version.Config.Get_Value (Repo, "remote." & Remote & ".url"));
+      exception
+         when others =>
+            Raw_URL := To_Unbounded_String (Remote_Display_URL (Repo, Remote));
+      end;
+
+      --  The upstream of the current branch, when it lives on this remote.
+      declare
+         Branch : constant String :=
+           Version.Refs.Current_Branch_Name (Repo);
+      begin
+         if Branch'Length > 0
+           and then Version.Config.Has_Key
+                      (Repo, "branch." & Branch & ".merge")
+           and then Version.Config.Has_Key
+                      (Repo, "branch." & Branch & ".remote")
+           and then Version.Config.Get_Value
+                      (Repo, "branch." & Branch & ".remote") = Remote
+         then
+            declare
+               Merge_Ref : constant String :=
+                 Version.Config.Get_Value
+                   (Repo, "branch." & Branch & ".merge");
+               Heads : constant String := "refs/heads/";
+            begin
+               if Merge_Ref'Length > Heads'Length
+                 and then Merge_Ref (Merge_Ref'First
+                                     .. Merge_Ref'First + Heads'Length - 1)
+                          = Heads
+               then
+                  Merge_Branch := To_Unbounded_String
+                    (Merge_Ref (Merge_Ref'First + Heads'Length
+                                .. Merge_Ref'Last));
+               end if;
+            end;
+         end if;
+      exception
+         when others =>
+            null;
+      end;
+
+      declare
+         Patterns : Version.Ref_Format.String_Vectors.Vector;
+      begin
+         Patterns.Append (Prefix);
+         for Name of Version.Ref_Format.For_Each_Ref
+           (Repo, Patterns, Format => "%(refname)")
+         loop
+            if Name'Length > Prefix'Length then
+               declare
+                  Short : constant String :=
+                    Name (Name'First + Prefix'Length .. Name'Last);
+                  Id : constant String :=
+                    Version.Objects.To_String
+                      (Version.Refs.Resolve_Ref (Repo, Name));
+                  Line : constant String :=
+                    Id & Character'Val (9);
+               begin
+                  if Short = "HEAD" then
+                     null;
+                  elsif Short = To_String (Merge_Branch) then
+                     For_Merge := To_Unbounded_String
+                       (Line & Character'Val (9)
+                        & "branch '" & Short & "' of "
+                        & To_String (Raw_URL) & Character'Val (10));
+                  else
+                     Append
+                       (Others_Text,
+                        Line & "not-for-merge" & Character'Val (9)
+                        & "branch '" & Short & "' of "
+                        & To_String (Raw_URL) & Character'Val (10));
+                  end if;
+               end;
+            end if;
+         end loop;
+      end;
+
+      Version.Files.Write_Binary_File_Atomic
+        (Path    =>
+           Version.Files.Join
+             (Version.Repository.Common_Git_Dir (Repo), "FETCH_HEAD"),
+         Content => To_String (For_Merge) & To_String (Others_Text));
+   exception
+      when others =>
+         null;   --  recording FETCH_HEAD is best effort, as in the ref form
+   end Write_Fetch_Head_All;
+
    --  is fetched to FETCH_HEAD, shown unconditionally (even when up to date) as
    --  " * branch <name>       -> FETCH_HEAD" (or "tag"). Also records
    --  .git/FETCH_HEAD with the resolved id, as git does.
@@ -17251,6 +17354,7 @@ package body Version.CLI is
                           (Repo, To_String (Remote_Name),
                            To_String (Ref_Name), Before);
                      else
+                        Write_Fetch_Head_All (Repo, To_String (Remote_Name));
                         Print_Fetch_Summary
                           (Repo, To_String (Remote_Name), Before);
                      end if;
