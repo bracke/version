@@ -2240,6 +2240,51 @@ package body CLI_Integration_Tests is
          raise;
    end Merge_No_Commit_And_Modify_Delete_Match_Git;
 
+   --  Regression: a checked-out executable took only the owner exec bit
+   --  (744 under umask 022, 764 under 002) because the checkout path used
+   --  GNAT.OS_Lib.Set_Executable. git creates the file 0777 & ~umask, so it
+   --  is 755 and 775 respectively. Non-executables already matched.
+   procedure Checkout_Exec_Bits_Match_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Ada.Directories.Set_Directory (Root);
+
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C GIT_CONFIG_NOSYSTEM=1"
+         & " GIT_AUTHOR_DATE='1700000000 +0000'"
+         & " GIT_COMMITTER_DATE='1700000000 +0000';"
+         & " rm -rf src; mkdir src; ( cd src; git init -q -b main;"
+         & "   git config user.email t@e; git config user.name T;"
+         & "   printf '#!/bin/sh\n' > run.sh; chmod +x run.sh;"
+         & "   printf 'plain\n' > p.txt; git add -A; git commit -qm c1 );"
+         --  clone under two umasks and compare the resulting modes with git
+         & " for u in 002 022; do"
+         & "   ( umask $u; rm -rf g o;"
+         & "     git clone -q src g;"
+         & "     " & CLI & " clone src o > /dev/null;"
+         & "     test ""$(stat -c %a g/run.sh)"" = ""$(stat -c %a o/run.sh)"";"
+         & "     test ""$(stat -c %a g/p.txt)"" = ""$(stat -c %a o/p.txt)"";"
+         --  and again through the checkout path, not just the clone path
+         & "     rm -f g/run.sh o/run.sh;"
+         & "     ( cd g; git checkout -- run.sh );"
+         & "     ( cd o; " & CLI & " restore run.sh > /dev/null );"
+         & "     test ""$(stat -c %a g/run.sh)"" = ""$(stat -c %a o/run.sh)"" );"
+         & " done");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Checkout_Exec_Bits_Match_Git;
+
    --  Byte-oracle the remaining plumbing: var, count-objects, rev-parse @{n},
    --  name-rev, and for-each-ref %(upstream).
    procedure Extra_Plumbing_Matches_Git
@@ -5481,6 +5526,9 @@ package body CLI_Integration_Tests is
       Register_Routine
         (T, Merge_No_Commit_And_Modify_Delete_Match_Git'Access,
          "merge --no-commit fast-forwards; modify/delete named like git");
+      Register_Routine
+        (T, Checkout_Exec_Bits_Match_Git'Access,
+         "checkout/clone exec bits honour the umask like git");
       Register_Routine
         (T, Format_Patch_Mbox_Matches_Git'Access,
          "format-patch mbox (diffstat, -<n>, separators) matches git");
