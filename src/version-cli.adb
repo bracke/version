@@ -21410,6 +21410,21 @@ package body Version.CLI is
                      return "";
                end Head_Blob;
 
+               --  The blob staged at Path, or "" when absent.
+               function Index_Blob (Path : String) return String is
+               begin
+                  for E of Version.Staging.Load (Repo) loop
+                     if To_String (E.Path) = Path and then E.Stage = 0 then
+                        return Version.Objects.Content
+                          (Version.Objects.Read_Object (Repo, E.Id));
+                     end if;
+                  end loop;
+                  return "";
+               exception
+                  when others =>
+                     return "";
+               end Index_Blob;
+
                function Cfg (Key : String) return String is
                  (if Version.Config.Has_Key (Repo, Key)
                   then Version.Config.Get_Value (Repo, Key) else "");
@@ -21591,15 +21606,26 @@ package body Version.CLI is
                                       To_String (C.Path);
                                     Full : constant String :=
                                       Version.Files.Join (Root, Path);
-                                    Old  : constant String := Head_Blob (Path);
+                                    --  git compares the index against the
+                                    --  working tree, and under --cached HEAD
+                                    --  against the index -- not HEAD against
+                                    --  the working tree in both cases.
                                     Local_F : constant String :=
-                                      Scratch ("LOCAL", Old);
+                                      Scratch
+                                        ("LOCAL",
+                                         (if Cached then Head_Blob (Path)
+                                          else Index_Blob (Path)));
+                                    Remote_F : constant String :=
+                                      (if Cached
+                                       then Scratch
+                                              ("REMOTE", Index_Blob (Path))
+                                       else Full);
                                     Status : Integer;
                                     pragma Unreferenced (Status);
                                  begin
                                     Status :=
-                                      Invoke (Cmd, Local_F, Full, Local_F,
-                                              Full);
+                                      Invoke (Cmd, Local_F, Remote_F,
+                                              Local_F, Remote_F);
                                  end;
                               end loop;
                            end;

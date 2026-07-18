@@ -2681,6 +2681,50 @@ package body CLI_Integration_Tests is
          raise;
    end Mailinfo_Headers_Match_Git;
 
+   --  Regression: difftool compared HEAD against the working tree in both
+   --  modes. git compares the index against the working tree, and under
+   --  --cached HEAD against the index -- so a staged-then-modified file was
+   --  shown with the wrong pair of sides either way.
+   procedure Difftool_Sides_Match_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Ada.Directories.Set_Directory (Root);
+
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C GIT_CONFIG_NOSYSTEM=1"
+         & " GIT_AUTHOR_DATE='1700000000 +0000'"
+         & " GIT_COMMITTER_DATE='1700000000 +0000';"
+         & " rm -rf r; mkdir r; ( cd r; git init -q -b main;"
+         & "   git config user.email t@e; git config user.name T;"
+         --  HEAD=B, index=C, worktree=D, so each pair is distinguishable
+         & "   printf 'B\n' > f.txt; git add -A; git commit -qm c1;"
+         & "   printf 'C\n' > f.txt; git add f.txt;"
+         & "   printf 'D\n' > f.txt;"
+         & "   git config difftool.x.cmd"
+         & "     'echo LOCAL=$(cat ""$LOCAL"") REMOTE=$(cat ""$REMOTE"")';"
+         & "   git difftool -y -t x > g.out 2>/dev/null;"
+         & "   " & CLI & " difftool -y --tool=x > v.out 2>/dev/null;"
+         & "   cmp -s g.out v.out;"
+         & "   grep -q 'LOCAL=C REMOTE=D' v.out;"
+         & "   git difftool -y --cached -t x > gc.out 2>/dev/null;"
+         & "   " & CLI & " difftool -y --cached --tool=x > vc.out 2>/dev/null;"
+         & "   cmp -s gc.out vc.out;"
+         & "   grep -q 'LOCAL=B REMOTE=C' vc.out )");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Difftool_Sides_Match_Git;
+
    --  Byte-oracle the remaining plumbing: var, count-objects, rev-parse @{n},
    --  name-rev, and for-each-ref %(upstream).
    procedure Extra_Plumbing_Matches_Git
@@ -5949,6 +5993,9 @@ package body CLI_Integration_Tests is
       Register_Routine
         (T, Mailinfo_Headers_Match_Git'Access,
          "mailinfo decodes encoded-words and cleans the subject like git");
+      Register_Routine
+        (T, Difftool_Sides_Match_Git'Access,
+         "difftool compares index/worktree and HEAD/index like git");
       Register_Routine
         (T, Format_Patch_Mbox_Matches_Git'Access,
          "format-patch mbox (diffstat, -<n>, separators) matches git");
