@@ -1874,6 +1874,51 @@ package body CLI_Integration_Tests is
          raise;
    end Format_Patch_Binary_Matches_Git;
 
+   --  Regression: every timestamp version writes must be real Unix time.
+   --  `Ada.Calendar.Time_Of (1970, 1, 1)` builds the epoch in the LOCAL zone,
+   --  so `Clock - Epoch` was short by the zone's 1970 UTC offset and every
+   --  commit, tag and reflog entry landed in the future (an hour, in central
+   --  Europe). Compare version's own stamp against the system clock.
+   procedure Commit_Timestamp_Is_Unix_Time
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Ada.Directories.Set_Directory (Root);
+
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C GIT_CONFIG_NOSYSTEM=1;"
+         --  deliberately NOT setting GIT_*_DATE: this checks the clock path
+         & " rm -rf r; mkdir r; ( cd r; git init -q -b main;"
+         & "   git config user.email t@e; git config user.name T;"
+         & "   printf 'a\n' > f.txt; " & CLI & " stage f.txt;"
+         & "   before=$(date +%s);"
+         & "   " & CLI & " save -m c1 >/dev/null;"
+         & "   after=$(date +%s);"
+         --  the committer stamp must sit inside the wall-clock window
+         & "   c=$(git cat-file -p HEAD | awk '/^committer/{print $(NF-1)}');"
+         & "   test ""$c"" -ge ""$before"";"
+         & "   test ""$c"" -le ""$after"";"
+         --  and so must the reflog entry git wrote alongside it
+         & "   r=$(awk 'END{print $5}' .git/logs/HEAD);"
+         & "   test ""$r"" -ge ""$before"";"
+         & "   test ""$r"" -le ""$after"";"
+         --  var reports the same clock
+         & "   v=$(" & CLI & " var GIT_COMMITTER_IDENT | awk '{print $(NF-1)}');"
+         & "   test ""$v"" -ge ""$before"" )");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Commit_Timestamp_Is_Unix_Time;
+
    --  Byte-oracle the remaining plumbing: var, count-objects, rev-parse @{n},
    --  name-rev, and for-each-ref %(upstream).
    procedure Extra_Plumbing_Matches_Git
@@ -5094,6 +5139,9 @@ package body CLI_Integration_Tests is
       Register_Routine
         (T, Format_Patch_Binary_Matches_Git'Access,
          "format-patch emits an appliable GIT binary patch");
+      Register_Routine
+        (T, Commit_Timestamp_Is_Unix_Time'Access,
+         "commit/reflog/var timestamps are real Unix time (not local-epoch)");
       Register_Routine
         (T, Format_Patch_Mbox_Matches_Git'Access,
          "format-patch mbox (diffstat, -<n>, separators) matches git");

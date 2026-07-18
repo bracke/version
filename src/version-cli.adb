@@ -1,7 +1,6 @@
 with Ada.Characters.Handling;
 with Ada.Directories;
 with Ada.Environment_Variables;
-with Ada.Calendar;
 with Ada.IO_Exceptions;
 with Ada.Strings;
 with Ada.Containers.Indefinite_Hashed_Maps;
@@ -108,6 +107,7 @@ with Version.Sparse;
 with Version.Stage;
 with Version.Worktrees;
 with Version.Submodules;
+with Version.Timestamps;
 
 package body Version.CLI is
    use Ada.Strings.Unbounded;
@@ -18283,10 +18283,8 @@ package body Version.CLI is
                  "version var (GIT_AUTHOR_IDENT|GIT_COMMITTER_IDENT|GIT_EDITOR)";
 
                function Now_Stamp return String is
-                  use type Ada.Calendar.Time;
                   T : constant Long_Long_Integer :=
-                    Long_Long_Integer
-                      (Ada.Calendar.Clock - Ada.Calendar.Time_Of (1970, 1, 1));
+                    Version.Timestamps.Unix_Now;
                   S : constant String := Long_Long_Integer'Image (T);
                begin
                   return S (S'First + 1 .. S'Last) & " +0000";
