@@ -1699,6 +1699,129 @@ package body CLI_Integration_Tests is
          raise;
    end Diff_Rev_And_Diff_Index_Patch_Match_Git;
 
+   --  Regression: format-patch emits git's mbox byte-for-byte -- the diffstat
+   --  and summary block after "---", the body running straight into "---", the
+   --  -<n> form (last n non-merge commits, root-inclusive), a blank line
+   --  between consecutive patches but none after the last, and no spurious
+   --  trailing newline.  Compared as raw bytes (git's own version number in the
+   --  trailer is normalised away).
+   procedure Format_Patch_Mbox_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+      --  Normalise the "-- \n<git version>" trailer, which is git's own.
+      Norm : constant String :=
+        "sed 's/^[0-9][0-9.]*$/VERSION/'";
+   begin
+      Ada.Directories.Set_Directory (Root);
+
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C GIT_CONFIG_NOSYSTEM=1"
+         & " GIT_AUTHOR_DATE='1700000000 +0000'"
+         & " GIT_COMMITTER_DATE='1700000000 +0000';"
+         & " rm -rf r; mkdir r; ( cd r; git init -q -b main;"
+         & "   git config user.email t@e; git config user.name T;"
+         & "   printf 'l1\nl2\nl3\n' > a; mkdir -p d; printf 'x\n' > d/b;"
+         & "   git add -A; git commit -qm 'first commit';"
+         --  a commit with a multi-paragraph body, a delete and a new exec file
+         & "   printf 'l1\nL2\nl3\nl4\n' > a; git rm -q d/b;"
+         & "   printf '#!/bin/sh\necho hi\n' > s.sh; chmod +x s.sh; git add -A;"
+         & "   git commit -qm 'second commit' -m 'Body line.' -m 'More body.';"
+         & "   printf 'l5\n' >> a; git add -A; git commit -qm 'third commit';"
+         --  --stdout: single, multiple (blank-line separated), over-long -<n>,
+         --  and an explicit range.  Raw bytes, so the trailing newline counts.
+         & "   for s in -1 -2 -3 -9 HEAD~2..HEAD HEAD~2..HEAD~1; do"
+         & "     git format-patch --stdout $s | " & Norm & " > g.mbox;"
+         & "     " & CLI & " format-patch --stdout $s | " & Norm & " > v.mbox;"
+         & "     cmp -s g.mbox v.mbox || { echo ""mismatch $s""; exit 1; };"
+         & "   done;"
+         --  -o <dir>: same file names and same bytes
+         & "   mkdir go vo;"
+         & "   git format-patch -o go -2 > g.names;"
+         & "   " & CLI & " format-patch -o vo -2 > v.names;"
+         & "   ( cd go; ls ) > g.ls; ( cd vo; ls ) > v.ls; cmp -s g.ls v.ls;"
+         & "   for f in $(cat g.ls); do"
+         & "     " & Norm & " go/$f > g.p; " & Norm & " vo/$f > v.p;"
+         & "     cmp -s g.p v.p || { echo ""file mismatch $f""; exit 1; };"
+         & "   done )");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Format_Patch_Mbox_Matches_Git;
+
+   --  Regression: rename detection. git pairs deletions with creations and
+   --  reports "similarity index"/"rename from"/"rename to", the `a => b` (and
+   --  brace-compressed `d/{a => b}`) stat names, R<nnn> in --name-status, and
+   --  honours -M/--no-renames/diff.renames. A mode-only change must still be
+   --  reported as a change by --stat and --name-status.
+   procedure Diff_Renames_Match_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Ada.Directories.Set_Directory (Root);
+
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C GIT_CONFIG_NOSYSTEM=1"
+         & " GIT_AUTHOR_DATE='1700000000 +0000'"
+         & " GIT_COMMITTER_DATE='1700000000 +0000';"
+         & " rm -rf r; mkdir r; ( cd r; git init -q -b main;"
+         & "   git config user.email t@e; git config user.name T;"
+         & "   mkdir -p d/sub;"
+         & "   seq 1 20 | sed 's/$/ line/' > d/sub/a.txt;"
+         & "   cp d/sub/a.txt d/sub/b.txt; cp d/sub/a.txt top.txt;"
+         & "   cp d/sub/a.txt mode.txt; git add -A; git commit -qm c1;"
+         --  a pure rename inside a directory, a rename across directories, a
+         --  rename with an edit, and a mode-only change
+         & "   git mv d/sub/a.txt d/other.txt;"
+         & "   git mv top.txt d/sub/top.txt;"
+         & "   git mv d/sub/b.txt d/sub/a2.txt;"
+         & "   sed -i '2s/.*/EDITED/' d/sub/a2.txt;"
+         & "   chmod +x mode.txt;"
+         & "   git add -A; git commit -qm c2;"
+         --  patch, stat, name-status and name-only all byte-match git
+         & "   for o in '' '--stat' '--name-status' '--name-only'; do"
+         & "     git diff $o HEAD~1 HEAD > g.out;"
+         & "     " & CLI & " diff $o HEAD~1 HEAD > v.out;"
+         & "     cmp -s g.out v.out || { echo mismatch-$o; exit 1; };"
+         & "   done;"
+         --  -M with a score, --no-renames, and diff.renames=false
+         & "   for o in '-M5' '-M99%' '--no-renames'; do"
+         & "     git diff $o --name-status HEAD~1 HEAD > g.out;"
+         & "     " & CLI & " diff $o --name-status HEAD~1 HEAD > v.out;"
+         & "     cmp -s g.out v.out || { echo mismatch-$o; exit 1; };"
+         & "   done;"
+         & "   git config diff.renames false;"
+         & "   git diff --name-status HEAD~1 HEAD > g.out;"
+         & "   " & CLI & " diff --name-status HEAD~1 HEAD > v.out;"
+         & "   cmp -s g.out v.out;"
+         & "   git config --unset diff.renames;"
+         --  format-patch carries the same rename block and stat
+         & "   git format-patch --stdout -1 | sed 's/^[0-9][0-9.]*$/V/' > g.p;"
+         & "   " & CLI & " format-patch --stdout -1"
+         & "     | sed 's/^[0-9][0-9.]*$/V/' > v.p;"
+         & "   cmp -s g.p v.p )");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Diff_Renames_Match_Git;
+
    --  Byte-oracle the remaining plumbing: var, count-objects, rev-parse @{n},
    --  name-rev, and for-each-ref %(upstream).
    procedure Extra_Plumbing_Matches_Git
@@ -4913,6 +5036,12 @@ package body CLI_Integration_Tests is
       Register_Routine
         (T, Diff_Rev_And_Diff_Index_Patch_Match_Git'Access,
          "diff <rev> tree-vs-worktree; diff-index -p patch output");
+      Register_Routine
+        (T, Diff_Renames_Match_Git'Access,
+         "diff rename detection (similarity/stat/-M/diff.renames) matches git");
+      Register_Routine
+        (T, Format_Patch_Mbox_Matches_Git'Access,
+         "format-patch mbox (diffstat, -<n>, separators) matches git");
    end Register_Tests;
 
    overriding function Name (T : Test_Case) return AUnit.Message_String is

@@ -225,9 +225,13 @@ Common failures: missing path operand, repository discovery failure, malformed i
 
 ### diff
 
-Syntax: `version diff [--stat] [--] [PATHSPEC...]`, `version diff [--stat] --staged [--] [PATHSPEC...]`, `version diff [--stat] --cached [--] [PATHSPEC...]`, `version diff [--stat] REV1 REV2`.
+Syntax: `version diff [OPTIONS] [--] [PATHSPEC...]`, `version diff [OPTIONS] --staged [--] [PATHSPEC...]`, `version diff [OPTIONS] --cached [--] [PATHSPEC...]`, `version diff [OPTIONS] REV1 REV2`, `version diff [OPTIONS] REV`.
+
+Options: `--stat`, `--name-only`, `--name-status`, `-U<n>`/`--unified=<n>`, `-M`/`-M<n>`/`--find-renames[=<n>]`, `--no-renames`.
 
 Purpose: show working-tree, staged, or commit-to-commit differences. The output is a minimal git-format unified diff (Myers/LCS hunks with context, a `diff --git` header, and an `index <old>..<new> <mode>` line; new/deleted/binary files and no-newline-at-EOF are rendered as git does). `--cached` is a byte-identical alias for `--staged`. `--stat` replaces the patch with git's per-file change-bar summary and a `N files changed, ...` footer.
+
+Renames are detected by default, as in git: a deleted path and a created path with similar enough content are reported as one rename (`similarity index NN%` plus `rename from`/`rename to` in the patch, `a => b` or the brace-compressed `d/{a => b}` in `--stat`, `R<nnn>` with both paths in `--name-status`). The similarity threshold defaults to 50% and is set with `-M<n>` (`-M75%`, or git's fractional spelling where `-M9` means 90%); `--no-renames` turns detection off, and the `diff.renames` configuration selects the default.
 
 Common failures: unknown revision, malformed object, no eligible paths.
 
@@ -313,9 +317,9 @@ Common failures: malformed patch, context/deletion mismatch (patch does not appl
 
 ### format-patch
 
-Syntax: `version format-patch [--stdout] [-o DIR] REVISION`.
+Syntax: `version format-patch [--stdout] [-o DIR] (REVISION | -<n>)`.
 
-Purpose: write one mbox patch file per commit in REVISION's range, oldest first (`<since>` means `<since>..HEAD`; `<A>..<B>` is an explicit range). `--stdout` writes all patches to standard output; `-o DIR` selects the output directory (default: current). Output (RFC2822 author date, `[PATCH n/m]` subjects) is consumable by `git am`.
+Purpose: write one mbox patch file per commit in REVISION's range, oldest first (`<since>` means `<since>..HEAD`; `<A>..<B>` is an explicit range; `-<n>` is the last n non-merge commits ending at HEAD, or at REVISION when one is given, and stops at the root commit if the history is shorter). `--stdout` writes all patches to standard output; `-o DIR` selects the output directory (default: current). Output (RFC2822 author date, `[PATCH n/m]` subjects) is consumable by `git am`.
 
 Common failures: unknown revision.
 

@@ -77,7 +77,6 @@ with Version.Fmt_Merge_Msg;
 with Version.Apply;
 with Ada.Streams.Stream_IO;
 with Version.Format_Patch;
-with Version.Rebase_State;
 with Version.Am;
 with Version.Cherry;
 with Version.Range_Diff;
@@ -95,6 +94,7 @@ with Version.Tracking;
 with Version.Diff;
 with Version.Doctor; use Version.Doctor;
 with Version.History;
+with Version.Rename_Detect;
 with Version.Log;
 with Version.Show;
 with Version.Maintenance;
@@ -7459,6 +7459,9 @@ package body Version.CLI is
                Stat   : Boolean := False;
                Name_Only   : Boolean := False;
                Name_Status : Boolean := False;
+               Rename_Mode  : Version.Diff.Rename_Detection :=
+                 Version.Diff.Renames_Default;
+               Rename_Score : Natural := 0;
                Opts   : Version.Diff.Diff_Options;
                Context : Natural := 3;
 
@@ -7492,11 +7495,62 @@ package body Version.CLI is
                   end if;
                   return Result;
                end LPathspecs;
+               --  git's parse_num(): the digits are read as a fraction, so
+               --  "-M5" is 50% and "-M50%" is 50%; a value at or above 1
+               --  clamps to the maximum score.
+               function Parse_Rename_Score (Text : String) return Natural is
+                  Num   : Natural := 0;
+                  Scale : Natural := 1;
+                  Dot   : Boolean := False;
+                  Score : constant Natural :=
+                    Version.Rename_Detect.Max_Score;
+               begin
+                  for C of Text loop
+                     if not Dot and then C = '.' then
+                        Scale := 1;
+                        Dot := True;
+                     elsif C = '%' then
+                        Scale := (if Dot then Scale * 100 else 100);
+                        exit;
+                     elsif C in '0' .. '9' then
+                        if Scale < 100_000 then
+                           Scale := Scale * 10;
+                           Num := Num * 10 + (Character'Pos (C)
+                                              - Character'Pos ('0'));
+                        end if;
+                     else
+                        exit;
+                     end if;
+                  end loop;
+
+                  if Num >= Scale then
+                     return Score;
+                  end if;
+                  return Score * Num / Scale;
+               end Parse_Rename_Score;
             begin
                LArgs (1) := To_Unbounded_String (Command);
                for I in 2 .. Count loop
                   if Arg (I) = "--stat" then
                      Stat := True;
+                  elsif Arg (I) = "--no-renames" then
+                     Rename_Mode := Version.Diff.Renames_Off;
+                  elsif Arg (I) = "-M" or else Arg (I) = "--find-renames" then
+                     Rename_Mode := Version.Diff.Renames_On;
+                  elsif (Arg (I)'Length > 2
+                         and then Arg (I) (Arg (I)'First .. Arg (I)'First + 1)
+                                  = "-M")
+                    or else (Arg (I)'Length > 16
+                             and then Arg (I) (Arg (I)'First
+                                               .. Arg (I)'First + 15)
+                                      = "--find-renames=")
+                  then
+                     Rename_Mode := Version.Diff.Renames_On;
+                     Rename_Score :=
+                       Parse_Rename_Score
+                         (if Arg (I) (Arg (I)'First + 1) = 'M'
+                          then Arg (I) (Arg (I)'First + 2 .. Arg (I)'Last)
+                          else Arg (I) (Arg (I)'First + 15 .. Arg (I)'Last));
                   elsif Arg (I) = "--name-only" then
                      Name_Only := True;
                   elsif Arg (I) = "--name-status" then
@@ -7535,6 +7589,8 @@ package body Version.CLI is
                         Name_Only => Name_Only,
                         Name_Status => Name_Status,
                         Context_Lines => Context,
+                        Detect_Renames => Rename_Mode,
+                        Rename_Score => Rename_Score,
                         others => <>);
 
                if LCount = 1 then
@@ -13105,7 +13161,12 @@ package body Version.CLI is
                Bad_Opt  : Boolean := False;
                Bad_Text : Unbounded_String;
                Rev_Idx  : Natural := 0;
+               Limit    : Natural := 0;   --  -<n>: last n commits
                I        : Positive := 2;
+
+               function All_Digits (S : String) return Boolean is
+                 (S'Length > 0
+                  and then (for all C of S => C in '0' .. '9'));
 
                function Pad4 (N : Natural) return String is
                   Img : constant String := Natural'Image (N);
@@ -13162,6 +13223,12 @@ package body Version.CLI is
                         end if;
                         Out_Dir := To_Unbounded_String (Arg (I + 1));
                         I := I + 1;
+                     elsif A'Length >= 2 and then A (A'First) = '-'
+                       and then All_Digits (A (A'First + 1 .. A'Last))
+                     then
+                        --  -<n>: format the last n commits (from HEAD, or the
+                        --  given revision), like git.
+                        Limit := Natural'Value (A (A'First + 1 .. A'Last));
                      elsif A'Length >= 1 and then A (A'First) = '-' then
                         Bad_Opt := True;
                         Bad_Text := To_Unbounded_String (A);
@@ -13181,13 +13248,14 @@ package body Version.CLI is
                   Usage_Error
                     ("unknown format-patch argument: " & To_String (Bad_Text),
                      Usage);
-               elsif Rev_Idx = 0 then
+               elsif Rev_Idx = 0 and then Limit = 0 then
                   Usage_Error ("format-patch requires a revision", Usage);
                else
                   declare
                      Repo : constant Version.Repository.Repository_Handle :=
                        Version.Repository.Open;
-                     Rev  : constant String := Arg (Rev_Idx);
+                     Rev  : constant String :=
+                       (if Rev_Idx = 0 then "HEAD" else Arg (Rev_Idx));
                      DD   : Natural := 0;
                   begin
                      for K in Rev'First .. Rev'Last - 1 loop
@@ -13198,52 +13266,86 @@ package body Version.CLI is
                      end loop;
 
                      declare
-                        Since : constant Version.Objects.Hex_Object_Id :=
-                          Version.Revisions.Resolve_Commit
-                            (Repo,
-                             (if DD = 0 then Rev
-                              else Rev (Rev'First .. DD - 1)));
-                        Tip   : constant Version.Objects.Hex_Object_Id :=
-                          (if DD = 0
-                           then Version.Objects.To_Object_Id (Version.Refs.Current_Commit_Id (Repo))
-                           else Version.Revisions.Resolve_Commit
-                                  (Repo, Rev (DD + 2 .. Rev'Last)));
-                        Commits : constant
-                          Version.Rebase_State.Commit_Vectors.Vector :=
-                            Version.Rebase.Commits_To_Replay (Repo, Tip, Since);
-                        Total : constant Natural := Natural (Commits.Length);
-                        N     : Natural := 0;
+                        Include : Version.History.Commit_Id_Vectors.Vector;
+                        Exclude : Version.History.Commit_Id_Vectors.Vector;
                      begin
-                        for C of Commits loop
-                           N := N + 1;
-                           declare
-                              Patch : constant String :=
-                                Version.Format_Patch.Patch_For_Commit
-                                  (Repo, C, N,
-                                   (if Total = 0 then 1 else Total));
-                           begin
-                              if Stdout then
-                                 Ada.Text_IO.Put (Patch);
-                              else
-                                 declare
-                                    Obj : constant Version.Objects.Git_Object :=
-                                      Version.Objects.Read_Object (Repo, C);
-                                    Name : constant String :=
-                                      Pad4 (N) & "-"
-                                      & Sanitize
-                                          (Version.Objects
-                                             .Commit_Message_First_Line (Obj))
-                                      & ".patch";
-                                    Full : constant String :=
-                                      Join (To_String (Out_Dir), Name);
-                                 begin
-                                    Version.Files.Write_Binary_File
-                                      (Full, Patch);
-                                    Success_Line (Full);
-                                 end;
-                              end if;
-                           end;
-                        end loop;
+                        --  git's three spellings: an explicit `<A>..<B>`
+                        --  range, a bare `<since>` (which means
+                        --  `<since>..HEAD`), and `-<n>` (the last n commits
+                        --  ending at HEAD, or at an explicit revision).
+                        if DD /= 0 then
+                           Exclude.Append
+                             (Version.Revisions.Resolve_Commit
+                                (Repo, Rev (Rev'First .. DD - 1)));
+                           Include.Append
+                             (Version.Revisions.Resolve_Commit
+                                (Repo, Rev (DD + 2 .. Rev'Last)));
+                        elsif Limit = 0 then
+                           Exclude.Append
+                             (Version.Revisions.Resolve_Commit (Repo, Rev));
+                           Include.Append
+                             (Version.Objects.To_Object_Id
+                                (Version.Refs.Current_Commit_Id (Repo)));
+                        else
+                           Include.Append
+                             (Version.Revisions.Resolve_Commit (Repo, Rev));
+                        end if;
+
+                        declare
+                           --  format-patch never emits a merge commit, and
+                           --  writes oldest first.
+                           Commits : constant
+                             Version.History.Commit_Id_Vectors.Vector :=
+                               Version.History.Rev_List
+                                 (Repo, Include, Exclude,
+                                  (Max_Count    => Limit,
+                                   No_Merges    => True,
+                                   First_Parent => False,
+                                   Oldest_First => True));
+                           Total : constant Natural :=
+                             Natural (Commits.Length);
+                           N     : Natural := 0;
+                        begin
+                           for C of Commits loop
+                              N := N + 1;
+                              declare
+                                 Patch : constant String :=
+                                   Version.Format_Patch.Patch_For_Commit
+                                     (Repo, C, N,
+                                      (if Total = 0 then 1 else Total));
+                              begin
+                                 if Stdout then
+                                    --  Byte-exact: Ada.Text_IO.Put would leave the
+                                    --  runtime mid-line and GNAT would append a
+                                    --  spurious trailing newline at exit.
+                                    Version.Console.Put (Patch);
+                                    --  git separates consecutive mbox messages
+                                    --  with an extra blank line (none after the
+                                    --  last).
+                                    if N < Total then
+                                       Version.Console.Put ([1 => ASCII.LF]);
+                                    end if;
+                                 else
+                                    declare
+                                       Obj : constant Version.Objects.Git_Object :=
+                                         Version.Objects.Read_Object (Repo, C);
+                                       Name : constant String :=
+                                         Pad4 (N) & "-"
+                                         & Sanitize
+                                             (Version.Objects
+                                                .Commit_Message_First_Line (Obj))
+                                         & ".patch";
+                                       Full : constant String :=
+                                         Join (To_String (Out_Dir), Name);
+                                    begin
+                                       Version.Files.Write_Binary_File
+                                         (Full, Patch);
+                                       Success_Line (Full);
+                                    end;
+                                 end if;
+                              end;
+                           end loop;
+                        end;
                      end;
                   end;
                end if;
