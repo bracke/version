@@ -15810,8 +15810,23 @@ package body Version.CLI is
                        Version.Repository.Open;
                   begin
                      if Action = "fill" then
-                        Version.Credential.Fill (Repo, Cred);
-                        Ada.Text_IO.Put (Version.Credential.Serialize (Cred));
+                        --  git refuses to fill a credential that cannot
+                        --  identify what it is for; it checks host first.
+                        if Length (Cred.Host) = 0 then
+                           Stderr_Line
+                             ("fatal: refusing to work with credential"
+                              & " missing host field");
+                           Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                        elsif Length (Cred.Protocol) = 0 then
+                           Stderr_Line
+                             ("fatal: refusing to work with credential"
+                              & " missing protocol field");
+                           Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                        else
+                           Version.Credential.Fill (Repo, Cred);
+                           Ada.Text_IO.Put
+                             (Version.Credential.Serialize (Cred));
+                        end if;
                      elsif Action = "approve" then
                         Version.Credential.Approve (Repo, Cred);
                      else

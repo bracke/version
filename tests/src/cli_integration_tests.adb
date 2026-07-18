@@ -2443,6 +2443,45 @@ package body CLI_Integration_Tests is
          raise;
    end Ls_Remote_Refs_And_Patterns_Match_Git;
 
+   --  Regression: `credential fill` accepted a record that cannot identify
+   --  what it is for -- no host, or no protocol -- and exited 0 having echoed
+   --  the partial input back. git dies with exit 128, checking host first.
+   procedure Credential_Fill_Validation_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Ada.Directories.Set_Directory (Root);
+
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C GIT_CONFIG_NOSYSTEM=1;"
+         & " rm -rf r; mkdir r; ( cd r; git init -q -b main;"
+         --  missing host, missing protocol, and wholly empty input
+         & "   rc=0; printf 'protocol=https\n\n' | " & CLI
+         & "     credential fill > out 2> err || rc=$?;"
+         & "   test $rc -eq 128;"
+         & "   grep -q 'missing host field' err; test ! -s out;"
+         & "   rc=0; printf 'host=example.com\n\n' | " & CLI
+         & "     credential fill > out 2> err || rc=$?;"
+         & "   test $rc -eq 128;"
+         & "   grep -q 'missing protocol field' err; test ! -s out;"
+         & "   rc=0; printf '\n' | " & CLI
+         & "     credential fill > out 2> err || rc=$?;"
+         & "   test $rc -eq 128;"
+         & "   grep -q 'missing host field' err )");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Credential_Fill_Validation_Matches_Git;
+
    --  Byte-oracle the remaining plumbing: var, count-objects, rev-parse @{n},
    --  name-rev, and for-each-ref %(upstream).
    procedure Extra_Plumbing_Matches_Git
@@ -5696,6 +5735,9 @@ package body CLI_Integration_Tests is
       Register_Routine
         (T, Ls_Remote_Refs_And_Patterns_Match_Git'Access,
          "ls-remote --refs and ref patterns match git");
+      Register_Routine
+        (T, Credential_Fill_Validation_Matches_Git'Access,
+         "credential fill rejects a record missing host/protocol");
       Register_Routine
         (T, Format_Patch_Mbox_Matches_Git'Access,
          "format-patch mbox (diffstat, -<n>, separators) matches git");
