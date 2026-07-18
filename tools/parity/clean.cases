@@ -1,0 +1,6 @@
+clean -n
+clean -nd
+clean -n -x
+clean -ndx
+clean -n untracked.txt
+clean -n deep

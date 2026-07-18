@@ -1,0 +1,13 @@
+# Tracked and untracked content above, at and below sub/, plus ignored files,
+# so a run from sub/ has something to include, exclude and scope away.
+mkdir -p sub/deep
+printf 'alpha match\nplain\n' > root.txt
+printf 'beta match\n' > sub/nested.txt
+printf 'gamma match\n' > sub/deep/deeper.txt
+printf '*.log\n' > .gitignore
+git add -A && git commit -qm base
+printf 'untracked match\n' > root-untracked.txt
+printf 'untracked match\n' > sub/untracked.txt
+printf 'deep untracked\n' > sub/deep/deep-untracked.txt
+printf 'ign\n' > sub/skip.log
+printf 'ign\n' > skip.log

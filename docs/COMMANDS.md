@@ -293,11 +293,13 @@ Common failures: source not under version control, destination already exists (u
 
 ### clean
 
-Syntax: `version clean [-n] [-f] [-d] [-x]`.
+Syntax: `version clean [-n] [-f] [-d] [-x] [--] [PATHSPEC...]`.
 
 Purpose: remove untracked files from the working tree. `-d` also removes untracked directories (reported collapsed, like git); `-x` also removes ignored files. `-n` previews (`Would remove ...`); one of `-n` or `-f` is required (clean refuses otherwise). Short flags may be combined (e.g. `-fd`).
 
-Common failures: neither `-n` nor `-f` given (refuses to clean). Path arguments are not yet supported.
+Pathspecs limit which untracked paths are considered; without any, clean still limits itself to the directory it was run in, as git does, and reports paths from there.
+
+Common failures: neither `-n` nor `-f` given (refuses to clean).
 
 ### bundle
 
@@ -456,9 +458,11 @@ Where paths are *printed*, the split follows git's:
 |---|---|
 | `status --porcelain` | `status` (long) |
 | `diff --name-only`, `--name-status`, `--stat` | `status --short` |
-| patch headers (`a/sub/nested.txt`) | `ls-files`, `ls-tree` |
+| patch headers (`a/sub/nested.txt`) | `ls-files`, `ls-tree`, `grep`, `clean` |
 
-`--porcelain` is the scriptable contract and stays worktree-relative on purpose; `--short` shows the same records to a human and relativises them. `ls-files` and `ls-tree` also limit themselves to the current directory's subtree, as git does.
+`--porcelain` is the scriptable contract and stays worktree-relative on purpose; `--short` shows the same records to a human and relativises them. `ls-files`, `ls-tree`, `grep` and `clean` also limit themselves to the current directory's subtree, as git does.
+
+For `diff`, `grep` and the history commands, an operand that names neither a revision nor an existing path is git's `fatal: ambiguous argument` with exit 128, rather than being silently treated as matching nothing.
 
 Commands not listed above have not been checked from a subdirectory and may still assume the worktree root.
 

@@ -1,0 +1,7 @@
+grep match
+grep -n match
+grep -l match
+grep -c match
+grep match -- nested.txt
+grep match nested.txt
+grep -n match deep

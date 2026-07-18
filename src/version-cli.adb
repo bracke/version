@@ -13645,8 +13645,6 @@ package body Version.CLI is
                if Bad_Opt then
                   Usage_Error ("unknown clean option: " & To_String (Bad_Text),
                                Usage);
-               elsif I <= Count then
-                  Usage_Error ("clean does not support path arguments", Usage);
                elsif not Dry and then not Force then
                   Error_Line ("neither -n nor -f given; refusing to clean");
                   Set_Command_Failure;
@@ -13656,16 +13654,46 @@ package body Version.CLI is
                        Version.Repository.Open;
                      Cands : constant Version.Clean.Path_Vectors.Vector :=
                        Version.Clean.Candidates (Repo, Opts);
+
+                     --  git limits clean to path operands, and without any it
+                     --  still limits itself to the directory it ran in.
+                     Specs : constant
+                       Version.Pathspec.Pathspec_Vectors.Vector :=
+                         (if I <= Count then Pathspecs_From_Args (I)
+                          else Version.Pathspec.Pathspec_Vectors.Empty_Vector);
+
+                     CL_Prefix : constant String := Repo_Prefix;
+
+                     function Selected (Path : String) return Boolean is
+                     begin
+                        if CL_Prefix /= ""
+                          and then not (Path'Length > CL_Prefix'Length
+                                        and then Path
+                                                   (Path'First
+                                                    .. Path'First
+                                                       + CL_Prefix'Length - 1)
+                                                 = CL_Prefix)
+                        then
+                           return False;
+                        end if;
+
+                        return Specs.Is_Empty
+                          or else Version.Pathspec.Matches_Any (Specs, Path);
+                     end Selected;
                   begin
                      for C of Cands loop
                         declare
                            P : constant String := To_String (C);
+                           Shown : constant String :=
+                             Version.Files.Relative_To_Prefix (P, CL_Prefix);
                         begin
-                           if Dry then
-                              Success_Line ("Would remove " & P);
-                           else
-                              Version.Clean.Remove_Candidate (Repo, P);
-                              Success_Line ("Removing " & P);
+                           if Selected (P) then
+                              if Dry then
+                                 Success_Line ("Would remove " & Shown);
+                              else
+                                 Version.Clean.Remove_Candidate (Repo, P);
+                                 Success_Line ("Removing " & Shown);
+                              end if;
                            end if;
                         end;
                      end loop;
@@ -14529,13 +14557,77 @@ package body Version.CLI is
                   declare
                      Repo : constant Version.Repository.Repository_Handle :=
                        Version.Repository.Open;
+
+                     --  Without a "--" separator an operand has to be a
+                     --  revision or a path that exists; git dies otherwise
+                     --  rather than reporting no matches, which is what a
+                     --  typo'd path would look like.
+                     Unresolvable : Natural := 0;
+
                      Pathspecs :
                        constant Version.Pathspec.Pathspec_Vectors.Vector :=
                          Pathspecs_From_Args (Pat_Idx + 1);
-                     Matches : constant Version.Grep.Match_Vectors.Vector :=
-                       Version.Grep.Search
-                         (Repo, Arg (Pat_Idx), Opts, Pathspecs);
+                     Matches_Raw : constant Version.Grep.Match_Vectors.Vector
+                       := Version.Grep.Search
+                            (Repo, Arg (Pat_Idx), Opts, Pathspecs);
+
+                     --  grep searches the current directory's subtree and
+                     --  names the files from there, as ls-files does.
+                     GR_Prefix : constant String := Repo_Prefix;
+
+                     function Shown (Path : Unbounded_String) return String is
+                       (Version.Files.Relative_To_Prefix
+                          (To_String (Path), GR_Prefix));
+
+                     function Matches
+                       return Version.Grep.Match_Vectors.Vector
+                     is
+                        Kept : Version.Grep.Match_Vectors.Vector;
+                     begin
+                        if GR_Prefix = "" then
+                           return Matches_Raw;
+                        end if;
+
+                        for M of Matches_Raw loop
+                           declare
+                              P : constant String := To_String (M.Path);
+                           begin
+                              if P'Length > GR_Prefix'Length
+                                and then P (P'First
+                                            .. P'First + GR_Prefix'Length - 1)
+                                         = GR_Prefix
+                              then
+                                 Kept.Append (M);
+                              end if;
+                           end;
+                        end loop;
+
+                        return Kept;
+                     end Matches;
                   begin
+                     for J in Pat_Idx + 1 .. Count loop
+                        exit when Arg (J) = "--";
+
+                        if Arg (J)'Length > 0
+                          and then Arg (J) (Arg (J)'First) /= ':'
+                          and then not Ada.Directories.Exists (Arg (J))
+                        then
+                           Unresolvable := J;
+                           exit;
+                        end if;
+                     end loop;
+
+                     if Unresolvable /= 0 then
+                        Ada.Text_IO.Put_Line
+                          (Ada.Text_IO.Standard_Error,
+                           "fatal: ambiguous argument '"
+                           & Arg (Unresolvable)
+                           & "': unknown revision or path not in the "
+                           & "working tree.");
+                        Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                        return;
+                     end if;
+
                      if Files_Mode then
                         --  git -l: each matching file once, in match order.
                         declare
@@ -14544,7 +14636,7 @@ package body Version.CLI is
                         begin
                            for M of Matches loop
                               if not Seen or else M.Path /= Prev then
-                                 Success_Line (To_String (M.Path));
+                                 Success_Line (Shown (M.Path));
                                  Prev := M.Path;
                                  Seen := True;
                               end if;
@@ -14559,8 +14651,7 @@ package body Version.CLI is
                            procedure Flush is
                            begin
                               if Seen then
-                                 Success_Line
-                                   (To_String (Prev) & ":" & Img (Cnt));
+                                 Success_Line (Shown (Prev) & ":" & Img (Cnt));
                               end if;
                            end Flush;
                         begin
@@ -14586,18 +14677,18 @@ package body Version.CLI is
                                  --  per binary file, never the line content.
                                  if not Bin_Seen or else M.Path /= Prev_Bin then
                                     Success_Line
-                                      ("Binary file " & To_String (M.Path)
+                                      ("Binary file " & Shown (M.Path)
                                        & " matches");
                                     Prev_Bin := M.Path;
                                     Bin_Seen := True;
                                  end if;
                               elsif Show_Lines then
                                  Success_Line
-                                   (To_String (M.Path) & ":" & Img (M.Line_No)
+                                   (Shown (M.Path) & ":" & Img (M.Line_No)
                                     & ":" & To_String (M.Text));
                               else
                                  Success_Line
-                                   (To_String (M.Path) & ":"
+                                   (Shown (M.Path) & ":"
                                     & To_String (M.Text));
                               end if;
                            end loop;
