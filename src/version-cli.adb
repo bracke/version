@@ -18605,7 +18605,13 @@ package body Version.CLI is
                              (Ada.Text_IO.Standard_Error,
                               "Git LFS pointer for " & To_String (File));
                            Ada.Text_IO.New_Line (Ada.Text_IO.Standard_Error);
-                           Ada.Text_IO.Put (Version.LFS.Build_Pointer (Content));
+                           --  Byte-exact: Ada.Text_IO.Put leaves the runtime
+                           --  mid-line and GNAT appends a terminator at exit,
+                           --  which would add a newline the pointer must not
+                           --  have -- its bytes are what the object id is
+                           --  computed over.
+                           Version.Console.Put
+                             (Version.LFS.Build_Pointer (Content));
                         end;
                      end if;
                   end;
@@ -18639,6 +18645,10 @@ package body Version.CLI is
 
                elsif Sub = "status" then
                   declare
+                     --  git-lfs's --porcelain switches to the short,
+                     --  script-readable form.
+                     Porcelain_Mode : constant Boolean :=
+                       (for some I in 3 .. Count => Arg (I) = "--porcelain");
                      Repo : constant Version.Repository.Repository_Handle :=
                        Version.Repository.Open;
                      St   : constant Version.Status.Status_Result :=
@@ -18743,11 +18753,67 @@ package body Version.CLI is
                            end;
                         end loop;
                      end Section;
+                     --  git-lfs --porcelain: git's short status codes, one
+                     --  line per LFS object -- "<staged><worktree> <path>".
+                     procedure Porcelain is
+                        function Columns (K : Version.Status.Change_Kind)
+                          return String is
+                          (case K is
+                              when Version.Status.New_File     => "A ",
+                              when Version.Status.Deleted_File  => "D ",
+                              when Version.Status.Renamed_File  => "R ",
+                              when others                       => " M");
+
+                        Seen : Version.Trailers.String_Vectors.Vector;
+                     begin
+                        --  git-lfs picks the column from the kind of change,
+                        --  not from whether it is staged: an add or a delete
+                        --  goes in the first column, a modification in the
+                        --  second. That is not git's short-status convention.
+                        for C of St.Changes loop
+                           declare
+                              Path  : constant String := To_String (C.Path);
+                              Idx_L : constant String := LFS_Oid (Path);
+                              Show  : Boolean := True;
+                           begin
+                              if Idx_L'Length > 0 then
+                                 declare
+                                    WT : constant String :=
+                                      Worktree_LFS_Oid (Path);
+                                 begin
+                                    --  An unchanged pointer is not modified.
+                                    if WT'Length = 0 or else WT = Idx_L then
+                                       Show := False;
+                                    end if;
+                                 end;
+                              end if;
+
+                              if Show then
+                                 Success_Line (Columns (C.Kind) & " " & Path);
+                                 Seen.Append (Path);
+                              end if;
+                           end;
+                        end loop;
+
+                        for C of St.Staged loop
+                           declare
+                              Path : constant String := To_String (C.Path);
+                           begin
+                              if not Seen.Contains (Path) then
+                                 Success_Line (Columns (C.Kind) & " " & Path);
+                              end if;
+                           end;
+                        end loop;
+                     end Porcelain;
                   begin
-                     Section ("Objects to be committed:", St.Staged, False);
-                     Section
-                       ("Objects not staged for commit:", St.Changes, True);
-                     Ada.Text_IO.New_Line;
+                     if Porcelain_Mode then
+                        Porcelain;
+                     else
+                        Section ("Objects to be committed:", St.Staged, False);
+                        Section
+                          ("Objects not staged for commit:", St.Changes, True);
+                        Ada.Text_IO.New_Line;
+                     end if;
                   end;
 
                elsif Sub = "fsck" then

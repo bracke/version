@@ -2988,6 +2988,58 @@ package body CLI_Integration_Tests is
          raise;
    end Hook_Run_And_Mktree_Match_Git;
 
+   --  Regression: `lfs pointer` appended a newline the pointer must not have
+   --  (Ada.Text_IO.Put leaves the runtime mid-line and GNAT terminates it at
+   --  exit), which changes the bytes the pointer's object id is computed over.
+   --  `lfs status --porcelain` was accepted and ignored, printing the human
+   --  form instead of git-lfs's short one.
+   procedure Lfs_Pointer_And_Status_Match_Git_Lfs
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Ada.Directories.Set_Directory (Root);
+
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C GIT_CONFIG_NOSYSTEM=1"
+         & " GIT_AUTHOR_DATE='1700000000 +0000'"
+         & " GIT_COMMITTER_DATE='1700000000 +0000';"
+         --  git-lfs may not be installed; the pointer check needs it
+         & " command -v git-lfs > /dev/null 2>&1 || exit 0;"
+         & " rm -rf p; mkdir p; ( cd p; git init -q -b main;"
+         & "   git config user.email t@e; git config user.name T;"
+         & "   printf 'binary content here\n' > file.bin;"
+         & "   git lfs pointer --file=file.bin > g.ptr 2>/dev/null;"
+         & "   " & CLI & " lfs pointer --file=file.bin > v.ptr 2>/dev/null;"
+         --  byte-exact: no trailing newline beyond the pointer itself
+         & "   cmp -s g.ptr v.ptr );"
+         --  --porcelain reports git-lfs's short codes, per kind of change
+         & " rm -rf s; mkdir s; ( cd s; git init -q -b main;"
+         & "   git config user.email t@e; git config user.name T;"
+         & "   git lfs track '*.bin' > /dev/null 2>&1;"
+         & "   printf 'data\n' > f.bin; git add -A > /dev/null 2>&1;"
+         & "   git commit -qm c1 > /dev/null 2>&1;"
+         & "   printf 'changed\n' > f.bin;"
+         & "   git lfs status --porcelain > g.out 2>/dev/null;"
+         & "   " & CLI & " lfs status --porcelain > v.out 2>/dev/null;"
+         & "   cmp -s g.out v.out;"
+         & "   rm -f f.bin;"
+         & "   git lfs status --porcelain > gd.out 2>/dev/null;"
+         & "   " & CLI & " lfs status --porcelain > vd.out 2>/dev/null;"
+         & "   cmp -s gd.out vd.out )");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Lfs_Pointer_And_Status_Match_Git_Lfs;
+
    --  Byte-oracle the remaining plumbing: var, count-objects, rev-parse @{n},
    --  name-rev, and for-each-ref %(upstream).
    procedure Extra_Plumbing_Matches_Git
@@ -6274,6 +6326,9 @@ package body CLI_Integration_Tests is
       Register_Routine
         (T, Hook_Run_And_Mktree_Match_Git'Access,
          "hook run honours config hooks; mktree rejects blank lines");
+      Register_Routine
+        (T, Lfs_Pointer_And_Status_Match_Git_Lfs'Access,
+         "lfs pointer bytes and status --porcelain match git-lfs");
       Register_Routine
         (T, Format_Patch_Mbox_Matches_Git'Access,
          "format-patch mbox (diffstat, -<n>, separators) matches git");
