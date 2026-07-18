@@ -4276,6 +4276,11 @@ package body Version.CLI is
                I := I + 1;
             elsif A = "--subdirectory-filter" and then I < Count then
                Sub_Dir := To_Unbounded_String (Arg (I + 1));
+               --  git remaps a commit that left the subdirectory untouched
+               --  onto its ancestor, so the rewritten history carries no
+               --  commit that changed nothing -- the same effect as
+               --  --prune-empty, which it therefore implies.
+               Prune_Empty := True;
                I := I + 1;
             elsif A = "--" then
                null;

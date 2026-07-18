@@ -3112,6 +3112,65 @@ package body CLI_Integration_Tests is
          raise;
    end Midx_Verify_And_Bundle_All_Match_Git;
 
+   --  Regression: `filter-branch --subdirectory-filter` kept commits that
+   --  never touched the subdirectory, so the rewritten history carried empty
+   --  commits git prunes (it remaps them onto their ancestor). Also: a repack
+   --  now refreshes objects/info/packs and the commit-graph, as git's gc does.
+   procedure Filter_Branch_And_Repack_Artifacts_Match_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Ada.Directories.Set_Directory (Root);
+
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C GIT_CONFIG_NOSYSTEM=1"
+         & " FILTER_BRANCH_SQUELCH_WARNING=1"
+         & " GIT_AUTHOR_DATE='1700000000 +0000'"
+         & " GIT_COMMITTER_DATE='1700000000 +0000';"
+         & " seed () { rm -rf $1; git init -q -b main $1;"
+         & "   ( cd $1; git config user.email t@e; git config user.name T;"
+         & "     mkdir -p sub;"
+         & "     printf 'a\n' > sub/f.txt; git add -A; git commit -qm c1;"
+         & "     printf 'b\n' >> sub/f.txt; git add -A; git commit -qm c2;"
+         & "     printf 'r\n' > root.txt; git add -A; git commit -qm c3root;"
+         & "     printf 'c\n' >> sub/f.txt; git add -A; git commit -qm c4 );"
+         & " };"
+         --  the commit that left sub/ untouched must not survive
+         & " seed g; seed o;"
+         & " ( cd g; git filter-branch -f --subdirectory-filter sub"
+         & "     > /dev/null 2>&1 );"
+         & " ( cd o; " & CLI & " filter-branch -f --subdirectory-filter sub"
+         & "     > /dev/null 2>&1 );"
+         & " git -C g log --format=%s > g.subjects;"
+         & " git -C o log --format=%s > o.subjects;"
+         & " cmp -s g.subjects o.subjects;"
+         & " test ""$(git -C g rev-parse HEAD^{tree})"""
+         & "   = ""$(git -C o rev-parse HEAD^{tree})"";"
+         --  a repack leaves the pack list and commit-graph git expects
+         & " rm -rf p; git init -q -b main p; ( cd p;"
+         & "   git config user.email t@e; git config user.name T;"
+         & "   printf 'x\n' > f; git add -A; git commit -qm c1;"
+         & "   printf 'y\n' >> f; git add -A; git commit -qm c2;"
+         & "   " & CLI & " gc > /dev/null 2>&1;"
+         & "   test -f .git/objects/info/packs;"
+         & "   grep -q '^P .*\.pack$' .git/objects/info/packs;"
+         & "   test -f .git/objects/info/commit-graph;"
+         --  and git accepts what we wrote
+         & "   git commit-graph verify; git fsck > /dev/null )");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Filter_Branch_And_Repack_Artifacts_Match_Git;
+
    --  Byte-oracle the remaining plumbing: var, count-objects, rev-parse @{n},
    --  name-rev, and for-each-ref %(upstream).
    procedure Extra_Plumbing_Matches_Git
@@ -6404,6 +6463,9 @@ package body CLI_Integration_Tests is
       Register_Routine
         (T, Midx_Verify_And_Bundle_All_Match_Git'Access,
          "midx verify catches structural corruption; bundle --all is complete");
+      Register_Routine
+        (T, Filter_Branch_And_Repack_Artifacts_Match_Git'Access,
+         "filter-branch prunes empty commits; repack writes git's artifacts");
       Register_Routine
         (T, Format_Patch_Mbox_Matches_Git'Access,
          "format-patch mbox (diffstat, -<n>, separators) matches git");
