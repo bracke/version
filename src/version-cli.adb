@@ -5910,7 +5910,11 @@ package body Version.CLI is
          Success_Line ("Author: " & To_String (Mail.Author_Name));
          Success_Line ("Email: " & To_String (Mail.Author_Email));
          Success_Line ("Subject: " & To_String (Mail.Subject));
-         Success_Line ("Date: " & To_String (Mail.Date));
+         --  git omits the Date line entirely when the mail carries no date,
+         --  rather than printing an empty one.
+         if Length (Mail.Date) > 0 then
+            Success_Line ("Date: " & To_String (Mail.Date));
+         end if;
          Success_Line ("");
 
          --  Verbatim: the body already carries its own newlines.

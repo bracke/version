@@ -2587,6 +2587,100 @@ package body CLI_Integration_Tests is
          raise;
    end Fetch_Head_Matches_Git;
 
+   --  Regression: index-pack. `-o <file>` wrote the requested index *and*
+   --  left a stray one beside the pack, and `--stdin` printed a bare checksum
+   --  where git prefixes it with "pack\t" (the caller cannot know the pack's
+   --  name otherwise).
+   procedure Index_Pack_Output_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Ada.Directories.Set_Directory (Root);
+
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C GIT_CONFIG_NOSYSTEM=1"
+         & " GIT_AUTHOR_DATE='1700000000 +0000'"
+         & " GIT_COMMITTER_DATE='1700000000 +0000';"
+         & " rm -rf r a b; mkdir r; ( cd r; git init -q -b main;"
+         & "   git config user.email t@e; git config user.name T;"
+         & "   printf 'l1\n' > f.txt; git add -A; git commit -qm c1;"
+         & "   printf 'l2\n' >> f.txt; git add -A; git commit -qm c2;"
+         & "   git rev-list --objects --all | awk '{print $1}'"
+         & "     | git pack-objects --stdout > ../p.pack );"
+         --  -o writes only the index it was asked for
+         & " mkdir a; cp p.pack a/my.pack;"
+         & " ( cd a; " & CLI & " index-pack -o custom.idx my.pack"
+         & "     > /dev/null;"
+         & "   test -f custom.idx; test ! -f my.idx );"
+         --  --stdin reports "pack<TAB><checksum>", as git does
+         & " mkdir b; ( cd b; git init -q .;"
+         & "   " & CLI & " index-pack --stdin < ../p.pack > out;"
+         & "   git init -q ../bg; ( cd ../bg;"
+         & "     git index-pack --stdin < ../p.pack > ../b/gout );"
+         & "   cmp -s out gout )");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Index_Pack_Output_Matches_Git;
+
+   --  Regression: mailinfo left RFC 2047 encoded-words raw ("=?UTF-8?Q?..?="
+   --  in Author and Subject), stripped only the first leading bracket group,
+   --  kept a leading "Re:", and printed an empty "Date:" line git omits.
+   --  Base64 words additionally overflowed the decoder's accumulator.
+   procedure Mailinfo_Headers_Match_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Ada.Directories.Set_Directory (Root);
+
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C GIT_CONFIG_NOSYSTEM=1;"
+         & " rm -rf m; mkdir m; ( cd m;"
+         --  quoted-printable in both headers, and nested bracket groups
+         & "   printf 'From: =?UTF-8?Q?Bj=C3=B6rn?= <b@x>\n"
+         & "Subject: [PATCH 1/1] [RFC] Fix =?UTF-8?Q?=C3=A4?= thing\n"
+         & "\nBody here.\n' > e1.txt;"
+         --  base64 word, and a Date that must be echoed
+         & "   printf 'From: P <p@x>\nDate: Mon, 3 Jul 2023 10:00:00 +0000\n"
+         & "Subject: =?UTF-8?B?QmFzZTY0IHN1YmplY3Q=?=\n\nBody.\n' > e2.txt;"
+         --  no date at all: git prints no Date line
+         & "   printf 'From: N <n@x>\nSubject: plain\n\nBody.\n' > e3.txt;"
+         --  a leading Re:, mixed case, ahead of a bracket group
+         & "   printf 'From: A <a@x>\nSubject: re: RE: [PATCH] mixed\n"
+         & "\nB.\n' > e4.txt;"
+         --  Latin-1 must be transcoded to UTF-8, not passed through raw
+         & "   printf 'From: =?ISO-8859-1?Q?Caf=E9?= <c@x>\n"
+         & "Subject: =?utf-8?q?lower_case?=\n\nB.\n' > e5.txt;"
+         & "   for e in e1 e2 e3 e4 e5; do"
+         & "     git mailinfo g.msg g.patch < $e.txt > g.hdr 2>/dev/null;"
+         & "     " & CLI & " mailinfo v.msg v.patch < $e.txt > v.hdr"
+         & "       2>/dev/null;"
+         & "     cmp -s g.hdr v.hdr || { echo ""hdr $e""; exit 1; };"
+         & "     cmp -s g.msg v.msg || { echo ""msg $e""; exit 1; };"
+         & "   done )");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Mailinfo_Headers_Match_Git;
+
    --  Byte-oracle the remaining plumbing: var, count-objects, rev-parse @{n},
    --  name-rev, and for-each-ref %(upstream).
    procedure Extra_Plumbing_Matches_Git
@@ -5849,6 +5943,12 @@ package body CLI_Integration_Tests is
       Register_Routine
         (T, Fetch_Head_Matches_Git'Access,
          "fetch records FETCH_HEAD like git");
+      Register_Routine
+        (T, Index_Pack_Output_Matches_Git'Access,
+         "index-pack -o and --stdin output match git");
+      Register_Routine
+        (T, Mailinfo_Headers_Match_Git'Access,
+         "mailinfo decodes encoded-words and cleans the subject like git");
       Register_Routine
         (T, Format_Patch_Mbox_Matches_Git'Access,
          "format-patch mbox (diffstat, -<n>, separators) matches git");
