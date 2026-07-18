@@ -319,7 +319,7 @@ Common failures: malformed patch, context/deletion mismatch (patch does not appl
 
 Syntax: `version format-patch [--stdout] [-o DIR] (REVISION | -<n>)`.
 
-Purpose: write one mbox patch file per commit in REVISION's range, oldest first (`<since>` means `<since>..HEAD`; `<A>..<B>` is an explicit range; `-<n>` is the last n non-merge commits ending at HEAD, or at REVISION when one is given, and stops at the root commit if the history is shorter). `--stdout` writes all patches to standard output; `-o DIR` selects the output directory (default: current). Output (RFC2822 author date, `[PATCH n/m]` subjects) is consumable by `git am`.
+Purpose: write one mbox patch file per commit in REVISION's range, oldest first (`<since>` means `<since>..HEAD`; `<A>..<B>` is an explicit range; `-<n>` is the last n non-merge commits ending at HEAD, or at REVISION when one is given, and stops at the root commit if the history is shorter). `--stdout` writes all patches to standard output; `-o DIR` selects the output directory (default: current). Output (RFC2822 author date, `[PATCH n/m]` subjects) is consumable by `git am`. A binary change is written as git's `GIT binary patch` (base85-encoded deflate, forward and reverse), so binary commits apply cleanly; the compressed bytes are not expected to equal git's, only to decode identically.
 
 Common failures: unknown revision.
 

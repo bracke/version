@@ -1822,6 +1822,58 @@ package body CLI_Integration_Tests is
          raise;
    end Diff_Renames_Match_Git;
 
+   --  Regression: format-patch implies git's --binary, so a binary change
+   --  travels as an appliable `GIT binary patch` (full index, literal blocks,
+   --  forward then reverse) instead of a "Binary files ... differ" line. The
+   --  deflated payload is deliberately NOT compared to git's -- a zlib stream
+   --  is not canonical -- so this asserts what matters: git can apply what we
+   --  write, and the resulting blob is identical.
+   procedure Format_Patch_Binary_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Ada.Directories.Set_Directory (Root);
+
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C GIT_CONFIG_NOSYSTEM=1"
+         & " GIT_AUTHOR_DATE='1700000000 +0000'"
+         & " GIT_COMMITTER_DATE='1700000000 +0000';"
+         & " rm -rf r d2; mkdir r; ( cd r; git init -q -b main;"
+         & "   git config user.email t@e; git config user.name T;"
+         & "   printf 'keep\n' > keep.txt;"
+         --  a binary blob: NUL in the first bytes makes it binary to both
+         & "   printf 'BIN\000\001\002\377data\000here' > img.bin;"
+         & "   git add -A; git commit -qm base;"
+         & "   printf 'BIN\000\001\002\377CHANGED\000tail' > img.bin;"
+         & "   git add -A; git commit -qm changebin;"
+         --  we emit a GIT binary patch, not a "differ" line
+         & "   " & CLI & " format-patch --stdout -1 > v.patch;"
+         & "   grep -q '^GIT binary patch$' v.patch;"
+         & "   grep -q '^literal ' v.patch;"
+         & "   ! grep -q 'Binary files' v.patch;"
+         --  the index line is unabbreviated, as git writes it with --binary
+         & "   grep -qE '^index [0-9a-f]{40,}\.\.[0-9a-f]{40,}' v.patch );"
+         --  git applies it and reproduces the exact tree
+         & " git init -q -b main d2; ( cd d2;"
+         & "   git config user.email t@e; git config user.name T;"
+         & "   git fetch -q ../r main; git reset -q --hard FETCH_HEAD~1;"
+         & "   git am ../r/v.patch >/dev/null;"
+         & "   test ""$(git rev-parse HEAD^{tree})"""
+         & "     = ""$(cd ../r; git rev-parse HEAD^{tree})"" )");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Format_Patch_Binary_Matches_Git;
+
    --  Byte-oracle the remaining plumbing: var, count-objects, rev-parse @{n},
    --  name-rev, and for-each-ref %(upstream).
    procedure Extra_Plumbing_Matches_Git
@@ -5039,6 +5091,9 @@ package body CLI_Integration_Tests is
       Register_Routine
         (T, Diff_Renames_Match_Git'Access,
          "diff rename detection (similarity/stat/-M/diff.renames) matches git");
+      Register_Routine
+        (T, Format_Patch_Binary_Matches_Git'Access,
+         "format-patch emits an appliable GIT binary patch");
       Register_Routine
         (T, Format_Patch_Mbox_Matches_Git'Access,
          "format-patch mbox (diffstat, -<n>, separators) matches git");
