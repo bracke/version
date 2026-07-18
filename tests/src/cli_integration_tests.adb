@@ -2117,6 +2117,67 @@ package body CLI_Integration_Tests is
          raise;
    end Ls_Files_Control_Chars_Match_Git;
 
+   --  Regression: a conflicted cherry-pick left no state git could read --
+   --  no stage 1/2/3 entries, no CHERRY_PICK_HEAD, no MERGE_MSG -- so
+   --  `git status` reported a plain modification instead of "UU". And a pick
+   --  that turns out to be empty (already applied) recorded an empty commit
+   --  and exited 0, where git refuses and pauses.
+   procedure Cherry_Pick_Conflict_State_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Ada.Directories.Set_Directory (Root);
+
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C GIT_CONFIG_NOSYSTEM=1"
+         & " GIT_AUTHOR_DATE='1700000000 +0000'"
+         & " GIT_COMMITTER_DATE='1700000000 +0000';"
+         & " rm -rf r e; mkdir r; ( cd r; git init -q -b main;"
+         & "   git config user.email t@e; git config user.name T;"
+         & "   printf 'base\n' > f.txt; git add -A; git commit -qm c1;"
+         & "   git checkout -qb feature;"
+         & "   printf 'feature\n' > f.txt; git add -A; git commit -qm featmod;"
+         & "   git checkout -q main;"
+         & "   printf 'mainside\n' > f.txt; git add -A; git commit -qm mainmod;"
+         --  the conflicted pick pauses with git-readable state
+         & "   rc=0; " & CLI & " cherry-pick feature > /dev/null 2>&1 || rc=$?;"
+         & "   test $rc -eq 1;"
+         & "   test -f .git/CHERRY_PICK_HEAD; test -f .git/MERGE_MSG;"
+         & "   test ""$(git ls-files -u | wc -l)"" = 3;"
+         & "   test ""$(git status --short)"" = 'UU f.txt';"
+         --  and --continue clears git's state files, as git does
+         & "   printf 'resolved\n' > f.txt; " & CLI & " stage f.txt;"
+         & "   " & CLI & " cherry-pick --continue > /dev/null;"
+         & "   test ! -f .git/CHERRY_PICK_HEAD; test ! -f .git/MERGE_MSG );"
+         --  an already-applied pick must not record an empty commit
+         & " mkdir e; ( cd e; git init -q -b main;"
+         & "   git config user.email t@e; git config user.name T;"
+         & "   printf 'a\n' > f.txt; git add -A; git commit -qm c1;"
+         & "   git checkout -qb feature;"
+         & "   printf 'a\nb\n' > f.txt; git add -A; git commit -qm addb;"
+         & "   git checkout -q main;"
+         & "   " & CLI & " cherry-pick feature > /dev/null;"
+         & "   before=$(git rev-list --count HEAD);"
+         & "   rc=0; " & CLI & " cherry-pick feature > /dev/null 2>&1 || rc=$?;"
+         & "   test $rc -eq 1;"
+         & "   test ""$(git rev-list --count HEAD)"" = ""$before"";"
+         & "   test -f .git/CHERRY_PICK_HEAD;"
+         & "   " & CLI & " cherry-pick --abort > /dev/null;"
+         & "   test ! -f .git/CHERRY_PICK_HEAD )");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Cherry_Pick_Conflict_State_Matches_Git;
+
    --  Byte-oracle the remaining plumbing: var, count-objects, rev-parse @{n},
    --  name-rev, and for-each-ref %(upstream).
    procedure Extra_Plumbing_Matches_Git
@@ -5352,6 +5413,9 @@ package body CLI_Integration_Tests is
       Register_Routine
         (T, Ls_Files_Control_Chars_Match_Git'Access,
          "ls-files lists and C-quotes control-character paths like git");
+      Register_Routine
+        (T, Cherry_Pick_Conflict_State_Matches_Git'Access,
+         "cherry-pick conflict/empty state is git-readable");
       Register_Routine
         (T, Format_Patch_Mbox_Matches_Git'Access,
          "format-patch mbox (diffstat, -<n>, separators) matches git");
