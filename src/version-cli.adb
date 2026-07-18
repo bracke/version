@@ -15100,16 +15100,30 @@ package body Version.CLI is
             declare
                Usage : constant String :=
                  "version rev-parse [--abbrev-ref] [--short] [--show-toplevel]"
-                 & " [--git-dir] [--is-inside-work-tree] REV...";
+                 & " [--git-dir] [--absolute-git-dir] [--show-prefix]"
+                 & " [--is-inside-work-tree] [--is-bare-repository]"
+                 & " [--symbolic-full-name] [--verify] [--quiet] [--all]"
+                 & " REV...";
                Abbrev  : Boolean := False;
                Short   : Boolean := False;
+               Symbolic : Boolean := False;
+               Verify   : Boolean := False;
+               Quiet    : Boolean := False;
                Bad_Opt : Boolean := False;
                Done    : Boolean := False;
                I       : Positive := 2;
             begin
-               while I <= Count and then Arg (I)'Length >= 2
-                 and then Arg (I) (Arg (I)'First .. Arg (I)'First + 1) = "--"
+               while I <= Count
+                 and then ((Arg (I)'Length >= 2
+                            and then Arg (I) (Arg (I)'First
+                                              .. Arg (I)'First + 1) = "--")
+                           or else Arg (I) = "-q")
                loop
+                  if Arg (I) = "-q" then
+                     Quiet := True;
+                     I := I + 1;
+                     goto Continue_Rev_Parse_Options;
+                  end if;
                   if Arg (I) = "--abbrev-ref" then
                      Abbrev := True;
                   elsif Arg (I) = "--short" then
@@ -15142,12 +15156,81 @@ package body Version.CLI is
                   elsif Arg (I) = "--is-inside-work-tree" then
                      Success_Line ("true");
                      Done := True;
+                  elsif Arg (I) = "--is-bare-repository" then
+                     --  A bare repository has no working tree, which is
+                     --  what core.bare records.
+                     declare
+                        Repo : constant Version.Repository.Repository_Handle :=
+                          Version.Repository.Open;
+                     begin
+                        Success_Line
+                          (if Version.Config.Has_Key (Repo, "core.bare")
+                             and then Version.Config.Get_Value
+                                        (Repo, "core.bare") = "true"
+                           then "true" else "false");
+                     end;
+                     Done := True;
+                  elsif Arg (I) = "--absolute-git-dir" then
+                     Success_Line
+                       (Version.Files.Normalize_Separators
+                          (Ada.Directories.Full_Name
+                             (Version.Repository.Git_Dir
+                                (Version.Repository.Open))));
+                     Done := True;
+                  elsif Arg (I) = "--show-prefix" then
+                     --  The path from the repository root to the working
+                     --  directory; empty (but still a line) at the root.
+                     declare
+                        Root : constant String :=
+                          Version.Files.Normalize_Separators
+                            (Version.Repository.Root_Path
+                               (Version.Repository.Open));
+                        Here : constant String :=
+                          Version.Files.Normalize_Separators
+                            (Ada.Directories.Current_Directory);
+                     begin
+                        if Here'Length > Root'Length then
+                           Success_Line
+                             (Here (Here'First + Root'Length + 1 .. Here'Last)
+                              & "/");
+                        else
+                           Success_Line ("");
+                        end if;
+                     end;
+                     Done := True;
+                  elsif Arg (I) = "--all" then
+                     declare
+                        Repo : constant Version.Repository.Repository_Handle :=
+                          Version.Repository.Open;
+                        Patterns :
+                          Version.Ref_Format.String_Vectors.Vector;
+                     begin
+                        Patterns.Append ("refs/");
+                        for Name of Version.Ref_Format.For_Each_Ref
+                          (Repo, Patterns, Format => "%(refname)")
+                        loop
+                           Success_Line
+                             (Version.Objects.To_String
+                                (Version.Refs.Resolve_Ref (Repo, Name)));
+                        end loop;
+                     end;
+                     Done := True;
+                  elsif Arg (I) = "--symbolic-full-name" then
+                     Symbolic := True;
+                  elsif Arg (I) = "--verify" then
+                     Verify := True;
+                  elsif Arg (I) = "--quiet" then
+                     Quiet := True;
+                  elsif Arg (I) = "--revs-only" then
+                     --  Every operand version accepts here is a rev already.
+                     null;
                   else
                      Usage_Error ("unknown rev-parse option: " & Arg (I), Usage);
                      Bad_Opt := True;
                      exit;
                   end if;
                   I := I + 1;
+                  <<Continue_Rev_Parse_Options>>
                end loop;
 
                if Bad_Opt then
@@ -15162,7 +15245,31 @@ package body Version.CLI is
                        Version.Repository.Open;
                   begin
                      for J in I .. Count loop
-                        if Abbrev and then Arg (J) = "HEAD" then
+                        if Symbolic then
+                           --  git prints the fully qualified ref a name
+                           --  stands for, and nothing at all when it is not
+                           --  a ref.
+                           declare
+                              H : constant Version.Refs.Head_Info :=
+                                Version.Refs.Read_Head (Repo);
+                           begin
+                              if Arg (J) = "HEAD"
+                                and then Version.Refs.Is_Attached (H)
+                              then
+                                 Success_Line
+                                   ("refs/heads/"
+                                    & Version.Refs.Branch_Name (H));
+                              elsif Version.Refs.Ref_Exists
+                                      (Repo, "refs/heads/" & Arg (J))
+                              then
+                                 Success_Line ("refs/heads/" & Arg (J));
+                              elsif Version.Refs.Ref_Exists
+                                      (Repo, "refs/tags/" & Arg (J))
+                              then
+                                 Success_Line ("refs/tags/" & Arg (J));
+                              end if;
+                           end;
+                        elsif Abbrev and then Arg (J) = "HEAD" then
                            declare
                               H : constant Version.Refs.Head_Info :=
                                 Version.Refs.Read_Head (Repo);
@@ -15175,6 +15282,17 @@ package body Version.CLI is
                            end;
                         elsif Abbrev then
                            Success_Line (Arg (J));
+                        elsif Verify and then Quiet then
+                           --  git reports an unresolvable rev with exit 1 and
+                           --  no message under --quiet.
+                           begin
+                              Success_Line
+                                (To_String
+                                   (Version.Revisions.Resolve (Repo, Arg (J))));
+                           exception
+                              when others =>
+                                 Set_Command_Failure;
+                           end;
                         else
                            declare
                               Full : constant String :=

@@ -1,0 +1,4 @@
+printf 'a\n' > f.txt && git add -A && git commit -qm c1
+git tag v1 && git tag -a v2 -m annotated
+git branch feature
+printf 'b\n' >> f.txt && git add -A && git commit -qm c2

@@ -1,0 +1,20 @@
+rev-parse HEAD
+rev-parse --short HEAD
+rev-parse HEAD~1
+rev-parse HEAD^
+rev-parse v1
+rev-parse v2
+rev-parse v2^{commit}
+rev-parse --verify HEAD
+rev-parse --abbrev-ref HEAD
+rev-parse --git-dir
+rev-parse --show-toplevel
+rev-parse --is-inside-work-tree
+rev-parse --is-bare-repository
+rev-parse --all
+rev-parse --symbolic-full-name HEAD
+rev-parse --revs-only HEAD
+rev-parse --quiet --verify nonexistent
+rev-parse HEAD feature
+rev-parse --show-prefix
+rev-parse --absolute-git-dir

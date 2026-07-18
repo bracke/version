@@ -382,7 +382,7 @@ Purpose: show, for each line of FILE at REV (default HEAD), the abbreviated comm
 Low-level commands over the object/ref/index store, intended for scripts. Output matches `git`'s for the supported forms.
 
 - `version cat-file (-t|-s|-e|-p|blob|tree|commit|tag) OBJECT` — object type, size, existence (exit status), or pretty content (`-p` of a tree lists entries recursively). The `<type> <object>` form prints the contents and fails if the object is not of that type.
-- `version rev-parse [--abbrev-ref] REV...` — resolve revisions to object ids (or the branch name for `--abbrev-ref HEAD`).
+- `version rev-parse [--abbrev-ref] [--short] [--symbolic-full-name] [--verify] [--quiet|-q] [--all] [--revs-only] [--show-toplevel] [--show-prefix] [--git-dir] [--absolute-git-dir] [--is-inside-work-tree] [--is-bare-repository] REV...` — resolve revisions to object ids (or the branch name for `--abbrev-ref HEAD`, the full ref for `--symbolic-full-name`). `--verify --quiet` exits 1 without a message when a revision does not resolve; `--all` lists every ref's object id; the repository-location queries report the paths git reports.
 - `version ls-files [-s|--stage] [-o|--others] [-m|--modified] [-d|--deleted] [--exclude-standard] [--] [PATHSPEC...]` — list tracked (stage-0) index paths, optionally filtered by pathspecs.
 - `version ls-tree [-r] [--name-only] TREE-ISH [--] [PATH...]` — list a tree's entries; one level by default (subtrees shown as `tree` entries), recursively with `-r`. Paths select entries.
 - `version hash-object [-w] [--stdin] [FILE]` — compute (and with `-w` write) a blob id.

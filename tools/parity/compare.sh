@@ -32,6 +32,10 @@ while IFS= read -r line; do
   ( cd "$WORK/o" && eval "\"$V\" $line" ) > "$WORK/o.out" 2> "$WORK/o.err"; orr=$?
   # Compare stdout and exit status; stderr wording is house style, so only
   # its emptiness is compared.
+  # The two fixtures live at different paths, so any absolute path in the
+  # output would differ spuriously; canonicalise both to the same token.
+  sed -i "s#$WORK/g#<REPO>#g" "$WORK/g.out" "$WORK/g.err" 2>/dev/null
+  sed -i "s#$WORK/o#<REPO>#g" "$WORK/o.out" "$WORK/o.err" 2>/dev/null
   ge=$([ -s "$WORK/g.err" ] && echo 1 || echo 0)
   oe=$([ -s "$WORK/o.err" ] && echo 1 || echo 0)
   if cmp -s "$WORK/g.out" "$WORK/o.out" && [ "$gr" = "$orr" ] && [ "$ge" = "$oe" ]; then
