@@ -2341,6 +2341,7 @@ package body Version.CLI is
       Program    : Unbounded_String;
       Wanted     : Version.Trailers.String_Vectors.Vector;
       Failed     : Boolean := False;
+      Failure_Count : Natural := 0;
       I          : Positive := 2;
    begin
       while I <= Count loop
@@ -2385,6 +2386,30 @@ package body Version.CLI is
 
          Paths : Version.Trailers.String_Vectors.Vector;
       begin
+         --  git errors on a named path that is not unmerged, before running
+         --  the merge program for anything.
+         if not All_Paths then
+            for Want of Wanted loop
+               declare
+                  Present : Boolean := False;
+               begin
+                  for E of Index loop
+                     if To_String (E.Path) = Want and then E.Stage /= 0 then
+                        Present := True;
+                     end if;
+                  end loop;
+
+                  if not Present then
+                     Stderr_Line
+                       ("fatal: git merge-index: " & Want
+                        & " not in the cache");
+                     Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                     return;
+                  end if;
+               end;
+            end loop;
+         end if;
+
          --  The unmerged paths, in index order, without duplicates.
          for E of Index loop
             if E.Stage /= 0 then
@@ -2453,21 +2478,34 @@ package body Version.CLI is
 
                if Status /= 0 then
                   Failed := True;
+                  Failure_Count := Failure_Count + 1;
 
                   if not Keep_Going then
-                     if not Quiet then
+                     --  git dies (exit 128) with the message, but under -q it
+                     --  simply exits 1.
+                     if Quiet then
+                        Set_Command_Failure;
+                     else
                         Stderr_Line ("fatal: merge program failed");
+                        Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
                      end if;
 
-                     Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
                      return;
                   end if;
                end if;
             end;
          end loop;
 
+         --  git's tail: with -o it accumulates failures, then dies unless -q,
+         --  in which case the exit status is the failure count.
          if Failed then
-            Set_Command_Failure;
+            if Quiet then
+               Ada.Command_Line.Set_Exit_Status
+                 (Ada.Command_Line.Exit_Status (Failure_Count));
+            else
+               Stderr_Line ("fatal: merge program failed");
+               Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+            end if;
          end if;
       end;
    end Run_Merge_Index_Command;
