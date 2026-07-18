@@ -35,6 +35,7 @@ with Version.Pathspec;
 with Version.Platform;
 with Version.Working_Tree;
 with Version.Ignore;
+with Version.Rev_Args;
 with Version.Revisions;
 with Version.Credential;
 with Version.Ref_Format;
@@ -8370,8 +8371,6 @@ package body Version.CLI is
                  & " [--format=<fmt>] [-<n>|-n <count>|--max-count=<n>] [REV]";
                Oneline    : Boolean := False;
                Show_Sig   : Boolean := False;
-               Rev        : Unbounded_String;
-               Have_Rev   : Boolean := False;
                Bad        : Boolean := False;
                Max_Count  : Natural := 0;
                Max_Prefix : constant String := "--max-count=";
@@ -8382,6 +8381,10 @@ package body Version.CLI is
                Stat       : Boolean := False;
                Patch      : Boolean := False;
                Context    : Natural := 3;
+               Walk       : Version.History.Rev_List_Options;
+               Operands   : Version.Rev_Args.String_Vectors.Vector;
+               Only_Paths : Boolean := False;
+               Topo_Order : Boolean := False;
 
                function Starts (S, P : String) return Boolean is
                  (S'Length >= P'Length
@@ -8413,6 +8416,27 @@ package body Version.CLI is
                         Bad := True;
                         exit;
                      end if;
+                  elsif Only_Paths then
+                     Operands.Append (Arg (I));
+                  elsif Arg (I) = "--" then
+                     Operands.Append (Arg (I));
+                     Only_Paths := True;
+                  elsif Arg (I) = "--no-merges" then
+                     Walk.No_Merges := True;
+                  elsif Arg (I) = "--merges" then
+                     Walk.Min_Parents := 2;
+                  elsif Arg (I) = "--first-parent" then
+                     Walk.First_Parent := True;
+                  elsif Arg (I) = "--topo-order" then
+                     Topo_Order := True;
+                  elsif Arg (I) = "--date-order" then
+                     Topo_Order := False;
+                  elsif Arg (I) = "--reverse" then
+                     Walk.Oldest_First := True;
+                  elsif Starts (Arg (I), "--skip=")
+                    and then All_Digits (After (Arg (I), "--skip="))
+                  then
+                     Walk.Skip := Natural'Value (After (Arg (I), "--skip="));
                   elsif Arg (I) = "--oneline" then
                      Oneline := True;
                   elsif Arg (I) = "--stat" then
@@ -8476,13 +8500,10 @@ package body Version.CLI is
                      Usage_Error ("unknown log option: " & Arg (I), Usage);
                      Bad := True;
                      exit;
-                  elsif not Have_Rev then
-                     Rev := To_Unbounded_String (Arg (I));
-                     Have_Rev := True;
                   else
-                     Usage_Error ("too many log arguments", Usage);
-                     Bad := True;
-                     exit;
+                     --  A revision, a range, a ^exclusion or a path: the
+                     --  shared parser decides which.
+                     Operands.Append (Arg (I));
                   end if;
                end loop;
 
@@ -8495,55 +8516,80 @@ package body Version.CLI is
                   declare
                      Repo : constant Version.Repository.Repository_Handle :=
                        Version.Repository.Open;
+
+                     Parsed : constant Version.Rev_Args.Revision_Arguments :=
+                       Version.Rev_Args.Parse (Repo, Operands);
+
+                     Selection : Version.History.Rev_List_Options := Walk;
+                     Commits   : Version.History.Commit_Id_Vectors.Vector;
+                     Include   : Version.History.Commit_Id_Vectors.Vector :=
+                       Parsed.Include;
                   begin
-                     if Has_Format then
+                     --  Bare `log` starts at HEAD.
+                     if Include.Is_Empty then
+                        Include.Append
+                          (Version.Objects.To_Object_Id
+                             (Version.Refs.Current_Commit_Id (Repo)));
+                     end if;
+
+                     Selection.Max_Count := Max_Count;
+
+                     for P of Parsed.Paths loop
+                        Selection.Paths.Append (New_Item => P);
+                     end loop;
+
+                     --  Reordering acts on the whole selection, so the caps
+                     --  have to wait until after it.
+                     if Topo_Order then
+                        Selection.Max_Count := 0;
+                        Selection.Skip := 0;
+                        Selection.Oldest_First := False;
+                     end if;
+
+                     Commits :=
+                       Version.History.Rev_List
+                         (Repo, Include, Parsed.Exclude, Selection);
+
+                     if Topo_Order then
+                        Commits :=
+                          Version.History.Topological_Order (Repo, Commits);
+
                         declare
-                           Tip : constant Version.Objects.Hex_Object_Id :=
-                             (if Have_Rev
-                              then Version.Revisions.Resolve_Commit
-                                     (Repo, To_String (Rev))
-                              else Version.Objects.To_Object_Id
-                                     (Version.Refs.Current_Commit_Id (Repo)));
+                           Caps : Version.History.Rev_List_Options := Walk;
                         begin
-                           Version.Console.Put
-                             (Version.Log.Log_Formatted_From_Commit
-                                (Repo, Tip, To_String (Format),
-                                 Terminate_Records => Terminator,
-                                 Max_Count         => Max_Count));
+                           Caps.Max_Count := Max_Count;
+                           Commits :=
+                             Version.History.Apply_Limits (Commits, Caps);
                         end;
-                     elsif Oneline and then Have_Rev then
+                     end if;
+
+                     if Has_Format then
                         Version.Console.Put
-                          (Version.Log.Log_Oneline_From_Commit
-                             (Repo,
-                              Version.Revisions.Resolve_Commit
-                                (Repo, To_String (Rev)),
-                              Max_Count => Max_Count));
+                          (Version.Log.Log_Formatted_List_Text
+                             (Repo, Commits, To_String (Format),
+                              Terminate_Records => Terminator));
                      elsif Oneline then
                         Version.Console.Put
-                          (Version.Log.Log_Oneline_Head
-                             (Repo, Max_Count => Max_Count));
-                     elsif Have_Rev then
+                          (Version.Log.Log_Oneline_List_Text (Repo, Commits));
+                     else
                         Version.Console.Put
-                          (Version.Log.Log_From_Commit
-                             (Repo,
-                              Version.Revisions.Resolve_Commit
-                                (Repo, To_String (Rev)),
+                          (Version.Log.Log_List_Text
+                             (Repo, Commits,
                               Show_Signature => Show_Sig,
-                              Max_Count      => Max_Count,
                               Stat           => Stat,
                               Patch          => Patch,
                               Context        => Context));
-                     else
-                        Version.Console.Put
-                          (Version.Log.Log_Head
-                             (Repo, Show_Signature => Show_Sig,
-                              Max_Count => Max_Count,
-                              Stat      => Stat,
-                              Patch     => Patch,
-                              Context   => Context));
                      end if;
                   end;
                end if;
+            exception
+               when E : others =>
+                  --  Same as rev-list: an operand that names neither a
+                  --  revision nor a path is git's die().
+                  Ada.Text_IO.Put_Line
+                    (Ada.Text_IO.Standard_Error,
+                     "fatal: " & User_Error_Text (E));
+                  Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
             end;
 
          elsif Command = "show" then
@@ -13979,7 +14025,8 @@ package body Version.CLI is
                                   (Max_Count    => Limit,
                                    No_Merges    => True,
                                    First_Parent => False,
-                                   Oldest_First => True));
+                                   Oldest_First => True,
+                                   others       => <>));
                            Total : constant Natural :=
                              Natural (Commits.Length);
                            N     : Natural := 0;
@@ -16529,142 +16576,319 @@ package body Version.CLI is
          elsif Command = "rev-list" then
             declare
                Usage : constant String :=
-                 "version rev-list [--count] [--all]"
-                 & " [--max-count=<n>|-n <n>] [REV]";
+                 "version rev-list [--count] [--all|--branches|--tags]"
+                 & " [--max-count=<n>|-n <n>] [--skip=<n>] [--reverse]"
+                 & " [--merges|--no-merges] [--min-parents=<n>]"
+                 & " [--max-parents=<n>] [--first-parent] [--parents]"
+                 & " [--oneline] [--objects] [--topo-order|--date-order]"
+                 & " <REV>... [--] [PATH...]";
+
+               function Starts (S, P : String) return Boolean is
+                 (S'Length >= P'Length
+                  and then S (S'First .. S'First + P'Length - 1) = P);
+               function After (S, P : String) return String is
+                 (S (S'First + P'Length .. S'Last));
+
+               function Is_Digits (S : String) return Boolean is
+                 (S'Length > 0 and then (for all C of S => C in '0' .. '9'));
+
+               Repo : constant Version.Repository.Repository_Handle :=
+                 Version.Repository.Open;
+
+               Options    : Version.History.Rev_List_Options;
                Count_Only : Boolean := False;
-               Max_Count  : Integer := -1;  --  -1 = unlimited
-               Bad_Opt    : Boolean := False;
-               Bad_Text   : Unbounded_String;
-               Rev_Idx    : Natural := 0;
-               All_Refs   : Boolean := False;
+               Show_Parents : Boolean := False;
+               Oneline    : Boolean := False;
+               Topo_Order : Boolean := False;
+               Show_Objects : Boolean := False;
+               Seed_All   : Boolean := False;
+               Seed_Heads : Boolean := False;
+               Seed_Tags  : Boolean := False;
+               Operands   : Version.Rev_Args.String_Vectors.Vector;
+               Rest_Are_Operands : Boolean := False;
                I          : Positive := 2;
+               OK         : Boolean := True;
 
                function Img (N : Natural) return String is
                   S : constant String := Natural'Image (N);
                begin
                   return S (S'First + 1 .. S'Last);
                end Img;
-            begin
-               while I <= Count loop
-                  if Arg (I) = "--count" then
-                     Count_Only := True;
-                  elsif Arg (I) = "--all" then
-                     All_Refs := True;
-                  elsif Arg (I)'Length > 12
-                    and then Arg (I) (Arg (I)'First .. Arg (I)'First + 11)
-                             = "--max-count="
-                  then
-                     Max_Count :=
-                       Integer'Value (Arg (I) (Arg (I)'First + 12 .. Arg (I)'Last));
-                  elsif Arg (I) = "--max-count" or else Arg (I) = "-n" then
-                     if I = Count then
-                        Bad_Opt := True;
-                        Bad_Text := To_Unbounded_String (Arg (I));
-                        exit;
-                     end if;
+
+               procedure Take_Number
+                 (Flag : String;
+                  Into : out Natural)
+               is
+               begin
+                  Into := 0;
+
+                  if Starts (Arg (I), Flag & "=") then
+                     Into := Natural'Value (After (Arg (I), Flag & "="));
                      I := I + 1;
-                     Max_Count := Integer'Value (Arg (I));
-                  elsif Arg (I)'Length >= 1 and then Arg (I) (Arg (I)'First) = '-'
-                  then
-                     Bad_Opt := True;
-                     Bad_Text := To_Unbounded_String (Arg (I));
-                     exit;
-                  elsif Rev_Idx = 0 then
-                     Rev_Idx := I;
+                  elsif I < Count then
+                     Into := Natural'Value (Arg (I + 1));
+                     I := I + 2;
                   else
-                     Bad_Opt := True;
-                     Bad_Text := To_Unbounded_String (Arg (I));
-                     exit;
+                     Usage_Error (Flag & " requires a number", Usage);
+                     OK := False;
                   end if;
-                  I := I + 1;
+               exception
+                  when Constraint_Error =>
+                     Usage_Error (Flag & " requires a number", Usage);
+                     OK := False;
+               end Take_Number;
+            begin
+               while OK and then I <= Count loop
+                  declare
+                     A : constant String := Arg (I);
+                  begin
+                     if Rest_Are_Operands then
+                        Operands.Append (A);
+                        I := I + 1;
+
+                     elsif A = "--" then
+                        --  Everything from here on is an operand, including
+                        --  the separator itself: Rev_Args reads it.
+                        Operands.Append (A);
+                        Rest_Are_Operands := True;
+                        I := I + 1;
+
+                     elsif A = "--count" then
+                        Count_Only := True;
+                        I := I + 1;
+
+                     elsif A = "--all" then
+                        Seed_All := True;
+                        I := I + 1;
+
+                     elsif A = "--branches" then
+                        Seed_Heads := True;
+                        I := I + 1;
+
+                     elsif A = "--tags" then
+                        Seed_Tags := True;
+                        I := I + 1;
+
+                     elsif A = "--max-count" or else Starts (A, "--max-count=")
+                     then
+                        Take_Number ("--max-count", Options.Max_Count);
+
+                     elsif A = "-n" then
+                        Take_Number ("-n", Options.Max_Count);
+
+                     elsif A = "--skip" or else Starts (A, "--skip=") then
+                        Take_Number ("--skip", Options.Skip);
+
+                     elsif A = "--min-parents"
+                       or else Starts (A, "--min-parents=")
+                     then
+                        Take_Number ("--min-parents", Options.Min_Parents);
+
+                     elsif A = "--max-parents"
+                       or else Starts (A, "--max-parents=")
+                     then
+                        declare
+                           N : Natural;
+                        begin
+                           Take_Number ("--max-parents", N);
+                           Options.Max_Parents := N;
+                        end;
+
+                     elsif A = "--no-min-parents" then
+                        Options.Min_Parents := 0;
+                        I := I + 1;
+
+                     elsif A = "--no-max-parents" then
+                        Options.Max_Parents :=
+                          Version.History.No_Parent_Limit;
+                        I := I + 1;
+
+                     elsif A = "--merges" then
+                        --  git defines --merges as --min-parents=2.
+                        Options.Min_Parents := 2;
+                        I := I + 1;
+
+                     elsif A = "--no-merges" then
+                        Options.No_Merges := True;
+                        I := I + 1;
+
+                     elsif A = "--first-parent" then
+                        Options.First_Parent := True;
+                        I := I + 1;
+
+                     elsif A = "--reverse" then
+                        Options.Oldest_First := True;
+                        I := I + 1;
+
+                     elsif A = "--parents" then
+                        Show_Parents := True;
+                        I := I + 1;
+
+                     elsif A = "--objects" then
+                        Show_Objects := True;
+                        I := I + 1;
+
+                     elsif A = "--oneline" then
+                        Oneline := True;
+                        I := I + 1;
+
+                     elsif A = "--topo-order" then
+                        Topo_Order := True;
+                        I := I + 1;
+
+                     elsif A = "--date-order" then
+                        --  Committer-date order is what the walk already
+                        --  produces.
+                        Topo_Order := False;
+                        I := I + 1;
+
+                     elsif A'Length > 1 and then A (A'First) = '-'
+                       and then Is_Digits (After (A, "-"))
+                     then
+                        --  git's bare -<n> spelling of --max-count.
+                        Options.Max_Count := Natural'Value (After (A, "-"));
+                        I := I + 1;
+
+                     elsif A'Length > 0 and then A (A'First) = '-'
+                       and then A /= "-" and then not Starts (A, "^")
+                     then
+                        Usage_Error
+                          ("unknown rev-list argument: " & A, Usage);
+                        OK := False;
+
+                     else
+                        Operands.Append (A);
+                        I := I + 1;
+                     end if;
+                  end;
                end loop;
 
-               if Bad_Opt then
-                  Usage_Error ("unknown rev-list argument: "
-                               & To_String (Bad_Text), Usage);
-               elsif Rev_Idx = 0 and then not All_Refs then
-                  Usage_Error ("rev-list requires a revision", Usage);
-               else
-                  declare
-                     Repo : constant Version.Repository.Repository_Handle :=
-                       Version.Repository.Open;
-                     Result : Version.History.Commit_Id_Vectors.Vector;
-                     Queue  : Version.History.Commit_Id_Vectors.Vector;
+               if not OK then
+                  return;
+               end if;
 
-                     function Seen (X : Version.Objects.Hex_Object_Id)
-                        return Boolean is
-                     begin
-                        for C of Result loop
-                           if C = X then
-                              return True;
-                           end if;
-                        end loop;
-                        return False;
-                     end Seen;
+               declare
+                  Parsed : Version.Rev_Args.Revision_Arguments :=
+                    Version.Rev_Args.Parse (Repo, Operands);
+               begin
+                  if Seed_All then
+                     for Tip of Version.Rev_Args.Ref_Tips (Repo) loop
+                        Parsed.Include.Append (Tip);
+                     end loop;
+                  end if;
+
+                  if Seed_Heads then
+                     for Tip of Version.Rev_Args.Ref_Tips
+                       (Repo, "refs/heads/")
+                     loop
+                        Parsed.Include.Append (Tip);
+                     end loop;
+                  end if;
+
+                  if Seed_Tags then
+                     for Tip of Version.Rev_Args.Ref_Tips
+                       (Repo, "refs/tags/")
+                     loop
+                        Parsed.Include.Append (Tip);
+                     end loop;
+                  end if;
+
+                  if Parsed.Include.Is_Empty then
+                     Usage_Error ("rev-list requires a revision", Usage);
+                     return;
+                  end if;
+
+                  declare
+                     --  Reordering acts on the whole selection, so with
+                     --  --topo-order the caps have to wait until after it.
+                     Walk_Options : Version.History.Rev_List_Options :=
+                       Options;
+
+                     Commits : Version.History.Commit_Id_Vectors.Vector;
                   begin
-                     if All_Refs then
-                        --  Seed from every ref tip (peeled to a commit).
-                        declare
-                           No_Patterns :
-                             Version.Ref_Format.String_Vectors.Vector;
-                        begin
-                           for Ref of Version.Ref_Format.For_Each_Ref
-                             (Repo, No_Patterns, Format => "%(refname)")
-                           loop
-                              begin
-                                 Queue.Append
-                                   (Version.Revisions.Resolve_Commit
-                                      (Repo, Ref));
-                              exception
-                                 when others =>
-                                    null;  --  non-commit ref (e.g. blob tag)
-                              end;
-                           end loop;
-                        end;
-                     end if;
-                     if Rev_Idx /= 0 then
-                        Queue.Append
-                          (Version.Revisions.Resolve_Commit
-                             (Repo, Arg (Rev_Idx)));
-                     end if;
-                     while not Queue.Is_Empty loop
-                        declare
-                           C : constant Version.Objects.Hex_Object_Id :=
-                             Queue.Last_Element;
-                        begin
-                           Queue.Delete_Last;
-                           if not Seen (C) then
-                              Result.Append (C);
-                              for P of Version.History.Parent_Commits (Repo, C)
-                              loop
-                                 if not Seen (P) then
-                                    Queue.Append (P);
-                                 end if;
-                              end loop;
-                           end if;
-                        end;
+                     for P of Parsed.Paths loop
+                        Walk_Options.Paths.Append (New_Item => P);
                      end loop;
 
-                     declare
-                        --  git stops the walk after --max-count commits.
-                        Limit : constant Natural :=
-                          (if Max_Count >= 0
-                           then Natural'Min (Max_Count, Natural (Result.Length))
-                           else Natural (Result.Length));
-                        Emitted : Natural := 0;
-                     begin
-                        if Count_Only then
-                           Success_Line (Img (Limit));
-                        else
-                           for C of Result loop
-                              exit when Emitted >= Limit;
-                              Success_Line (To_String (C));
-                              Emitted := Emitted + 1;
-                           end loop;
-                        end if;
-                     end;
+                     if Topo_Order then
+                        Walk_Options.Max_Count := 0;
+                        Walk_Options.Skip := 0;
+                        Walk_Options.Oldest_First := False;
+                     end if;
+
+                     Commits :=
+                       Version.History.Rev_List
+                         (Repo, Parsed.Include, Parsed.Exclude, Walk_Options);
+
+                     if Topo_Order then
+                        Commits :=
+                          Version.History.Topological_Order (Repo, Commits);
+                        Commits :=
+                          Version.History.Apply_Limits (Commits, Options);
+                     end if;
+
+                     if Count_Only then
+                        Success_Line (Img (Natural (Commits.Length)));
+                     elsif Show_Objects then
+                        for O of Version.History.Object_List
+                          (Repo, Commits, Parsed.Exclude)
+                        loop
+                           --  git names every object but a commit, and a root
+                           --  tree's name is empty -- so the line still ends
+                           --  in a space.
+                           Success_Line
+                             (To_String (O.Id)
+                              & (if O.Name = Null_Unbounded_String
+                                   and then Commits.Contains (O.Id)
+                                 then ""
+                                 else " " & To_String (O.Name)));
+                        end loop;
+                     else
+                        for C of Commits loop
+                           declare
+                              Line : Unbounded_String;
+                           begin
+                              if Oneline then
+                                 declare
+                                    Text : constant String :=
+                                      Version.Log.Log_Oneline_From_Commit
+                                        (Repo, C, Max_Count => 1);
+                                    Stop : Natural := Text'Last;
+                                 begin
+                                    while Stop >= Text'First
+                                      and then Text (Stop) = ASCII.LF
+                                    loop
+                                       Stop := Stop - 1;
+                                    end loop;
+
+                                    Append (Line, Text (Text'First .. Stop));
+                                 end;
+                              else
+                                 Append (Line, To_String (C));
+
+                                 if Show_Parents then
+                                    for P of Version.History.Parent_Commits
+                                      (Repo, C)
+                                    loop
+                                       Append (Line, " " & To_String (P));
+                                    end loop;
+                                 end if;
+                              end if;
+
+                              Success_Line (To_String (Line));
+                           end;
+                        end loop;
+                     end if;
                   end;
-               end if;
+               end;
+            exception
+               when E : others =>
+                  --  An operand that is neither a revision nor a path is a
+                  --  git die(): exit 128, not an ordinary failure.
+                  Ada.Text_IO.Put_Line
+                    (Ada.Text_IO.Standard_Error,
+                     "fatal: " & User_Error_Text (E));
+                  Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
             end;
 
          elsif Command = "pull" then

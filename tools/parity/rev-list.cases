@@ -1,0 +1,25 @@
+rev-list HEAD
+rev-list --max-count=3 HEAD
+rev-list -n 2 HEAD
+rev-list --skip=2 HEAD
+rev-list HEAD~3..HEAD
+rev-list main ^side
+rev-list --first-parent HEAD
+rev-list --merges HEAD
+rev-list --no-merges HEAD
+rev-list --reverse HEAD
+rev-list --count HEAD
+rev-list --count --no-merges HEAD
+rev-list --all
+rev-list --branches
+rev-list --tags
+rev-list HEAD -- a.txt
+rev-list HEAD -- s.txt
+rev-list --parents HEAD
+rev-list --topo-order HEAD
+rev-list --date-order HEAD
+rev-list --objects HEAD~1..HEAD
+rev-list --max-parents=1 HEAD
+rev-list --min-parents=2 HEAD
+rev-list v1..v2
+rev-list --oneline HEAD

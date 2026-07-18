@@ -1,0 +1,24 @@
+log --oneline
+log --oneline -5
+log --oneline --max-count=3
+log --oneline --skip=2
+log --oneline --reverse
+log --oneline --no-merges
+log --oneline --merges
+log --oneline --first-parent
+log --oneline HEAD~3..HEAD
+log --oneline main ^side
+log --oneline -- a.txt
+log --oneline -- s.txt
+log --oneline --no-merges -- a.txt
+log --oneline v1..v2
+log
+log -2
+log --stat -2
+log --format=%H
+log --format=%h%x20%s
+log --pretty=format:%an
+log -p -1
+log --oneline --topo-order
+log --first-parent --oneline -3
+log --oneline --skip=1 --max-count=2

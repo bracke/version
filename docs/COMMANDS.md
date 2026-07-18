@@ -444,15 +444,15 @@ Low-level commands over the object/ref/index store, intended for scripts. Output
 - `version symbolic-ref HEAD [REF]` — print the branch HEAD points at, or (with REF) point HEAD at REF without touching the working tree.
 - `version show-ref` — list `<oid> <refname>` for branches and tags.
 - `version for-each-ref [PATTERN]` — list `<oid> <objecttype>\t<refname>` for branches and tags, optionally filtered by a refname prefix.
-- `version rev-list [--count] REV` — list (or count) commits reachable from REV.
+- `version rev-list [--count] [--all|--branches|--tags] [--max-count=<n>|-n <n>|-<n>] [--skip=<n>] [--reverse] [--merges|--no-merges] [--min-parents=<n>] [--max-parents=<n>] [--first-parent] [--parents] [--oneline] [--objects] [--topo-order|--date-order] <REV>... [--] [PATH...]` — list (or count) commits reachable from the given revisions. Revisions may be ranges (`A..B`, `A...B`) or exclusions (`^X`). Output is newest-first in committer-date order, git's default; `--topo-order` keeps a line of development contiguous instead. `--objects` also lists the trees and blobs the commits reach, each with the path it appears under (empty for a root tree). Paths after `--` limit the walk with git's default history simplification.
 
 ## History
 
 ### log
 
-Syntax: `version log [--oneline] [--stat] [-p|--patch] [-U<n>|--unified=<n>] [--show-signature] [--format=<fmt>] [-<n>|-n <count>|--max-count=<n>] [REV]`.
+Syntax: `version log [--oneline] [--stat] [-p|--patch] [-U<n>|--unified=<n>] [--show-signature] [--format=<fmt>] [-<n>|-n <count>|--max-count=<n>] [--skip=<n>] [--reverse] [--merges|--no-merges] [--first-parent] [--topo-order|--date-order] [<REV>...] [--] [PATH...]`.
 
-Purpose: show commit history from HEAD or a revision. Author dates render in git's default format (`Www Mmm D HH:MM:SS YYYY ±HHMM`, in the commit's timezone). `--oneline` prints one compact `<short-id> <subject>` line per commit (short id abbreviated to git's shortest-unique length, 7-char floor) using the same first-parent walk. `-<n>`, `-n <count>`, or `--max-count=<n>` limits the number of commits shown.
+Purpose: show commit history from HEAD or a revision. Author dates render in git's default format (`Www Mmm D HH:MM:SS YYYY ±HHMM`, in the commit's timezone). `--oneline` prints one compact `<short-id> <subject>` line per commit (short id abbreviated to git's shortest-unique length, 7-char floor). `-<n>`, `-n <count>`, or `--max-count=<n>` limits the number of commits shown. Revision selection is the same as `rev-list`'s and shares its implementation: several revisions list their union, ranges (`A..B`, `A...B`) and exclusions (`^X`) work, `--skip`, `--reverse`, `--merges`/`--no-merges`, `--first-parent` and `--topo-order` apply, and paths after `--` limit the history with git's default simplification. The walk follows every parent by default, not only the first.
 
 ### show
 

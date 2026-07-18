@@ -1,0 +1,28 @@
+# A history with a merge, a side branch and tags, so traversal order,
+# --merges/--no-merges, path limiting and ranges all have something to bite
+# on. Each commit gets its own increasing timestamp: the harness pins one
+# date for every commit, which would make git's date-ordered traversal a
+# tie-break artifact rather than a behaviour worth matching.
+c () { # $1 = message, $2 = seconds past the base date
+  GIT_AUTHOR_DATE="$((1700000000 + $2)) +0000" \
+  GIT_COMMITTER_DATE="$((1700000000 + $2)) +0000" \
+  git commit -qm "$1"
+}
+printf 'a\n' > a.txt
+git add -A && c "c1 add a" 10
+printf 'b\n' > b.txt
+git add -A && c "c2 add b" 20
+git tag v1
+git checkout -q -b side
+printf 'side\n' > s.txt
+git add -A && c "c3 side adds s" 30
+printf 'more\n' >> s.txt
+git add -A && c "c4 side edits s" 40
+git checkout -q main
+printf 'a2\n' >> a.txt
+git add -A && c "c5 main edits a" 50
+GIT_AUTHOR_DATE="1700000060 +0000" GIT_COMMITTER_DATE="1700000060 +0000" \
+  git merge -q --no-ff -m "c6 merge side" side
+printf 'a3\n' >> a.txt
+git add -A && c "c7 main edits a again" 70
+git tag -a v2 -m "release two"

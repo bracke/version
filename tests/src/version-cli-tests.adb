@@ -1970,11 +1970,25 @@ package body Version.CLI.Tests is
          "unknown log option: --decorate",
          Log_Usage,
          "log unknown option");
-      Check_Usage_Failure
-        ("log HEAD extra",
-         "too many log arguments",
-         Log_Usage,
-         "log too many arguments");
+      --  git accepts several revisions (`log main side` lists the union), so
+      --  a second operand is not an error. One that names neither a revision
+      --  nor a path is git's die(): "fatal: ambiguous argument", exit 128.
+      declare
+         Output : Ada.Strings.Unbounded.Unbounded_String;
+         Status : Integer;
+      begin
+         Run_CLI_Capture (Root, "log HEAD extra", Output, Status);
+         Assert
+           (Status = 128,
+            "log with an unresolvable operand must exit 128");
+         --  This fixture has no commits, so HEAD is the first operand that
+         --  fails to resolve; the point is the diagnostic and the status,
+         --  not which operand is named.
+         Assert_Contains
+           (Ada.Strings.Unbounded.To_String (Output),
+            "fatal: ambiguous argument",
+            "log unresolvable operand diagnostic");
+      end;
       Check_Usage_Failure
         ("log --oneline --graph",
          "unknown log option: --graph",

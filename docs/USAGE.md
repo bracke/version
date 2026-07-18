@@ -156,8 +156,9 @@ are stored by `version`.
 ## History
 
 ```text
-version log [REV]
-version log --oneline [REV]
+version log [<REV>...] [--] [PATH...]
+version log --oneline [<REV>...]
+version log [--skip=<n>] [--reverse] [--merges|--no-merges] [--first-parent]
 version show [REV]
 version checkout REV
 version checkout REV -- PATHSPEC...

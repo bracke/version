@@ -825,13 +825,16 @@ package body Version.CLI.Help is
          Line ("--cached is a byte-identical alias for --staged.");
       elsif Name = "log" then
          Line ("Usage:");
-         Line ("  version log [REV]");
-         Line ("  version log --oneline [REV]");
+         Line ("  version log [<REV>...] [--] [PATH...]");
+         Line ("  version log --oneline [<REV>...]");
          Line ("  version log --show-signature [REV]");
          Line;
-         Line ("Show commit history from HEAD or a revision.");
+         Line ("Show commit history from HEAD or the given revisions.");
          Line ("Use --oneline for one compact '<short-id> <subject>' line per commit.");
          Line ("Use --show-signature to verify and show each signed commit's signature.");
+         Line ("Ranges (A..B, A...B), exclusions (^X) and path limits work as in git.");
+         Line ("--skip, --reverse, --merges/--no-merges, --first-parent and");
+         Line ("--topo-order select and order the same way rev-list does.");
       elsif Name = "show" then
          Line ("Usage:");
          Line ("  version show [REV]");
