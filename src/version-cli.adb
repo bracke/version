@@ -6703,7 +6703,18 @@ package body Version.CLI is
       Names     : Version.Trailers.String_Vectors.Vector;
       Paths     : Version.Trailers.String_Vectors.Vector;
       Seen_Sep  : Boolean := False;
+
+      --  With an explicit `--`, everything before it is an attribute name;
+      --  without one, git takes a single attribute and treats the rest as
+      --  paths.
+      Has_Sep : Boolean := False;
    begin
+      for I in 2 .. Count loop
+         if Arg (I) = "--" then
+            Has_Sep := True;
+         end if;
+      end loop;
+
       for I in 2 .. Count loop
          declare
             A : constant String := Arg (I);
@@ -6717,18 +6728,13 @@ package body Version.CLI is
                Error_Line ("unknown option: " & A);
                Set_Usage_Failure;
                return;
-            elsif not All_Attrs and then not Seen_Sep and then Paths.Is_Empty
-              and then Names.Is_Empty
+            elsif not All_Attrs and then not Seen_Sep
+              and then (Has_Sep or else Names.Is_Empty)
             then
+               --  Without `--`, git takes exactly one attribute name -- the
+               --  first operand -- and treats everything after it as a path,
+               --  whether or not that path exists.
                Names.Append (A);
-            elsif not All_Attrs and then not Seen_Sep then
-               --  Without `--`, git reads attribute names until the first one
-               --  that names an existing file.
-               if Ada.Directories.Exists (A) then
-                  Paths.Append (A);
-               else
-                  Names.Append (A);
-               end if;
             else
                Paths.Append (A);
             end if;

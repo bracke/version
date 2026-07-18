@@ -2725,6 +2725,55 @@ package body CLI_Integration_Tests is
          raise;
    end Difftool_Sides_Match_Git;
 
+   --  Regression: check-attr treated every leading operand as an attribute
+   --  name, guessing where the paths began by testing which operands named an
+   --  existing file. git is simpler: without `--` the first operand is the one
+   --  attribute and everything after it is a path (existing or not); with
+   --  `--`, everything before it is an attribute.
+   procedure Check_Attr_Operands_Match_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Ada.Directories.Set_Directory (Root);
+
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C GIT_CONFIG_NOSYSTEM=1"
+         & " GIT_AUTHOR_DATE='1700000000 +0000'"
+         & " GIT_COMMITTER_DATE='1700000000 +0000';"
+         & " rm -rf r; mkdir r; ( cd r; git init -q -b main;"
+         & "   git config user.email t@e; git config user.name T;"
+         & "   printf '*.txt text\n*.bin binary\n' > .gitattributes;"
+         & "   printf 'x\n' > a.txt; printf 'y\n' > b.bin;"
+         & "   git add -A; git commit -qm c1;"
+         --  'binary' here is a PATH, not a second attribute
+         & "   git check-attr text binary a.txt > g1 2>&1;"
+         & "   " & CLI & " check-attr text binary a.txt > v1 2>&1;"
+         & "   cmp -s g1 v1;"
+         --  with --, both operands before it are attributes
+         & "   git check-attr text binary -- a.txt b.bin > g2 2>&1;"
+         & "   " & CLI & " check-attr text binary -- a.txt b.bin > v2 2>&1;"
+         & "   cmp -s g2 v2;"
+         --  a path that does not exist is still a path
+         & "   git check-attr text nope.txt > g3 2>&1;"
+         & "   " & CLI & " check-attr text nope.txt > v3 2>&1;"
+         & "   cmp -s g3 v3;"
+         & "   git check-attr -a a.txt b.bin > g4 2>&1;"
+         & "   " & CLI & " check-attr -a a.txt b.bin > v4 2>&1;"
+         & "   cmp -s g4 v4 )");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Check_Attr_Operands_Match_Git;
+
    --  Byte-oracle the remaining plumbing: var, count-objects, rev-parse @{n},
    --  name-rev, and for-each-ref %(upstream).
    procedure Extra_Plumbing_Matches_Git
@@ -5996,6 +6045,9 @@ package body CLI_Integration_Tests is
       Register_Routine
         (T, Difftool_Sides_Match_Git'Access,
          "difftool compares index/worktree and HEAD/index like git");
+      Register_Routine
+        (T, Check_Attr_Operands_Match_Git'Access,
+         "check-attr attribute/path operand split matches git");
       Register_Routine
         (T, Format_Patch_Mbox_Matches_Git'Access,
          "format-patch mbox (diffstat, -<n>, separators) matches git");
