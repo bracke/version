@@ -446,6 +446,19 @@ Low-level commands over the object/ref/index store, intended for scripts. Output
 - `version for-each-ref [PATTERN]` — list `<oid> <objecttype>\t<refname>` for branches and tags, optionally filtered by a refname prefix.
 - `version rev-list [--count] [--all|--branches|--tags] [--max-count=<n>|-n <n>|-<n>] [--skip=<n>] [--reverse] [--merges|--no-merges] [--min-parents=<n>] [--max-parents=<n>] [--first-parent] [--parents] [--oneline] [--objects] [--topo-order|--date-order] <REV>... [--] [PATH...]` — list (or count) commits reachable from the given revisions. Revisions may be ranges (`A..B`, `A...B`) or exclusions (`^X`). Output is newest-first in committer-date order, git's default; `--topo-order` keeps a line of development contiguous instead. `--objects` also lists the trees and blobs the commits reach, each with the path it appears under (empty for a root tree). Paths after `--` limit the walk with git's default history simplification.
 
+## git command names
+
+`version` names four commands differently from git. Git's spelling is accepted for each and dispatches to ours:
+
+| git | `version` |
+|---|---|
+| `add` | `stage` |
+| `commit` | `save` |
+| `rm` | `remove` |
+| `fsck` | `verify` |
+
+These are convenience aliases for the command *name* only. The aliased commands keep this CLI's flags and output, which differ from git's: `stage` and `remove` report what they did where git is silent, `verify` prints an object count, and git-only flags such as `add -A`/`-u`/`-n`, `rm -r`/`--cached`/`-n`, and `commit -a`/`--allow-empty` are not accepted. Do not read `version add` as `git add`.
+
 ## History
 
 ### log

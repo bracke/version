@@ -176,6 +176,18 @@ package body Version.CLI is
       return Error_Output_Text ("expected: " & Text);
    end Expected_Output_Text;
 
+   function Canonical_Command (Name : String) return String is
+   begin
+      --  These four are the names a git user reaches for first; refusing
+      --  them is a parity gap with no upside.
+      return
+        (if Name = "add" then "stage"
+         elsif Name = "commit" then "save"
+         elsif Name = "rm" then "remove"
+         elsif Name = "fsck" then "verify"
+         else Name);
+   end Canonical_Command;
+
    function Unknown_Command_Output_Text (Command : String) return String is
    begin
       return Error_Output_Text ("unknown command: " & Command);
@@ -7609,7 +7621,7 @@ package body Version.CLI is
       end if;
 
       declare
-         Command : constant String := Arg (1);
+         Command : constant String := Canonical_Command (Arg (1));
       begin
          if Is_Help_Option (Command) then
             if Count /= 1 then
@@ -7624,8 +7636,10 @@ package body Version.CLI is
                Print_Usage;
 
             elsif Count = 2 then
-               if Version.CLI.Help.Known_Command (Arg (2)) then
-                  Version.CLI.Help.Print_Command (Arg (2));
+               if Version.CLI.Help.Known_Command
+                    (Canonical_Command (Arg (2)))
+               then
+                  Version.CLI.Help.Print_Command (Canonical_Command (Arg (2)));
                else
                   Error_Line ("unknown command: " & Arg (2));
                   Set_Usage_Failure;

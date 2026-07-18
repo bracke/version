@@ -755,6 +755,31 @@ package body Version.CLI.Tests is
          "log oneline command help");
    end CLI_Command_Help_Output_Is_Frozen;
 
+   procedure CLI_Git_Command_Names_Are_Accepted
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      pragma Unreferenced (T);
+   begin
+      --  Four commands this CLI names differently from git. The git spelling
+      --  maps onto ours; it is a convenience alias, not a promise that the
+      --  command's flags or output match git's.
+      Assert
+        (Version.CLI.Canonical_Command ("add") = "stage",
+         "add must map to stage");
+      Assert
+        (Version.CLI.Canonical_Command ("commit") = "save",
+         "commit must map to save");
+      Assert
+        (Version.CLI.Canonical_Command ("rm") = "remove",
+         "rm must map to remove");
+      Assert
+        (Version.CLI.Canonical_Command ("fsck") = "verify",
+         "fsck must map to verify");
+      Assert
+        (Version.CLI.Canonical_Command ("status") = "status",
+         "an unaliased command name must pass through unchanged");
+   end CLI_Git_Command_Names_Are_Accepted;
+
    procedure CLI_Usage_And_Unknown_Output_Are_Frozen
      (T : in out AUnit.Test_Cases.Test_Case'Class)
    is
@@ -5389,6 +5414,11 @@ package body Version.CLI.Tests is
         (T,
          Help_Knows_Stable_Command_Surface'Access,
          "CLI: help knows stable command surface");
+
+      Register_Routine
+        (T,
+         CLI_Git_Command_Names_Are_Accepted'Access,
+         "CLI: git's names for add/commit/rm/fsck are accepted");
 
       Register_Routine
         (T,

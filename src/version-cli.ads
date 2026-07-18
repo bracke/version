@@ -20,6 +20,11 @@ package Version.CLI is
 
    function Is_Help_Option (Text : String) return Boolean;
 
+   function Canonical_Command (Name : String) return String;
+   --  This CLI names four commands differently from git; map git's spelling
+   --  onto ours (add -> stage, commit -> save, rm -> remove, fsck -> verify)
+   --  so both are accepted. Any other name is returned unchanged.
+
    function Is_Command_Help_Request
      (Command : String;
       Option  : String;
