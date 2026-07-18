@@ -2393,6 +2393,56 @@ package body CLI_Integration_Tests is
          raise;
    end Diff_Files_And_Ls_Tree_Pathspecs_Match_Git;
 
+   --  Regression: ls-remote ignored --refs (it still printed HEAD and the
+   --  peeled "^{}" entries git suppresses) and never matched its pattern
+   --  operands, returning nothing for `ls-remote <repo> v1*`. git turns each
+   --  pattern into "*/<pattern>" and wildmatches it against "/<refname>",
+   --  where `*` crosses slashes -- and matches the full name, so a pattern
+   --  ending before "^{}" excludes the peeled line.
+   procedure Ls_Remote_Refs_And_Patterns_Match_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Ada.Directories.Set_Directory (Root);
+
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C GIT_CONFIG_NOSYSTEM=1"
+         & " GIT_AUTHOR_DATE='1700000000 +0000'"
+         & " GIT_COMMITTER_DATE='1700000000 +0000';"
+         & " rm -rf src; mkdir src; ( cd src; git init -q -b main;"
+         & "   git config user.email t@e; git config user.name T;"
+         & "   printf 'a\n' > f; git add -A; git commit -qm c1;"
+         & "   git tag v1.0; git tag -a v2.0 -m two;"
+         & "   git branch feature; git branch release/1 );"
+         & " for a in '' '--refs' '--tags' '--tags --refs' '--heads'"
+         & "          '--heads --refs'; do"
+         & "   git ls-remote $a src > g.out;"
+         & "   " & CLI & " ls-remote $a src > v.out;"
+         & "   cmp -s g.out v.out || { echo ""flags [$a]""; exit 1; };"
+         & " done;"
+         & " for p in 'v1*' 'refs/tags/v*' feature 'release/*' '*/1' 'nope*'"
+         & "          'v?.0' '*.0'; do"
+         & "   git ls-remote src ""$p"" > g.out;"
+         & "   " & CLI & " ls-remote src ""$p"" > v.out;"
+         & "   cmp -s g.out v.out || { echo ""pattern [$p]""; exit 1; };"
+         & "   git ls-remote --refs src ""$p"" > g.out;"
+         & "   " & CLI & " ls-remote --refs src ""$p"" > v.out;"
+         & "   cmp -s g.out v.out || { echo ""refs [$p]""; exit 1; };"
+         & " done");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Ls_Remote_Refs_And_Patterns_Match_Git;
+
    --  Byte-oracle the remaining plumbing: var, count-objects, rev-parse @{n},
    --  name-rev, and for-each-ref %(upstream).
    procedure Extra_Plumbing_Matches_Git
@@ -5643,6 +5693,9 @@ package body CLI_Integration_Tests is
       Register_Routine
         (T, Diff_Files_And_Ls_Tree_Pathspecs_Match_Git'Access,
          "diff-files/ls-tree pathspec operands match git");
+      Register_Routine
+        (T, Ls_Remote_Refs_And_Patterns_Match_Git'Access,
+         "ls-remote --refs and ref patterns match git");
       Register_Routine
         (T, Format_Patch_Mbox_Matches_Git'Access,
          "format-patch mbox (diffstat, -<n>, separators) matches git");

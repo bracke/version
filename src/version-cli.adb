@@ -6402,6 +6402,7 @@ package body Version.CLI is
       Heads : Boolean := False;
       Tags  : Boolean := False;
       Exit_Code : Boolean := False;
+      Refs_Only : Boolean := False;
       Remote : Unbounded_String;
       Patterns : Version.Trailers.String_Vectors.Vector;
    begin
@@ -6418,7 +6419,7 @@ package body Version.CLI is
             elsif A = "-q" or else A = "--quiet" then
                null;
             elsif A = "--refs" then
-               null;
+               Refs_Only := True;
             elsif A'Length > 0 and then A (A'First) = '-' then
                Error_Line ("unknown option: " & A);
                Set_Usage_Failure;
@@ -6459,6 +6460,37 @@ package body Version.CLI is
             end if;
          end Wanted;
 
+         --  git's tail_match: every pattern becomes "*/<pattern>" and is
+         --  wildmatched against "/<refname>", with `*` crossing slashes. So
+         --  "v1*" finds refs/tags/v1.0 and "refs/tags/v*" finds them all.
+         function Wild (Pattern, Text : String) return Boolean is
+            function Match (PI, TI : Natural) return Boolean is
+            begin
+               if PI > Pattern'Last then
+                  return TI > Text'Last;
+               end if;
+
+               case Pattern (PI) is
+                  when '*' =>
+                     --  Try every split; `*` is allowed to span separators.
+                     for K in TI - 1 .. Text'Last loop
+                        if Match (PI + 1, K + 1) then
+                           return True;
+                        end if;
+                     end loop;
+                     return False;
+                  when '?' =>
+                     return TI <= Text'Last and then Match (PI + 1, TI + 1);
+                  when others =>
+                     return TI <= Text'Last
+                       and then Pattern (PI) = Text (TI)
+                       and then Match (PI + 1, TI + 1);
+               end case;
+            end Match;
+         begin
+            return Match (Pattern'First, Text'First);
+         end Wild;
+
          function Selected (Name : String) return Boolean is
          begin
             if Patterns.Is_Empty then
@@ -6466,12 +6498,7 @@ package body Version.CLI is
             end if;
 
             for P of Patterns loop
-               --  git matches a pattern against the tail of the ref name.
-               if Name = P
-                 or else (Name'Length > P'Length
-                          and then Name (Name'Last - P'Length .. Name'Last)
-                                   = "/" & P)
-               then
+               if Wild ("*/" & P, "/" & Name) then
                   return True;
                end if;
             end loop;
@@ -6488,7 +6515,11 @@ package body Version.CLI is
                     and then Name (Name'Last - 2 .. Name'Last) = "^{}"
                   then Name (Name'First .. Name'Last - 3) else Name);
             begin
-               if Wanted (Name) and then Selected (Bare) then
+               if Refs_Only
+                 and then (Name = "HEAD" or else Name /= Bare)
+               then
+                  null;   --  --refs hides HEAD and peeled "^{}" entries
+               elsif Wanted (Name) and then Selected (Name) then
                   Success_Line
                     (Version.Objects.To_String (R.Id) & ASCII.HT & Name);
                   Shown := Shown + 1;
