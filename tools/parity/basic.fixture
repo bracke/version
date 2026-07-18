@@ -1,0 +1,11 @@
+mkdir -p sub
+printf 'l1\nl2\nl3\n' > tracked.txt
+printf 'x\n' > sub/nested.txt
+git add -A && git commit -qm "first commit"
+printf 'l1\nCHANGED\nl3\n' > tracked.txt
+printf 'staged\n' > staged.txt && git add staged.txt
+printf 'untracked\n' > untracked.txt
+printf 'ign\n' > ignored.log
+printf '*.log\n' > .gitignore && git add .gitignore && git commit -qm "second commit"
+git tag v1 && git tag -a v2 -m annotated
+git branch feature

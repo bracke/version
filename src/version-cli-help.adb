@@ -198,8 +198,9 @@ package body Version.CLI.Help is
          Append_Line (Text, "Usage:");
          Append_Line
            (Text,
-            "  version status [--porcelain|--short|--branch] " &
-            "[--ignored[=MODE]] [--] [PATHSPEC...]");
+            "  version status [--porcelain[=v1]|--short|--long] " &
+            "[--branch] [--ignored[=MODE]] " &
+            "[--untracked-files[=MODE]] [--] [PATHSPEC...]");
          Append_Line (Text);
          Append_Line
            (Text,
@@ -770,8 +771,9 @@ package body Version.CLI.Help is
       elsif Name = "status" then
          Line ("Usage:");
          Line
-           ("  version status [--porcelain|--short|--branch] " &
-            "[--ignored[=MODE]] [--] [PATHSPEC...]");
+           ("  version status [--porcelain[=v1]|--short|--long] " &
+            "[--branch] [--ignored[=MODE]] " &
+            "[--untracked-files[=MODE]] [--] [PATHSPEC...]");
          Line;
          Line
            ("Show deterministic working tree and index status, optionally filtered by pathspec.");

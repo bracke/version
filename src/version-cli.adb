@@ -7698,9 +7698,17 @@ package body Version.CLI is
          elsif Command = "status" then
             declare
                Usage        : constant String :=
-                 "version status [--porcelain|--short|--branch] "
-                 & "[--ignored[=MODE]] [--] [PATHSPEC...]";
+                 "version status [--porcelain[=v1]|--short|--long] [--branch] "
+                 & "[--ignored[=MODE]] [--untracked-files[=MODE]]"
+                 & " [--] [PATHSPEC...]";
                Mode         : Natural := 0;
+               --  git treats --branch as a modifier on the short/porcelain
+               --  formats, not as a format of its own.
+               Show_Branch  : Boolean := False;
+               --  git's -z frames porcelain records with NUL instead of LF,
+               --  and -uno drops untracked files from the report entirely.
+               Nul_Records  : Boolean := False;
+               No_Untracked : Boolean := False;
                Include_Ignored : Boolean := False;
                All_Untracked   : Boolean := False;
                Ignored_Mode : Version.Status.Ignored_Display_Mode :=
@@ -7715,7 +7723,10 @@ package body Version.CLI is
                         if I < Count then
                            Path_First := I + 1;
                         end if;
-                     elsif not Has_Separator and then Arg (I) = "--porcelain" then
+                     elsif not Has_Separator
+                       and then (Arg (I) = "--porcelain"
+                                 or else Arg (I) = "--porcelain=v1")
+                     then
                         if Mode /= 0 then
                            Usage_Error
                              ("duplicate status mode option: " & Arg (I), Usage);
@@ -7734,12 +7745,15 @@ package body Version.CLI is
                      elsif not Has_Separator
                        and then (Arg (I) = "--branch" or else Arg (I) = "-b")
                      then
+                        Show_Branch := True;
+                     elsif not Has_Separator and then Arg (I) = "--long" then
+                        --  git's default format, spelled explicitly.
                         if Mode /= 0 then
                            Usage_Error
                              ("duplicate status mode option: " & Arg (I), Usage);
                            return;
                         end if;
-                        Mode := 3;
+                        Mode := 4;
                      elsif not Has_Separator and then Arg (I) = "--ignored" then
                         Include_Ignored := True;
                         Ignored_Mode := Version.Status.Ignored_Traditional;
@@ -7779,6 +7793,14 @@ package body Version.CLI is
                      then
                         All_Untracked := False;
                      elsif not Has_Separator
+                       and then (Arg (I) = "-uno"
+                                 or else Arg (I) = "--untracked-files=no")
+                     then
+                        No_Untracked := True;
+                        All_Untracked := False;
+                     elsif not Has_Separator and then Arg (I) = "-z" then
+                        Nul_Records := True;
+                     elsif not Has_Separator
                        and then Arg (I)'Length > 0
                        and then Arg (I) (Arg (I)'First) = '-'
                      then
@@ -7788,6 +7810,67 @@ package body Version.CLI is
                         Path_First := I;
                      end if;
                   end loop;
+               end if;
+
+               --  --branch on top of the short or porcelain format is what
+               --  Print_Branch_Status renders; on its own it is git's short
+               --  format with the header.
+               if Show_Branch and then (Mode = 0 or else Mode = 1 or else Mode = 2)
+               then
+                  Mode := 3;
+               end if;
+
+               --  --long is the default long format.
+               if Mode = 4 then
+                  Mode := 0;
+               end if;
+
+               --  -z and -uno are shaping options the Print_* helpers do not
+               --  take, so render through the public text builders instead.
+               if (Nul_Records or else No_Untracked)
+                 and then (Mode = 1 or else Mode = 2 or else Mode = 3)
+                 and then not Has_Separator
+               then
+                  declare
+                     Result : Version.Status.Status_Result :=
+                       (if Include_Ignored
+                        then Version.Status.Current_Status_With_Ignored
+                               (Ignored_Mode, All_Untracked)
+                        else Version.Status.Current_Status (All_Untracked));
+                  begin
+                     if No_Untracked then
+                        Result.Untracked.Clear;
+                     end if;
+
+                     declare
+                        Text : constant String :=
+                          (if Mode = 1
+                           then Version.Status.Porcelain_Status_Text
+                                  (Result, Include_Ignored)
+                           elsif Mode = 2
+                           then Version.Status.Short_Status_Text
+                                  (Result, Include_Ignored)
+                           else Version.Status.Branch_Status_Text
+                                  (Result, Include_Ignored));
+                     begin
+                        if Nul_Records then
+                           --  Every record terminator becomes a NUL.
+                           declare
+                              Framed : String := Text;
+                           begin
+                              for I in Framed'Range loop
+                                 if Framed (I) = ASCII.LF then
+                                    Framed (I) := ASCII.NUL;
+                                 end if;
+                              end loop;
+                              Version.Console.Put (Framed);
+                           end;
+                        else
+                           Version.Console.Put (Text);
+                        end if;
+                     end;
+                  end;
+                  return;
                end if;
 
                if Has_Separator and then not Has_Path_Argument (Path_First) then

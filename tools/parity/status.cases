@@ -1,0 +1,16 @@
+status
+status --short
+status --porcelain
+status --porcelain=v1
+status --short --branch
+status --porcelain --branch
+status --long
+status --short --untracked-files=no
+status --porcelain --untracked-files=all
+status --short --ignored
+status --porcelain -z
+status -uno
+status --short -uno
+status --porcelain --untracked-files=no
+status -s -z
+status --porcelain -z --branch

@@ -868,7 +868,8 @@ package body Version.CLI.Tests is
          "porcelain status ignored entries must remain stable when requested");
       Assert_Contains
         (Version.CLI.Help.Command_Text ("status"),
-         "version status [--porcelain|--short|--branch] [--ignored[=MODE]]",
+         "version status [--porcelain[=v1]|--short|--long] [--branch]"
+         & " [--ignored[=MODE]] [--untracked-files[=MODE]]",
          "status help porcelain, short, branch, and ignored form");
       Assert_Contains
         (Version.CLI.Help.Command_Text ("status"),
@@ -1840,7 +1841,8 @@ package body Version.CLI.Tests is
       Root : constant String :=
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Status_Usage : constant String :=
-        "version status [--porcelain|--short|--branch] [--ignored[=MODE]] [--] [PATHSPEC...]";
+        "version status [--porcelain[=v1]|--short|--long] [--branch]"
+        & " [--ignored[=MODE]] [--untracked-files[=MODE]] [--] [PATHSPEC...]";
       Diff_Usage : constant String :=
         "version diff [--stat|--name-only|--name-status]"
         & " [--staged|--cached] [--] [PATHSPEC...]"
@@ -1900,9 +1902,11 @@ package body Version.CLI.Tests is
          "missing status pathspec",
          Status_Usage,
          "status separator only after mode");
+      --  --branch is a modifier in git, not a format, so it no longer
+      --  conflicts; two real formats still do.
       Check_Usage_Failure
-        ("status --short --branch",
-         "duplicate status mode option: --branch",
+        ("status --short --porcelain",
+         "duplicate status mode option: --porcelain",
          Status_Usage,
          "status second mode rejected");
 
