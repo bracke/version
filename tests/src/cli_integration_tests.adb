@@ -1964,6 +1964,66 @@ package body CLI_Integration_Tests is
          raise;
    end Clone_Config_Excludes_Global;
 
+   --  Regression: mailsplit. A directory operand is a Maildir (cur/ then new/,
+   --  dotfiles skipped, filenames in git's natural order so "2" precedes
+   --  "10") -- feeding one to Read_Binary_File previously exhausted the heap.
+   --  Every CRLF line ending becomes LF unless --keep-cr, an empty mailbox is
+   --  an error, and a mailbox whose first line is not a "From " line is
+   --  "corrupt mailbox" unless -b.
+   procedure Mailsplit_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Ada.Directories.Set_Directory (Root);
+
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C GIT_CONFIG_NOSYSTEM=1;"
+         & " rm -rf M g o; mkdir -p M/cur M/new g o;"
+         --  CRLF in one message, natural-order names, and a skipped dotfile
+         & " printf 'From: a@b\r\nSubject: one\r\n\r\nbody\r\n'"
+         & "   > M/cur/2;"
+         & " printf 'From: c@d\nSubject: two\n\nbody two\n' > M/cur/10;"
+         & " printf 'From: e@f\nSubject: three\n\nbody 3\n' > M/new/1;"
+         & " printf 'hidden\n' > M/cur/.skip;"
+         & " git mailsplit -og M > g.count;"
+         & " " & CLI & " mailsplit -oo M > o.count;"
+         & " cmp -s g.count o.count;"
+         & " for f in 0001 0002 0003; do cmp -s g/$f o/$f; done;"
+         --  --keep-cr leaves the CRLF alone, as git does
+         & " rm -rf g2 o2; mkdir g2 o2;"
+         & " printf 'From x Mon Sep 17 00:00:00 2001\r\nA: b\r\n\r\nc\r\n'"
+         & "   > crlf.mbox;"
+         & " git mailsplit --keep-cr -og2 crlf.mbox > /dev/null;"
+         & " " & CLI & " mailsplit --keep-cr -oo2 crlf.mbox > /dev/null;"
+         & " cmp -s g2/0001 o2/0001;"
+         --  an empty mailbox is an error, with git's two lines and exit 1
+         & " : > empty.mbox; rm -rf o3; mkdir o3;"
+         & " rc=0; " & CLI & " mailsplit -oo3 empty.mbox > /dev/null 2> e.err"
+         & "   || rc=$?;"
+         & " test $rc -eq 1;"
+         & " grep -q ""^error: empty mbox: .empty.mbox.$"" e.err;"
+         & " grep -q ""^error: cannot split patches from empty.mbox$"" e.err;"
+         --  a bare mailbox is corrupt without -b, accepted with it
+         & " printf 'not a from line\nblah\n' > bare.mbox;"
+         & " rm -rf o4 o5; mkdir o4 o5;"
+         & " rc=0; " & CLI & " mailsplit -oo4 bare.mbox > /dev/null 2> b.err"
+         & "   || rc=$?;"
+         & " test $rc -eq 1; grep -q ""^corrupt mailbox$"" b.err;"
+         & " " & CLI & " mailsplit -b -oo5 bare.mbox > /dev/null");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Mailsplit_Matches_Git;
+
    --  Byte-oracle the remaining plumbing: var, count-objects, rev-parse @{n},
    --  name-rev, and for-each-ref %(upstream).
    procedure Extra_Plumbing_Matches_Git
@@ -5190,6 +5250,9 @@ package body CLI_Integration_Tests is
       Register_Routine
         (T, Clone_Config_Excludes_Global'Access,
          "clone config excludes the global config and matches git");
+      Register_Routine
+        (T, Mailsplit_Matches_Git'Access,
+         "mailsplit: Maildir, CRLF, empty and bare mailboxes match git");
       Register_Routine
         (T, Format_Patch_Mbox_Matches_Git'Access,
          "format-patch mbox (diffstat, -<n>, separators) matches git");

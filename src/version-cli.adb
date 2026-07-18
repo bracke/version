@@ -5437,10 +5437,86 @@ package body Version.CLI is
    --  `mailsplit [-o<dir>] [-b] [<mbox>...]` -- one file per message, numbered
    --  from 1; the count goes to stdout.
    procedure Run_Mailsplit_Command is
-      Out_Dir : Unbounded_String := To_Unbounded_String (".");
-      Inputs  : Version.Trailers.String_Vectors.Vector;
-      Text    : Unbounded_String;
-      Written : Natural := 0;
+      Out_Dir    : Unbounded_String := To_Unbounded_String (".");
+      Inputs     : Version.Trailers.String_Vectors.Vector;
+      Text       : Unbounded_String;
+      Written    : Natural := 0;
+      Keep_CR    : Boolean := False;
+      Allow_Bare : Boolean := False;
+      Failed     : Boolean := False;
+
+      --  git's is_from_line: "From <who> <hh:mm:ss> <year>", loosely checked.
+      function Is_From_Line (Line : String) return Boolean is
+         Colon : Integer;
+      begin
+         if Line'Length < 20
+           or else Line (Line'First .. Line'First + 4) /= "From "
+         then
+            return False;
+         end if;
+
+         --  Scan back from the line's end for the time's ':'.
+         Colon := Line'Last - 1;
+         loop
+            if Colon < Line'First + 5 then
+               return False;
+            end if;
+            Colon := Colon - 1;
+            exit when Line (Colon) = ':';
+         end loop;
+
+         if Colon - 4 < Line'First or else Colon + 2 > Line'Last then
+            return False;
+         end if;
+         if Line (Colon - 4) not in '0' .. '9'
+           or else Line (Colon - 2) not in '0' .. '9'
+           or else Line (Colon - 1) not in '0' .. '9'
+           or else Line (Colon + 1) not in '0' .. '9'
+           or else Line (Colon + 2) not in '0' .. '9'
+         then
+            return False;
+         end if;
+
+         --  Year must look later than 1990.
+         declare
+            Rest : constant String := Line (Colon + 3 .. Line'Last);
+            Year : Natural := 0;
+            K    : Natural := Rest'First;
+         begin
+            while K <= Rest'Last and then Rest (K) = ' ' loop
+               K := K + 1;
+            end loop;
+            while K <= Rest'Last and then Rest (K) in '0' .. '9' loop
+               Year := Year * 10 + (Character'Pos (Rest (K))
+                                    - Character'Pos ('0'));
+               K := K + 1;
+            end loop;
+            return Year > 90;
+         end;
+      end Is_From_Line;
+
+      --  git rewrites every CRLF line ending as LF unless --keep-cr.
+      function Strip_CR (Mail : String) return String is
+         Result : Unbounded_String;
+         I      : Natural := Mail'First;
+      begin
+         if Keep_CR then
+            return Mail;
+         end if;
+         while I <= Mail'Last loop
+            if Mail (I) = ASCII.CR
+              and then I < Mail'Last
+              and then Mail (I + 1) = ASCII.LF
+            then
+               Append (Result, ASCII.LF);
+               I := I + 2;
+            else
+               Append (Result, Mail (I));
+               I := I + 1;
+            end if;
+         end loop;
+         return To_String (Result);
+      end Strip_CR;
    begin
       for I in 2 .. Count loop
          declare
@@ -5448,7 +5524,11 @@ package body Version.CLI is
          begin
             if A'Length > 2 and then A (A'First .. A'First + 1) = "-o" then
                Out_Dir := To_Unbounded_String (A (A'First + 2 .. A'Last));
-            elsif A = "-b" or else A = "-f" or else A = "-d" then
+            elsif A = "--keep-cr" then
+               Keep_CR := True;
+            elsif A = "-b" then
+               Allow_Bare := True;
+            elsif A = "-f" or else A = "-d" then
                null;
             elsif A'Length > 0 and then A (A'First) = '-' then
                null;
@@ -5458,33 +5538,188 @@ package body Version.CLI is
          end;
       end loop;
 
-      if Inputs.Is_Empty then
-         Text := To_Unbounded_String (Read_All_Stdin);
-      else
-         for Path of Inputs loop
-            Append (Text, Version.Files.Read_Binary_File (Path));
-         end loop;
-      end if;
-
       Version.Files.Create_Directory_If_Missing (To_String (Out_Dir));
 
-      for Mail of Version.Mailbox.Split (To_String (Text)) loop
-         Written := Written + 1;
-
-         declare
+      declare
+         --  Write one message, numbered from 1 across every input.
+         procedure Emit (Mail : String) is
             N    : constant String :=
-              Ada.Strings.Fixed.Trim (Natural'Image (Written),
+              Ada.Strings.Fixed.Trim (Natural'Image (Written + 1),
                                       Ada.Strings.Both);
             Name : constant String :=
               [1 .. 4 - N'Length => '0'] & N;
          begin
+            Written := Written + 1;
             Version.Files.Write_Binary_File
-              (Version.Files.Join (To_String (Out_Dir), Name), Mail);
-         end;
-      end loop;
+              (Version.Files.Join (To_String (Out_Dir), Name),
+               Strip_CR (Mail));
+         end Emit;
 
-      Success_Line
-        (Ada.Strings.Fixed.Trim (Natural'Image (Written), Ada.Strings.Both));
+         --  git's maildir_filename_cmp: runs of digits compare numerically,
+         --  so "2" sorts before "10".
+         function Maildir_Less (Left, Right : String) return Boolean is
+            I : Natural := Left'First;
+            J : Natural := Right'First;
+         begin
+            while I <= Left'Last and then J <= Right'Last loop
+               if Left (I) in '0' .. '9' and then Right (J) in '0' .. '9' then
+                  declare
+                     IS_E : Natural := I;
+                     JS_E : Natural := J;
+                     LV, RV : Natural := 0;
+                  begin
+                     while IS_E <= Left'Last
+                       and then Left (IS_E) in '0' .. '9'
+                     loop
+                        IS_E := IS_E + 1;
+                     end loop;
+                     while JS_E <= Right'Last
+                       and then Right (JS_E) in '0' .. '9'
+                     loop
+                        JS_E := JS_E + 1;
+                     end loop;
+                     --  Oversized runs cannot be compared as numbers; fall
+                     --  back to the textual order for them.
+                     if IS_E - I <= 9 and then JS_E - J <= 9 then
+                        LV := Natural'Value (Left (I .. IS_E - 1));
+                        RV := Natural'Value (Right (J .. JS_E - 1));
+                        if LV /= RV then
+                           return LV < RV;
+                        end if;
+                     elsif Left (I .. IS_E - 1) /= Right (J .. JS_E - 1) then
+                        return Left (I .. IS_E - 1) < Right (J .. JS_E - 1);
+                     end if;
+                     I := IS_E;
+                     J := JS_E;
+                  end;
+               else
+                  if Left (I) /= Right (J) then
+                     return Left (I) < Right (J);
+                  end if;
+                  I := I + 1;
+                  J := J + 1;
+               end if;
+            end loop;
+
+            return Left'Last - I < Right'Last - J;
+         end Maildir_Less;
+
+         --  git treats a directory operand as a Maildir: every file under
+         --  cur/ then new/ is one message, dotfiles skipped.
+         --  git scans cur/ then new/.
+         Sub_Names : constant array (1 .. 2) of Unbounded_String :=
+           [To_Unbounded_String ("cur"), To_Unbounded_String ("new")];
+
+         procedure Split_Maildir (Root : String) is
+            package Sorting is new
+              Version.Trailers.String_Vectors.Generic_Sorting
+                ("<" => Maildir_Less);
+            Names : Version.Trailers.String_Vectors.Vector;
+         begin
+            for Sub of Sub_Names loop
+               declare
+                  Dir : constant String :=
+                    Version.Files.Join (Root, To_String (Sub));
+               begin
+                  if Ada.Directories.Exists (Dir) then
+                     declare
+                        Search : Ada.Directories.Search_Type;
+                        Item   : Ada.Directories.Directory_Entry_Type;
+                     begin
+                        Ada.Directories.Start_Search
+                          (Search, Dir, "",
+                           [Ada.Directories.Ordinary_File => True,
+                            others => False]);
+                        while Ada.Directories.More_Entries (Search) loop
+                           Ada.Directories.Get_Next_Entry (Search, Item);
+                           declare
+                              Base : constant String :=
+                                Ada.Directories.Simple_Name (Item);
+                           begin
+                              if Base'Length > 0
+                                and then Base (Base'First) /= '.'
+                              then
+                                 Names.Append
+                                   (To_String (Sub) & "/" & Base);
+                              end if;
+                           end;
+                        end loop;
+                        Ada.Directories.End_Search (Search);
+                     end;
+                  end if;
+               end;
+            end loop;
+
+            Sorting.Sort (Names);
+
+            for N of Names loop
+               Emit (Version.Files.Read_Binary_File
+                       (Version.Files.Join (Root, N)));
+            end loop;
+         end Split_Maildir;
+      begin
+         if Inputs.Is_Empty then
+            Text := To_Unbounded_String (Read_All_Stdin);
+            for Mail of Version.Mailbox.Split (To_String (Text)) loop
+               Emit (Mail);
+            end loop;
+         else
+            for Path of Inputs loop
+               exit when Failed;
+               if Ada.Directories.Exists (Path)
+                 and then Ada.Directories.Kind (Path)
+                          = Ada.Directories.Directory
+               then
+                  Split_Maildir (Path);
+               else
+                  declare
+                     Body_Text : constant String :=
+                       Version.Files.Read_Binary_File (Path);
+                     Mails : constant Version.Mailbox.Text_Vectors.Vector :=
+                       Version.Mailbox.Split (Body_Text);
+                     First_Line_End : Natural := Body_Text'Last;
+                  begin
+                     if Body_Text'Length = 0 then
+                        --  git refuses an empty mailbox outright.
+                        Error_Line ("empty mbox: '" & Path & "'");
+                        Error_Line ("cannot split patches from " & Path);
+                        Set_Command_Failure;
+                        Failed := True;
+                     else
+                        for K in Body_Text'Range loop
+                           if Body_Text (K) = ASCII.LF then
+                              First_Line_End := K;
+                              exit;
+                           end if;
+                        end loop;
+
+                        if not Allow_Bare
+                          and then not Is_From_Line
+                                         (Body_Text (Body_Text'First
+                                                     .. First_Line_End))
+                        then
+                           --  git's split_one: a mailbox whose first line is
+                           --  not a "From " line, without -b.
+                           Stderr_Line ("corrupt mailbox");
+                           Set_Command_Failure;
+                           Failed := True;
+                        else
+                           for Mail of Mails loop
+                              Emit (Mail);
+                           end loop;
+                        end if;
+                     end if;
+                  end;
+               end if;
+            end loop;
+         end if;
+      end;
+
+      if not Failed then
+         Success_Line
+           (Ada.Strings.Fixed.Trim (Natural'Image (Written),
+                                    Ada.Strings.Both));
+      end if;
    exception
       when E : Ada.IO_Exceptions.Name_Error | Ada.IO_Exceptions.Use_Error =>
          Error_Line (Ada.Exceptions.Exception_Message (E));
