@@ -1,0 +1,11 @@
+# A tree with content above, at and below a subdirectory, so a run from sub/
+# exercises pathspecs that stay inside it, reach above it, and escape to the
+# repository root.
+mkdir -p sub/deep
+printf 'r\n' > root.txt
+printf 'n\n' > sub/nested.txt
+printf 'd\n' > sub/deep/deeper.txt
+git add -A && git commit -qm base
+printf 'changed\n' > root.txt
+printf 'changed\n' > sub/nested.txt
+printf 'u\n' > sub/untracked.txt

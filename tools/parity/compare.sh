@@ -7,6 +7,11 @@
 # case file holds one argument line per case. Each case runs in its own pair
 # of pristine clones of the fixture, so cases cannot contaminate each other.
 #
+# Set SUBDIR to run every case from that directory inside the repo instead of
+# from the root. git resolves pathspecs against the current directory and
+# relativises some output to it, so a harness that only ever runs at the root
+# cannot see either behaviour.
+#
 # HOME is isolated: the user's ~/.gitconfig sets diff.algorithm=histogram and
 # merge.conflictstyle=diff3, which silently changes git's output and has
 # faked "bugs" before.
@@ -28,8 +33,8 @@ while IFS= read -r line; do
   case "$line" in ''|\#*) continue ;; esac
   n=$((n+1))
   build "$WORK/g"; build "$WORK/o"
-  ( cd "$WORK/g" && eval "git $line"  ) > "$WORK/g.out" 2> "$WORK/g.err"; gr=$?
-  ( cd "$WORK/o" && eval "\"$V\" $line" ) > "$WORK/o.out" 2> "$WORK/o.err"; orr=$?
+  ( cd "$WORK/g/${SUBDIR:-.}" && eval "git $line"  ) > "$WORK/g.out" 2> "$WORK/g.err"; gr=$?
+  ( cd "$WORK/o/${SUBDIR:-.}" && eval "\"$V\" $line" ) > "$WORK/o.out" 2> "$WORK/o.err"; orr=$?
   # Compare stdout and exit status; stderr wording is house style, so only
   # its emptiness is compared.
   # The two fixtures live at different paths, so any absolute path in the
@@ -49,5 +54,6 @@ while IFS= read -r line; do
       "$(wc -l < "$WORK/g.err")" "$(wc -l < "$WORK/o.err")"
   fi
 done < "$CASES"
-printf '%s: %d cases, %d match, %d differ\n' "$(basename "$CASES" .cases)" "$n" "$same" "$diffs"
+printf '%s%s: %d cases, %d match, %d differ\n' "$(basename "$CASES" .cases)" \
+  "${SUBDIR:+ (from $SUBDIR)}" "$n" "$same" "$diffs"
 rm -rf "$WORK" "$H"

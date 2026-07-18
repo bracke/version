@@ -334,15 +334,27 @@ package body Version.CLI is
       return False;
    end Has_Path_Argument;
 
+   function Repo_Prefix return String is
+   begin
+      --  The directory this command was run in, relative to the worktree
+      --  root. git resolves every pathspec against it; outside a repository
+      --  there is nothing to be relative to.
+      return Version.Repository.Prefix (Version.Repository.Open);
+   exception
+      when others =>
+         return "";
+   end Repo_Prefix;
+
    function Pathspecs_From_Args
      (First_Index : Positive) return Version.Pathspec.Pathspec_Vectors.Vector
    is
       Result : Version.Pathspec.Pathspec_Vectors.Vector;
+      Prefix : constant String := Repo_Prefix;
    begin
       if Count >= First_Index then
          for I in First_Index .. Count loop
             if Arg (I) /= "--" then
-               Version.Pathspec.Append_Parse (Result, Arg (I));
+               Version.Pathspec.Append_Parse (Result, Arg (I), Prefix);
             end if;
          end loop;
       end if;
@@ -1097,7 +1109,7 @@ package body Version.CLI is
 
       while I <= Count loop
          if After_Dash_Dash then
-            Version.Pathspec.Append_Parse (Specs, Arg (I));
+            Version.Pathspec.Append_Parse (Specs, Arg (I), Repo_Prefix);
             I := I + 1;
          elsif Arg (I) = "--output" then
             if Output_Explicit then
@@ -1142,7 +1154,7 @@ package body Version.CLI is
             Usage_Error ("unknown archive option: " & Arg (I), Usage);
             return;
          else
-            Version.Pathspec.Append_Parse (Specs, Arg (I));
+            Version.Pathspec.Append_Parse (Specs, Arg (I), Repo_Prefix);
             I := I + 1;
          end if;
       end loop;
@@ -8153,7 +8165,7 @@ package body Version.CLI is
                   if LCount >= First then
                      for I in First .. LCount loop
                         if LArg (I) /= "--" then
-                           Version.Pathspec.Append_Parse (Result, LArg (I));
+                           Version.Pathspec.Append_Parse (Result, LArg (I), Repo_Prefix);
                         end if;
                      end loop;
                   end if;
@@ -8334,6 +8346,23 @@ package body Version.CLI is
                         Version.Console.Put
                           (Version.Diff.Diff_Tree_Vs_Working
                              (Repo, Tree, Opts));
+                     elsif LArg (2)'Length > 0
+                       and then LArg (2) (LArg (2)'First) /= ':'
+                       and then not Ada.Directories.Exists (LArg (2))
+                     then
+                        --  A leading ':' is pathspec magic, so the operand is
+                        --  unambiguously a pathspec and its own validation
+                        --  reports any problem with it.
+                        --  Neither a revision nor a path that exists: git
+                        --  dies here rather than reporting no changes, which
+                        --  is what a typo'd path would otherwise look like.
+                        Ada.Text_IO.Put_Line
+                          (Ada.Text_IO.Standard_Error,
+                           "fatal: ambiguous argument '" & LArg (2)
+                           & "': unknown revision or path not in the "
+                           & "working tree.");
+                        Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                        return;
                      else
                         Version.Console.Put
                           (Version.Diff.Diff_Working_Tree
@@ -12743,7 +12772,7 @@ package body Version.CLI is
                         Usage_Error ("unknown stage option: " & Arg (I), Usage);
                         return;
                      else
-                        Version.Pathspec.Append_Parse (Specs, Arg (I));
+                        Version.Pathspec.Append_Parse (Specs, Arg (I), Repo_Prefix);
                      end if;
                   end loop;
                end if;
@@ -15401,15 +15430,32 @@ package body Version.CLI is
                   return S (S'First + 1 .. S'Last);
                end Img;
 
+               LS_Prefix : constant String := Repo_Prefix;
+
+               function Under_Cwd (Path : String) return Boolean is
+                 (LS_Prefix = ""
+                  or else (Path'Length > LS_Prefix'Length
+                           and then Path (Path'First
+                                          .. Path'First + LS_Prefix'Length - 1)
+                                    = LS_Prefix));
+
                procedure Emit (Path : String) is
                begin
+                  --  ls-files lists the current directory's subtree and shows
+                  --  paths from there, unlike the porcelain formats.
+                  if not Under_Cwd (Path) then
+                     return;
+                  end if;
+
                   if Specs.Is_Empty
                     or else Version.Pathspec.Matches_Any (Specs, Path)
                   then
                      --  git C-quotes a path holding control characters or
                      --  high-bit bytes.
                      Success_Line
-                       (Version.Path_Quoting.Quote_C_Style (Path));
+                       (Version.Path_Quoting.Quote_C_Style
+                          (Version.Files.Relative_To_Prefix
+                             (Path, LS_Prefix)));
                   end if;
                end Emit;
             begin
@@ -15444,7 +15490,7 @@ package body Version.CLI is
                      Bad := True;
                      exit;
                   else
-                     Version.Pathspec.Append_Parse (Specs, Arg (I));
+                     Version.Pathspec.Append_Parse (Specs, Arg (I), Repo_Prefix);
                   end if;
                end loop;
 
@@ -15494,24 +15540,29 @@ package body Version.CLI is
 
                for E of Entries loop
                   if not Bad and then E.Stage = 0
+                    and then Under_Cwd (To_String (E.Path))
                     and then
                       (Specs.Is_Empty
                        or else Version.Pathspec.Matches_Any
                                  (Specs, To_String (E.Path)))
                   then
-                     if Stage_Fmt then
-                        --  git: <mode> SP <object> SP <stage> TAB <path>
-                        Success_Line
-                          (To_String (E.Mode) & " " & To_String (E.Id)
-                           & " " & Img (E.Stage)
-                           & Character'Val (9)
-                           & Version.Path_Quoting.Quote_C_Style
-                               (To_String (E.Path)));
-                     else
-                        Success_Line
-                          (Version.Path_Quoting.Quote_C_Style
-                             (To_String (E.Path)));
-                     end if;
+                     declare
+                        Shown : constant String :=
+                          Version.Path_Quoting.Quote_C_Style
+                            (Version.Files.Relative_To_Prefix
+                               (To_String (E.Path), LS_Prefix));
+                     begin
+                        if Stage_Fmt then
+                           --  git: <mode> SP <object> SP <stage> TAB <path>
+                           Success_Line
+                             (To_String (E.Mode) & " " & To_String (E.Id)
+                              & " " & Img (E.Stage)
+                              & Character'Val (9)
+                              & Shown);
+                        else
+                           Success_Line (Shown);
+                        end if;
+                     end;
                   end if;
                end loop;
             end;
@@ -15540,7 +15591,7 @@ package body Version.CLI is
                   if not Sep and then Arg (I) = "--" then
                      Sep := True;
                   elsif Sep then
-                     Version.Pathspec.Append_Parse (Specs, Arg (I));
+                     Version.Pathspec.Append_Parse (Specs, Arg (I), Repo_Prefix);
                      Raw_Specs.Append (Arg (I));
                   elsif Arg (I) = "-r" then
                      Recursive := True;
@@ -15555,7 +15606,7 @@ package body Version.CLI is
                      Tree_Idx := I;
                   else
                      --  git also takes bare paths after the tree-ish.
-                     Version.Pathspec.Append_Parse (Specs, Arg (I));
+                     Version.Pathspec.Append_Parse (Specs, Arg (I), Repo_Prefix);
                      Raw_Specs.Append (Arg (I));
                   end if;
                   I := I + 1;
@@ -15570,8 +15621,54 @@ package body Version.CLI is
                   declare
                      Repo : constant Version.Repository.Repository_Handle :=
                        Version.Repository.Open;
+
+                     --  ls-tree reads the tree from the directory it was run
+                     --  in, so inside sub/ it lists sub's own entries, named
+                     --  from there. Descending to that subtree gives both at
+                     --  once -- filtering the top-level listing would not,
+                     --  since without -r the entry for sub/ is a single tree.
+                     LT_Prefix : constant String := Repo_Prefix;
+
+                     function Scoped
+                       (Root : Version.Objects.Hex_Object_Id)
+                        return Version.Objects.Hex_Object_Id
+                     is
+                        Current : Version.Objects.Hex_Object_Id := Root;
+                        From    : Positive := LT_Prefix'First;
+                     begin
+                        for I in LT_Prefix'Range loop
+                           if LT_Prefix (I) = '/' then
+                              declare
+                                 Part : constant String :=
+                                   LT_Prefix (From .. I - 1);
+                              begin
+                                 for E of Version.Objects.Tree_Entries
+                                            (Repo, Current)
+                                 loop
+                                    if To_String (E.Path) = Part
+                                      and then E.Kind = Tree_Directory
+                                    then
+                                       Current := E.Id;
+                                    end if;
+                                 end loop;
+
+                                 From := I + 1;
+                              end;
+                           end if;
+                        end loop;
+
+                        return Current;
+                     exception
+                        when others =>
+                           --  The directory is not in this tree; git lists
+                           --  nothing rather than falling back to the root.
+                           return Root;
+                     end Scoped;
+
                      Tree : constant Version.Objects.Hex_Object_Id :=
-                       Version.Revisions.Resolve_Tree (Repo, Arg (Tree_Idx));
+                       Scoped
+                         (Version.Revisions.Resolve_Tree
+                            (Repo, Arg (Tree_Idx)));
                      --  Without -r git still resolves a nested path operand
                      --  ("d/sub") by walking down the tree; a plain top-level
                      --  listing would never contain it.
@@ -15684,8 +15781,11 @@ package body Version.CLI is
                   begin
                      for E of Entries loop
                         if Selected (To_String (E.Path)) then
+                           declare
+                              Shown : constant String := To_String (E.Path);
+                           begin
                            if Name_Only then
-                              Success_Line (To_String (E.Path));
+                              Success_Line (Shown);
                            else
                               Success_Line
                                 (Mode6 (To_String (E.Mode)) & " "
@@ -15694,8 +15794,9 @@ package body Version.CLI is
                                        when Tree_Gitlink   => "commit",
                                        when Tree_Blob      => "blob")
                                  & " " & To_String (E.Id)
-                                 & Character'Val (9) & To_String (E.Path));
+                                 & Character'Val (9) & Shown);
                            end if;
+                           end;
                         end if;
                      end loop;
                   end;
@@ -21934,7 +22035,7 @@ package body Version.CLI is
                      exit;
                   else
                      --  git filters the report by the pathspec operands.
-                     Version.Pathspec.Append_Parse (Specs, Arg (I));
+                     Version.Pathspec.Append_Parse (Specs, Arg (I), Repo_Prefix);
                   end if;
                end loop;
 
@@ -22863,6 +22964,13 @@ package body Version.CLI is
       end;
 
    exception
+      when E : Version.Pathspec.Outside_Repository =>
+         --  git's die() for a pathspec above the worktree root: exit 128,
+         --  not the ordinary failure status.
+         Ada.Text_IO.Put_Line
+           (Ada.Text_IO.Standard_Error, "fatal: " & User_Error_Text (E));
+         Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+
       when
         E :
           Ada.Directories.Name_Error

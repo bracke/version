@@ -446,6 +446,22 @@ Low-level commands over the object/ref/index store, intended for scripts. Output
 - `version for-each-ref [PATTERN]` — list `<oid> <objecttype>\t<refname>` for branches and tags, optionally filtered by a refname prefix.
 - `version rev-list [--count] [--all|--branches|--tags] [--max-count=<n>|-n <n>|-<n>] [--skip=<n>] [--reverse] [--merges|--no-merges] [--min-parents=<n>] [--max-parents=<n>] [--first-parent] [--parents] [--oneline] [--objects] [--topo-order|--date-order] <REV>... [--] [PATH...]` — list (or count) commits reachable from the given revisions. Revisions may be ranges (`A..B`, `A...B`) or exclusions (`^X`). Output is newest-first in committer-date order, git's default; `--topo-order` keeps a line of development contiguous instead. `--objects` also lists the trees and blobs the commits reach, each with the path it appears under (empty for a root tree). Paths after `--` limit the walk with git's default history simplification.
 
+## Running from a subdirectory
+
+Path arguments are resolved against the directory the command runs in, not the worktree root, as git does. `version add nested.txt` inside `sub/` stages `sub/nested.txt`; `..` reaches above the current directory, and `:(top)path` or `:/path` anchors a pathspec at the root instead. A pathspec that climbs above the worktree root is refused with exit 128.
+
+Where paths are *printed*, the split follows git's:
+
+| worktree-relative | relative to the current directory |
+|---|---|
+| `status --porcelain` | `status` (long) |
+| `diff --name-only`, `--name-status`, `--stat` | `status --short` |
+| patch headers (`a/sub/nested.txt`) | `ls-files`, `ls-tree` |
+
+`--porcelain` is the scriptable contract and stays worktree-relative on purpose; `--short` shows the same records to a human and relativises them. `ls-files` and `ls-tree` also limit themselves to the current directory's subtree, as git does.
+
+Commands not listed above have not been checked from a subdirectory and may still assume the worktree root.
+
 ## git command names
 
 `version` names four commands differently from git. Git's spelling is accepted for each and dispatches to ours:

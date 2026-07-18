@@ -1,0 +1,22 @@
+# Input: a pathspec is resolved against the current directory.
+status --porcelain nested.txt
+status --porcelain deep/deeper.txt
+status --porcelain ../root.txt
+diff --name-only nested.txt
+ls-files nested.txt
+# Escaping the prefix with git's magic.
+status --porcelain :(top)root.txt
+status --porcelain :/root.txt
+# Implicit scope: these default to the current directory's subtree.
+ls-files
+ls-files --others
+ls-tree HEAD
+ls-tree -r HEAD
+# Output: machine-readable formats stay repository-relative...
+status --porcelain
+diff --name-only
+diff --name-status
+diff --stat
+# ...while these relativise to the current directory.
+status --short
+status
