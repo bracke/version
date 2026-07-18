@@ -108,6 +108,7 @@ with Version.Stage;
 with Version.Worktrees;
 with Version.Submodules;
 with Version.Timestamps;
+with Version.Name_Rev;
 
 package body Version.CLI is
    use Ada.Strings.Unbounded;
@@ -19086,112 +19087,14 @@ package body Version.CLI is
                Tags_Only : Boolean := False;
                Bad       : Boolean := False;
 
-               --  The nearest ref-based name for Target, walking first-parent
-               --  history from each ref tip (git's common case). Annotated
-               --  tags are rendered "tags/<name>^0"; a positive distance adds
-               --  "~<n>". Returns "undefined" when no ref reaches Target.
+               --  git's name-rev, which walks every parent (a commit
+               --  reachable only through a merge's second parent is named
+               --  "<tip>^2"); see Version.Name_Rev.
                function Best_Name
                  (Repo   : Version.Repository.Repository_Handle;
                   Target : Version.Objects.Hex_Object_Id) return String
-               is
-                  Patterns  : Version.Ref_Format.String_Vectors.Vector;
-                  Best_Depth : Integer := Integer'Last;
-                  Best_Ref   : Unbounded_String;
-               begin
-                  Patterns.Append ("refs/tags/");
-                  if not Tags_Only then
-                     Patterns.Append ("refs/heads/");
-                  end if;
-                  for Refname of Version.Ref_Format.For_Each_Ref
-                    (Repo, Patterns, Format => "%(refname)")
-                  loop
-                     declare
-                        Cur   : Unbounded_String :=
-                          To_Unbounded_String
-                            (To_String
-                               (Version.Revisions.Resolve_Commit
-                                  (Repo, Refname)));
-                        Depth : Integer := 0;
-                        Done  : Boolean := False;
-                     begin
-                        while not Done loop
-                           if Version.Objects.To_Object_Id (To_String (Cur))
-                             = Target
-                           then
-                              --  git prefers a tag over a branch when both
-                              --  reach the commit at the same distance.
-                              declare
-                                 Tag_Pfx : constant String := "refs/tags/";
-                                 function Is_Tag (R : String) return Boolean is
-                                   (R'Length >= Tag_Pfx'Length
-                                    and then R (R'First .. R'First
-                                               + Tag_Pfx'Length - 1)
-                                             = Tag_Pfx);
-                              begin
-                                 if Depth < Best_Depth
-                                   or else (Depth = Best_Depth
-                                            and then Is_Tag (Refname)
-                                            and then not Is_Tag
-                                                       (To_String (Best_Ref)))
-                                 then
-                                    Best_Depth := Depth;
-                                    Best_Ref := To_Unbounded_String (Refname);
-                                 end if;
-                              end;
-                              Done := True;
-                           else
-                              declare
-                                 P : constant String :=
-                                   Version.Objects.Commit_Parent_Id
-                                     (Version.Objects.Read_Object
-                                        (Repo,
-                                         Version.Objects.To_Object_Id
-                                           (To_String (Cur))));
-                              begin
-                                 exit when P'Length = 0 or else Depth > 100_000;
-                                 Cur := To_Unbounded_String (P);
-                                 Depth := Depth + 1;
-                              end;
-                           end if;
-                        end loop;
-                     end;
-                  end loop;
-
-                  if Best_Depth = Integer'Last then
-                     return "undefined";
-                  end if;
-
-                  declare
-                     RN  : constant String := To_String (Best_Ref);
-                     Is_Tag : constant Boolean :=
-                       RN'Length > 10
-                       and then RN (RN'First .. RN'First + 9) = "refs/tags/";
-                     Base : constant String :=
-                       (if RN'Length > 11
-                          and then RN (RN'First .. RN'First + 10) = "refs/heads/"
-                        then RN (RN'First + 11 .. RN'Last)
-                        elsif Is_Tag
-                        then "tags/" & RN (RN'First + 10 .. RN'Last)
-                        else RN);
-                     --  Annotated tag: the ref names a tag object, so ^0 peels
-                     --  it to the commit.
-                     Peel : constant String :=
-                       (if Is_Tag
-                          and then Version.Objects.Kind
-                                     (Version.Objects.Read_Object
-                                        (Repo,
-                                         Version.Refs.Resolve_Ref (Repo, RN)))
-                                   = Version.Objects.Tag_Object
-                        then "^0" else "");
-                  begin
-                     if Best_Depth = 0 then
-                        return Base & Peel;
-                     else
-                        return Base & Peel & "~"
-                          & Natural_Image (Best_Depth);
-                     end if;
-                  end;
-               end Best_Name;
+               is (Version.Name_Rev.Describe_Commit
+                     (Repo, Target, Tags_Only => Tags_Only));
             begin
                for I in 2 .. Count loop
                   if Arg (I) = "--tags" then

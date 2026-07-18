@@ -2024,6 +2024,54 @@ package body CLI_Integration_Tests is
          raise;
    end Mailsplit_Matches_Git;
 
+   --  Regression: name-rev walked first-parent history only, so a commit
+   --  reachable solely through a merge's second parent could not be named
+   --  "<tip>^2" -- it fell back to a branch name, or to "undefined" under
+   --  --tags. Ported git's name-rev (multi-parent walk, merge-traversal
+   --  weighting, tag-and-age tip ordering) in Version.Name_Rev.
+   procedure Name_Rev_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Ada.Directories.Set_Directory (Root);
+
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C GIT_CONFIG_NOSYSTEM=1"
+         & " GIT_AUTHOR_DATE='1700000000 +0000'"
+         & " GIT_COMMITTER_DATE='1700000000 +0000';"
+         & " rm -rf r; mkdir r; ( cd r; git init -q -b main;"
+         & "   git config user.email t@e; git config user.name T;"
+         & "   printf 'a\n' > f; git add -A; git commit -qm c1; git tag v1;"
+         & "   git checkout -qb side;"
+         & "   printf 's\n' > g; git add -A; git commit -qm s1;"
+         & "   printf 's2\n' >> g; git add -A; git commit -qm s2;"
+         & "   git checkout -q main;"
+         & "   printf 'b\n' >> f; git add -A; git commit -qm c2;"
+         & "   git merge -q --no-ff side -m merge;"
+         & "   git tag -a v2 -m two;"
+         --  every commit must get git's exact name, with and without --tags
+         & "   for r in $(git rev-list --all); do"
+         & "     test ""$(" & CLI & " name-rev $r)"" = ""$(git name-rev $r)"";"
+         & "     test ""$(" & CLI & " name-rev --tags $r)"""
+         & "       = ""$(git name-rev --tags $r)"";"
+         & "   done;"
+         --  the side tip specifically must be named through the merge parent
+         & "   test ""$(" & CLI & " name-rev $(git rev-parse side)"
+         & "     | awk '{print $2}')"" = 'tags/v2^2' )");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Name_Rev_Matches_Git;
+
    --  Byte-oracle the remaining plumbing: var, count-objects, rev-parse @{n},
    --  name-rev, and for-each-ref %(upstream).
    procedure Extra_Plumbing_Matches_Git
@@ -5253,6 +5301,9 @@ package body CLI_Integration_Tests is
       Register_Routine
         (T, Mailsplit_Matches_Git'Access,
          "mailsplit: Maildir, CRLF, empty and bare mailboxes match git");
+      Register_Routine
+        (T, Name_Rev_Matches_Git'Access,
+         "name-rev walks all parents and matches git (incl. <tip>^2)");
       Register_Routine
         (T, Format_Patch_Mbox_Matches_Git'Access,
          "format-patch mbox (diffstat, -<n>, separators) matches git");
