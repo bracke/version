@@ -2876,6 +2876,58 @@ package body CLI_Integration_Tests is
          raise;
    end Fmt_Merge_Msg_Grouping_Matches_Git;
 
+   --  Regression: `commit-graph write` wrote a graph from the refs even with
+   --  no packs, where git's plain form reads the pack indexes and so writes
+   --  nothing (only --reachable walks refs). And `maintenance run
+   --  --task=pack-refs` / `--task=commit-graph` were stubs that did nothing,
+   --  although version has both capabilities.
+   procedure Commit_Graph_And_Maintenance_Match_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Ada.Directories.Set_Directory (Root);
+
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C GIT_CONFIG_NOSYSTEM=1"
+         & " GIT_AUTHOR_DATE='1700000000 +0000'"
+         & " GIT_COMMITTER_DATE='1700000000 +0000';"
+         & " seed () { rm -rf $1; git init -q -b main $1;"
+         & "   ( cd $1; git config user.email t@e; git config user.name T;"
+         & "     printf 'l1\n' > f.txt; git add -A; git commit -qm c1;"
+         & "     printf 'l2\n' >> f.txt; git add -A; git commit -qm c2;"
+         & "     git branch b1 ); };"
+         --  loose objects only: git writes no graph, and neither must we
+         & " seed a; ( cd a; " & CLI & " commit-graph write > /dev/null 2>&1;"
+         & "   test ! -e .git/objects/info/commit-graph );"
+         --  --reachable walks the refs and does write one
+         & " seed b; ( cd b;"
+         & "   " & CLI & " commit-graph write --reachable > /dev/null 2>&1;"
+         & "   test -f .git/objects/info/commit-graph;"
+         --  and real git must be able to verify what we wrote
+         & "   git commit-graph verify );"
+         --  maintenance tasks do their work instead of silently passing
+         & " seed c; ( cd c;"
+         & "   " & CLI & " maintenance run --task=pack-refs > /dev/null 2>&1;"
+         & "   test -f .git/packed-refs );"
+         & " seed d; ( cd d;"
+         & "   " & CLI & " maintenance run --task=commit-graph"
+         & "     > /dev/null 2>&1;"
+         & "   test -f .git/objects/info/commit-graph;"
+         & "   git commit-graph verify )");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Commit_Graph_And_Maintenance_Match_Git;
+
    --  Byte-oracle the remaining plumbing: var, count-objects, rev-parse @{n},
    --  name-rev, and for-each-ref %(upstream).
    procedure Extra_Plumbing_Matches_Git
@@ -6156,6 +6208,9 @@ package body CLI_Integration_Tests is
       Register_Routine
         (T, Fmt_Merge_Msg_Grouping_Matches_Git'Access,
          "fmt-merge-msg groups refs per source like git");
+      Register_Routine
+        (T, Commit_Graph_And_Maintenance_Match_Git'Access,
+         "commit-graph write gating and maintenance tasks match git");
       Register_Routine
         (T, Format_Patch_Mbox_Matches_Git'Access,
          "format-patch mbox (diffstat, -<n>, separators) matches git");

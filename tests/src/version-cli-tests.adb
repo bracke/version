@@ -2918,7 +2918,8 @@ package body Version.CLI.Tests is
    is
       Root : constant String :=
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
-      Pack_Refs_Usage : constant String := "version pack-refs [--prune]";
+      Pack_Refs_Usage : constant String :=
+        "version pack-refs [--all] [--prune]";
       Prune_Usage     : constant String := "version prune [--dry-run|--now]";
       GC_Usage        : constant String := "version gc [--dry-run|--now]";
       Verify_Usage    : constant String := "version verify";
@@ -2963,9 +2964,11 @@ package body Version.CLI.Tests is
          "duplicate option: --prune",
          Pack_Refs_Usage,
          "pack-refs duplicate prune");
+      --  git accepts --all, so it is no longer an error; keep the
+      --  unknown-option coverage with an option git does not have either.
       Check_Usage_Failure
-        ("pack-refs --all",
-         "unknown pack-refs option: --all",
+        ("pack-refs --bogus",
+         "unknown pack-refs option: --bogus",
          Pack_Refs_Usage,
          "pack-refs unknown option");
       Check_Usage_Failure

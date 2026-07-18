@@ -1,3 +1,6 @@
+- Fix: `commit-graph write` no longer writes a graph for a repository whose objects are all loose. git's plain form reads the pack indexes, so it produces nothing until the objects are packed; `--reachable`, now recognised, is what walks the refs instead. The graph version writes verifies clean under real `git commit-graph verify`.
+- Fix: `maintenance run --task=pack-refs` and `--task=commit-graph` do their work instead of silently passing -- they were stubbed as no-ops on the assumption that version keeps neither file, though it maintains both.
+- Fix: `pack-refs` accepts git's `--all` instead of rejecting it as an unknown option (version already packs heads and tags together, which is what the flag asks for).
 - Fix: `fmt-merge-msg` lists every ref fetched from one remote under a single `of <url>` (`Merge branch 'a', tag 't1' of U`) instead of repeating the URL per kind, and reports a bare-URL FETCH_HEAD line (a HEAD fetch) instead of producing an empty message.
 - Fix: `difftool` compares the index against the working tree, and HEAD against the index under `--cached`, rather than HEAD against the working tree in both modes.
 - Fix: `check-attr` takes exactly one attribute name before `--` and treats the remaining operands as paths, as git does, instead of guessing where the attributes ended by testing which operand named an existing file.

@@ -5016,9 +5016,53 @@ package body Version.CLI is
         Version.Repository.Open;
 
       Sub : constant String := (if Count >= 2 then Arg (2) else "");
+
+      Reachable : Boolean := False;
+
+      --  git's plain `commit-graph write` reads the pack indexes, so a
+      --  repository whose objects are all loose yields no graph at all;
+      --  --reachable is what walks the refs instead.
+      function Has_Pack return Boolean is
+         Dir : constant String :=
+           Version.Files.Join
+             (Version.Files.Join
+                (Version.Repository.Common_Git_Dir (Repo), "objects"),
+              "pack");
+      begin
+         if not Ada.Directories.Exists (Dir) then
+            return False;
+         end if;
+
+         declare
+            Search : Ada.Directories.Search_Type;
+            Item   : Ada.Directories.Directory_Entry_Type;
+            Found  : Boolean := False;
+         begin
+            Ada.Directories.Start_Search
+              (Search, Dir, "*.pack",
+               [Ada.Directories.Ordinary_File => True, others => False]);
+            Found := Ada.Directories.More_Entries (Search);
+            if Found then
+               Ada.Directories.Get_Next_Entry (Search, Item);
+            end if;
+            Ada.Directories.End_Search (Search);
+            return Found;
+         end;
+      exception
+         when others =>
+            return False;
+      end Has_Pack;
    begin
+      for I in 3 .. Count loop
+         if Arg (I) = "--reachable" then
+            Reachable := True;
+         end if;
+      end loop;
+
       if Sub = "write" then
-         Version.Commit_Graph.Write (Repo);
+         if Reachable or else Has_Pack then
+            Version.Commit_Graph.Write (Repo);
+         end if;
 
       elsif Sub = "verify" then
          declare
@@ -17517,12 +17561,18 @@ package body Version.CLI is
 
          elsif Command = "pack-refs" then
             declare
-               Usage : constant String := "version pack-refs [--prune]";
+               Usage : constant String :=
+                 "version pack-refs [--all] [--prune]";
                Prune_Loose : Boolean := False;
             begin
                if Count >= 2 then
                   for I in 2 .. Count loop
-                     if Arg (I) = "--prune" then
+                     --  git's --all packs every ref; version already packs
+                     --  heads and tags together, so it only has to be
+                     --  accepted rather than change what is packed.
+                     if Arg (I) = "--all" then
+                        null;
+                     elsif Arg (I) = "--prune" then
                         if Prune_Loose then
                            Usage_Error ("duplicate option: --prune", Usage);
                            return;
@@ -17738,11 +17788,27 @@ package body Version.CLI is
                   or else T = "pack-refs" or else T = "prefetch");
 
                --  Tasks that touch object storage map onto version's GC;
-               --  the auxiliary tasks (commit-graph, pack-refs, prefetch)
-               --  maintain files version does not keep, so they are no-ops.
+               --  pack-refs and commit-graph do their own real work below,
+               --  and prefetch remains a no-op.
                function Is_Object_Task (T : String) return Boolean is
                  (T = "gc" or else T = "loose-objects"
                   or else T = "incremental-repack");
+
+               --  git's maintenance actually packs the refs and writes the
+               --  commit-graph; these were stubbed out as no-ops.
+               procedure Run_Auxiliary_Task (T : String) is
+                  Repo : constant Version.Repository.Repository_Handle :=
+                    Version.Repository.Open;
+               begin
+                  if T = "pack-refs" then
+                     Version.Packed_Refs.Pack_Refs (Repo);
+                  elsif T = "commit-graph" then
+                     Version.Commit_Graph.Write (Repo);
+                  end if;
+               exception
+                  when others =>
+                     null;
+               end Run_Auxiliary_Task;
             begin
                if Count < 2 then
                   Usage_Error ("maintenance needs a subcommand", Usage);
@@ -17775,6 +17841,9 @@ package body Version.CLI is
                               else
                                  Saw_Task := True;
                                  Run_GC   := Run_GC or else Is_Object_Task (TN);
+                                 if not Is_Object_Task (TN) then
+                                    Run_Auxiliary_Task (TN);
+                                 end if;
                               end if;
                            end;
                            I := I + 1;
