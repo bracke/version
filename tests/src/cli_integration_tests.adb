@@ -2285,6 +2285,61 @@ package body CLI_Integration_Tests is
          raise;
    end Checkout_Exec_Bits_Match_Git;
 
+   --  Regression: interpret-trailers. A new trailer landed after the "---"
+   --  patch divider instead of in the trailer block before it; --unfold left
+   --  continuation lines folded in whole-message output (it only worked under
+   --  --only-trailers) and did not strip a leading tab; and the blank
+   --  separator line git always emits was missing when no trailer was added.
+   procedure Interpret_Trailers_Edge_Cases_Match_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI : constant String :=
+        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+   begin
+      Ada.Directories.Set_Directory (Root);
+
+      Version.Git_Fixtures.Run
+        (Root,
+         "set -e; export LC_ALL=C GIT_CONFIG_NOSYSTEM=1;"
+         & " rm -rf t; mkdir t; ( cd t;"
+         & "   printf 'subj\n' > m1.txt;"
+         & "   printf 'subj\n\nbody\n' > m2.txt;"
+         & "   printf 'subj\n\nSigned-off-by: A\n\tcont\n  more\n'"
+         & "     > m3.txt;"
+         & "   printf 'subj\n\nbody\n\nSigned-off-by: A <a@x>\n---\n"
+         & " diff --git a/x b/x\n' > m4.txt;"
+         & "   printf '\n' > m5.txt;"
+         & "   : > m6.txt;"
+         --  every message shape against every option combination
+         & "   for m in m1 m2 m3 m4 m5 m6; do"
+         & "     for o in '' '--unfold' '--only-trailers' '--parse'"
+         & "              '--only-input'; do"
+         & "       git interpret-trailers $o $m.txt > g.out 2>&1 || true;"
+         & "       " & CLI & " interpret-trailers $o $m.txt > v.out 2>&1"
+         & "         || true;"
+         & "       cmp -s g.out v.out || { echo ""$m [$o]""; exit 1; };"
+         & "     done;"
+         & "     git interpret-trailers --trailer 'X: y' $m.txt > g.out 2>&1;"
+         & "     " & CLI & " interpret-trailers --trailer 'X: y' $m.txt"
+         & "       > v.out 2>&1;"
+         & "     cmp -s g.out v.out || { echo ""$m trailer""; exit 1; };"
+         & "     git interpret-trailers --where before --trailer 'X: y'"
+         & "       $m.txt > g.out 2>&1;"
+         & "     " & CLI & " interpret-trailers --where before"
+         & "       --trailer 'X: y' $m.txt > v.out 2>&1;"
+         & "     cmp -s g.out v.out || { echo ""$m before""; exit 1; };"
+         & "   done )");
+
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end Interpret_Trailers_Edge_Cases_Match_Git;
+
    --  Byte-oracle the remaining plumbing: var, count-objects, rev-parse @{n},
    --  name-rev, and for-each-ref %(upstream).
    procedure Extra_Plumbing_Matches_Git
@@ -5529,6 +5584,9 @@ package body CLI_Integration_Tests is
       Register_Routine
         (T, Checkout_Exec_Bits_Match_Git'Access,
          "checkout/clone exec bits honour the umask like git");
+      Register_Routine
+        (T, Interpret_Trailers_Edge_Cases_Match_Git'Access,
+         "interpret-trailers: divider, unfold and separator match git");
       Register_Routine
         (T, Format_Patch_Mbox_Matches_Git'Access,
          "format-patch mbox (diffstat, -<n>, separators) matches git");
