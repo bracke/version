@@ -12313,6 +12313,95 @@ package body Version.CLI is
                         Force          => Force);
                   end;
 
+               elsif Arg (2) = "add" then
+                  declare
+                     Url  : Unbounded_String;
+                     Path : Unbounded_String;
+                     Bad  : Boolean := False;
+                  begin
+                     for I in 3 .. Count loop
+                        if Arg (I)'Length > 0
+                          and then Arg (I) (Arg (I)'First) = '-'
+                        then
+                           Usage_Error
+                             ("unknown submodule add option: " & Arg (I),
+                              Usage);
+                           Bad := True;
+                           exit;
+                        elsif Length (Url) = 0 then
+                           Url := To_Unbounded_String (Arg (I));
+                        elsif Length (Path) = 0 then
+                           Path := To_Unbounded_String (Arg (I));
+                        else
+                           Usage_Error
+                             ("too many submodule add arguments", Usage);
+                           Bad := True;
+                           exit;
+                        end if;
+                     end loop;
+
+                     if not Bad then
+                        if Length (Url) = 0 then
+                           Usage_Error ("missing submodule url", Usage);
+                        else
+                           declare
+                              U : constant String := To_String (Url);
+
+                              --  git defaults the path to the URL's last
+                              --  component, less any trailing ".git".
+                              function Default_Path return String is
+                                 Stop  : Natural := U'Last;
+                                 Start : Natural := U'First;
+                              begin
+                                 while Stop >= U'First
+                                   and then U (Stop) = '/'
+                                 loop
+                                    Stop := Stop - 1;
+                                 end loop;
+
+                                 for K in reverse U'First .. Stop loop
+                                    if U (K) = '/' then
+                                       Start := K + 1;
+                                       exit;
+                                    end if;
+                                 end loop;
+
+                                 declare
+                                    Base : constant String :=
+                                      U (Start .. Stop);
+                                 begin
+                                    if Base'Length > 4
+                                      and then Base (Base'Last - 3
+                                                     .. Base'Last) = ".git"
+                                    then
+                                       return Base
+                                         (Base'First .. Base'Last - 4);
+                                    end if;
+                                    return Base;
+                                 end;
+                              end Default_Path;
+
+                              Target : constant String :=
+                                (if Length (Path) > 0 then To_String (Path)
+                                 else Default_Path);
+                              Repo : constant
+                                Version.Repository.Repository_Handle :=
+                                  Version.Repository.Open;
+                           begin
+                              --  git narrates the clone on stderr.
+                              Stderr_Line
+                                ("Cloning into '"
+                                 & Version.Files.Join
+                                     (Version.Repository.Root_Path (Repo),
+                                      Target)
+                                 & "'...");
+                              Version.Submodules.Add (Repo, U, Target);
+                              Stderr_Line ("done.");
+                           end;
+                        end if;
+                     end if;
+                  end;
+
                else
                   Usage_Error
                     ("unknown submodule subcommand: " & Arg (2), Usage);
