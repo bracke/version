@@ -5963,6 +5963,16 @@ package body Version.CLI is
                Names.Append ("refs/tags/" & To_String (T));
             end loop;
 
+            --  git lists refs sorted by refname. List_Branches yields the
+            --  current branch first, which would otherwise put it out of
+            --  order.
+            declare
+               package Sorting is new
+                 Version.Trailers.String_Vectors.Generic_Sorting ("<" => "<");
+            begin
+               Sorting.Sort (Names);
+            end;
+
             for Name of Names loop
                declare
                   Id : constant Version.Objects.Hex_Object_Id :=
@@ -6897,14 +6907,73 @@ package body Version.CLI is
 
             Version.Staging.Write (Repo, Merged);
 
-            --  git names every path it had to merge the content of, then every
-            --  one where that failed.
-            for Path of Needs_Merge loop
-               Success_Line ("Auto-merging " & Path);
-            end loop;
+            --  git narrates a path at a time: the "Auto-merging" line for a
+            --  path is immediately followed by that path's CONFLICT line, if
+            --  it has one. Listing every Auto-merging line and then every
+            --  CONFLICT line separates each failure from the path it belongs
+            --  to, which is not what git prints.
+            declare
+               function Is_Conflicted (Path : String) return Boolean is
+               begin
+                  for C of Conflicts loop
+                     if To_String (C.Path) = Path then
+                        return True;
+                     end if;
+                  end loop;
+                  return False;
+               end Is_Conflicted;
 
-            for C of Conflicts loop
-               declare
+               function Merged_Content (Path : String) return Boolean is
+               begin
+                  for P of Needs_Merge loop
+                     if P = Path then
+                        return True;
+                     end if;
+                  end loop;
+                  return False;
+               end Merged_Content;
+
+               procedure Report_Conflict (C : Version.Merge.Conflict);
+
+               --  Walk the paths in order, taking each from whichever list
+               --  reaches it first, so a path present in both is narrated
+               --  once and in one place.
+               procedure Narrate is
+                  NI : Natural := Needs_Merge.First_Index;
+               begin
+                  for C of Conflicts loop
+                     declare
+                        CP : constant String := To_String (C.Path);
+                     begin
+                        while NI <= Needs_Merge.Last_Index
+                          and then Needs_Merge.Element (NI) < CP
+                        loop
+                           Success_Line
+                             ("Auto-merging " & Needs_Merge.Element (NI));
+                           NI := NI + 1;
+                        end loop;
+
+                        if Merged_Content (CP) then
+                           Success_Line ("Auto-merging " & CP);
+                           if NI <= Needs_Merge.Last_Index
+                             and then Needs_Merge.Element (NI) = CP
+                           then
+                              NI := NI + 1;
+                           end if;
+                        end if;
+
+                        Report_Conflict (C);
+                     end;
+                  end loop;
+
+                  while NI <= Needs_Merge.Last_Index loop
+                     Success_Line
+                       ("Auto-merging " & Needs_Merge.Element (NI));
+                     NI := NI + 1;
+                  end loop;
+               end Narrate;
+
+               procedure Report_Conflict (C : Version.Merge.Conflict) is
                   Path : constant String := To_String (C.Path);
 
                   --  A path that survives on only one side is a
@@ -6924,6 +6993,7 @@ package body Version.CLI is
 
                   In_Ours   : constant Boolean := Side_Has (Ours_Items);
                   In_Theirs : constant Boolean := Side_Has (Theirs_Items);
+                  In_Base   : constant Boolean := Side_Has (Base_Items);
                   Ours_Label   : constant String := To_String (Head);
                   Theirs_Label : constant String := Remotes.First_Element;
                begin
@@ -6932,7 +7002,13 @@ package body Version.CLI is
                         Success_Line
                           ("CONFLICT (binary): Merge conflict in " & Path);
                      when others =>
-                        if In_Ours and then not In_Theirs then
+                        if In_Ours and then In_Theirs and then not In_Base
+                        then
+                           --  Both sides created the path independently;
+                           --  git calls that add/add, not a content clash.
+                           Success_Line
+                             ("CONFLICT (add/add): Merge conflict in " & Path);
+                        elsif In_Ours and then not In_Theirs then
                            Success_Line
                              ("CONFLICT (modify/delete): " & Path
                               & " deleted in " & Theirs_Label
@@ -6951,8 +7027,10 @@ package body Version.CLI is
                              ("CONFLICT (content): Merge conflict in " & Path);
                         end if;
                   end case;
-               end;
-            end loop;
+               end Report_Conflict;
+            begin
+               Narrate;
+            end;
 
             if not Conflicts.Is_Empty then
                Set_Command_Failure;
@@ -17882,11 +17960,33 @@ package body Version.CLI is
                   Usage_Error ("commit-tree requires a tree and -m MESSAGE",
                                Usage);
                else
-                  Success_Line
-                    (To_String (Version.Write.Write_Commit_With_Parents
-                       (Repo,
-                        Version.Revisions.Resolve_Tree (Repo, Arg (Tree_Idx)),
-                        Parents, To_String (Msg))));
+                  declare
+                     --  git wants a tree here, not merely something a tree
+                     --  can be reached from: `commit-tree HEAD` is an error,
+                     --  while `commit-tree HEAD^{tree}` is not. Peeling the
+                     --  argument to a tree would silently accept the first
+                     --  and build a commit the user never asked for, so
+                     --  resolve without peeling and check the kind.
+                     Tree_Id : constant Version.Objects.Hex_Object_Id :=
+                       Version.Revisions.Resolve (Repo, Arg (Tree_Idx));
+                     use type Version.Objects.Object_Kind;
+                  begin
+                     if Version.Objects.Kind
+                          (Version.Objects.Read_Object (Repo, Tree_Id))
+                        /= Version.Objects.Tree_Object
+                     then
+                        --  git names the object it resolved to, not the way
+                        --  the user spelled it.
+                        Error_Line
+                          (To_String (Tree_Id)
+                           & " is not a valid 'tree' object");
+                        Set_Command_Failure;
+                     else
+                        Success_Line
+                          (To_String (Version.Write.Write_Commit_With_Parents
+                             (Repo, Tree_Id, Parents, To_String (Msg))));
+                     end if;
+                  end;
                end if;
             end;
 
@@ -24667,9 +24767,14 @@ package body Version.CLI is
             end;
 
          else
-            Error_Line ("unknown command: " & Command);
-            Print_Usage;
-            Set_Usage_Failure;
+            --  git names the command on stderr and stops. Printing the usage
+            --  banner as well puts a hundred lines on the stdout of anything
+            --  that mistyped a command -- which is what `for-each-repo`
+            --  running an unknown subcommand did.
+            Error_Line
+              ("'" & Command & "' is not a version command."
+               & " See 'version --help'.");
+            Set_Command_Failure;
          end if;
       end;
 

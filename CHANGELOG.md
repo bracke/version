@@ -1,3 +1,7 @@
+- Fix: the merge backends (`merge-recursive`, `merge-subtree`, `merge-resolve`) narrate a path at a time, so each CONFLICT line follows the `Auto-merging` line for the same path instead of all of one kind preceding all of the other; a path both sides created is now reported as add/add rather than a content conflict.
+- Fix: `commit-tree` requires an actual tree. It peeled a commit to its tree, so `commit-tree HEAD` silently built a commit git refuses to build.
+- Fix: an unknown command no longer prints the usage banner on stdout. It put a hundred lines into the stdout of anything that mistyped a command, `for-each-repo` running an unknown subcommand among them, and exits 1 as git does rather than 2.
+- Fix: `refs list` sorts by refname; the current branch was listed first.
 - Add: `submodule add` accepts `-b/--branch`, `--name` and `-f/--force`, in the attached, glued and `=` forms. The `.gitmodules` section, administrative directory, config keys and checked-out branch now all match git.
 - Fix: `submodule add` on a path that is already a repository adopts it and prints git's `Adding existing repo at '<path>' to the index` on stdout, rather than refusing.
 - Add: `worktree move` and `worktree repair`. Output, `worktree list` and the on-disk `gitdir` pointer all match git, and a worktree moved by either command is usable by real git afterwards.
