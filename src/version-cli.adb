@@ -1166,6 +1166,86 @@ package body Version.CLI is
       end if;
    end Run_Classic_Config_Command;
 
+   --  git's `log --author=<pat>` and `--grep=<pat>`: keep the commits whose
+   --  author identity, respectively whose message, matches. Both are regular
+   --  expressions in git, so each is compiled once and applied -- testing them
+   --  as substrings would agree on a plain name and diverge silently the
+   --  moment a pattern carried a metacharacter. An empty pattern means the
+   --  filter was not requested.
+   function Filter_Commits
+     (Repo           : Version.Repository.Repository_Handle;
+      Commits        : Version.History.Commit_Id_Vectors.Vector;
+      Author_Pattern : String;
+      Grep_Pattern   : String)
+      return Version.History.Commit_Id_Vectors.Vector
+   is
+      --  The value of a header line ("author X <y> 1 +0000"), or "".
+      function Header (Text, Key : String) return String is
+         Pos  : constant Natural := Ada.Strings.Fixed.Index (Text, Key);
+         Stop : Natural;
+      begin
+         if Pos = 0 then
+            return "";
+         end if;
+
+         Stop := Ada.Strings.Fixed.Index
+           (Text (Pos .. Text'Last), "" & Character'Val (10));
+         if Stop = 0 then
+            Stop := Text'Last + 1;
+         end if;
+         return Text (Pos + Key'Length .. Stop - 1);
+      end Header;
+
+      --  Everything past the blank line that ends the header block.
+      function Message (Text : String) return String is
+         Sep : constant Natural :=
+           Ada.Strings.Fixed.Index
+             (Text, Character'Val (10) & Character'Val (10));
+      begin
+         return (if Sep = 0 then "" else Text (Sep + 2 .. Text'Last));
+      end Message;
+
+      function Filter_By
+        (Input     : Version.History.Commit_Id_Vectors.Vector;
+         Pattern   : String;
+         On_Author : Boolean)
+         return Version.History.Commit_Id_Vectors.Vector
+      is
+         M    : constant Version.Grep.Line_Matcher :=
+           Version.Grep.Compile (Pattern);
+         Kept : Version.History.Commit_Id_Vectors.Vector;
+      begin
+         for C of Input loop
+            declare
+               Text : constant String :=
+                 Version.Objects.Content
+                   (Version.Objects.Read_Object (Repo, C));
+               Field : constant String :=
+                 (if On_Author then Header (Text, "author ")
+                  else Message (Text));
+            begin
+               if Version.Grep.Matches (M, Field) then
+                  Kept.Append (C);
+               end if;
+            end;
+         end loop;
+
+         return Kept;
+      end Filter_By;
+
+      Result : Version.History.Commit_Id_Vectors.Vector := Commits;
+   begin
+      if Author_Pattern'Length > 0 then
+         Result := Filter_By (Result, Author_Pattern, On_Author => True);
+      end if;
+
+      if Grep_Pattern'Length > 0 then
+         Result := Filter_By (Result, Grep_Pattern, On_Author => False);
+      end if;
+
+      return Result;
+   end Filter_Commits;
+
    procedure Run_Archive_Command is
       Usage           : constant String :=
         "version archive REV [--output PATH] [--format tar|zip] [--prefix PATH] [--] [PATHSPEC...]";
@@ -8718,6 +8798,10 @@ package body Version.CLI is
                Seed_All   : Boolean := False;
                Seed_Heads : Boolean := False;
                Seed_Tags  : Boolean := False;
+               Author_Pat : Unbounded_String;
+               Has_Author : Boolean := False;
+               Grep_Pat   : Unbounded_String;
+               Has_Grep   : Boolean := False;
 
                function Starts (S, P : String) return Boolean is
                  (S'Length >= P'Length
@@ -8837,6 +8921,14 @@ package body Version.CLI is
                      Seed_Tags := True;
                   elsif Arg (I) = "-s" or else Arg (I) = "--no-patch" then
                      Patch := False;
+                  elsif Starts (Arg (I), "--author=") then
+                     Author_Pat :=
+                       To_Unbounded_String (After (Arg (I), "--author="));
+                     Has_Author := True;
+                  elsif Starts (Arg (I), "--grep=") then
+                     Grep_Pat :=
+                       To_Unbounded_String (After (Arg (I), "--grep="));
+                     Has_Grep := True;
                   elsif Arg (I)'Length > 0
                     and then Arg (I) (Arg (I)'First) = '-'
                   then
@@ -8914,6 +9006,22 @@ package body Version.CLI is
                      Commits :=
                        Version.History.Rev_List
                          (Repo, Include, Parsed.Exclude, Selection);
+
+                     --  git's --author/--grep are regular expressions over
+                     --  the author identity and the commit message; matching
+                     --  by substring would agree until a pattern carried a
+                     --  metacharacter, so they are compiled properly.
+                     if Has_Author or else Has_Grep then
+                        Commits :=
+                          Filter_Commits
+                            (Repo, Commits,
+                             Author_Pattern =>
+                               (if Has_Author then To_String (Author_Pat)
+                                else ""),
+                             Grep_Pattern =>
+                               (if Has_Grep then To_String (Grep_Pat)
+                                else ""));
+                     end if;
 
                      if Topo_Order then
                         Commits :=
