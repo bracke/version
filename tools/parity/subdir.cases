@@ -19,3 +19,5 @@ diff HEAD
 diff --name-only HEAD
 show --stat HEAD
 blame nested.txt
+rm --cached nested.txt
+rm -f nested.txt

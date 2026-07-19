@@ -1,0 +1,8 @@
+# Two commits and a second branch, so a switch, a detach and a stash all
+# have somewhere to go.
+printf 'one\n' > a.txt
+mkdir -p sub && printf 'n\n' > sub/nested.txt
+git add -A && git commit -qm first
+printf 'two\n' > a.txt && git add -A && git commit -qm second
+git branch other
+printf 'dirty\n' > a.txt

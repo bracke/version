@@ -1,0 +1,11 @@
+# One file per state check_local_mod distinguishes: unchanged, staged only,
+# worktree only, and staged content matching neither the file nor HEAD.
+printf 'base\n' > clean.txt
+printf 'base\n' > staged.txt
+printf 'base\n' > local.txt
+printf 'base\n' > both.txt
+mkdir -p sub && printf 'base\n' > sub/nested.txt
+git add -A && git commit -qm base
+printf 'staged\n' > staged.txt && git add staged.txt
+printf 'local\n' > local.txt
+printf 'x\n' > both.txt && git add both.txt && printf 'y\n' > both.txt

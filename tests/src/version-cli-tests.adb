@@ -3774,17 +3774,16 @@ package body Version.CLI.Tests is
          end;
       end Check_Usage_Failure;
 
-      procedure Check_Success (Command, Output_Fragment, Context : String) is
+      procedure Check_Silent (Command, Context : String) is
          Output : Ada.Strings.Unbounded.Unbounded_String;
          Status : Integer;
       begin
          Run_CLI_Capture (Root, Command, Output, Status);
          Assert (Status = 0, Context & " must succeed");
-         Assert_Contains
-           (Ada.Strings.Unbounded.To_String (Output),
-            Output_Fragment,
-            Context & " output");
-      end Check_Success;
+         Assert
+           (Ada.Strings.Unbounded.Length (Output) = 0,
+            Context & " must print nothing, as git does");
+      end Check_Silent;
 
       Tar_Output     : constant String := Join (Root, "cli-archive.tar");
       Zip_Output     : constant String := Join (Root, "cli-archive.zip");
@@ -3829,23 +3828,20 @@ package body Version.CLI.Tests is
       Ada.Directories.Set_Directory (Root);
       Commit_File (Root, "a.txt", "one" & Character'Val (10), "base");
 
-      Check_Success
+      Check_Silent
         ("archive HEAD --output " & Shell_Quote (Tar_Output),
-         "created archive " & Tar_Output,
          "archive tar output");
       Assert (Ada.Directories.Exists (Tar_Output), "tar archive must be written");
 
-      Check_Success
+      Check_Silent
         ("archive HEAD --output " & Shell_Quote (Zip_Output),
-         "created archive " & Zip_Output,
          "archive zip output inferred");
       Assert (Ada.Directories.Exists (Zip_Output), "zip archive must be written");
 
-      Check_Success
+      Check_Silent
         ("archive HEAD --output "
          & Shell_Quote (Literal_Output)
          & " -- --not-an-option",
-         "created archive " & Literal_Output,
          "archive option-looking pathspec after separator");
       Assert
         (Ada.Directories.Exists (Literal_Output),
@@ -3922,17 +3918,17 @@ package body Version.CLI.Tests is
       Check_Usage_Failure
         ("remove",
          "missing remove pathspec",
-         "version remove [--] PATHSPEC...",
+         "version remove [-f] [--cached] [-n] [--] PATHSPEC...",
          "remove missing pathspec");
       Check_Usage_Failure
         ("remove --",
          "missing remove pathspec",
-         "version remove [--] PATHSPEC...",
+         "version remove [-f] [--cached] [-n] [--] PATHSPEC...",
          "remove separator only");
       Check_Usage_Failure
-        ("remove --cached a.txt",
-         "unknown remove option: --cached",
-         "version remove [--] PATHSPEC...",
+        ("remove --definitely-not-supported a.txt",
+         "unknown remove option: --definitely-not-supported",
+         "version remove [-f] [--cached] [-n] [--] PATHSPEC...",
          "remove unknown option");
 
       Version.Init.Init (Root);
@@ -3949,7 +3945,7 @@ package body Version.CLI.Tests is
 
       Check_Success
         ("remove -- --literal",
-         "removed --literal",
+         "rm '--literal'",
          "remove option-looking pathspec after separator");
 
       Write_File (Root, ".gitignore", "*.log" & Character'Val (10));
@@ -4020,6 +4016,17 @@ package body Version.CLI.Tests is
             Context & " output");
       end Check_Success;
 
+      procedure Check_Silent (Command, Context : String) is
+         Output : Ada.Strings.Unbounded.Unbounded_String;
+         Status : Integer;
+      begin
+         Run_CLI_Capture (Root, Command, Output, Status);
+         Assert (Status = 0, Context & " must succeed");
+         Assert
+           (Ada.Strings.Unbounded.Length (Output) = 0,
+            Context & " must print nothing, as git does");
+      end Check_Silent;
+
       Old_Dir : constant String := Ada.Directories.Current_Directory;
    begin
       Check_Usage_Failure
@@ -4061,33 +4068,33 @@ package body Version.CLI.Tests is
       Commit_File (Root, "a.txt", "one" & Character'Val (10), "base");
 
       Write_File (Root, "a.txt", "two" & Character'Val (10));
-      Check_Success ("restore a.txt", "restored paths", "restore pathspec");
+      Check_Silent ("restore a.txt", "restore pathspec");
 
       Write_File (Root, "a.txt", "two" & Character'Val (10));
-      Check_Success
+      Check_Silent
         ("restore --source HEAD -- a.txt",
-         "restored paths from HEAD",
          "restore source pathspec");
+      Write_File (Root, "a.txt", "two" & Character'Val (10));
+      Check_Silent
+        ("restore --source=HEAD -- a.txt",
+         "restore source pathspec, attached spelling");
 
       Write_File (Root, "a.txt", "two" & Character'Val (10));
       Check_Success ("stage a.txt", "staged a.txt", "stage for restore");
-      Check_Success
+      Check_Silent
         ("restore --staged a.txt",
-         "restored staged paths",
          "restore staged pathspec");
 
       Write_File (Root, "a.txt", "two" & Character'Val (10));
       Check_Success ("stage a.txt", "staged a.txt", "stage for source staged");
-      Check_Success
+      Check_Silent
         ("restore --source HEAD --staged -- a.txt",
-         "restored staged paths from HEAD",
          "restore source staged pathspec");
 
       Write_File (Root, "a.txt", "two" & Character'Val (10));
       Check_Success ("stage a.txt", "staged a.txt", "stage for staged source");
-      Check_Success
+      Check_Silent
         ("restore --staged --source HEAD -- a.txt",
-         "restored staged paths from HEAD",
          "restore staged source pathspec");
 
       Ada.Directories.Set_Directory (Old_Dir);
@@ -4138,6 +4145,17 @@ package body Version.CLI.Tests is
             Context & " output");
       end Check_Success;
 
+      procedure Check_Silent (Command, Context : String) is
+         Output : Ada.Strings.Unbounded.Unbounded_String;
+         Status : Integer;
+      begin
+         Run_CLI_Capture (Root, Command, Output, Status);
+         Assert (Status = 0, Context & " must succeed");
+         Assert
+           (Ada.Strings.Unbounded.Length (Output) = 0,
+            Context & " must print nothing, as git does");
+      end Check_Silent;
+
       Old_Dir : constant String := Ada.Directories.Current_Directory;
    begin
       Check_Usage_Failure
@@ -4166,21 +4184,20 @@ package body Version.CLI.Tests is
       Ada.Directories.Set_Directory (Root);
       Commit_File (Root, "a.txt", "one" & Character'Val (10), "base");
 
-      Check_Success ("checkout HEAD", "checked out HEAD", "checkout revision");
+      Check_Success
+        ("checkout HEAD", "HEAD is now at", "checkout revision");
 
       Write_File (Root, "a.txt", "two" & Character'Val (10));
-      Check_Success
+      Check_Silent
         ("checkout HEAD -- a.txt",
-         "checked out paths from HEAD",
          "checkout pathspec");
 
       Write_File (Root, "--literal", "literal" & Character'Val (10));
       Check_Success ("stage -- --literal", "staged --literal", "stage literal");
       Version.Write.Save ("literal file");
       Write_File (Root, "--literal", "changed" & Character'Val (10));
-      Check_Success
+      Check_Silent
         ("checkout HEAD -- --literal",
-         "checked out paths from HEAD",
          "checkout option-looking pathspec after separator");
 
       Ada.Directories.Set_Directory (Old_Dir);

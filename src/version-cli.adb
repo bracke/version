@@ -145,6 +145,7 @@ package body Version.CLI is
 
    procedure Expected (Text : String);
    procedure Error_Line (Text : String);
+   procedure Stderr_Line (Text : String);
    procedure Set_Usage_Failure;
    procedure Set_Command_Failure;
    procedure Usage_Error (Detail, Usage : String);
@@ -625,38 +626,6 @@ package body Version.CLI is
          Set_Command_Failure;
       end if;
    end Run_Check_Ignore;
-
-   procedure Parse_Pathspec_Command_Arguments
-     (Command_Name, Usage : String; OK : out Boolean)
-   is
-      After_Separator : Boolean := False;
-      Operand_Count   : Natural := 0;
-   begin
-      OK := False;
-
-      if Count >= 2 then
-         for I in 2 .. Count loop
-            if Arg (I) = "--" and then not After_Separator then
-               After_Separator := True;
-            elsif not After_Separator
-              and then Arg (I)'Length > 0
-              and then Arg (I) (Arg (I)'First) = '-'
-            then
-               Usage_Error
-                 ("unknown " & Command_Name & " option: " & Arg (I), Usage);
-               return;
-            else
-               Operand_Count := Operand_Count + 1;
-            end if;
-         end loop;
-      end if;
-
-      if Operand_Count = 0 then
-         Usage_Error ("missing " & Command_Name & " pathspec", Usage);
-      else
-         OK := True;
-      end if;
-   end Parse_Pathspec_Command_Arguments;
 
    procedure Append_Unique
      (Paths : in out Version.Path_Safety.Path_Vector; Path : String) is
@@ -1258,7 +1227,6 @@ package body Version.CLI is
                Run_Filter (Command, Tar_Temp, To_String (Output));
                Version.Files.Delete_File_If_Exists (Tar_Temp);
             end;
-            Success_Line ("created archive " & To_String (Output));
             return;
          else
             raise Ada.IO_Exceptions.Data_Error
@@ -1315,8 +1283,73 @@ package body Version.CLI is
             Pathspecs  => Specs,
             Prefix     => To_String (Prefix));
       end;
-      Success_Line ("created archive " & To_String (Output));
    end Run_Archive_Command;
+
+   --  A switch carries local modifications across when the target does not
+   --  touch those paths; git lists what it carried, one "M<TAB><path>" line
+   --  per path, on standard output.
+   procedure Print_Carried_Modifications is
+      Result : constant Version.Status.Status_Result :=
+        Version.Status.Current_Status;
+   begin
+      for C of Result.Changes loop
+         Success_Line
+           ("M" & Character'Val (9) & Ada.Strings.Unbounded.To_String (C.Path));
+      end loop;
+   end Print_Carried_Modifications;
+
+   --  git's report for a checkout or switch that leaves HEAD detached: the
+   --  advice block, suppressed by advice.detachedHead=false, then the commit
+   --  landed on. All of it goes to standard error -- unlike `reset --hard`,
+   --  whose identical-looking "HEAD is now at" line goes to standard output.
+   procedure Print_Detached_Head_Advice
+     (Repo     : Version.Repository.Repository_Handle;
+      Revision : String;
+      Commit   : Version.Objects.Hex_Object_Id)
+   is
+      Hex : constant String := Version.Objects.To_String (Commit);
+      Obj : constant Version.Objects.Git_Object :=
+        Version.Objects.Read_Object (Repo, Commit);
+      Advice : constant Boolean :=
+        not Version.Config.Has_Key (Repo, "advice.detachedHead")
+        or else Version.Config.Get_Value (Repo, "advice.detachedHead") /= "false";
+   begin
+      if Advice then
+         Stderr_Line ("Note: switching to '" & Revision & "'.");
+         Stderr_Line ("");
+         Stderr_Line
+           ("You are in 'detached HEAD' state. You can look around, make "
+            & "experimental");
+         Stderr_Line
+           ("changes and commit them, and you can discard any commits you "
+            & "make in this");
+         Stderr_Line
+           ("state without impacting any branches by switching back to a "
+            & "branch.");
+         Stderr_Line ("");
+         Stderr_Line
+           ("If you want to create a new branch to retain commits you "
+            & "create, you may");
+         Stderr_Line
+           ("do so (now or later) by using -c with the switch command. "
+            & "Example:");
+         Stderr_Line ("");
+         Stderr_Line ("  git switch -c <new-branch-name>");
+         Stderr_Line ("");
+         Stderr_Line ("Or undo this operation with:");
+         Stderr_Line ("");
+         Stderr_Line ("  git switch -");
+         Stderr_Line ("");
+         Stderr_Line
+           ("Turn off this advice by setting config variable "
+            & "advice.detachedHead to false");
+         Stderr_Line ("");
+      end if;
+
+      Stderr_Line
+        ("HEAD is now at " & Hex (Hex'First .. Hex'First + 6) & " "
+         & Version.Objects.Commit_Message_First_Line (Obj));
+   end Print_Detached_Head_Advice;
 
    procedure Set_Usage_Failure is
    begin
@@ -12157,9 +12190,35 @@ package body Version.CLI is
                           (Include_Untracked => Include_Untracked,
                            Include_Ignored   => Include_Ignored,
                            Pathspecs         => Specs);
-                        Success_Line ("stashed changes");
+
+                        --  git names the commit the stash was taken against.
+                        --  HEAD does not move, so it still reads correctly
+                        --  here; a detached HEAD is spelled "(no branch)".
+                        declare
+                           Repo : constant
+                             Version.Repository.Repository_Handle :=
+                               Version.Repository.Open;
+                           Head : constant Version.Refs.Head_Info :=
+                             Version.Refs.Read_Head (Repo);
+                           Where : constant String :=
+                             (if Version.Refs.Is_Attached (Head)
+                              then Version.Refs.Branch_Name (Head)
+                              else "(no branch)");
+                           Hex : constant String :=
+                             Version.Refs.Current_Commit_Id (Repo);
+                           Obj : constant Version.Objects.Git_Object :=
+                             Version.Objects.Read_Object
+                               (Repo, Version.Objects.To_Object_Id (Hex));
+                        begin
+                           Success_Line
+                             ("Saved working directory and index state WIP on "
+                              & Where & ": "
+                              & Hex (Hex'First .. Hex'First + 6) & " "
+                              & Version.Objects.Commit_Message_First_Line
+                                  (Obj));
+                        end;
                      else
-                        Success_Line ("no changes to stash");
+                        Success_Line ("No local changes to save");
                      end if;
                   end;
                end Run_Stash_Push;
@@ -12863,39 +12922,176 @@ package body Version.CLI is
 
          elsif Command = "remove" then
             declare
-               Usage : constant String := "version remove [--] PATHSPEC...";
-               OK    : Boolean := False;
+               Usage : constant String :=
+                 "version remove [-f] [--cached] [-n] [--] PATHSPEC...";
+               Force         : Boolean := False;
+               Cached_Only   : Boolean := False;
+               Dry_Run       : Boolean := False;
+               After_Sep     : Boolean := False;
+               Operand_Count : Natural := 0;
+               Specs         : Version.Pathspec.Pathspec_Vectors.Vector;
             begin
-               Parse_Pathspec_Command_Arguments ("remove", Usage, OK);
-               if not OK then
-                  return;
-               end if;
-            end;
-
-            declare
-               Specs   : constant Version.Pathspec.Pathspec_Vectors.Vector :=
-                 Pathspecs_From_Args (2);
-               Matches : constant Version.Path_Safety.Path_Vector :=
-                 Matching_Candidates (Index_Candidates, Specs);
-            begin
-               if Matches.Is_Empty then
-                  raise Ada.IO_Exceptions.Data_Error
-                    with Pathspec_No_Tracked_Paths_Text;
-               end if;
-
-               for I in Matches.First_Index .. Matches.Last_Index loop
-                  Version.Remove.Remove_Path (Matches.Element (I));
+               for I in 2 .. Count loop
+                  if After_Sep then
+                     Operand_Count := Operand_Count + 1;
+                     Version.Pathspec.Append_Parse
+                       (Specs, Arg (I), Repo_Prefix);
+                  elsif Arg (I) = "--" then
+                     After_Sep := True;
+                  elsif Arg (I) = "-f" or else Arg (I) = "--force" then
+                     Force := True;
+                  elsif Arg (I) = "--cached" then
+                     Cached_Only := True;
+                  elsif Arg (I) = "-n" or else Arg (I) = "--dry-run" then
+                     Dry_Run := True;
+                  elsif Arg (I) = "-q" or else Arg (I) = "--quiet" then
+                     null;
+                  elsif Arg (I)'Length > 0
+                    and then Arg (I) (Arg (I)'First) = '-'
+                  then
+                     Usage_Error ("unknown remove option: " & Arg (I), Usage);
+                     return;
+                  else
+                     Operand_Count := Operand_Count + 1;
+                     Version.Pathspec.Append_Parse
+                       (Specs, Arg (I), Repo_Prefix);
+                  end if;
                end loop;
 
-               if Natural (Matches.Length) = 1 then
-                  Success_Line
-                    ("removed " & Matches.Element (Matches.First_Index));
-               else
-                  Success_Line
-                    ("removed "
-                     & Natural_Image (Natural (Matches.Length))
-                     & " paths");
+               if Operand_Count = 0 then
+                  Usage_Error ("missing remove pathspec", Usage);
+                  return;
                end if;
+
+               declare
+                  Candidates : constant Version.Path_Safety.Path_Vector :=
+                    Index_Candidates;
+                  Matches : constant Version.Path_Safety.Path_Vector :=
+                    Matching_Candidates (Candidates, Specs);
+               begin
+                  --  git checks every pathspec, not just the set as a whole:
+                  --  one that matches nothing is fatal even when the others
+                  --  matched, and nothing is removed. It is a die(), so the
+                  --  status is 128 rather than an ordinary command failure.
+                  for S of Specs loop
+                     declare
+                        One : Version.Pathspec.Pathspec_Vectors.Vector;
+                     begin
+                        One.Append (S);
+                        if Matching_Candidates (Candidates, One).Is_Empty then
+                           Stderr_Line
+                             ("fatal: pathspec '"
+                              & Version.Pathspec.To_Text (S)
+                              & "' did not match any files");
+                           Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                           return;
+                        end if;
+                     end;
+                  end loop;
+
+                  if Matches.Is_Empty then
+                     raise Ada.IO_Exceptions.Data_Error
+                       with Pathspec_No_Tracked_Paths_Text;
+                  end if;
+
+                  --  git refuses to delete content the object store could not
+                  --  give back, and classifies every path before touching any
+                  --  of them so a refusal removes nothing at all. `--cached`
+                  --  keeps the working file, so a difference on one side
+                  --  alone survives in the file or in HEAD and is allowed;
+                  --  staged content differing from both is still refused,
+                  --  because dropping the index entry is what loses it.
+                  if not Force then
+                     declare
+                        Status : constant Version.Status.Status_Result :=
+                          Version.Status.Current_Status;
+                        Staged_List : Version.Path_Safety.Path_Vector;
+                        Local_List  : Version.Path_Safety.Path_Vector;
+                        Both_List   : Version.Path_Safety.Path_Vector;
+
+                        procedure Report
+                          (Paths     : Version.Path_Safety.Path_Vector;
+                           Singular  : String;
+                           Plural    : String;
+                           Hint      : String) is
+                        begin
+                           if Paths.Is_Empty then
+                              return;
+                           end if;
+
+                           Error_Line
+                             (if Natural (Paths.Length) = 1
+                              then Singular
+                              else Plural);
+                           for P of Paths loop
+                              Stderr_Line ("    " & P);
+                           end loop;
+                           Stderr_Line (Hint);
+                        end Report;
+                     begin
+                        for I in Matches.First_Index .. Matches.Last_Index loop
+                           case Version.Remove.Modification_Of
+                                  (Status, Matches.Element (I))
+                           is
+                              when Version.Remove.Staged_And_Local_Change =>
+                                 Both_List.Append (Matches.Element (I));
+                              when Version.Remove.Staged_Change =>
+                                 if not Cached_Only then
+                                    Staged_List.Append (Matches.Element (I));
+                                 end if;
+                              when Version.Remove.Local_Change =>
+                                 if not Cached_Only then
+                                    Local_List.Append (Matches.Element (I));
+                                 end if;
+                              when Version.Remove.Unmodified =>
+                                 null;
+                           end case;
+                        end loop;
+
+                        if not Staged_List.Is_Empty
+                          or else not Local_List.Is_Empty
+                          or else not Both_List.Is_Empty
+                        then
+                           Report
+                             (Staged_List,
+                              "the following file has changes staged in the "
+                              & "index:",
+                              "the following files have changes staged in the "
+                              & "index:",
+                              "(use --cached to keep the file, or -f to force "
+                              & "removal)");
+                           Report
+                             (Local_List,
+                              "the following file has local modifications:",
+                              "the following files have local modifications:",
+                              "(use --cached to keep the file, or -f to force "
+                              & "removal)");
+                           Report
+                             (Both_List,
+                              "the following file has staged content different"
+                              & " from both the" & Character'Val (10)
+                              & "file and the HEAD:",
+                              "the following files have staged content "
+                              & "different from both the" & Character'Val (10)
+                              & "file and the HEAD:",
+                              "(use -f to force removal)");
+                           Set_Command_Failure;
+                           return;
+                        end if;
+                     end;
+                  end if;
+
+                  --  git reports one `rm '<path>'` line per path, and reports
+                  --  exactly the same under -n while changing nothing.
+                  for I in Matches.First_Index .. Matches.Last_Index loop
+                     if not Dry_Run then
+                        Version.Remove.Remove_Path
+                          (Matches.Element (I), Cached_Only => Cached_Only);
+                     end if;
+
+                     Success_Line ("rm '" & Matches.Element (I) & "'");
+                  end loop;
+               end;
             end;
 
          elsif Command = "restore" then
@@ -12928,6 +13124,22 @@ package body Version.CLI is
                      if Pathspec_First = 0 then
                         Pathspec_First := I;
                      end if;
+                     I := I + 1;
+
+                  elsif Arg (I)'Length > 9
+                    and then Arg (I) (Arg (I)'First .. Arg (I)'First + 8)
+                             = "--source="
+                  then
+                     --  git spells it both ways.
+                     if Has_Source then
+                        Usage_Error ("duplicate option: --source", Usage);
+                        return;
+                     end if;
+
+                     Has_Source := True;
+                     Source_Rev :=
+                       To_Unbounded_String
+                         (Arg (I) (Arg (I)'First + 9 .. Arg (I)'Last));
                      I := I + 1;
 
                   elsif Arg (I) = "--source" then
@@ -12973,7 +13185,6 @@ package body Version.CLI is
 
                if Count = 1 then
                   Version.Restore.Restore_Current_Commit;
-                  Success_Line ("restored working tree");
 
                elsif Pathspec_Count = 0 then
                   Usage_Error ("missing restore pathspec", Usage);
@@ -13004,7 +13215,6 @@ package body Version.CLI is
                         Version.Restore.Restore_Staged_Path_From_Source
                           (Revision, Matches.Element (J));
                      end loop;
-                     Success_Line ("restored staged paths from " & Revision);
                   end;
 
                elsif Has_Source then
@@ -13034,7 +13244,6 @@ package body Version.CLI is
                         Version.Restore.Restore_Path_From_Source
                           (Revision, Matches.Element (J));
                      end loop;
-                     Success_Line ("restored paths from " & Revision);
                   end;
 
                elsif Has_Staged then
@@ -13060,7 +13269,6 @@ package body Version.CLI is
                      for J in Matches.First_Index .. Matches.Last_Index loop
                         Version.Restore.Restore_Staged_Path (Matches.Element (J));
                      end loop;
-                     Success_Line ("restored staged paths");
                   end;
 
                else
@@ -13088,7 +13296,6 @@ package body Version.CLI is
                      for J in Matches.First_Index .. Matches.Last_Index loop
                         Version.Restore.Restore_Path (Matches.Element (J));
                      end loop;
-                     Success_Line ("restored paths");
                   end;
                end if;
             end;
@@ -13122,16 +13329,22 @@ package body Version.CLI is
                         Version.Checkout.Checkout_Commit
                           (Version.Revisions.Resolve_Commit (Repo, Arg (2)),
                            Branch => Arg (2));
+                        Print_Carried_Modifications;
                         if Already then
-                           Success_Line ("Already on '" & Arg (2) & "'");
+                           Stderr_Line ("Already on '" & Arg (2) & "'");
                         else
-                           Success_Line
+                           Stderr_Line
                              ("Switched to branch '" & Arg (2) & "'");
                         end if;
                      else
-                        Version.Checkout.Checkout_Commit
-                          (Version.Revisions.Resolve_Commit (Repo, Arg (2)));
-                        Success_Line ("checked out " & Arg (2));
+                        declare
+                           C : constant Version.Objects.Hex_Object_Id :=
+                             Version.Revisions.Resolve_Commit (Repo, Arg (2));
+                        begin
+                           Version.Checkout.Checkout_Commit (C);
+                           Print_Carried_Modifications;
+                           Print_Detached_Head_Advice (Repo, Arg (2), C);
+                        end;
                      end if;
                   end;
                elsif Arg (3) /= "--" then
@@ -13168,7 +13381,6 @@ package body Version.CLI is
                              (Commit, Matches.Element (I));
                         end loop;
                      end;
-                     Success_Line ("checked out paths from " & Arg (2));
                   end;
                end if;
             end;
@@ -13315,7 +13527,7 @@ package body Version.CLI is
                         end if;
                         Version.Branch.Switch_Branch
                           (Ada.Strings.Unbounded.To_String (New_Name));
-                        Success_Line
+                        Stderr_Line
                           ("Switched to a new branch '"
                            & Ada.Strings.Unbounded.To_String (New_Name) & "'");
                      elsif not Has_Tgt and then not Detach then
@@ -13331,7 +13543,10 @@ package body Version.CLI is
                         begin
                            Note_Previous;
                            Version.Checkout.Checkout_Commit (C);
-                           Success_Line
+                           Print_Carried_Modifications;
+                           --  `switch --detach` is explicit intent, so git
+                           --  omits the detached-HEAD advice block here.
+                           Stderr_Line
                              ("HEAD is now at "
                               & Hex (Hex'First .. Hex'First + 6) & " "
                               & Version.Objects.Commit_Message_First_Line (Obj));
@@ -13339,7 +13554,8 @@ package body Version.CLI is
                      else
                         Note_Previous;
                         Version.Branch.Switch_Branch (Tgt);
-                        Success_Line ("Switched to branch '" & Tgt & "'");
+                        Print_Carried_Modifications;
+                        Stderr_Line ("Switched to branch '" & Tgt & "'");
                      end if;
                   end;
                end if;

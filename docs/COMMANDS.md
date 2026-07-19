@@ -189,13 +189,17 @@ Common failures: no match, path outside repository, unsupported file type, spars
 
 ### remove
 
-Syntax: `version remove [--] PATHSPEC...`.
+Syntax: `version remove [-f|--force] [--cached] [-n|--dry-run] [-q|--quiet] [--] PATHSPEC...`.
 
-Purpose: remove matching tracked paths from the index and working tree.
+Purpose: remove matching tracked paths from the index and working tree. Reports `rm '<path>'` per path, as `git rm` does.
 
 Example: `version remove obsolete.txt`.
 
-Common failures: no tracked match, unsafe deletion target, repository not open.
+Removal is refused, as git's `check_local_mod` refuses it, for any path whose content the object store could not give back: one with changes staged in the index, one with local modifications, or one whose staged content differs from both the file and HEAD. Every path is classified before any is deleted, so a refusal removes nothing at all. `-f` overrides all three. `--cached` drops the index entry and keeps the working file, so a difference on one side alone is allowed and only the differs-from-both case is still refused. `-n` reports what would be removed and changes nothing.
+
+A pathspec matching no tracked path is fatal (`fatal: pathspec '<text>' did not match any files`, exit 128) even when other pathspecs on the same command line matched.
+
+Common failures: pathspec matching nothing (exit 128), a path that would lose content (exit 1), unsafe deletion target, repository not open.
 
 ### save
 
@@ -237,9 +241,9 @@ Common failures: unknown revision, malformed object, no eligible paths.
 
 ### restore
 
-Syntax: `version restore`, `version restore [--] PATHSPEC...`, `version restore --staged [--] PATHSPEC...`, `version restore --source REV [--] PATHSPEC...`, and staged/source combinations.
+Syntax: `version restore`, `version restore [--] PATHSPEC...`, `version restore --staged [--] PATHSPEC...`, `version restore --source REV [--] PATHSPEC...`, and staged/source combinations. `--source` is also spelled `--source=REV`.
 
-Purpose: restore working-tree or staged paths from HEAD or another revision.
+Purpose: restore working-tree or staged paths from HEAD or another revision. Prints nothing on success, as git does.
 
 Common failures: unknown source revision, dirty target, no source match, filesystem-guard rejection.
 
@@ -247,15 +251,17 @@ Common failures: unknown source revision, dirty target, no source match, filesys
 
 Syntax: `version checkout REV`, `version checkout REV -- PATHSPEC...`.
 
-Purpose: detach at a revision or restore matching paths from a revision.
+Purpose: switch to a branch, detach at a revision, or restore matching paths from a revision. Restoring paths prints nothing. A switch reports `Switched to branch '<name>'`, `Already on '<name>'` or, when it detaches, git's detached-HEAD advice followed by `HEAD is now at <short> <subject>` — all on **standard error**, where git puts them. (`reset --hard`'s identical-looking `HEAD is now at` line goes to standard output; the streams genuinely differ between the two commands.) The advice block is suppressed by `advice.detachedHead=false`.
 
-Common failures: unknown revision, dirty working tree, unsafe materialization target.
+A switch with work in progress follows git's rule: it is refused only for paths whose content differs between HEAD and the target, and every other local edit is carried across untouched and listed as `M<TAB><path>` on standard output. Refusal reports `Your local changes to the following files would be overwritten by checkout:` and changes nothing.
+
+Common failures: unknown revision, a local change the target would overwrite, an untracked file the target would overwrite, unsafe materialization target.
 
 ### switch
 
 Syntax: `version switch [-c|-C <new-branch>] [--detach] (<branch>|<start-point>|-)`.
 
-Purpose: switch the current branch, matching `git switch`. `<branch>` updates HEAD to the branch symref (`Switched to branch '<name>'`); `-c`/`-C <new> [<start>]` creates `<new>` (at `<start>`, else HEAD) and switches to it (`Switched to a new branch '<new>'`); `-` returns to the previously checked-out branch (resolved from the HEAD reflog); `--detach [<commit>]` detaches HEAD at `<commit>` (default HEAD) and prints `HEAD is now at <short> <subject>`. Leaving a detached HEAD first prints `Previous HEAD position was <short> <subject>`, as git does.
+Purpose: switch the current branch, matching `git switch`. `<branch>` updates HEAD to the branch symref (`Switched to branch '<name>'`); `-c`/`-C <new> [<start>]` creates `<new>` (at `<start>`, else HEAD) and switches to it (`Switched to a new branch '<new>'`); `-` returns to the previously checked-out branch (resolved from the HEAD reflog); `--detach [<commit>]` detaches HEAD at `<commit>` (default HEAD) and prints `HEAD is now at <short> <subject>` without the detached-HEAD advice, since asking for it is explicit intent. Leaving a detached HEAD first prints `Previous HEAD position was <short> <subject>`, as git does. All of these go to standard error, as in git. Local changes are carried or refused exactly as for `checkout` above.
 
 Common failures: unknown branch or revision, no previous branch for `-`, ambiguous or missing operand.
 
@@ -549,7 +555,7 @@ Cherry-pick and revert fail on unknown revisions, merge commits without mainline
 
 Syntax: `version stash`, `version stash push [PATH...]`, `version stash push --include-untracked [PATH...]`, `version stash push --include-ignored [PATH...]`, `version stash create [PATH...]`, `version stash create --include-untracked [PATH...]`, `version stash create --include-ignored [PATH...]`, `version stash store COMMIT`, `version stash store -m MESSAGE COMMIT`, `version stash list`, `version stash show [--patch] [stash@{N}] [PATH...]`, `version stash apply [stash@{N}] [PATH...]`, `version stash pop [stash@{N}] [PATH...]`, `version stash branch NAME [stash@{N}]`, `version stash drop [stash@{N}]`, `version stash clear`.
 
-Purpose: save and restore uncommitted work through `refs/stash`. Pathspecs on `stash push` limit the stashed and reset paths; non-matching changes are left in the working tree/index. `--include-untracked` adds non-ignored untracked files; `--include-ignored` adds both non-ignored and ignored untracked files. `stash create` writes a stash-shaped commit and prints its id without updating `refs/stash` or resetting the worktree; `stash store COMMIT` validates and pushes such a commit onto the stash stack using the stored commit subject as the list message; `-m MESSAGE` overrides that message. `stash show` lists stashed paths, and `stash show --patch` prints the patch; optional pathspecs filter summary, patch, apply, and pop output/effects; no-match apply/pop reports that no paths matched and leaves the stash stack unchanged. `stash branch` creates a branch at the stash base, switches to it, applies the selected stash, and drops that stash only after a successful apply. `stash clear` removes the entire stash stack.
+Purpose: save and restore uncommitted work through `refs/stash`. A successful `stash push` reports git's `Saved working directory and index state WIP on <branch>: <short> <subject>` (`(no branch)` when HEAD is detached), and reports `No local changes to save` when there is nothing to stash. Pathspecs on `stash push` limit the stashed and reset paths; non-matching changes are left in the working tree/index. `--include-untracked` adds non-ignored untracked files; `--include-ignored` adds both non-ignored and ignored untracked files. `stash create` writes a stash-shaped commit and prints its id without updating `refs/stash` or resetting the worktree; `stash store COMMIT` validates and pushes such a commit onto the stash stack using the stored commit subject as the list message; `-m MESSAGE` overrides that message. `stash show` lists stashed paths, and `stash show --patch` prints the patch; optional pathspecs filter summary, patch, apply, and pop output/effects; no-match apply/pop reports that no paths matched and leaves the stash stack unchanged. `stash branch` creates a branch at the stash base, switches to it, applies the selected stash, and drops that stash only after a successful apply. `stash clear` removes the entire stash stack.
 
 Common failures: dirty target blocks apply/pop/branch, existing branch target, invalid stash spec, missing stash, active replay state, conflict during apply.
 
@@ -643,7 +649,9 @@ Common failures: malformed `.gitmodules`, unsafe path, relative URL without a co
 
 Syntax: `version archive REV`, `version archive REV --output PATH`, `version archive REV --format tar|zip`, `version archive REV [--] PATHSPEC...`.
 
-Options may appear before or after `REV`, as in git: `REV` is the first non-option operand and any later operand is a pathspec. `--output` is also spelled `-o`, and `--output`, `--format`, and `--prefix` each accept the `--name=value` form as well as `--name value`.
+Options may appear before or after `REV`, as in git: `REV` is the first non-option operand and any later operand is a pathspec. `--output` is also spelled `-o`, and `--output`, `--format`, and `--prefix` each accept the `--name=value` form as well as `--name value`. Writing the archive succeeds silently, as git does.
+
+The archive is normally built beside the target and renamed into place, so a failure leaves no truncated file. When the target is not a regular file — `-o /dev/null`, the usual way to time an archive or check that one builds — it is written directly instead, since there is no device node to rename over.
 
 Purpose: export the tree referenced by `REV` directly from repository objects without reading the working tree, index, sparse checkout materialization, or linked-worktree state.
 

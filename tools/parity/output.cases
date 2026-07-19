@@ -1,0 +1,18 @@
+# git says nothing at all for these.
+restore a.txt
+restore --staged a.txt
+restore --source=HEAD a.txt
+checkout HEAD -- a.txt
+archive --format=tar HEAD -o out.tar
+# A switch is reported on stderr, so stdout must stay empty.
+checkout other
+checkout main
+switch other
+checkout HEAD~1
+switch --detach HEAD
+# stash speaks on stdout, and names the commit it was taken against.
+stash push
+stash list
+# A local change the target commit would write over must still be refused.
+checkout HEAD~1
+switch --detach HEAD~1

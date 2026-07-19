@@ -1,0 +1,28 @@
+# Removal is refused for anything the object store could not give back.
+rm clean.txt
+rm staged.txt
+rm local.txt
+rm both.txt
+# All-or-nothing: a refusal must not remove the clean path alongside it.
+rm clean.txt staged.txt
+rm clean.txt local.txt
+rm clean.txt both.txt
+rm staged.txt local.txt
+# -f forces every state.
+rm -f clean.txt
+rm -f staged.txt
+rm -f local.txt
+rm -f both.txt
+# --cached keeps the file, so one-sided differences are recoverable.
+rm --cached clean.txt
+rm --cached staged.txt
+rm --cached local.txt
+rm --cached both.txt
+# -n reports without changing anything.
+rm -n clean.txt
+rm -n staged.txt
+rm -n clean.txt sub/nested.txt
+# Untracked and missing paths.
+rm missing.txt
+rm sub/nested.txt
+rm clean.txt missing.txt
