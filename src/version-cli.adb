@@ -966,16 +966,92 @@ package body Version.CLI is
       end if;
    end Short_Id;
 
-   procedure Print_Worktree_List is
-      Items : constant Version.Worktrees.Worktree_Info_Vectors.Vector :=
+   --  git's `worktree list`: the primary worktree first, then the linked ones
+   --  by path. The plain form pads the path column to the widest entry and
+   --  names the branch in brackets (or "(detached HEAD)"); --porcelain emits
+   --  the record form scripts read. The house format this replaced shared
+   --  neither shape nor ordering with git's.
+   procedure Print_Worktree_List (Porcelain : Boolean := False) is
+      Raw : constant Version.Worktrees.Worktree_Info_Vectors.Vector :=
         Version.Worktrees.List;
+
+      Items : Version.Worktrees.Worktree_Info_Vectors.Vector;
+      Width : Natural := 0;
+
+      function Abbrev (Hex : String) return String is
+        (if Hex'Length >= 7 then Hex (Hex'First .. Hex'First + 6) else Hex);
    begin
-      if not Items.Is_Empty then
-         for I in Items.First_Index .. Items.Last_Index loop
-            Ada.Text_IO.Put_Line
-              (Version.Worktrees.Worktree_Status_Line (Items.Element (I)));
+      --  Primary first (it is the one List reports as Current), then the rest
+      --  in path order.
+      for It of Raw loop
+         if It.Current then
+            Items.Append (It);
+         end if;
+      end loop;
+
+      declare
+         Linked : Version.Worktrees.Worktree_Info_Vectors.Vector;
+      begin
+         for It of Raw loop
+            if not It.Current then
+               Linked.Append (It);
+            end if;
          end loop;
+
+         --  Small lists; an insertion sort keeps this readable.
+         for I in Linked.First_Index .. Linked.Last_Index loop
+            for J in I + 1 .. Linked.Last_Index loop
+               if To_String (Linked.Element (J).Path)
+                  < To_String (Linked.Element (I).Path)
+               then
+                  declare
+                     Tmp : constant Version.Worktrees.Worktree_Info :=
+                       Linked.Element (I);
+                  begin
+                     Linked.Replace_Element (I, Linked.Element (J));
+                     Linked.Replace_Element (J, Tmp);
+                  end;
+               end if;
+            end loop;
+         end loop;
+
+         for It of Linked loop
+            Items.Append (It);
+         end loop;
+      end;
+
+      if Porcelain then
+         for It of Items loop
+            Success_Line ("worktree " & To_String (It.Path));
+            if Length (It.Head) > 0 then
+               Success_Line ("HEAD " & To_String (It.Head));
+            end if;
+            if It.Detached then
+               Success_Line ("detached");
+            else
+               Success_Line ("branch refs/heads/" & To_String (It.Branch));
+            end if;
+            Success_Line ("");
+         end loop;
+         return;
       end if;
+
+      for It of Items loop
+         Width := Natural'Max (Width, Length (It.Path));
+      end loop;
+
+      for It of Items loop
+         declare
+            Path : constant String := To_String (It.Path);
+            Pad  : constant String :=
+              [1 .. Natural'Max (Width - Path'Length, 0) => ' '];
+         begin
+            Success_Line
+              (Path & Pad & " " & Abbrev (To_String (It.Head)) & " "
+               & (if It.Detached then "(detached HEAD)"
+                  else "[" & To_String (It.Branch) & "]"));
+         end;
+      end loop;
    end Print_Worktree_List;
 
    function Ends_With (Text : String; Suffix : String) return Boolean is
@@ -12248,11 +12324,16 @@ package body Version.CLI is
                   Usage_Error ("missing worktree subcommand", Usage);
                   return;
                elsif Arg (2) = "list" then
-                  if Count /= 2 then
+                  if Count = 3
+                    and then (Arg (3) = "--porcelain" or else Arg (3) = "-v")
+                  then
+                     Print_Worktree_List (Porcelain => Arg (3) = "--porcelain");
+                  elsif Count /= 2 then
                      Usage_Error ("too many worktree list arguments", Usage);
                      return;
+                  else
+                     Print_Worktree_List;
                   end if;
-                  Print_Worktree_List;
 
                elsif Arg (2) = "current" then
                   if Count /= 2 then
