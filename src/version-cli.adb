@@ -1989,6 +1989,32 @@ package body Version.CLI is
       end loop;
    end Sort_Branches;
 
+   --  Remote-tracking branches, as `branch -r` names them ("origin/main")
+   --  and as `branch -a` names them ("remotes/origin/main"). A symbolic ref
+   --  such as origin/HEAD is shown with the ref it points at, like git.
+   procedure Print_Remote_Branch_List (With_Prefix : Boolean) is
+      Repo : constant Version.Repository.Repository_Handle :=
+        Version.Repository.Open;
+      Pats : Version.Ref_Format.String_Vectors.Vector;
+   begin
+      --  For_Each_Ref matches a refname prefix, not a glob.
+      Pats.Append ("refs/remotes");
+      declare
+         Lines : constant Version.Ref_Format.String_Vectors.Vector :=
+           Version.Ref_Format.For_Each_Ref
+             (Repo, Pats, Format => "%(refname:lstrip=2)");
+      begin
+         for I in Lines.First_Index .. Lines.Last_Index loop
+            declare
+               Name : constant String := Lines.Element (I);
+            begin
+               Ada.Text_IO.Put_Line
+                 ("  " & (if With_Prefix then "remotes/" else "") & Name);
+            end;
+         end loop;
+      end;
+   end Print_Remote_Branch_List;
+
    procedure Print_Branch_List is
       Repo : constant Version.Repository.Repository_Handle :=
         Version.Repository.Open;
@@ -9163,12 +9189,18 @@ package body Version.CLI is
                   Version.Console.Put
                     (Version.Branch.List_Branches_Verbose_Text);
                elsif Count = 2
-                 and then (Arg (2) = "-a" or else Arg (2) = "--all"
-                           or else Arg (2) = "-r" or else Arg (2) = "--remotes")
+                 and then (Arg (2) = "-r" or else Arg (2) = "--remotes")
                then
-                  --  git -a/-r also lists remote-tracking branches; with none
-                  --  present this equals the local listing.
+                  --  -r lists the remote-tracking branches INSTEAD of the
+                  --  local ones. Printing the local list here answered a
+                  --  different question entirely.
+                  Print_Remote_Branch_List (With_Prefix => False);
+               elsif Count = 2
+                 and then (Arg (2) = "-a" or else Arg (2) = "--all")
+               then
+                  --  -a lists both, remote-tracking ones under "remotes/".
                   Print_Branch_List;
+                  Print_Remote_Branch_List (With_Prefix => True);
                elsif Arg (2) = "list" then
                   if Count = 2 then
                      Print_Branch_List;
