@@ -19151,14 +19151,16 @@ package body Version.CLI is
                Usage : constant String :=
                  "version pack-refs [--all] [--prune]";
                Prune_Loose : Boolean := False;
+               Pack_All    : Boolean := False;
             begin
                if Count >= 2 then
                   for I in 2 .. Count loop
-                     --  git's --all packs every ref; version already packs
-                     --  heads and tags together, so it only has to be
-                     --  accepted rather than change what is packed.
+                     --  git's --all packs every ref under refs/, which is more
+                     --  than the heads and tags packed by default: a
+                     --  remote-tracking ref, a note or a stash is none of
+                     --  those and was simply left loose.
                      if Arg (I) = "--all" then
-                        null;
+                        Pack_All := True;
                      elsif Arg (I) = "--prune" then
                         if Prune_Loose then
                            Usage_Error ("duplicate option: --prune", Usage);
@@ -19180,10 +19182,11 @@ package body Version.CLI is
                   end loop;
                end if;
 
+               --  git packs refs silently.
                Version.Packed_Refs.Pack_Refs
-                 (Repo => Version.Repository.Open,
+                 (Repo        => Version.Repository.Open,
+                  Include_All => Pack_All,
                   Prune_Loose => Prune_Loose);
-               Success_Line ("packed refs");
             end;
 
          elsif Command = "verify" then

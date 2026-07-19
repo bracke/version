@@ -3010,6 +3010,17 @@ package body Version.CLI.Tests is
             Context & " output");
       end Check_Success;
 
+      procedure Check_Silent (Command, Context : String) is
+         Output : Ada.Strings.Unbounded.Unbounded_String;
+         Status : Integer;
+      begin
+         Run_CLI_Capture (Root, Command, Output, Status);
+         Assert (Status = 0, Context & " must succeed");
+         Assert
+           (Ada.Strings.Unbounded.Length (Output) = 0,
+            Context & " must print nothing, as git does");
+      end Check_Silent;
+
       Old_Dir : constant String := Ada.Directories.Current_Directory;
    begin
       Check_Usage_Failure
@@ -3088,9 +3099,8 @@ package body Version.CLI.Tests is
       Ada.Directories.Set_Directory (Root);
       Commit_File (Root, "a.txt", "one" & Character'Val (10), "base");
 
-      Check_Success ("pack-refs", "packed refs", "pack-refs default");
-      Check_Success
-        ("pack-refs --prune", "packed refs", "pack-refs prune");
+      Check_Silent ("pack-refs", "pack-refs default");
+      Check_Silent ("pack-refs --prune", "pack-refs prune");
       Check_Success
         ("prune", "unreachable loose objects", "prune default");
       Check_Success
