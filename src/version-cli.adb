@@ -7784,6 +7784,10 @@ package body Version.CLI is
             & (if B.Steps = 1 then " step)" else " steps)"));
          Success_Line ("[" & Hex & "] " & Subject (B.Rev));
          Version.Checkout.Checkout_Commit (B.Rev);
+
+         --  Record what was handed out, as git does at every step.
+         Version.Bisect.Record_Expected
+           (Version.Repository.Open, B.Rev);
       end Emit_Continue;
 
       procedure Emit_Found (B : Version.Bisect.Bisection) is
@@ -12518,6 +12522,25 @@ package body Version.CLI is
                   end if;
                   --  git removes a worktree silently.
                   Version.Worktrees.Remove (Arg (3));
+
+               elsif Arg (2) = "move" then
+                  if Count /= 4 then
+                     Usage_Error
+                       ("worktree move requires a source and a destination",
+                        Usage);
+                  else
+                     --  git moves a worktree silently.
+                     Version.Worktrees.Move (Arg (3), Arg (4));
+                  end if;
+
+               elsif Arg (2) = "repair" then
+                  if Count < 3 then
+                     Usage_Error ("missing worktree path", Usage);
+                  else
+                     for I in 3 .. Count loop
+                        Version.Worktrees.Repair (Arg (I));
+                     end loop;
+                  end if;
 
                elsif Arg (2) = "lock" or else Arg (2) = "unlock" then
                   declare
@@ -19883,6 +19906,19 @@ package body Version.CLI is
                      elsif Unshallow then
                         Version.Fetch.Fetch_Unshallow
                           (To_String (Remote_Name));
+                     elsif Have_Ref then
+                        --  A named ref restricts which tracking refs move.
+                        declare
+                           Spec  : constant String := To_String (Ref_Name);
+                           Colon : constant Natural :=
+                             Ada.Strings.Fixed.Index (Spec, ":");
+                           Src   : constant String :=
+                             (if Colon = 0 then Spec
+                              else Spec (Spec'First .. Colon - 1));
+                        begin
+                           Version.Fetch.Fetch_Branch
+                             (To_String (Remote_Name), Src);
+                        end;
                      else
                         Version.Fetch.Fetch (To_String (Remote_Name));
                      end if;

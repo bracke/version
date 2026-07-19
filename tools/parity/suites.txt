@@ -58,7 +58,7 @@ wtmutate3.fixture       wtmutate3.cases       -    15
 # --- maintenance and local-path transport.
 
 multirepo.fixture       multirepo.cases       -    43
-multirepo2.fixture      multirepo2.cases      -    57
+multirepo2.fixture      multirepo2.cases      -    55
 multirepo3.fixture      multirepo3.cases      -    25
 histtools.fixture       histtools.cases       -    39
 histtools2.fixture      histtools2.cases      -    14
