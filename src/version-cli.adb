@@ -7931,6 +7931,17 @@ package body Version.CLI is
                      & " from '" & Cmd & "' is < 0 or >= 128");
                   Set_Command_Failure;
                   return;
+               elsif Status = 126 or else Status = 127 then
+                  --  The shell could not run the command at all (not found,
+                  --  not executable). Recording that as "bad" -- which is
+                  --  what any non-zero status used to mean here -- lets the
+                  --  bisection run to completion and name a commit with
+                  --  total confidence, having tested nothing. git aborts.
+                  Error_Line
+                    ("bogus exit code " & Img (Status) & " from '" & Cmd
+                     & "': the command could not be run");
+                  Set_Command_Failure;
+                  return;
                elsif Status = 125 then
                   Mark_Revs (Is_Bad => False, Is_Skip => True,
                              Verb => "skip", Head_Only => True);
