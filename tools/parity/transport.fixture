@@ -1,0 +1,55 @@
+# Every remote lives under .git/ so it never shows up as untracked worktree
+# state, and every path used by a case is relative to the worktree root, so
+# the harness can canonicalise the two fixture roots to the same token.
+git init -q --bare .git/origin.git
+git init -q --bare .git/empty.git
+
+printf 'a\n' > f.txt
+git add -A && git commit -qm one
+git tag v0
+printf 'b\n' >> f.txt
+git commit -aqm two
+git branch side
+git tag -a v1 -m 'release one'
+
+git remote add origin .git/origin.git
+git push -q origin main side --tags
+# The bare remotes were created with the built-in default branch name, which is
+# not `main`; point their HEAD at a branch that exists so they advertise HEAD
+# and so clone has a default branch to check out.
+git --git-dir=.git/origin.git symbolic-ref HEAD refs/heads/main
+git --git-dir=.git/empty.git symbolic-ref HEAD refs/heads/main
+
+# A bundle written by git, so the bundle reader is exercised against a file it
+# did not produce itself.
+git bundle create -q .git/all.bundle --all
+
+# Rewind the local repo one commit and drop everything the remote has, so
+# fetch/pull/ls-remote all have real work to do and a real gap to report.
+git reset -q --hard HEAD~1
+git tag -d v0 v1 >/dev/null 2>&1
+git branch -D side >/dev/null 2>&1
+git update-ref -d refs/remotes/origin/main
+git update-ref -d refs/remotes/origin/side
+git config branch.main.remote origin
+git config branch.main.merge refs/heads/main
+
+# A branch and a tag the remote has never seen, so push has something it can
+# legitimately create; main itself is behind the remote, so pushing it must be
+# rejected as a non-fast-forward.
+git branch topic
+git checkout -q topic
+printf 'local\n' > t.txt
+git add -A && git commit -qm topic
+git tag vlocal
+git checkout -q main
+
+# A second remote name for the `remote` subcommands, and a dangling one that
+# points at a path that does not exist.
+git remote add mirror .git/origin.git
+git remote add gone .git/missing.git
+
+# One remote-tracking ref under `mirror`, so renaming or removing that remote
+# has refs to migrate or delete, not just config lines. It is written directly
+# rather than fetched so that `origin` stays untouched.
+git update-ref refs/remotes/mirror/main HEAD

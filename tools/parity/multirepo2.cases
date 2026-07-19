@@ -1,0 +1,126 @@
+# Multi-repo structure that already exists: two committed submodules (one
+# checked out but rolled back, one deinitialised) and three linked worktrees
+# (healthy, locked, and one whose directory was deleted).
+#
+# Every worktree here lives inside the superproject, so the absolute paths
+# `worktree list` prints fall under the fixture root and the harness
+# canonicalises them; an external worktree would leak the two distinct
+# temporary directory names into stdout and fail for no reason.
+
+# --- worktree inventory ------------------------------------------------
+# All three list formats have to agree on four worktrees, on which branch or
+# detached HEAD each holds, and on the locked/prunable annotations.
+worktree list
+worktree list --porcelain
+worktree list -v
+worktree list --porcelain -z
+
+# --- worktree prune ----------------------------------------------------
+# `wt/gone` has an administrative directory pointing at a path that no
+# longer exists; prune is the only thing that reclaims it.
+worktree prune
+worktree prune -n
+worktree prune -v
+worktree prune --expire=now
+# Pruning must not touch the two live worktrees, so a second inventory
+# after a prune is the real assertion -- but the harness only ever runs one
+# command, so `prune -v` naming exactly one worktree stands in for it.
+
+# --- worktree remove ---------------------------------------------------
+# A clean linked worktree comes out silently.
+worktree remove wt/live
+# A locked one must be refused with a message about the lock, not about
+# dirtiness, and -f alone is still not enough for a lock.
+worktree remove wt/lockd
+worktree remove -f wt/lockd
+worktree remove -f -f wt/lockd
+# A worktree whose directory is already gone is removable: only the
+# administrative files are left to delete.
+worktree remove wt/gone
+# The primary worktree can never be removed, nor can a path that is not one.
+worktree remove .
+worktree remove nosuch
+worktree remove wt/live extra
+
+# --- worktree lock / unlock -------------------------------------------
+worktree lock wt/live
+worktree lock --reason "in use" wt/live
+# Locking twice, and unlocking something that was never locked, are the two
+# error paths.
+worktree lock wt/lockd
+worktree unlock wt/lockd
+worktree unlock wt/live
+worktree lock nosuch
+worktree unlock nosuch
+
+# --- worktree move -----------------------------------------------------
+worktree move wt/live wt/moved
+# The destination already exists, the source is locked, and the source is
+# the primary worktree: three separate refusals.
+worktree move wt/live wt/lockd
+worktree move wt/lockd wt/moved
+worktree move . wt/moved
+worktree move nosuch wt/moved
+
+# --- worktree add against existing worktrees ---------------------------
+# `main` and `side` are each already checked out somewhere, so both adds
+# must be refused rather than creating a second holder of the ref.
+worktree add wt/new main
+worktree add wt/new side
+# The path of an existing worktree is not reusable either.
+worktree add wt/live main
+
+# --- worktree repair ---------------------------------------------------
+worktree repair
+worktree repair wt/live
+
+# --- submodule inventory ----------------------------------------------
+# `lib` is checked out at a commit other than the one recorded in the
+# index (leading '+'), `opt` is not initialised (leading '-').
+submodule status
+submodule status --recursive
+submodule status --cached
+submodule status lib
+submodule status opt
+submodule status nosuch
+submodule summary
+# The superproject's own status must call `lib` modified and must NOT
+# report the deinitialised `opt` as a deletion: the gitlink is still there,
+# only the working directory is empty.
+status --short
+status --porcelain=v2
+
+# --- submodule init / update ------------------------------------------
+submodule init
+submodule init opt
+submodule update
+submodule update --init
+submodule update --recursive
+submodule update --init --recursive
+submodule update lib
+submodule update --checkout lib
+submodule sync
+submodule sync --recursive
+submodule sync lib
+
+# --- submodule deinit -------------------------------------------------
+# `lib` has a checked-out commit that differs from the recorded one, which
+# is a local modification: deinit without --force must refuse rather than
+# throw the difference away.
+submodule deinit lib
+submodule deinit --force lib
+submodule deinit opt
+submodule deinit --all
+submodule deinit --all --force
+submodule deinit nosuch
+submodule deinit
+
+# --- submodule foreach -------------------------------------------------
+# foreach must visit only initialised submodules, announce each one, and
+# export the documented variables to the command it runs.
+submodule foreach pwd
+submodule foreach 'echo "$name|$sm_path|$displaypath|$sha1|$toplevel"'
+submodule foreach --recursive pwd
+submodule foreach -q pwd
+submodule foreach false
+submodule foreach

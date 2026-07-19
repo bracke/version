@@ -1,0 +1,69 @@
+# A superproject-to-be: linear history, a side branch, and three donor
+# repositories that live inside the worktree but are ignored, so a case can
+# name a local path as a "remote" without ever touching the network and
+# without the donor showing up as untracked noise.
+#
+# The donors are inside the repo on purpose: compare.sh canonicalises the two
+# fixture roots, so any absolute path it prints collapses to the same token.
+# A donor at ../src would instead be a single directory SHARED by both sides.
+#
+# Every commit gets its own increasing timestamp so that ordering is a
+# property of the history and not a tie-break on the harness's pinned date.
+c () { # $1 = message, $2 = seconds past the base date
+  GIT_AUTHOR_DATE="$((1700000000 + $2)) +0000" \
+  GIT_COMMITTER_DATE="$((1700000000 + $2)) +0000" \
+  git commit -qm "$1"
+}
+
+# git 2.38 refuses file:// and bare-path transports for submodule clones
+# unless protocol.file.allow says otherwise. It is set globally because the
+# clone runs as a child process in a different directory and so does not see
+# the superproject's local config.
+git config --global protocol.file.allow always
+
+printf '/.ext/\n/wt/\n' > .gitignore
+mkdir -p dir
+printf 'a\n' > a.txt
+printf 'b\n' > dir/b.txt
+git add -A && c "c1 add files" 10
+printf 'a2\n' >> a.txt
+git add -A && c "c2 edit a" 20
+git tag v1
+git checkout -q -b side
+printf 'side\n' > s.txt
+git add -A && c "c3 side adds s" 30
+git checkout -q main
+printf 'a3\n' >> a.txt
+git add -A && c "c4 edit a again" 40
+
+# Donor 1: two commits, a tag and a second branch, so subtree/submodule cases
+# can name something other than the default branch.
+mkdir -p .ext/lib
+( cd .ext/lib && git init -q -b main . \
+  && git config user.email t@e && git config user.name T \
+  && mkdir -p src && printf 'l1\n' > src/l.txt && git add -A \
+  && GIT_AUTHOR_DATE='1700000100 +0000' GIT_COMMITTER_DATE='1700000100 +0000' \
+     git commit -qm "lib c1" \
+  && git tag lv1 \
+  && printf 'l2\n' >> src/l.txt && git add -A \
+  && GIT_AUTHOR_DATE='1700000110 +0000' GIT_COMMITTER_DATE='1700000110 +0000' \
+     git commit -qm "lib c2" \
+  && git checkout -q -b lside \
+  && printf 'ls\n' > src/side.txt && git add -A \
+  && GIT_AUTHOR_DATE='1700000120 +0000' GIT_COMMITTER_DATE='1700000120 +0000' \
+     git commit -qm "lib side" \
+  && git checkout -q main )
+
+# Donor 2: a single commit, used where two submodules must be distinguished.
+mkdir -p .ext/lib2
+( cd .ext/lib2 && git init -q -b main . \
+  && git config user.email t@e && git config user.name T \
+  && printf 'm1\n' > m.txt && git add -A \
+  && GIT_AUTHOR_DATE='1700000130 +0000' GIT_COMMITTER_DATE='1700000130 +0000' \
+     git commit -qm "lib2 c1" )
+
+# A bare repository to receive `subtree push` without a network.
+git init -q --bare -b main .ext/bare.git
+
+# Nothing in this suite may open an editor: a prompt would hang the harness.
+git config core.editor true

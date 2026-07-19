@@ -1,0 +1,42 @@
+# A repository that already CONTAINS a subtree: `vendor/` was grafted from
+# the donor with a real `git subtree add`, both sides have moved on since,
+# and the donor has a bare mirror to push into. Only in this shape do
+# `subtree merge`, `pull`, `push` and `split --rejoin` have the merge base
+# they need -- on a virgin repository they can only ever report failure, so
+# the interesting half of the subtree surface is unreachable without it.
+c () { # $1 = message, $2 = seconds past the base date
+  GIT_AUTHOR_DATE="$((1700000000 + $2)) +0000" \
+  GIT_COMMITTER_DATE="$((1700000000 + $2)) +0000" \
+  git commit -qm "$1"
+}
+git config --global protocol.file.allow always
+
+printf '/.ext/\n/wt/\n' > .gitignore
+printf 'a\n' > a.txt
+git add -A && c "c1 add a" 10
+
+# The donor, ignored so it is not worktree noise; see multirepo.fixture.
+mkdir -p .ext/lib
+( cd .ext/lib && git init -q -b main . \
+  && git config user.email t@e && git config user.name T \
+  && printf 'l1\n' > l.txt && git add -A \
+  && GIT_AUTHOR_DATE='1700000100 +0000' GIT_COMMITTER_DATE='1700000100 +0000' \
+     git commit -qm "lib c1" )
+
+git subtree add -q --prefix=vendor ./.ext/lib main
+
+# The superproject edits the grafted content, so `split` has a local commit
+# to replay and `push` has something to send.
+printf 'local\n' >> vendor/l.txt
+git add -A && c "c2 edit vendor locally" 50
+
+# The donor moves on independently, so `merge`/`pull` have something to
+# bring in and cannot short-circuit to "Already up to date".
+( cd .ext/lib && printf 'l2\n' >> l.txt && git add -A \
+  && GIT_AUTHOR_DATE='1700000160 +0000' GIT_COMMITTER_DATE='1700000160 +0000' \
+     git commit -qm "lib c2" )
+
+# A bare mirror of the donor to receive `subtree push` without a network.
+git clone -q --bare .ext/lib .ext/bare.git
+
+git config core.editor true

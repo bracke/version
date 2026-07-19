@@ -1,0 +1,29 @@
+# f.txt is conflicted right now; g.txt's conflict was resolved earlier and its
+# resolution is sitting in .git/rr-cache.
+
+# `status` lists the paths whose conflicts rerere is tracking for this merge,
+# `remaining` lists only the ones it has not resolved for you, and the two are
+# different lists in general -- here they happen to agree, which is itself the
+# thing to check.
+rerere status
+rerere remaining
+# `diff` shows what the working tree has done to the recorded preimage so far,
+# which for an untouched conflict is the conflict markers themselves.
+rerere diff
+# Bare `rerere` is the record/replay step git runs from merge; with the
+# conflict already recorded it must be a silent no-op rather than a usage error.
+rerere
+# `forget` drops the recorded resolution for a path and puts the conflict back;
+# it must distinguish a path that is conflicted now from one that is not.
+rerere forget f.txt
+rerere forget g.txt
+rerere forget .
+rerere forget nosuchfile.txt
+rerere forget
+# `gc` expires old entries -- with everything freshly written nothing is old
+# enough to remove, so this must be silent and leave the cache intact.
+rerere gc
+# `clear` drops the current merge's recorded state unconditionally.
+rerere clear
+# An unknown subcommand must be refused rather than treated as a path.
+rerere nosuchsubcommand

@@ -1,0 +1,156 @@
+# --- gc -------------------------------------------------------------------
+# git gc is silent on success; anything printed on stdout is a divergence.
+gc
+# The flags a script is most likely to pass. --auto is the one hooks use, and
+# on a repo this small it must decide there is nothing to do and stay silent.
+gc --quiet
+gc -q
+gc --auto
+gc --aggressive
+gc --no-quiet
+# git spells the pruning window as a date, not as --now/--dry-run.
+gc --prune=now
+gc --prune=all
+gc --no-prune
+# Rejections must be rejected the same way: git has no --dry-run for gc.
+gc --dry-run
+gc --now
+gc --bogus-option
+gc extra-argument
+
+# --- prune ----------------------------------------------------------------
+# Plain prune deletes; it prints nothing when it succeeds.
+prune
+# -n/--dry-run list what would go, one "<sha> <type>" line per object, so the
+# fixture's two unreachable objects pin both the selection and the format.
+prune -n
+prune --dry-run
+prune -v
+prune --verbose
+prune -n -v
+prune --expire=now
+prune --expire=never
+# --no-progress is accepted; --progress too. Neither may reach stdout.
+prune --no-progress
+prune --progress
+prune --bogus-option
+# A rev argument protects that object from pruning.
+prune --dry-run HEAD
+
+# --- repack ---------------------------------------------------------------
+# Bare repack on an already-packed repo has nothing new to do.
+repack
+repack -q
+repack -d
+repack -a
+repack -a -d
+repack -adf
+repack -A -d
+repack --window=1
+repack -l
+repack --bogus-option
+repack extra-argument
+
+# --- fsck (the CLI also spells this `verify`) -----------------------------
+# fsck reports dangling objects on stdout; the fixture has exactly one
+# dangling blob and one dangling commit, both with fixed ids.
+fsck
+fsck --dangling
+fsck --no-dangling
+fsck --unreachable
+fsck --connectivity-only
+fsck --strict
+fsck --no-progress
+fsck --name-objects
+fsck --root
+fsck --tags
+fsck --cache
+fsck --full
+fsck --no-full
+fsck --lost-found
+fsck --bogus-option
+# A named object limits the check to what that object reaches.
+fsck HEAD
+
+# --- prune-packed ---------------------------------------------------------
+# Nothing in the fixture is both loose and packed, so this must be a silent
+# no-op rather than a deletion.
+prune-packed
+prune-packed -n
+prune-packed --dry-run
+prune-packed -q
+prune-packed --quiet
+
+# --- maintenance ----------------------------------------------------------
+maintenance run
+maintenance run --quiet
+maintenance run --auto
+maintenance run --task=gc
+maintenance run --task=commit-graph
+maintenance run --task=loose-objects
+maintenance run --task=incremental-repack
+maintenance run --task=pack-refs
+maintenance run --task=prefetch
+maintenance run --task=bogus
+maintenance run --task=gc --task=commit-graph
+# The bare command and the unknown subcommand are both usage errors.
+maintenance
+maintenance bogus
+
+# --- commit-graph ---------------------------------------------------------
+# Both write and verify are silent, and verify must accept what write left.
+commit-graph write
+commit-graph write --reachable
+commit-graph write --changed-paths
+commit-graph write --no-progress
+commit-graph verify
+commit-graph verify --no-progress
+commit-graph
+commit-graph bogus
+commit-graph write --bogus-option
+
+# --- multi-pack-index -----------------------------------------------------
+multi-pack-index write
+multi-pack-index verify
+multi-pack-index expire
+multi-pack-index repack
+multi-pack-index write --no-progress
+multi-pack-index
+multi-pack-index bogus
+
+# --- verify-pack ----------------------------------------------------------
+# The fixture's pack was written by real git, so the name, the object sizes
+# and the offsets are identical on both sides and every column is comparable.
+verify-pack .git/objects/pack/*.idx
+verify-pack -v .git/objects/pack/*.idx
+verify-pack --verbose .git/objects/pack/*.idx
+verify-pack -s .git/objects/pack/*.idx
+verify-pack --stat-only .git/objects/pack/*.idx
+# Feeding it the pack instead of the index, and feeding it nothing at all.
+verify-pack .git/objects/pack/*.pack
+verify-pack
+verify-pack no-such-pack.idx
+verify-pack --bogus-option .git/objects/pack/*.idx
+
+# --- unpack-objects -------------------------------------------------------
+# Every object in the pack is already present loose-or-packed, so unpacking it
+# back into the same repo must be a silent no-op that loses nothing.
+unpack-objects -q < .git/objects/pack/*.pack
+unpack-objects -n < .git/objects/pack/*.pack
+unpack-objects --strict -q < .git/objects/pack/*.pack
+# Every case here redirects stdin explicitly: the harness feeds the case file
+# itself on stdin, so a command that reads stdin would eat the remaining cases.
+unpack-objects -q < /dev/null
+
+# --- pack-objects ---------------------------------------------------------
+# Pack *bytes* are deliberately allowed to differ, so only the exit status and
+# the non-pack stdout of the erroring forms are asserted here.
+pack-objects --stdout --revs < /dev/null > /dev/null
+pack-objects < /dev/null
+pack-objects --bogus-option --stdout < /dev/null > /dev/null
+
+# --- index-pack -----------------------------------------------------------
+# --verify re-checks an existing pack against its index and prints nothing.
+index-pack --verify .git/objects/pack/*.pack
+index-pack < /dev/null
+index-pack --verify no-such-pack.pack

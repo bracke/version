@@ -1,0 +1,110 @@
+# Creating multi-repo structure from a repository that has none yet.
+#
+# Every worktree path here is INSIDE the repository. That is not laziness: a
+# path outside it would resolve to a directory that the two fixture roots
+# share, so the first side would create it and the second would find it
+# already there. Inside the root, the harness canonicalises it away instead.
+
+# --- worktree add ------------------------------------------------------
+# The plainest form: a new worktree checking out an existing branch.
+worktree add wt/w1 side
+# A detached worktree at a tag, and at a raw revision.
+worktree add --detach wt/w1 v1
+worktree add --detach wt/w1 HEAD~1
+# Checking out a branch that the primary worktree already holds must be
+# refused, or two worktrees could commit to one ref.
+worktree add wt/w1 main
+# -b creates the branch as part of the add; -B resets an existing one.
+worktree add -b fresh wt/w1
+worktree add -B side wt/w1 main
+# git infers the branch name from the final path component when no
+# commit-ish is given, so `worktree add wt/side` should check out `side`.
+worktree add wt/side
+worktree add wt/nosuchbranch
+# --detach with no revision means HEAD.
+worktree add --detach wt/w1
+# A revision that does not resolve, and a path that is already a file.
+worktree add --detach wt/w1 nosuchrev
+worktree add wt/w1 a.txt
+worktree add wt/w1 dir
+# Argument-count errors on both sides of the minimum.
+worktree add
+worktree add wt/w1 side extra
+# --no-checkout leaves the worktree empty but registered; --lock registers
+# it already locked so that a later remove has to refuse.
+worktree add --no-checkout wt/w1 side
+worktree add --lock wt/w1 side
+
+# --- worktree list / prune / lock on a repository with no linked worktrees ---
+# The primary worktree still has to be listed, in all three formats.
+worktree list
+worktree list --porcelain
+worktree list -v
+worktree list -z
+# Nothing to prune, nothing to lock: these are the quiet-success and
+# not-a-worktree baselines the later fixtures diverge from.
+worktree prune
+worktree prune -n
+worktree prune -v
+worktree lock wt/w1
+worktree unlock wt/w1
+worktree move wt/w1 wt/w2
+worktree remove wt/w1
+worktree repair
+# Subcommand dispatch itself: missing, unknown, and too many arguments.
+worktree
+worktree bogus
+worktree list extra
+
+# --- submodule add -----------------------------------------------------
+# Adding a submodule from a local donor is the only way a repository ever
+# gets one, so its absence would make the whole family unreachable.
+submodule add ./.ext/lib lib
+submodule add ./.ext/lib
+submodule add --name libname ./.ext/lib lib
+submodule add -b lside ./.ext/lib lib
+# The path is already occupied by tracked content.
+submodule add ./.ext/lib dir
+# A donor path that is not a repository at all.
+submodule add ./.ext/nosuch lib
+
+# --- submodule queries with no submodules configured -------------------
+# All of these must succeed silently rather than complain: a repository
+# without submodules is the common case, not an error.
+submodule status
+submodule init
+submodule update
+submodule sync
+submodule foreach pwd
+submodule summary
+submodule
+submodule bogus
+
+# --- subtree add / split on virgin history -----------------------------
+# Grafting a donor in under a new prefix, plain and squashed.
+subtree add --prefix=vendor ./.ext/lib main
+subtree add --prefix=vendor ./.ext/lib main --squash
+subtree add -P vendor ./.ext/lib main
+# A tag and a non-default branch as the donor ref, and a ref that is absent.
+subtree add --prefix=vendor ./.ext/lib lv1
+subtree add --prefix=vendor ./.ext/lib lside
+subtree add --prefix=vendor ./.ext/lib nosuchref
+# A prefix that already exists must be refused before anything is fetched.
+subtree add --prefix=dir ./.ext/lib main
+# --prefix is mandatory, and add needs a ref when given a repository.
+subtree add ./.ext/lib main
+subtree add --prefix=vendor
+subtree
+# Splitting a directory that was never a subtree still works: it replays the
+# directory's own history into standalone commits.
+subtree split --prefix=dir
+subtree split -P dir
+subtree split --prefix=dir --branch dirsplit
+subtree split --prefix=dir --ignore-joins
+subtree split --prefix=dir --annotate="X: "
+subtree split --prefix=dir HEAD~1
+subtree split --prefix=nosuch
+# merge/pull/push against a prefix with no subtree relationship.
+subtree merge --prefix=dir v1
+subtree pull --prefix=dir ./.ext/lib main
+subtree push --prefix=dir ./.ext/bare.git main

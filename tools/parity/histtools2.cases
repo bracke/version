@@ -1,0 +1,51 @@
+# One step taken from a bisect that is already paused at c5 (bad=c9, good=c2).
+# c5 is still good and c6 is the first bad commit, so the answers below are
+# fixed and the halving arithmetic is checked at a point where it is no longer
+# the trivial first step.
+
+# Marking the checked-out midpoint decides the remaining range in one move:
+# good must narrow to the c6..c7 half, bad must narrow to the c3..c5 half.
+bisect good
+bisect bad
+# `skip` cannot decide and must pick a different commit to test instead.
+bisect skip
+# Marking a commit other than the checked-out one is allowed and must be taken
+# into account rather than ignored.
+bisect good main~5
+bisect bad main~2
+bisect bad HEAD
+bisect good HEAD
+# Marking a commit outside the current range is a contradiction git reports.
+bisect good main
+bisect bad v1
+# A revision that does not resolve must be refused before any state is written.
+bisect good nosuchref
+# The transcript must list the start and both endpoint markings, in order, and
+# is the input `bisect replay` expects.
+bisect log
+bisect replay bisect-transcript.txt
+bisect replay nosuchfile.txt
+# The terms in force are good/bad here, so `terms` must say so and the old/new
+# aliases must be rejected as the wrong vocabulary for this session.
+bisect terms
+bisect terms --term-good
+bisect terms --term-bad
+bisect terms --term-old
+bisect terms --term-new
+bisect old
+bisect new
+# `run` drives the session to completion by itself; the probe exits non-zero
+# exactly on the commits carrying the bug, so it must land on c6 and print the
+# full "is the first bad commit" report.
+bisect run ./probe.sh
+# A probe that always fails, and one that cannot be executed at all, are the
+# two failure modes `run` has to distinguish.
+bisect run false
+bisect run ./nosuchprobe.sh
+# `start` again mid-session restarts rather than compounding the state.
+bisect start
+bisect start main~2 main~5
+# `reset` must return to the branch that was checked out before the bisect.
+bisect reset
+bisect reset feature
+bisect reset nosuchref

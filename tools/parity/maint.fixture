@@ -1,0 +1,25 @@
+# A repository that gives every maintenance command something to chew on: a
+# real pack, a commit graph with depth, an annotated tag, and objects that are
+# genuinely unreachable so gc/prune/fsck have to agree on what is garbage.
+for i in 1 2 3; do printf 'f%s\n' "$i" > "f$i.txt"; git add -A; git commit -qm "c$i"; done
+git tag -a v1 -m 'tag one'
+git branch side
+
+# A commit whose branch is then deleted. The reflog would still make it
+# reachable, so expire the reflog: fsck/prune/gc must treat it as garbage.
+git checkout -q -b gone
+printf 'orphan\n' > orphan.txt
+git add orphan.txt
+git commit -qm orphan
+git checkout -q main
+git branch -qD gone
+git reflog expire --expire=now --expire-unreachable=now --all
+
+# Pack everything reachable with real git, so both sides start from a
+# byte-identical pack and `verify-pack` cases compare like for like. The
+# unreachable objects above stay loose, which is what prune/gc must find.
+git repack -q -a -d
+
+# One more loose unreachable blob, written after the repack so nothing can
+# absorb it into a pack.
+printf 'dangling\n' | git hash-object -w --stdin > /dev/null

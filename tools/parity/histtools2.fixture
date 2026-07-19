@@ -1,0 +1,13 @@
+# The same history as histtools, but left PAUSED in the middle of a bisect.
+#
+# `bisect` is stateful across invocations and every case in the harness gets a
+# pristine clone, so a multi-step bisect cannot be written as consecutive case
+# lines. The paused state is therefore built here with real git -- `git bisect
+# start main v1` marks c9 bad and c2 good and checks out the midpoint c5 --
+# and each case probes exactly one step taken from that point.
+#
+# `bisect log` is captured to an untracked file so `bisect replay` has a real
+# transcript to consume without a second command in the case line.
+. "$(dirname "$FIXTURE")/histtools.fixture"
+git bisect start main v1 > /dev/null 2>&1
+git bisect log > bisect-transcript.txt 2>/dev/null

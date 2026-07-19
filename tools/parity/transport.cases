@@ -1,0 +1,165 @@
+# Transport against a local filesystem remote. Every path is relative to the
+# worktree root so the harness can canonicalise the two fixture roots, and
+# every remote lives under .git/ so it is invisible to worktree commands.
+#
+# Several cases chain a non-git inspector (`cat`, `ls`) after the command
+# because the interesting result is on disk, not on stdout: a fetch that
+# reports success but writes no ref, or a `remote rename` that leaves stale
+# config, is otherwise invisible to a stdout/exit comparison.
+
+# --- ls-remote: read a remote's advertisement without touching the repo.
+ls-remote .git/origin.git
+ls-remote origin
+ls-remote --heads .git/origin.git
+ls-remote --tags .git/origin.git
+ls-remote -q .git/origin.git
+# --symref reports what HEAD is a symref to, which is how clone picks a branch.
+ls-remote --symref .git/origin.git
+# A ref pattern selects a subset of the advertisement.
+ls-remote .git/origin.git main
+ls-remote .git/origin.git 'refs/tags/*'
+# An empty remote advertises nothing, and --exit-code turns that into status 2.
+ls-remote .git/empty.git
+ls-remote --exit-code .git/empty.git
+ls-remote --exit-code .git/origin.git
+# --get-url resolves the configured URL without contacting anything.
+ls-remote --get-url origin
+# A URL that is not a repository is a fatal transport error, not a soft failure.
+ls-remote .git/missing.git
+ls-remote nosuch
+
+# --- remote: the configured-remote registry.
+remote
+remote -v
+remote --verbose
+remote show
+remote show -n origin
+remote get-url origin
+remote get-url gone
+remote get-url --all origin
+remote get-url nosuch
+# add/rename/remove must leave the config file exactly as git leaves it, so the
+# whole file is dumped rather than one key.
+remote add up .git/origin.git && cat .git/config
+remote add origin .git/origin.git
+remote add up nosuch://x && cat .git/config
+remote rename mirror mirr && cat .git/config
+remote remove mirror && cat .git/config
+remote rm mirror && cat .git/config
+remote set-url origin .git/empty.git && cat .git/config
+# rename and remove also have to migrate or delete the remote-tracking refs
+# that belong to the remote, not just its config section.
+remote rename mirror mirr && ls .git/refs/remotes
+remote remove mirror && ls .git/refs/remotes
+remote rename nosuch other
+remote remove nosuch
+remote prune origin
+remote set-head origin -a
+remote update
+
+# --- fetch: the refs and objects that end up in the repo are the whole point,
+# so each fetch is followed by a dump of the ref namespace it should have
+# written. The fixture's local repo is one commit behind the remote and has no
+# remote-tracking refs, so every one of these has real work to do.
+fetch origin && ls .git/refs/remotes/origin
+fetch origin && cat .git/refs/remotes/origin/main
+fetch origin && cat .git/refs/tags/v1
+# A destination refspec must create exactly that ref and nothing else.
+fetch origin main:refs/heads/newb && ls .git/refs/heads
+fetch origin side:refs/heads/newb && cat .git/refs/heads/newb
+# A source-only refspec updates FETCH_HEAD and the tracking ref, not a branch.
+fetch origin main && cat .git/FETCH_HEAD
+fetch origin side && ls .git/refs/heads
+fetch --porcelain origin
+fetch --dry-run origin && ls .git/refs/remotes
+fetch --tags origin && ls .git/refs/tags
+fetch --prune origin && ls .git/refs/remotes/origin
+fetch --all && ls .git/refs/remotes
+# A URL may be used where a remote name is expected.
+fetch .git/origin.git side
+fetch gone
+fetch nosuch
+
+# --- pull: fetch plus integrate. Local main is a strict ancestor of the
+# remote's, so every one of these is a fast-forward, and the worktree file has
+# to gain the second line.
+pull origin main && cat f.txt
+pull && cat f.txt
+pull --ff-only origin main && cat f.txt
+pull --rebase origin main && cat f.txt
+pull --no-rebase origin main && cat f.txt
+# Pulling a branch that is not the current one still fast-forwards HEAD.
+pull origin side && cat f.txt
+pull gone
+
+# --- push: the remote's refs after the push are what matters, so each push is
+# followed by a listing of the bare remote's ref tree. `topic` and `vlocal`
+# exist only locally; `main` is behind the remote and must be rejected.
+push origin topic && ls .git/origin.git/refs/heads
+push origin topic && ls .git/refs/remotes/origin
+push origin main && ls .git/origin.git/refs/heads
+push --force origin main && cat .git/origin.git/refs/heads/main
+push origin :side && ls .git/origin.git/refs/heads
+push --delete origin side && ls .git/origin.git/refs/heads
+push --dry-run origin topic && ls .git/origin.git/refs/heads
+push --porcelain origin topic
+push --tags origin && ls .git/origin.git/refs/tags
+push origin vlocal && ls .git/origin.git/refs/tags
+push -u origin topic && cat .git/config
+push origin topic:refs/heads/renamed && ls .git/origin.git/refs/heads
+push origin
+push
+push nosuch main
+push gone topic
+
+# --- clone: a fresh repository built from the remote.
+clone .git/origin.git c && ls -a c
+clone .git/origin.git c && cat c/.git/HEAD
+clone .git/origin.git c && cat c/.git/config
+clone .git/origin.git c && ls c/.git/refs/remotes/origin
+clone .git/origin.git
+clone --bare .git/origin.git c.git && ls c.git
+clone --mirror .git/origin.git m.git && cat m.git/config
+clone -b side .git/origin.git c && cat c/.git/HEAD
+clone --no-checkout .git/origin.git c && ls -a c
+# Cloning an empty repository leaves an unborn HEAD, not an error.
+clone .git/empty.git c && cat c/.git/HEAD
+# --depth is silently ignored for a local clone; it is not a failure.
+clone --depth 1 .git/origin.git c && ls -a c
+clone .git/origin.git .
+clone .git/missing.git c
+
+# --- bundle: an offline transport, so the file must be both readable by git
+# and readable from a file git wrote (.git/all.bundle comes from the fixture).
+bundle list-heads .git/all.bundle
+bundle list-heads .git/all.bundle refs/heads/main
+bundle verify .git/all.bundle
+# The header of a bundle we write is plain text and ends at the first blank
+# line, so it can be compared without depending on the deflate bytes of the
+# pack that follows being identical -- they need only be decodable.
+bundle create b.bundle --all && sed -n '1,/^$/p' b.bundle
+bundle create b.bundle main && sed -n '1,/^$/p' b.bundle
+bundle create b.bundle main..side && sed -n '1,/^$/p' b.bundle
+bundle unbundle .git/all.bundle && ls .git/refs/heads
+# A file and a directory that are not bundles must both fail cleanly.
+bundle verify f.txt
+bundle verify .git/origin.git
+bundle verify .git/nosuch.bundle
+
+# --- fetch-pack / send-pack: the plumbing under fetch and push.
+fetch-pack --all .git/origin.git
+fetch-pack .git/origin.git refs/heads/side
+fetch-pack --quiet --all .git/origin.git
+fetch-pack .git/origin.git refs/heads/nosuch
+send-pack .git/origin.git refs/heads/topic && ls .git/origin.git/refs/heads
+send-pack --dry-run .git/origin.git refs/heads/topic && ls .git/origin.git/refs/heads
+
+# --- init: the other end of every transport is a repository someone created.
+init sub && cat sub/.git/HEAD
+init --bare bare.git && cat bare.git/HEAD
+init -q sub && cat sub/.git/HEAD
+init --initial-branch=trunk sub && cat sub/.git/HEAD
+init sub && ls sub/.git
+# Re-running init on an existing repository is a no-op that reports itself.
+init
+init --bare .git/origin.git

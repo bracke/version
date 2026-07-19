@@ -1,0 +1,76 @@
+# A history for the history-rewriting and annotation commands.
+#
+# Shape:
+#   * a long linear main (c1..c9) so `bisect` has room to halve more than once
+#     and so its "N revisions left / roughly M steps" arithmetic is exercised;
+#   * a regression introduced at c6 (flag.txt flips ok -> bug) so a `bisect run`
+#     script has a real, single answer to find;
+#   * a side branch forked at c3 whose first commit was also cherry-picked onto
+#     main, so `cherry` has both an equivalent (-) and a new (+) commit to
+#     classify rather than only one of the two;
+#   * annotated and lightweight tags plus two extra branches, so `name-rev` has
+#     to choose between several candidate names for the same commit;
+#   * notes already attached to two commits, and one note in a non-default
+#     notes ref, so `notes list/show/copy/remove/prune` have prior state to act
+#     on instead of only ever starting from empty;
+#   * one `replace` ref already installed so `replace -l`/`-d` are probed
+#     against an existing mapping. It grafts a side commit, not a main one, so
+#     it cannot perturb every other case's view of main.
+#
+# Every commit gets its own increasing timestamp, seeded from the date the
+# harness pins, so commit ids stay reproducible across the two runs while the
+# history is still strictly ordered. That matters more here than elsewhere:
+# `notes` and `filter-branch` write new objects derived from these commits, so
+# any drift in a commit id would surface as a spurious diff.
+c () { # $1 = message, $2 = seconds past the base date
+  GIT_AUTHOR_DATE="$((1700000000 + $2)) +0000" \
+  GIT_COMMITTER_DATE="$((1700000000 + $2)) +0000" \
+  git commit -qm "$1"
+}
+printf 'ok\n' > flag.txt
+printf '1\n' > a.txt
+git add -A && c "c1 base" 10
+printf '2\n' >> a.txt
+git add -A && c "c2 grow a" 20
+git tag v1
+printf '3\n' >> a.txt
+git add -A && c "c3 grow a again" 30
+
+git checkout -q -b side
+printf 's1\n' > s.txt
+git add -A && c "s1 side adds s" 100
+git branch s1only
+printf 's2\n' >> s.txt
+git add -A && c "s2 side edits s" 110
+git checkout -q main
+
+printf '4\n' >> a.txt
+git add -A && c "c4 grow a once more" 40
+printf '5\n' >> a.txt
+git add -A && c "c5 still ok" 50
+printf 'bug\n' > flag.txt
+git add -A && c "c6 introduces the bug" 60
+git branch feature
+printf '7\n' >> a.txt
+git add -A && c "c7 after the bug" 70
+# Cherry-pick only the first side commit, so `cherry side` must report s1 as
+# already applied (-) and s2 as still missing (+).
+GIT_AUTHOR_DATE="1700000080 +0000" GIT_COMMITTER_DATE="1700000080 +0000" \
+  git cherry-pick s1only > /dev/null
+printf '9\n' >> a.txt
+git add -A && c "c9 tip" 90
+git tag -a v2 -m "release two"
+
+# Notes in the default ref on two commits, plus one in a second notes ref, so
+# the default ref and --ref can be told apart.
+git notes add -m "note on tip" main
+git notes add -m "note on c6" feature
+git notes --ref=review add -m "reviewed" main~2
+
+git replace --graft side v1 > /dev/null
+
+# An untracked, executable probe for `bisect run`. Untracked so it survives
+# every checkout bisect performs, and silent so only bisect's own output is
+# compared.
+printf '#!/bin/sh\ngrep -q bug flag.txt && exit 1\nexit 0\n' > probe.sh
+chmod +x probe.sh

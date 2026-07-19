@@ -1,0 +1,34 @@
+# A repository whose rr-cache is already populated AND which is sitting in an
+# unresolved conflict, because `rerere` has nothing to report in either state
+# alone: `clear`/`gc`/`forget` need a recorded resolution to act on, while
+# `status`/`diff`/`remaining` need a conflict that is live right now.
+#
+# Two independent conflicts are staged:
+#   1. g.txt conflicts, is resolved by hand and committed -- that records a
+#      preimage AND a postimage in .git/rr-cache;
+#   2. f.txt then conflicts on a second merge and is deliberately left
+#      unresolved, so the working tree still has conflict markers and an entry
+#      with no postimage.
+git config rerere.enabled true
+printf 'g base\n' > g.txt
+printf 'f base\n' > f.txt
+git add -A && git commit -qm base
+
+git checkout -q -b topic1
+printf 'g topic\n' > g.txt
+git add -A && git commit -qm "topic1 edits g"
+git checkout -q main
+printf 'g main\n' > g.txt
+git add -A && git commit -qm "main edits g"
+git merge topic1 > /dev/null 2>&1
+printf 'g merged by hand\n' > g.txt
+git add g.txt && git commit -qm "merge topic1 resolved" > /dev/null 2>&1
+
+git checkout -q -b topic2 main~1
+printf 'f topic\n' > f.txt
+git add -A && git commit -qm "topic2 edits f"
+git checkout -q main
+printf 'f main\n' > f.txt
+git add -A && git commit -qm "main edits f"
+# Left conflicted on purpose: this is the state every case starts from.
+git merge topic2 > /dev/null 2>&1

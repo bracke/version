@@ -1,0 +1,70 @@
+# A repository that already contains a grafted subtree at `vendor/`, with
+# local commits on top and an independently advanced donor. This is the only
+# shape in which `merge`, `pull`, `push` and `split --rejoin` do real work:
+# on a virgin repository they can only report that there is no relationship.
+
+# --- split -------------------------------------------------------------
+# Replaying the prefix's history into standalone commits. The resulting id
+# is fully determined by the fixture's pinned dates, so it is comparable.
+subtree split --prefix=vendor
+subtree split -P vendor
+subtree split --prefix=vendor HEAD
+# --branch names the result; --rejoin additionally merges it back so the
+# next split has a cheaper starting point.
+subtree split --prefix=vendor --branch vs
+subtree split --prefix=vendor --rejoin
+subtree split --prefix=vendor --rejoin --branch vs
+# --ignore-joins recomputes from scratch, ignoring the graft commit.
+subtree split --prefix=vendor --ignore-joins
+# --annotate prefixes every replayed commit message, which changes every id.
+subtree split --prefix=vendor --annotate="X: "
+# --onto grafts the replay onto an existing history.
+subtree split --prefix=vendor --onto HEAD
+# -q suppresses the progress meter but not the resulting id.
+subtree split -q --prefix=vendor
+# Splitting a prefix that is not a directory in this revision.
+subtree split --prefix=nosuch
+subtree split --prefix=vendor nosuchrev
+
+# --- merge -------------------------------------------------------------
+# Merging the donor's new commit in under the existing prefix.
+subtree merge --prefix=vendor HEAD
+subtree merge --prefix=vendor --squash HEAD
+subtree merge --prefix=vendor -m "custom message" HEAD
+subtree merge --prefix=vendor nosuchrev
+subtree merge --prefix=vendor
+# A prefix with no subtree relationship has no merge base to work from.
+subtree merge --prefix=nosuch HEAD
+
+# --- pull --------------------------------------------------------------
+# The donor moved and the superproject edited the same lines, so the pull
+# has to conflict -- which is the case that matters, because a tool that
+# silently resolves it loses one side.
+subtree pull --prefix=vendor ./.ext/lib main
+subtree pull --prefix=vendor ./.ext/lib main --squash
+subtree pull --prefix=vendor ./.ext/lib nosuchref
+subtree pull --prefix=vendor ./.ext/lib
+subtree pull --prefix=nosuch ./.ext/lib main
+
+# --- push --------------------------------------------------------------
+# Pushing the split result to a bare mirror. `main` there already has the
+# donor's newer commit, so the push is a non-fast-forward and must be
+# rejected; a fresh branch name must be accepted.
+subtree push --prefix=vendor ./.ext/bare.git main
+subtree push --prefix=vendor ./.ext/bare.git newbranch
+subtree push --prefix=vendor ./.ext/bare.git HEAD:refs/heads/other
+subtree push --prefix=vendor ./.ext/bare.git
+subtree push --prefix=nosuch ./.ext/bare.git main
+
+# --- add on an occupied prefix ----------------------------------------
+# The graft already happened, so a second add must be refused -- and must
+# be refused before it fetches anything.
+subtree add --prefix=vendor ./.ext/lib main
+subtree add --prefix=vendor ./.ext/lib main --squash
+
+# --- how the graft looks to the rest of the tool ----------------------
+# `subtree add` is a real merge commit, so ordinary history commands have
+# to see it. These are cheap regression anchors on the fixture itself.
+log --oneline
+log --oneline vendor
+ls-files

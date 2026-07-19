@@ -1,0 +1,172 @@
+# --- bisect, from a repository that is NOT bisecting -------------------------
+# Every case gets a pristine clone, so only the first step of a bisect can be
+# probed here; the paused-mid-bisect steps live in histtools2. What this file
+# covers is the entry point and the refusals.
+#
+# `start` with no revisions must set up the session and say what it is still
+# waiting for rather than failing.
+bisect start
+# `start` given both endpoints at once is the whole first halving: the count of
+# remaining revisions, the "roughly N steps" estimate and the checkout line.
+bisect start main v1
+bisect start HEAD main~8
+# A one-commit range leaves nothing to test, so bisect must announce the first
+# bad commit immediately instead of halving.
+bisect start main main~1
+# Bad older than good is a contradiction; git still starts and complains.
+bisect start v1 main
+# --term-old/--term-new rename the two ends, which changes every subsequent
+# prompt, so the rename has to be honoured from the very first message.
+bisect start --term-old=works --term-new=broken main v1
+# --no-checkout bisects by moving BISECT_HEAD instead of the working tree.
+bisect start --no-checkout main v1
+# Everything below needs a session that does not exist; each must refuse.
+bisect good
+bisect bad
+bisect skip
+bisect log
+bisect terms
+bisect run ./probe.sh
+# `reset` outside a bisect is a documented no-op, not an error.
+bisect reset
+bisect reset main
+
+# --- notes: reading existing state -------------------------------------------
+# The fixture leaves notes on main and on feature in the default ref, and one
+# on main~2 in refs/notes/review.
+notes list
+notes
+notes list main
+notes list feature
+notes list main~2
+notes list v1
+notes show
+notes show main
+notes show feature
+notes show main~2
+notes show v1
+notes get-ref
+# --ref must read the other notes ref and nothing from the default one.
+notes --ref=review list
+notes --ref=review show main~2
+notes --ref=review show main
+notes --ref=refs/notes/review list
+# A notes ref that does not exist at all is empty, not an error.
+notes --ref=absent list
+notes --ref=absent show main
+
+# --- notes: writing ----------------------------------------------------------
+# Adding where there is no note yet succeeds silently.
+notes add -m "fresh" main~2
+notes add -m "fresh" v1
+# Adding over an existing note must refuse unless forced.
+notes add -m "clobber" main
+notes add -f -m "clobber" main
+notes add --force -m "clobber" main
+# Two -m arguments are joined as paragraphs.
+notes add -m "one" -m "two" main~2
+# append creates when absent and concatenates when present, which are two
+# different code paths through the same subcommand.
+notes append -m "extra" main
+notes append -m "extra" main~2
+# remove is silent on success and complains about a commit with no note unless
+# told to ignore that.
+notes remove main
+notes remove main~2
+notes remove --ignore-missing main~2
+notes remove v2
+# copy needs -f for the same reason add does.
+notes copy main main~2
+notes copy main feature
+notes copy -f main feature
+notes copy main~2 main
+# Nothing in this repository is unreachable, so prune must do nothing at all.
+notes prune
+notes prune -n
+notes prune -v
+
+# --- replace -----------------------------------------------------------------
+# The fixture installs one graft on the side branch.
+replace
+replace -l
+replace --list
+replace -l 2ea
+replace -l ffff
+replace --format=short -l
+replace --format=medium -l
+replace --format=long -l
+# Creating a new mapping is silent; re-creating it must refuse without -f.
+replace v1 main~8
+replace side v1
+replace -f side v1
+# Both objects must be the same type, and both must exist.
+replace v1 v2
+replace v1 nosuchobject
+replace nosuchobject v1
+# --graft synthesises the replacement commit rather than taking one.
+replace --graft main~1 main~3
+replace --graft main
+# Deleting the mapping the fixture installed, and one that is not there.
+replace -d 2ea5f3fdea732633444330c243136f278ccd0af2
+replace -d side
+replace -d v1
+replace --delete side
+
+# --- cherry ------------------------------------------------------------------
+# s1 was cherry-picked onto main and s2 was not, so upstream=main head=side must
+# print exactly one - line and one + line, in that order.
+cherry main side
+cherry -v main side
+cherry side main
+cherry v1 side
+cherry -v v1 side
+cherry main feature
+cherry main main
+cherry --abbrev=8 -v main side
+# With no head argument the current branch is used; with no upstream at all
+# there is no configured upstream for main, which is an error.
+cherry main
+cherry
+cherry nosuchref side
+
+# --- name-rev ----------------------------------------------------------------
+# Several refs describe the same commits, so the choice of name is the whole
+# behaviour under test.
+name-rev main
+name-rev HEAD
+name-rev main~3
+name-rev main~8
+name-rev dc116b7bd82f7ed93918d51b96211b090dff7d21
+name-rev --tags main~3
+name-rev --tags main~8
+name-rev --name-only main~3
+name-rev --all
+name-rev --refs=refs/heads/main main~3
+name-rev --refs=refs/tags/* main~3
+name-rev --always main~3
+name-rev main~3 main~8 HEAD
+name-rev v2
+name-rev nosuchref
+# A tree is not nameable; git reports it rather than crashing.
+name-rev main^{tree}
+
+# --- filter-branch -----------------------------------------------------------
+# Rewriting a two-commit tip keeps the run short enough that the elapsed-seconds
+# figure in the progress line cannot drift between the two invocations.
+filter-branch --msg-filter 'sed s/c9/C9/' HEAD~2..HEAD
+filter-branch --env-filter 'GIT_AUTHOR_NAME=Z' HEAD~2..HEAD
+filter-branch --tree-filter 'rm -f flag.txt' HEAD~2..HEAD
+filter-branch --index-filter 'git rm -q --cached --ignore-unmatch flag.txt' HEAD~2..HEAD
+filter-branch --subdirectory-filter nosuchdir HEAD~2..HEAD
+# --prune-empty drops commits the filter emptied out.
+filter-branch --prune-empty --tree-filter 'rm -f a.txt' HEAD~2..HEAD
+# No filter at all is a usage error, and an unknown filter must not be ignored.
+filter-branch HEAD~2..HEAD
+filter-branch --no-such-filter x HEAD~2..HEAD
+# A plain branch name rather than a range, so the range handling and the ref
+# handling can be told apart when one of them fails.
+filter-branch --msg-filter 'sed s/c9/C9/' -- main
+filter-branch --msg-filter 'sed s/c9/C9/' --all
+# `side` is the branch the fixture's replace ref grafts, so this case also asks
+# whether the rewrite walks the replaced history or the raw one.
+filter-branch -f --tree-filter 'rm -f s.txt' side

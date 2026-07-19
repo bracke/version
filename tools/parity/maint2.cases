@@ -1,0 +1,41 @@
+# With no pack in the repository, the multi-pack-index commands have nothing
+# to index. git treats that as a hard error; a tool that quietly succeeds is
+# telling a script the index was written when it was not.
+multi-pack-index write
+multi-pack-index verify
+multi-pack-index expire
+multi-pack-index repack
+
+# verify-pack with no pack to point at.
+verify-pack .git/objects/pack/nothing.idx
+
+# prune-packed on a repo where nothing is packed must remove nothing, and it
+# must not mistake "loose and unpacked" for "loose and redundant".
+prune-packed
+prune-packed -n
+
+# The everything-is-loose starting point is where gc and repack actually have
+# work to do, so this is the case that pins their success output.
+gc
+repack
+repack -a -d
+
+# fsck on a clean, fully reachable loose repository has nothing to report.
+fsck
+fsck --unreachable
+fsck --strict
+
+# prune on a repo with no garbage at all: silent, and nothing removed.
+prune
+prune -n
+
+# commit-graph over loose commits only.
+commit-graph write
+commit-graph verify
+commit-graph write --reachable
+
+# maintenance on the shape its scheduler actually meets: loose objects, no pack.
+maintenance run
+maintenance run --task=loose-objects
+maintenance run --task=incremental-repack
+maintenance run --task=pack-refs

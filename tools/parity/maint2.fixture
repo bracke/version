@@ -1,0 +1,5 @@
+# A loose-only repository: nothing has ever been packed. Several maintenance
+# commands are only meaningful once a pack exists, and this is the shape that
+# exposes how they fail (or refuse) when there is none.
+for i in 1 2; do printf 'f%s\n' "$i" > "f$i.txt"; git add -A; git commit -qm "c$i"; done
+git tag light
