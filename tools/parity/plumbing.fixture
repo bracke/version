@@ -1,0 +1,69 @@
+# Object and index plumbing needs one of every object type, one of every index
+# mode, and a repository where the same object is both packed and loose.
+# Content is fixed so every object id used by the cases is reproducible; the
+# harness pins the author and committer dates, so the commit and tag ids are
+# stable too.
+printf 'hello\n' > hello.txt
+printf 'l1\nl2\nl3\n' > multi.txt
+printf '' > empty.txt
+mkdir -p sub
+printf 'nested\n' > sub/nested.txt
+printf '#!/bin/sh\necho hi\n' > run.sh && chmod +x run.sh
+ln -s hello.txt link.txt
+git add -A && git commit -qm "first commit"
+
+# A second commit gives cat-file and read-tree two different trees to move
+# between, and makes hello.txt's two blobs distinguishable by id.
+printf 'hello2\n' > hello.txt
+printf 'added\n' > added.txt
+git add -A && git commit -qm "second commit"
+
+# An annotated tag is the only way to reach cat-file's tag-object paths.
+git tag -a v1 -m "annotated tag" HEAD
+git tag lightweight HEAD
+
+# Untracked file: something --add can add and --stdin can name.
+printf 'new\n' > untracked.txt
+
+# ---- inputs for the commands that read stdin -------------------------------
+# The harness evaluates each case line, so a case can redirect from one of
+# these; a here-doc would not survive the one-line-per-case format.
+
+# cat-file --batch / --batch-check: a blob, a tree, a commit, a tag, an
+# abbreviated id, a rev expression, and one id that does not exist.
+{ printf '14be0d41c639d701e0fe23e835b5fe9524b4459d\n'
+  printf 'd25c4cbbeaa3a867628fb71fef3e398feb526c7e\n'
+  printf 'e35167e92e266b0a42889fdebf5adbfb7701fa86\n'
+  printf '2c94ca4525e63906b18c98b0724186195a5f6fe4\n'
+  printf '14be0d4\n'
+  printf 'HEAD:sub/nested.txt\n'
+  printf '0000000000000000000000000000000000000000\n'; } > objs.txt
+
+# hash-object --stdin-paths / update-index --stdin / checkout-index --stdin.
+printf 'hello.txt\nmulti.txt\nsub/nested.txt\n' > paths.txt
+
+# update-index --index-info: the plain form, an explicit stage, and a removal.
+{ printf '100644 14be0d41c639d701e0fe23e835b5fe9524b4459d\tfromindexinfo.txt\n'
+  printf '100755 4163036efa65bd4a469e752267498f01ea36a55c\tfromindexinfo.sh\n'; } > info.txt
+
+# mktree: the canonical ls-tree form, the same entries out of order, an entry
+# naming an object that does not exist, and the NUL-terminated form.
+git ls-tree HEAD > tree.txt
+sort -r tree.txt > tree-unsorted.txt
+printf '100644 blob 1111111111111111111111111111111111111111\tghost.txt\n' > tree-missing.txt
+git ls-tree -z HEAD > tree-z.bin
+
+# get-tar-commit-id: an archive of a commit, of a tag, and of a bare tree
+# (which carries no commit id extended header at all).
+git archive --format=tar HEAD > archive.tar
+git archive --format=tar v1 > archive-tag.tar
+git archive --format=tar HEAD^{tree} > archive-tree.tar
+
+# ---- packed + loose --------------------------------------------------------
+# repack without -d keeps every packed object's loose copy, which is the state
+# count-objects reports as prune-packable and prune-packed exists to clean up.
+git repack -a -q
+cp .git/objects/pack/*.idx idx.bin
+# One loose object that no pack contains, so prune-packed has something it must
+# leave behind and count-objects has a non-zero remainder.
+printf 'dangling blob\n' | git hash-object -w --stdin >/dev/null

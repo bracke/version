@@ -1,0 +1,258 @@
+# ---------------------------------------------------------------- cat-file --
+# One query of each kind against one object of each type, because cat-file
+# dispatches on the object header and each type has its own printer.
+cat-file -t 14be0d41c639d701e0fe23e835b5fe9524b4459d
+cat-file -t d25c4cbbeaa3a867628fb71fef3e398feb526c7e
+cat-file -t e35167e92e266b0a42889fdebf5adbfb7701fa86
+cat-file -t 2c94ca4525e63906b18c98b0724186195a5f6fe4
+cat-file -s 14be0d41c639d701e0fe23e835b5fe9524b4459d
+cat-file -s d25c4cbbeaa3a867628fb71fef3e398feb526c7e
+cat-file -s e35167e92e266b0a42889fdebf5adbfb7701fa86
+cat-file -s 2c94ca4525e63906b18c98b0724186195a5f6fe4
+cat-file -s e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+# -e is exit-status only, so it is the cheapest check that lookup agrees.
+cat-file -e 14be0d41c639d701e0fe23e835b5fe9524b4459d
+cat-file -e 0000000000000000000000000000000000000000
+cat-file -e HEAD
+# -p pretty-prints; the tree and tag printers are entirely separate code.
+cat-file -p 14be0d41c639d701e0fe23e835b5fe9524b4459d
+cat-file -p d25c4cbbeaa3a867628fb71fef3e398feb526c7e
+cat-file -p 9dfd7d08cef435bccfc5701b5b547c3740a67404
+cat-file -p e35167e92e266b0a42889fdebf5adbfb7701fa86
+cat-file -p 2c94ca4525e63906b18c98b0724186195a5f6fe4
+cat-file -p e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+# The <type> <object> form must emit the raw payload, not the pretty form; for
+# a tree that means binary entries rather than ls-tree output.
+cat-file blob 14be0d41c639d701e0fe23e835b5fe9524b4459d
+cat-file commit e35167e92e266b0a42889fdebf5adbfb7701fa86
+cat-file tag 2c94ca4525e63906b18c98b0724186195a5f6fe4
+cat-file tree d25c4cbbeaa3a867628fb71fef3e398feb526c7e
+# A type that does not match the object must be refused, except that asking for
+# a commit's tree via a peeling type is not what this form means.
+cat-file blob d25c4cbbeaa3a867628fb71fef3e398feb526c7e
+cat-file tree 14be0d41c639d701e0fe23e835b5fe9524b4459d
+cat-file commit 2c94ca4525e63906b18c98b0724186195a5f6fe4
+# Revision syntax, not just raw ids: peeling, path lookup and abbreviation all
+# have to resolve before the object is read.
+cat-file -t HEAD
+cat-file -t v1
+cat-file -t v1^{}
+cat-file -t HEAD^{tree}
+cat-file -p HEAD:hello.txt
+cat-file -p HEAD^:hello.txt
+cat-file -p HEAD:sub
+cat-file -t 14be0d4
+cat-file -s 14be0d4
+cat-file -p HEAD:nosuchfile
+# Missing objects and malformed invocations.
+cat-file -t 0000000000000000000000000000000000000000
+cat-file -p 0000000000000000000000000000000000000000
+cat-file -t
+cat-file blob
+cat-file -t -s HEAD
+# --batch reads ids on stdin and must keep going past a missing one.
+cat-file --batch < objs.txt
+cat-file --batch-check < objs.txt
+cat-file --batch-check='%(objectname) %(objecttype) %(objectsize)' < objs.txt
+cat-file --batch='%(objecttype)' < objs.txt
+cat-file --batch < /dev/null
+cat-file --batch-check < /dev/null
+# --batch-all-objects ignores stdin and walks the whole store, which exercises
+# both the loose scan and the pack index in one go.
+cat-file --batch-check --batch-all-objects < /dev/null
+cat-file --batch-all-objects --batch-check='%(objecttype)' < /dev/null
+
+# ------------------------------------------------------------- hash-object --
+# Hashing a worktree file, stdin, and the empty input; -w additionally writes.
+hash-object hello.txt
+hash-object multi.txt
+hash-object empty.txt
+hash-object sub/nested.txt
+hash-object run.sh
+hash-object hello.txt multi.txt sub/nested.txt
+hash-object --stdin < hello.txt
+hash-object --stdin < /dev/null
+hash-object --stdin < multi.txt
+hash-object -w --stdin < multi.txt
+# Writing an object that is not in the store yet must actually create it.
+hash-object -w untracked.txt && find .git/objects -type f -name '*' -not -path '*pack*' | wc -l
+# -t names the type header that goes into the hash, so a different -t must give
+# a different id for identical bytes.
+hash-object -t blob --stdin < hello.txt
+hash-object -t tree --stdin < /dev/null
+hash-object -t commit --stdin < /dev/null
+hash-object -t tag --stdin < /dev/null
+hash-object -t bogus --stdin < /dev/null
+# --literally lets a malformed payload through the type check.
+hash-object -t commit --literally --stdin < hello.txt
+# --stdin-paths takes a list instead of argv.
+hash-object --stdin-paths < paths.txt
+hash-object -w --stdin-paths < paths.txt
+# --no-filters and --path only matter with attributes configured, but they must
+# still parse and not change the id here.
+hash-object --no-filters hello.txt
+hash-object --path=hello.txt --stdin < hello.txt
+# A symlink is hashed as its target text by add, but hash-object reads the file.
+hash-object link.txt
+# Error cases: absent file, a directory, and no argument at all.
+hash-object nosuchfile.txt
+hash-object sub
+hash-object
+
+# -------------------------------------------------------------- write-tree --
+# The index matches HEAD, so write-tree must reproduce HEAD's tree exactly.
+write-tree
+write-tree --missing-ok
+write-tree --prefix=sub
+write-tree --prefix=sub/
+write-tree --prefix=nosuchdir
+
+# --------------------------------------------------------------- read-tree --
+# read-tree only rewrites the index, so the check is what real git then reads
+# back out of the index our binary wrote.
+read-tree HEAD && git ls-files -s
+read-tree HEAD^ && git ls-files -s
+read-tree d25c4cbbeaa3a867628fb71fef3e398feb526c7e && git ls-files -s
+read-tree 9dfd7d08cef435bccfc5701b5b547c3740a67404 && git ls-files -s
+read-tree --empty && git ls-files -s
+read-tree v1 && git ls-files -s
+# Two trees without -m stages them; with -m it is a two-way merge instead.
+read-tree HEAD^ HEAD && git ls-files -s
+read-tree -m HEAD^ && git ls-files -s
+read-tree -m HEAD^ HEAD && git ls-files -s
+read-tree -m HEAD HEAD^ HEAD && git ls-files -s
+# -u also updates the worktree, so the file content is part of the answer.
+read-tree -u -m HEAD^ && git ls-files -s && cat hello.txt
+read-tree -u --reset HEAD^ && cat hello.txt
+# --prefix grafts a tree in under a directory without disturbing the rest.
+read-tree --prefix=graft/ 9dfd7d08cef435bccfc5701b5b547c3740a67404 && git ls-files -s
+read-tree --prefix=graft/ HEAD && git ls-files -s
+# -i keeps the worktree untouched even when the caller asked for a merge.
+read-tree -i -m HEAD^ HEAD && git ls-files -s
+# Errors: a non-tree argument, a missing rev, and no argument.
+read-tree 14be0d41c639d701e0fe23e835b5fe9524b4459d
+read-tree nosuchref
+read-tree
+
+# ------------------------------------------------------------ update-index --
+# Every mutation is verified by having real git read the index afterwards.
+update-index --add untracked.txt && git ls-files -s
+update-index --add untracked.txt hello.txt && git ls-files -s
+update-index --remove hello.txt && git ls-files -s
+update-index --force-remove hello.txt && git ls-files -s
+update-index --add --remove untracked.txt && git ls-files -s
+update-index hello.txt && git ls-files -s
+update-index untracked.txt
+# Mode bits are index-only state that no worktree change can express.
+update-index --chmod=+x hello.txt && git ls-files -s
+update-index --chmod=-x run.sh && git ls-files -s
+update-index --chmod=+x nosuchfile.txt
+# --cacheinfo invents an entry with no worktree file behind it, in both the
+# comma-packed and the historical three-argument spelling.
+update-index --add --cacheinfo 100644,14be0d41c639d701e0fe23e835b5fe9524b4459d,invented.txt && git ls-files -s
+update-index --add --cacheinfo 100644 14be0d41c639d701e0fe23e835b5fe9524b4459d invented.txt && git ls-files -s
+update-index --add --cacheinfo 100755,4163036efa65bd4a469e752267498f01ea36a55c,invented.sh && git ls-files -s
+update-index --add --cacheinfo 120000,a5162f80d4a6782b7cb2a0a197f834e683cb9eb1,invented.link && git ls-files -s
+update-index --add --cacheinfo 100644,0000000000000000000000000000000000000000,ghost.txt && git ls-files -s
+update-index --add --cacheinfo 100999,14be0d41c639d701e0fe23e835b5fe9524b4459d,badmode.txt
+# The per-entry flag bits are only visible through ls-files -v.
+update-index --assume-unchanged hello.txt && git ls-files -v
+update-index --no-assume-unchanged hello.txt && git ls-files -v
+update-index --skip-worktree hello.txt && git ls-files -v
+update-index --no-skip-worktree hello.txt && git ls-files -v
+# --refresh restats without changing content; on a clean tree it must be quiet.
+update-index --refresh
+update-index -q --refresh
+update-index --really-refresh
+# Bulk input forms.
+update-index --stdin < paths.txt && git ls-files -s
+update-index --index-info < info.txt && git ls-files -s
+update-index --add --stdin < paths.txt && git ls-files -s
+# Errors: a path with no file and no --add, and an unknown option.
+update-index nosuchfile.txt
+update-index --add nosuchfile.txt
+update-index --add sub
+
+# ---------------------------------------------------------- checkout-index --
+# The worktree already matches the index, so the interesting cases are the ones
+# that write somewhere else or are asked to overwrite.
+checkout-index -a
+checkout-index -a -f
+checkout-index -f hello.txt
+checkout-index hello.txt
+checkout-index -a -q
+checkout-index -n -a
+# --prefix writes a second copy of the tree, which is directly observable.
+checkout-index -a -f --prefix=out/ && find out -type f | sort
+checkout-index --prefix=out/ hello.txt sub/nested.txt && find out -type f | sort
+checkout-index -a --prefix=out/ && cat out/hello.txt out/sub/nested.txt
+checkout-index -a --prefix=out/ && test -x out/run.sh && echo exec-bit-kept
+checkout-index -a --prefix=out/ && test -L out/link.txt && echo symlink-kept
+# --stdin takes the path list from a file instead of argv.
+checkout-index -f --stdin < paths.txt
+checkout-index --prefix=out/ --stdin < paths.txt && find out -type f | sort
+checkout-index -f --stdin -z < /dev/null
+# Errors: a path that is not in the index at all.
+checkout-index nosuchfile.txt
+checkout-index -f nosuchfile.txt
+checkout-index untracked.txt
+
+# ------------------------------------------------------------------ mktree --
+# Feeding ls-tree output back in must reproduce the very tree it came from.
+mktree < tree.txt
+mktree < tree-unsorted.txt
+mktree -z < tree-z.bin
+mktree < /dev/null
+# An entry naming an absent object is refused unless --missing says otherwise.
+mktree < tree-missing.txt
+mktree --missing < tree-missing.txt
+# Garbage input must be rejected rather than hashed.
+mktree < hello.txt
+mktree < paths.txt
+
+# -------------------------------------------------------------- show-index --
+# The pack index was written by real git in both repositories, so any
+# difference here is in our reader, not in anything we produced.
+show-index < idx.bin
+show-index --object-format=sha1 < idx.bin
+show-index < /dev/null
+show-index < hello.txt
+
+# ----------------------------------------------------------- count-objects --
+# Loose and packed counts, in both the terse and the verbose report.
+count-objects
+count-objects -v
+count-objects -H
+count-objects -v -H
+count-objects --verbose
+count-objects --human-readable
+
+# ------------------------------------------------------------- unpack-file --
+# unpack-file prints a temporary name that is random by design, so the case
+# reads the file it named instead of comparing the name itself.
+unpack-file 14be0d41c639d701e0fe23e835b5fe9524b4459d | xargs cat
+unpack-file f0f23074642919bb50ab5b6e4ec489706127f061 | xargs cat
+unpack-file e69de29bb2d1d6434b8b29ae775ad8c2e48c5391 | xargs cat
+unpack-file HEAD:hello.txt | xargs cat
+# Non-blob and missing arguments must fail rather than write an empty file.
+unpack-file d25c4cbbeaa3a867628fb71fef3e398feb526c7e
+unpack-file 0000000000000000000000000000000000000000
+unpack-file
+
+# ------------------------------------------------------------ prune-packed --
+# Every loose object that the pack also holds must go, and the one loose object
+# no pack holds must stay; listing the store afterwards shows both at once.
+prune-packed && find .git/objects -type f | sort
+prune-packed -n && find .git/objects -type f | sort
+prune-packed --dry-run && find .git/objects -type f | sort
+prune-packed -q && find .git/objects -type f | sort
+prune-packed && git count-objects -v
+
+# ------------------------------------------------------ get-tar-commit-id --
+# git archive records the commit id in a pax extended header; a tree archive
+# has no such record, so that case must fail cleanly.
+get-tar-commit-id < archive.tar
+get-tar-commit-id < archive-tag.tar
+get-tar-commit-id < archive-tree.tar
+get-tar-commit-id < /dev/null
+get-tar-commit-id < hello.txt

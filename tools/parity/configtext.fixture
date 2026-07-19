@@ -1,0 +1,101 @@
+# Repo-local config with several value shapes: a multi-valued key, a
+# subsection with a dotted name, a bool, an int with a unit suffix, and a
+# key whose value needs quoting on output.
+git config user.name T
+git config user.email t@e
+git config core.bare false
+git config core.abbrev 12
+git config core.bigFileThreshold 1m
+git config alias.st status
+git config alias.lg "log --oneline"
+git config --add remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'
+git config --add remote.origin.fetch '+refs/tags/*:refs/tags/*'
+git config remote.origin.url https://example.invalid/r.git
+git config 'branch.main.remote' origin
+git config 'url.git@example.invalid:.insteadOf' https://example.invalid/
+git config section.emptyvalue ''
+git config section.trailingspace 'a b '
+git config section.number 42
+git config section.boolTrue yes
+git config section.boolFalse off
+
+# An attributes file exercising a plain pattern, a directory pattern, a
+# negated attribute, a set-to-value attribute and a macro-ish builtin.
+cat > .gitattributes <<'EOF'
+*.txt text
+*.bin -text binary
+*.md text diff=markdown
+sub/** export-ignore
+nested.c whitespace=indent,trail
+unset.txt -diff
+EOF
+mkdir -p sub
+printf 'x\n' > sub/nested.txt
+printf 'x\n' > a.txt
+printf 'x\n' > a.bin
+printf 'x\n' > a.md
+
+# A mailmap covering all four of git's entry shapes.
+cat > .mailmap <<'EOF'
+Proper Name <proper@example.com> <commit@example.com>
+<proper@example.com> <other@example.com>
+Renamed Only <rename@example.com>
+Complex Name <complex@example.com> Old Name <old@example.com>
+EOF
+
+git add -A && git commit -qm base
+
+# Message bodies for stripspace / interpret-trailers.
+printf '\n\nsubject here\n\n\n\nbody line\n\n\n' > msg.txt
+printf '# a comment\nreal line\n\n# another\n' > cmsg.txt
+printf 'plain body\n' > plain.txt
+printf '' > empty.txt
+printf 'subject\n\nbody\n\nSigned-off-by: A <a@e>\nAcked-by: B <b@e>\n' > trailers.txt
+printf 'subject\n\nbody\n\nSigned-off-by: A\n <continued>\n' > folded.txt
+printf 'subject\n\nbody text\n' > notrailer.txt
+printf '  leading and trailing   \n\t\ttabs\t\t\n' > ws.txt
+
+# An mbox with two messages for mailsplit, and a single mail for mailinfo.
+cat > box.mbox <<'EOF'
+From nobody Mon Sep 17 00:00:00 2001
+From: A U Thor <author@example.com>
+Date: Mon, 1 Jan 2024 00:00:00 +0000
+Subject: [PATCH 1/2] first change
+
+First body.
+---
+ f | 1 +
+EOF
+cat >> box.mbox <<'EOF'
+From nobody Mon Sep 17 00:00:00 2001
+From: A U Thor <author@example.com>
+Date: Mon, 1 Jan 2024 00:00:01 +0000
+Subject: [PATCH 2/2] second change
+
+Second body.
+EOF
+# An mbox whose From_ line lacks a date, which git rejects as corrupt.
+printf 'From nobody\nFrom: A <a@e>\nSubject: s\n\nbody\n' > nodate.mbox
+# mailsplit refuses to create its output directory, so pre-create them.
+mkdir -p out out2 out3 out4 out5 out6 out7 out8 out9 out10
+
+cat > one.mail <<'EOF'
+From: A U Thor <author@example.com>
+Date: Mon, 1 Jan 2024 00:00:00 +0000
+Subject: [PATCH] the subject
+
+The body.
+
+Signed-off-by: A U Thor <author@example.com>
+---
+ f | 1 +
+diff --git a/f b/f
+EOF
+
+# A hook that prints its arguments, so `hook run` is observable on stdout.
+mkdir -p .git/hooks
+cat > .git/hooks/post-checkout <<'EOF'
+#!/bin/sh
+echo "hook ran: $*"
+EOF
+chmod +x .git/hooks/post-checkout

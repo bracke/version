@@ -1,0 +1,354 @@
+# REFS & BRANCHES family: branch, for-each-ref, show-ref, symbolic-ref,
+# update-ref, pack-refs, name-rev, describe, cherry, verify-tag.
+#
+# Some cases end in `&& git <read command>`. Those are the state-changing
+# ones: the harness only compares stdout, so a silent write would otherwise
+# be untested. Reading the result back with the *system* git on both sides
+# turns the case into "did our write land where git's write lands, in a form
+# git can read".
+#
+# Object ids are never hardcoded; `$(git rev-parse ...)` is evaluated inside
+# each repo, and both repos are byte-identical because the harness pins the
+# author and committer dates.
+
+## branch — listing
+branch
+branch --list
+branch -v
+branch -vv
+branch -r
+branch -a
+branch -av
+branch -avv
+branch -rv
+# The default listing must ignore refs outside refs/heads, so refs/custom/odd
+# may appear in none of these.
+branch --list 'f*'
+branch --list 'm*'
+branch --list 'nomatch*'
+branch -a --list 'origin/*'
+branch -r --list 'origin/t*'
+branch --show-current
+branch --format='%(refname:short) %(objectname:short)'
+branch --format='%(HEAD)%(refname)'
+branch -v --abbrev=8
+branch -v --no-abbrev
+branch --sort=refname
+branch --sort=-refname
+branch --sort=objectname
+branch -a --sort=refname
+branch --ignore-case --list 'F*'
+
+## branch — filtering by reachability and position
+branch --merged
+branch --no-merged
+branch --merged main
+branch --no-merged main
+branch --merged topic
+branch --no-merged topic
+branch -a --merged main
+branch --contains v1.0
+branch --no-contains v1.0
+branch --contains topic
+branch --points-at main
+branch --points-at v2.0
+branch --points-at $(git rev-parse main)
+branch -a --points-at main
+# Two filters at once must intersect, not union.
+branch --merged main --contains v1.0
+
+## branch — creation, deletion, rename, copy
+branch newbr && git branch
+branch newbr topic && git rev-parse newbr
+branch newbr v1.0 && git rev-parse newbr
+# Creating over an existing name is an error and must not move the branch.
+branch main topic
+branch -f main topic && git rev-parse main
+# -f on the checked-out branch is refused by git.
+branch -f main topic
+branch -d merged-br && git branch
+# topic is not merged into HEAD, so -d must refuse and -D must not.
+branch -d topic
+branch -D topic && git branch
+branch -d main
+branch -d nosuchbranch
+branch -d merged-br feature && git branch
+branch -d -r origin/topic && git branch -r
+branch -m feature feat2 && git branch
+branch -m feat2 && git branch
+# Renaming onto a name that exists needs -M.
+branch -m merged-br feature
+branch -M merged-br feature && git branch
+branch -c feature copy1 && git branch -v
+branch -C feature main && git branch -v
+branch -q -d merged-br && git branch
+# Deleting a branch that is not a branch.
+branch -d v1.0
+branch -d refs/heads/merged-br && git branch
+
+## branch — upstream configuration
+branch --set-upstream-to=origin/topic topic && git branch -vv
+branch --set-upstream-to=origin/main && git branch -vv
+branch -u origin/topic feature && git branch -vv
+branch --unset-upstream main && git branch -vv
+branch --unset-upstream topic
+branch -t newbr origin/topic && git branch -vv
+branch --no-track newbr origin/topic && git branch -vv
+branch --set-upstream-to=nosuchref topic
+
+## for-each-ref — selection
+for-each-ref
+for-each-ref refs/heads
+for-each-ref refs/heads/
+for-each-ref 'refs/heads/*'
+for-each-ref 'refs/tags/*'
+for-each-ref 'refs/heads/*' 'refs/tags/*'
+for-each-ref 'refs/nosuch/*'
+for-each-ref '*topic*'
+for-each-ref --count=3
+for-each-ref --count=3 refs/heads
+for-each-ref --count=0
+for-each-ref --ignore-case 'refs/heads/MAIN'
+for-each-ref --points-at main
+for-each-ref --points-at v2.0
+for-each-ref --merged main refs/heads
+for-each-ref --no-merged main refs/heads
+for-each-ref --contains v1.0 refs/heads
+for-each-ref --no-contains v1.0 refs/heads
+
+## for-each-ref — sorting
+for-each-ref --sort=refname refs/heads
+for-each-ref --sort=-refname refs/heads
+for-each-ref --sort=objectname refs/heads
+for-each-ref --sort=objecttype
+for-each-ref --sort=committerdate refs/heads
+for-each-ref --sort=-committerdate refs/heads
+# Two sort keys: the second must break ties left by the first, and feature
+# and main deliberately share a commit date.
+for-each-ref --sort=committerdate --sort=refname refs/heads
+
+## for-each-ref — format atoms
+for-each-ref --format='%(refname)'
+for-each-ref --format='%(refname:short)'
+for-each-ref --format='%(refname:lstrip=2)'
+for-each-ref --format='%(refname:rstrip=1)'
+for-each-ref --format='%(objectname)'
+for-each-ref --format='%(objectname:short)'
+for-each-ref --format='%(objectname:short=8)'
+for-each-ref --format='%(objecttype)'
+for-each-ref --format='%(objectsize)' refs/heads
+# The * prefix peels through an annotated tag; on a lightweight tag it is empty.
+for-each-ref --format='%(refname) %(*objectname)' refs/tags
+for-each-ref --format='%(refname) %(*objecttype)' refs/tags
+for-each-ref --format='%(HEAD) %(refname:short)' refs/heads
+for-each-ref --format='%(subject)' refs/heads
+for-each-ref --format='%(contents:subject)' refs/tags
+for-each-ref --format='%(body)' refs/tags/v1.0
+for-each-ref --format='%(contents)' refs/tags/v1.0
+for-each-ref --format='%(authorname) <%(authoremail)>' refs/heads/main
+for-each-ref --format='%(committername)' refs/heads/main
+for-each-ref --format='%(committerdate:short)' refs/heads
+for-each-ref --format='%(committerdate:iso8601)' refs/heads/main
+for-each-ref --format='%(committerdate:unix)' refs/heads
+for-each-ref --format='%(creatordate:short)' refs/tags
+for-each-ref --format='%(taggername)|%(taggerdate:short)' refs/tags
+for-each-ref --format='%(upstream)' refs/heads
+for-each-ref --format='%(upstream:short)' refs/heads/main
+for-each-ref --format='%(upstream:track)' refs/heads/main
+for-each-ref --format='%(upstream:trackshort)' refs/heads/main
+for-each-ref --format='%(push)' refs/heads/main
+for-each-ref --format='%(symref)' refs/remotes/origin/HEAD
+for-each-ref --format='[%(align:20,left)%(refname:short)%(end)]' refs/heads
+for-each-ref --format='[%(align:20,right)%(refname:short)%(end)]' refs/heads
+for-each-ref --format='%(if)%(HEAD)%(then)CUR %(end)%(refname:short)' refs/heads
+for-each-ref --format='%(color:red)%(refname:short)%(color:reset)' refs/heads
+for-each-ref --format='%(refname)%00%(objecttype)' refs/heads
+for-each-ref --format='%(nosuchatom)' refs/heads
+for-each-ref --format='%(refname' refs/heads
+
+## for-each-ref — shell quoting modes
+for-each-ref --shell --format='%(refname)' refs/heads
+for-each-ref --perl --format='%(refname)' refs/heads
+for-each-ref --python --format='%(refname)' refs/heads
+for-each-ref --tcl --format='%(refname)' refs/heads
+for-each-ref --shell --format='ref=%(refname:short) obj=%(objectname:short)' refs/heads
+
+## show-ref
+show-ref
+show-ref --head
+show-ref --heads
+show-ref --tags
+show-ref --heads --tags
+show-ref -d
+show-ref --dereference --tags
+show-ref --head -d
+show-ref --hash
+show-ref --hash --heads
+show-ref -s --tags
+show-ref --abbrev
+show-ref --abbrev=8 --heads
+show-ref --hash --abbrev=8 --heads
+show-ref main
+show-ref topic main
+show-ref v1.0
+show-ref -d v1.0
+show-ref origin/main
+show-ref refs/heads/main
+show-ref nosuchref
+show-ref -q main
+show-ref -q nosuchref
+show-ref --verify refs/heads/main
+show-ref --verify main
+show-ref --verify refs/heads/nosuch
+show-ref --verify -q refs/heads/nosuch
+show-ref --exclude-existing < /dev/null
+
+## symbolic-ref
+symbolic-ref HEAD
+symbolic-ref --short HEAD
+symbolic-ref refs/remotes/origin/HEAD
+symbolic-ref --short refs/remotes/origin/HEAD
+# Pointing HEAD elsewhere does not touch the index or worktree, so this is a
+# pure ref write; read it back with git to prove the file is well formed.
+symbolic-ref HEAD refs/heads/topic && git symbolic-ref HEAD
+symbolic-ref -m 'retarget' HEAD refs/heads/topic && git symbolic-ref HEAD
+# Detaching then re-attaching goes through the non-symbolic error path.
+symbolic-ref --delete refs/remotes/origin/HEAD && git show-ref origin/HEAD
+symbolic-ref -d HEAD && git rev-parse --verify HEAD
+symbolic-ref refs/heads/main
+symbolic-ref -q refs/heads/main
+symbolic-ref nosuchref
+symbolic-ref -q nosuchref
+symbolic-ref HEAD not-a-ref-name
+
+## update-ref
+update-ref refs/heads/newref refs/heads/main && git show-ref refs/heads/newref
+update-ref refs/heads/newref $(git rev-parse topic) && git rev-parse newref
+update-ref refs/heads/main $(git rev-parse topic) && git rev-parse main
+# The old-value argument is a compare-and-swap; a wrong one must fail and
+# leave the ref alone.
+update-ref refs/heads/main $(git rev-parse topic) $(git rev-parse main) && git rev-parse main
+update-ref refs/heads/main $(git rev-parse topic) $(git rev-parse dup)
+update-ref refs/heads/nosuch $(git rev-parse topic) $(git rev-parse main)
+# The all-zero old value asserts the ref does not yet exist.
+update-ref refs/heads/newref $(git rev-parse topic) 0000000000000000000000000000000000000000 && git rev-parse newref
+update-ref refs/heads/main $(git rev-parse topic) 0000000000000000000000000000000000000000
+update-ref -d refs/heads/feature && git show-ref
+update-ref -d refs/heads/feature $(git rev-parse feature) && git show-ref
+update-ref -d refs/heads/feature $(git rev-parse topic)
+update-ref -d refs/heads/nosuch
+update-ref -m 'move it' refs/heads/main $(git rev-parse topic) && git reflog show main
+# --no-deref writes the symref file itself rather than what it points at.
+update-ref --no-deref refs/remotes/origin/HEAD $(git rev-parse topic) && git show-ref refs/remotes/origin/HEAD
+update-ref refs/remotes/origin/HEAD $(git rev-parse topic) && git show-ref refs/remotes/origin/main
+update-ref --stdin < /dev/null && git show-ref refs/heads/main
+update-ref refs/heads/main not-a-valid-object
+update-ref refs/heads/main
+# Refusing a malformed ref name protects the ref store.
+update-ref 'refs/heads/bad..name' $(git rev-parse main)
+
+## pack-refs
+pack-refs --all && git show-ref
+pack-refs --all && git for-each-ref
+pack-refs --all && git branch -a
+pack-refs --all && git rev-parse main
+# The packed-refs file itself is a documented on-disk format, so compare it
+# byte for byte rather than trusting a reader to hide a difference.
+pack-refs --all && cat .git/packed-refs
+pack-refs --all --prune && git show-ref
+pack-refs --all --prune && cat .git/packed-refs
+pack-refs
+pack-refs --all --prune && git branch -d merged-br && git show-ref
+pack-refs --all && git update-ref refs/heads/main $(git rev-parse topic) && git show-ref refs/heads/main
+
+## name-rev
+name-rev HEAD
+name-rev --name-only HEAD
+name-rev $(git rev-parse HEAD)
+name-rev $(git rev-parse main)
+name-rev $(git rev-parse topic)
+name-rev $(git rev-parse merged-br)
+name-rev $(git rev-parse v1.0^{})
+name-rev --name-only $(git rev-parse topic)
+name-rev --tags $(git rev-parse HEAD)
+name-rev --tags $(git rev-parse topic)
+name-rev --refs='refs/heads/*' $(git rev-parse HEAD)
+name-rev --refs='refs/tags/v1*' $(git rev-parse HEAD)
+name-rev --exclude='refs/tags/*' $(git rev-parse HEAD)
+name-rev --all
+name-rev --name-only --all
+# An object no ref reaches: --always must still print something.
+name-rev $(git rev-parse main^{tree})
+name-rev --always $(git rev-parse main^{tree})
+name-rev nosuchref
+name-rev
+name-rev --stdin < /dev/null
+
+## describe
+describe
+describe HEAD
+describe --tags
+describe --all
+describe --long
+describe --tags --long
+describe --abbrev=4
+describe --abbrev=0
+describe --abbrev=40
+describe topic
+describe --tags topic
+describe --all topic
+describe --long topic
+describe dup
+describe merged-br
+describe HEAD topic
+describe --tags HEAD topic dup
+describe --match 'v1*'
+describe --match 'v1*' topic
+describe --tags --match 'light*'
+describe --exclude 'v2*'
+describe --tags --exclude 'v2*'
+describe --candidates=1
+describe --candidates=1 topic
+describe --first-parent
+# A clean worktree makes --dirty a no-op; the suffix must not appear.
+describe --dirty
+describe --dirty=-DIRTY
+describe --always
+describe --always $(git rev-parse main^{tree})
+describe --contains HEAD
+describe --contains $(git rev-parse topic)
+describe --all --contains $(git rev-parse topic)
+describe $(git rev-parse main)
+describe nosuchref
+describe --tags --match 'nomatch*'
+describe --always --match 'nomatch*'
+describe --all --always --match 'nomatch*'
+
+## cherry
+cherry main dup
+cherry -v main dup
+cherry dup main
+cherry -v dup main
+cherry main topic
+cherry -v main topic
+cherry main
+cherry v1.0 dup
+cherry -v v1.0 dup
+# The third argument limits the range examined on the head side.
+cherry main dup dup~1
+cherry main main
+cherry
+cherry nosuchref dup
+
+## verify-tag
+# Nothing here is signed, so every one of these is an error path; the point is
+# that the errors are the same errors.
+verify-tag v1.0
+verify-tag -v v1.0
+verify-tag --raw v1.0
+verify-tag --format='%(tag)' v1.0
+verify-tag light1
+verify-tag v1.0 v2.0
+verify-tag nosuchtag
+verify-tag
+verify-tag HEAD

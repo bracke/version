@@ -10204,9 +10204,36 @@ package body Version.CLI is
                   end case;
                end Put_Git_Ort_Conflict_Message;
 
+               --  The name git reports for the strategy it used. `recursive`
+               --  and `subtree` keep their own names; everything that goes
+               --  through the default backend is reported as `ort`, which is
+               --  what git calls it.
+               function Git_Strategy_Name
+                 (Opts : Version.Branch.Merge_Options) return String is
+               begin
+                  case Opts.Strategy is
+                     when Version.Branch.Strategy_Ours      => return "ours";
+                     when Version.Branch.Strategy_Recursive =>
+                        return "recursive";
+                     when Version.Branch.Strategy_Subtree   =>
+                        return "subtree";
+                     when others                            => return "ort";
+                  end case;
+               end Git_Strategy_Name;
+
+               --  `-s ours` takes our tree wholesale without merging any
+               --  content, so git prints none of the per-path commentary for
+               --  it -- no "Auto-merging", no CONFLICT lines.
+               Suppress_Merge_Diagnostics : Boolean := False;
+
                procedure Put_Merge_Diagnostic (Text : String) is
                begin
-                  Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, Text);
+                  --  git's merge writes its whole running commentary --
+                  --  "Auto-merging", the CONFLICT lines and the closing
+                  --  verdict -- to standard output, not standard error.
+                  if not Suppress_Merge_Diagnostics then
+                     Ada.Text_IO.Put_Line (Text);
+                  end if;
                end Put_Merge_Diagnostic;
 
                Last_Merge_Was_Fast_Forward : Boolean := False;
@@ -10691,6 +10718,7 @@ package body Version.CLI is
                      Options.Strategy := Version.Branch.Strategy_Ours;
                      Options.Strategy_Explicit := True;
                      Options.Strategy_Ours := True;
+                     Suppress_Merge_Diagnostics := True;
                   elsif Name = "ort" then
                      Options.Strategy := Version.Branch.Strategy_Ort;
                      Options.Strategy_Explicit := True;
@@ -11468,11 +11496,11 @@ package body Version.CLI is
                                  Options => Options)
                            then
                               if Options.Squash then
-                                 Success_Line
+                                 Stderr_Line
                                    ("Automatic merge went well; stopped before committing as requested");
                                  Success_Line ("Squash commit -- not updating HEAD");
                               elsif Options.No_Commit then
-                                 Success_Line
+                                 Stderr_Line
                                    ("Automatic merge went well; stopped before committing as requested");
                               elsif Last_Merge_Was_Fast_Forward then
                                  if Last_Merge_Before_Valid then
@@ -11486,7 +11514,10 @@ package body Version.CLI is
                               elsif Last_Merge_Was_Already_Up_To_Date then
                                  Success_Line ("Already up to date.");
                               else
-                                 Success_Line ("Merge made by the 'ort' strategy.");
+                                 Success_Line
+                                   ("Merge made by the '"
+                                    & Git_Strategy_Name (Options)
+                                    & "' strategy.");
                                  if Last_Merge_Before_Valid then
                                     Print_Merge_Stat_If_Requested
                                       (Options, Last_Merge_Before_Id);
@@ -11504,11 +11535,11 @@ package body Version.CLI is
                                 (Last_Merge_Before_Id, Targets);
                            end if;
                            if Options.Squash then
-                              Success_Line
+                              Stderr_Line
                                 ("Automatic merge went well; stopped before committing as requested");
                               Success_Line ("Squash commit -- not updating HEAD");
                            elsif Options.No_Commit then
-                              Success_Line
+                              Stderr_Line
                                 ("Automatic merge went well; stopped before committing as requested");
                            else
                               Success_Line ("Merge made by the 'octopus' strategy.");

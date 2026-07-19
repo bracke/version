@@ -1,0 +1,120 @@
+# --- patch-id: one property per case ------------------------------------
+# A single-file patch is the baseline; if this matches, the hunk hashing is
+# right and any multi-file failure is about ordering, not content.
+patch-id < q-f1.patch
+patch-id < q-f2.patch
+# The identical change at line 30 instead of line 3. patch-id is defined to
+# ignore line numbers, so this must hash the same as a shallow patch would.
+patch-id < q-deep.patch
+# Two files in both orders. --stable must give one id for both spellings and
+# --unstable must give two, so this pair pins which mode does what.
+patch-id < q-12.patch
+patch-id < q-21.patch
+patch-id --stable < q-12.patch
+patch-id --stable < q-21.patch
+patch-id --unstable < q-12.patch
+patch-id --unstable < q-21.patch
+# Three files, to catch a sort that only works for pairs.
+patch-id --stable < q-123.patch
+patch-id --stable < q-321.patch
+patch-id --unstable < q-123.patch
+patch-id --unstable < q-321.patch
+# --verbatim hashes the bytes as given, so it must differ from --unstable on
+# a patch whose whitespace and context are non-canonical.
+patch-id --verbatim < q-12.patch
+patch-id --verbatim < q-f1.patch
+patch-id --verbatim < q-u5.patch
+# Changes carrying no hunk body at all.
+patch-id < q-rename.patch
+patch-id < q-mode.patch
+# Binary, with and without the encoded data.
+patch-id < q-bin.patch
+patch-id < q-binhdr.patch
+# The no-newline-at-eof marker is part of the hashed content.
+patch-id < q-nonl.patch
+# Context width must not change the id, since only +/- lines are hashed.
+patch-id < q-u0.patch
+patch-id < q-u5.patch
+# Whole-tree patches in both directions.
+patch-id < q-fwd-all.patch
+patch-id < q-rev-all.patch
+patch-id --stable < q-rev-all.patch
+# A mail-formatted patch: the message body must not be hashed.
+patch-id < q-mail.patch
+# Input with no diff in it must yield no id and no error.
+patch-id < /dev/null
+
+# --- apply: acceptance and refusal -------------------------------------
+# Baseline: a patch that applies, checked and then applied for real.
+apply --check -R q-f1.patch
+apply -R q-f1.patch
+apply --check q-rev-all.patch
+apply q-rev-all.patch
+# A patch already present in the worktree must be refused, not doubled.
+apply --check q-f1.patch
+apply q-f1.patch
+# A binary patch with its data can be applied; the header-only form cannot,
+# because there is nothing to reconstruct the blob from.
+apply --check -R q-bin.patch
+apply -R q-bin.patch
+apply --check -R q-binhdr.patch
+apply -R q-binhdr.patch
+apply --stat q-binhdr.patch
+# Structural patches.
+apply --check -R q-rename.patch
+apply --check -R q-mode.patch
+apply --check -R q-nonl.patch
+apply -R q-nonl.patch
+# Malformed or unsatisfiable input must fail rather than half-apply.
+apply --check q-ghost.patch
+apply q-ghost.patch
+apply --check q-miscount.patch
+apply --recount --check q-miscount.patch
+# Mail-formatted input is accepted: apply skips down to the first diff.
+apply --check -R q-mail.patch
+apply -R q-mail.patch
+# Context tolerance around a change that is present at a shifted position.
+apply --check -R q-u0.patch
+apply --check -R q-u5.patch
+apply --unidiff-zero --check -R q-u0.patch
+apply -C1 --check -R q-f1.patch
+apply -C5 --check -R q-f1.patch
+# Reporting modes over each patch shape.
+apply --stat q-123.patch
+apply --stat q-rename.patch
+apply --stat q-mode.patch
+apply --stat q-nonl.patch
+apply --stat q-bin.patch
+apply --numstat q-123.patch
+apply --numstat q-bin.patch
+apply --numstat q-nonl.patch
+apply --summary q-rev-all.patch
+apply --summary q-rename.patch
+apply --stat --summary q-rev-all.patch
+apply --stat --numstat q-123.patch
+# --index and --cached must both refuse when the index disagrees with what
+# the patch expects, and succeed when it agrees.
+apply --index --check -R q-f1.patch
+apply --index -R q-f1.patch
+apply --cached --check -R q-f1.patch
+apply --cached -R q-f1.patch
+apply --index -R q-rename.patch
+# 3-way needs the blobs named by the index lines to be present.
+apply --3way --check -R q-f1.patch
+apply --3way -R q-f1.patch
+apply --3way --check q-ghost.patch
+# Path stripping.
+apply -p0 --check -R q-f1.patch
+apply -p1 --check -R q-f1.patch
+apply -p2 --check -R q-f1.patch
+apply --directory=sub --check -R q-f1.patch
+apply --directory=sub --stat -R q-f1.patch
+# Selecting a subset of the files inside one patch.
+apply --include=f1.txt --stat q-123.patch
+apply --exclude=f1.txt --stat q-123.patch
+apply --include='f*.txt' --stat q-123.patch
+apply --exclude='*' --check -R q-123.patch
+# Reading from stdin instead of a named file.
+apply --stat < q-123.patch
+apply --check -R < q-f1.patch
+apply --numstat - < q-123.patch

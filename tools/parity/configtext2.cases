@@ -1,0 +1,81 @@
+# `version config` implements the subcommand spelling git grew in 2.46
+# (get/set/unset/list) rather than the classic option spelling, so these
+# cases probe that surface specifically. Shares configtext.fixture.
+
+# --- config list -----------------------------------------------------------
+# The default listing is section.key=value for every local entry.
+config list
+config list --name-only
+config list --null
+config list --show-scope
+config list --show-origin
+config list --local
+config list --global
+# `keys` is not a git subcommand at all; git should reject it.
+config keys
+
+# --- config get ------------------------------------------------------------
+# A present key, an empty-valued key, and an absent key.
+config get user.name
+config get section.emptyvalue
+config get no.such.key
+# Names are case-insensitive except in the subsection.
+config get USER.NAME
+config get branch.main.remote
+config get url.git@example.invalid:.insteadOf
+# A multi-valued key: bare `get` must fail, `--all` must list every value.
+config get remote.origin.fetch
+config get --all remote.origin.fetch
+config get --all no.such.key
+# --default only applies when the key is absent.
+config get --default fallback no.such.key
+config get --default fallback user.name
+# --type canonicalises the stored spelling.
+config get --type=bool section.boolTrue
+config get --type=bool section.boolFalse
+config get --type=int section.number
+config get --type=int core.bigFileThreshold
+config get --type=int user.name
+# --regexp/--value select among keys and values.
+config get --regexp 'alias\..*'
+config get --all --regexp '^remote\.'
+config get --all --value 'a b ' section.trailingspace
+# --name-only suppresses the values.
+config get --name-only --all --regexp 'alias\..*'
+# Explicit scopes.
+config get --local user.name
+config get --global user.name
+config get --file .git/config user.name
+config get --show-scope user.name
+config get --show-names --all --regexp 'alias\..*'
+# Missing operand.
+config get < /dev/null
+
+# --- config set / unset ----------------------------------------------------
+# Setting prints nothing and updates the file.
+config set new.key value && cat .git/config
+config set user.name Other && cat .git/config
+# Setting a multi-valued key without --all or --value is an error.
+config set remote.origin.fetch replaced
+config set --all remote.origin.fetch replaced && cat .git/config
+config set --append remote.origin.fetch third && cat .git/config
+config set --type=bool new.flag yes && cat .git/config
+config set --type=int new.size 3 && cat .git/config
+config set --type=bool new.flag notabool
+config set new.key < /dev/null
+# Unsetting one value, an absent key, and a multi-valued key.
+config unset user.name && cat .git/config
+config unset no.such.key
+config unset remote.origin.fetch
+config unset --all remote.origin.fetch && cat .git/config
+config unset < /dev/null
+
+# --- config rename-section / remove-section --------------------------------
+config rename-section section newsection && cat .git/config
+config rename-section nosuch other
+config remove-section section && cat .git/config
+config remove-section nosuch
+
+# --- unknown subcommand ----------------------------------------------------
+config nosuchsub
+config --nosuchoption

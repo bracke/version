@@ -1,0 +1,13 @@
+# Both sides rewrite the same line, so the merge must conflict, alongside a
+# file only one side touched, which must still merge cleanly around it.
+export EDITOR=true GIT_MERGE_AUTOEDIT=no
+printf 'base\n' > c.txt
+printf 'x\n' > clean.txt
+git add -A && git commit -qm base
+git branch side
+printf 'MAIN\n' > c.txt && printf 'y\n' > clean.txt
+git add -A && git commit -qm "main edit"
+git checkout -q side
+printf 'SIDE\n' > c.txt
+git add -A && git commit -qm "side edit"
+git checkout -q main

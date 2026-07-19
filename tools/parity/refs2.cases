@@ -1,0 +1,30 @@
+# Every ref-enumerating command in the family, run against a repo that holds
+# refs outside the three well-known hierarchies. The question each case asks is
+# the same: does the command still produce its normal answer, or does the
+# unusual ref break it?
+for-each-ref
+for-each-ref refs/heads
+for-each-ref 'refs/custom/*'
+for-each-ref 'refs/notes/*'
+for-each-ref --format='%(refname)'
+for-each-ref --count=2
+show-ref
+show-ref --heads
+show-ref --tags
+show-ref refs/custom/odd
+show-ref --verify refs/stash
+# branch must not show these refs at all.
+branch
+branch -a
+name-rev HEAD
+name-rev $(git rev-parse topic)
+name-rev --refs='refs/heads/*' $(git rev-parse HEAD)
+describe
+describe --all
+describe --all topic
+pack-refs --all && git show-ref
+pack-refs --all && cat .git/packed-refs
+symbolic-ref HEAD
+update-ref refs/custom/odd $(git rev-parse main) && git show-ref refs/custom/odd
+update-ref -d refs/custom/odd && git show-ref
+cherry main topic

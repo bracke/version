@@ -1,0 +1,60 @@
+# A repository whose only purpose is to manufacture patch files with known
+# shapes, so `patch-id` and `apply` can be probed one property at a time.
+printf 'f1 a\nf1 b\nf1 c\nf1 d\nf1 e\n' > f1.txt
+printf 'f2 a\nf2 b\nf2 c\nf2 d\nf2 e\n' > f2.txt
+printf 'f3 a\nf3 b\nf3 c\nf3 d\nf3 e\n' > f3.txt
+printf 'r a\nr b\nr c\n' > r-old.txt
+printf '#!/bin/sh\nexit 0\n' > m.sh
+printf 'bin\000\001\002 one\n' > bin.dat
+printf 'no newline here' > nl.txt
+i=1; while [ $i -le 40 ]; do printf 'pad %s\n' "$i"; i=$((i+1)); done > big.txt
+git add -A && git commit -qm c1
+git tag base
+
+sed -i 's/^f1 c$/f1 CHANGED/' f1.txt
+sed -i 's/^f2 c$/f2 CHANGED/' f2.txt
+sed -i 's/^f3 c$/f3 CHANGED/' f3.txt
+git mv r-old.txt r-new.txt
+chmod +x m.sh
+printf 'bin\000\001\002 two\n' > bin.dat
+printf 'no newline here\n' > nl.txt
+sed -i 's/^pad 30$/pad THIRTY/' big.txt
+git add -A && git commit -qm c2
+git tag tip
+
+# Single-file patches, the building blocks for the ordering probes.
+git diff base tip -- f1.txt > q-f1.patch
+git diff base tip -- f2.txt > q-f2.patch
+git diff base tip -- f3.txt > q-f3.patch
+# The same two file sections in both orders. A stable patch-id must hash
+# these identically and an unstable one must not, so the pair pins which
+# mode is which.
+cat q-f1.patch q-f2.patch > q-12.patch
+cat q-f2.patch q-f1.patch > q-21.patch
+cat q-f1.patch q-f2.patch q-f3.patch > q-123.patch
+cat q-f3.patch q-f2.patch q-f1.patch > q-321.patch
+# The same change sitting at a different line number: patch-id ignores line
+# numbers, so this must hash the same as the shallow one.
+git diff base tip -- big.txt > q-deep.patch
+# Structural changes that carry no hunk at all, and the no-newline marker.
+git diff -M base tip -- r-old.txt r-new.txt > q-rename.patch
+git diff base tip -- m.sh > q-mode.patch
+git diff base tip -- nl.txt > q-nonl.patch
+# Binary, with and without the actual data. git refuses to apply the second
+# form, so it separates "parsed the header" from "can reconstruct content".
+git diff --binary base tip -- bin.dat > q-bin.patch
+git diff base tip -- bin.dat > q-binhdr.patch
+# A full-tree patch and its reverse, both in the direction that applies to
+# the current worktree.
+git diff tip base > q-rev-all.patch
+git diff base tip > q-fwd-all.patch
+# Context-free and extra-context variants of one change.
+git diff -U0 base tip -- f1.txt > q-u0.patch
+git diff -U5 base tip -- f1.txt > q-u5.patch
+# A patch whose header names a file that does not exist.
+printf 'diff --git a/ghost.txt b/ghost.txt\n--- a/ghost.txt\n+++ b/ghost.txt\n@@ -1 +1 @@\n-old\n+new\n' > q-ghost.patch
+# A patch with an intact header but a hunk count that lies about its size.
+printf 'diff --git a/f1.txt b/f1.txt\n--- a/f1.txt\n+++ b/f1.txt\n@@ -1,9 +1,9 @@\n f1 a\n-f1 b\n+f1 B\n' > q-miscount.patch
+# Mail-formatted input: apply must skip the message body and use the diff.
+printf 'From 1234 Mon Sep 17 00:00:00 2001\nFrom: T <t@e>\nSubject: [PATCH] tweak\n\nbody text\n---\n' > q-mail.patch
+cat q-f1.patch >> q-mail.patch

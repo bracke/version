@@ -1,0 +1,53 @@
+# Working-tree mutation with content that only exists in the working tree or
+# only in the index. Every case here asks the same question: does the command
+# refuse where git refuses, and does it destroy no more than git destroys?
+
+# mv carries local and staged modifications along with the rename rather than
+# discarding them, and still refuses an untracked source or an existing
+# destination.
+mv local.txt x.txt
+mv staged.txt x.txt
+mv both.txt x.txt
+mv untracked.txt x.txt
+mv clean.txt untracked.txt
+mv -f clean.txt untracked.txt
+mv local.txt staged.txt
+mv -f local.txt staged.txt
+mv clean.txt local.txt dir
+
+# reset --hard is the one mode that is allowed to throw the dirty content away;
+# --soft and --mixed must keep it.
+reset --hard
+reset --hard HEAD~1
+reset --soft HEAD~1
+reset HEAD~1
+reset
+reset --hard v1
+# Unstaging individual paths, including a path that is staged and modified.
+reset -- staged.txt
+reset -- both.txt
+reset HEAD -- both.txt
+reset HEAD -- clean.txt
+# A bad revision must not touch the dirty content on the way to the error.
+reset --hard nosuchrev
+reset nosuchrev
+
+# cherry-pick and revert must refuse outright: replaying a commit over dirty
+# content would overwrite work that is in no object.
+cherry-pick side
+revert HEAD
+cherry-pick -n side
+revert -n HEAD
+# The bad-revision path must refuse for the revision, not for the tree.
+cherry-pick nosuchrev
+revert nosuchrev
+
+# notes touch no working-tree file, so a dirty tree must not stop them.
+notes add -m x HEAD
+notes show HEAD
+
+# sparse-checkout would have to remove files outside the cone, which is exactly
+# what it must not do while those files carry uncommitted content.
+sparse-checkout set dir
+sparse-checkout init
+sparse-checkout list

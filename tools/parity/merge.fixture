@@ -1,0 +1,16 @@
+# Two branches off one base, touching separate files, the same file in
+# non-overlapping places, and the same lines -- the three outcomes a merge
+# has to tell apart (clean, clean-by-hunk, conflict).
+export EDITOR=true GIT_MERGE_AUTOEDIT=no
+printf 'base\nshared\ntail\n' > both.txt
+printf 'only\n' > ours-only.txt
+git add -A && git commit -qm base
+git branch side
+printf 'MAIN\nshared\ntail\n' > both.txt
+printf 'main\n' > main-only.txt
+git add -A && git commit -qm "main edit"
+git checkout -q side
+printf 'base\nshared\nSIDE\n' > both.txt
+printf 'side\n' > side-only.txt
+git add -A && git commit -qm "side edit"
+git checkout -q main

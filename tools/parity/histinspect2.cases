@@ -1,0 +1,110 @@
+# --- merge-base on genuinely diverged branches ----------------------------
+# topic and rebased forked at different points, so each pair has a distinct
+# answer and the argument order must not change it.
+merge-base topic rebased
+merge-base rebased topic
+merge-base main topic
+merge-base main rebased
+merge-base topic main
+merge-base HEAD topic
+merge-base --all topic rebased
+merge-base base topic
+# An unrelated root has no common ancestor: git exits 1 with no output.
+merge-base main orphan
+merge-base --all main orphan
+merge-base --is-ancestor main orphan
+# Ancestry questions whose answer is known from the fixture shape.
+merge-base --is-ancestor base topic
+merge-base --is-ancestor base main
+merge-base --is-ancestor topic main
+merge-base --is-ancestor main rebased
+# Three-way and single-argument forms.
+merge-base main topic rebased
+merge-base topic
+# Errors.
+merge-base topic nosuchref
+merge-base
+
+# --- format-patch ---------------------------------------------------------
+# Always --stdout: the file-writing form embeds a directory listing and a
+# per-file name we do not want to diff. Each patch carries a From line with
+# the commit id, a numbered subject, the body, the diff and a signature.
+#
+# The six cases below carry a signature, whose text is the emitting tool's
+# version number ("2.54.0" for git, "2.43.0" for us). That single trailing
+# line is expected to differ and is not a defect; every other byte of these
+# patches must match. The --no-signature cases further down are the ones
+# that hold the whole output to byte equality.
+format-patch --stdout main..topic
+format-patch --stdout main..rebased
+format-patch --stdout base..topic
+format-patch --stdout -1 topic
+format-patch --stdout -2 topic
+format-patch --stdout HEAD~1..HEAD
+# Numbering: -n forces [PATCH n/m] even for a single patch, -N drops it, and
+# --start-number shifts the counter.
+format-patch --stdout -n main..topic
+format-patch --stdout -N main..topic
+format-patch --stdout --start-number 5 main..topic
+format-patch --stdout --numbered main..topic
+format-patch --stdout --no-numbered main..topic
+# Subject decoration.
+format-patch --stdout --subject-prefix=RFC main..topic
+format-patch --stdout --rfc main..topic
+format-patch --stdout -v2 main..topic
+format-patch --stdout --reroll-count=3 main..topic
+# Signature control, which is the one line that legitimately carries a git
+# version string; --no-signature and an explicit signature remove that.
+format-patch --stdout --no-signature main..topic
+format-patch --stdout --signature=SIG main..topic
+format-patch --stdout --no-signature -1 topic
+# Diff shaping has to reach the embedded patch.
+format-patch --stdout --no-signature --stat main..topic
+format-patch --stdout --no-signature -U1 main..topic
+format-patch --stdout --no-signature --numbered-files main..topic
+# Cover letters and thread headers.
+format-patch --stdout --cover-letter --no-signature main..topic
+format-patch --stdout --thread --no-signature main..topic
+# An empty range produces nothing at all and still succeeds.
+format-patch --stdout main..main
+format-patch --stdout --no-signature HEAD..HEAD
+# Errors.
+format-patch --stdout nosuchref
+format-patch --stdout main..nosuchref
+
+# --- range-diff -----------------------------------------------------------
+# topic and rebased are the same three changes on different bases with one
+# amended commit, so a correct range-diff pairs all three and marks exactly
+# one as changed.
+range-diff main..topic main..rebased
+range-diff base..topic main..rebased
+range-diff main..rebased main..topic
+range-diff base..topic base..topic
+# A series compared against a strict prefix of itself must report the
+# missing commit as removed rather than silently pairing it.
+range-diff main..topic main..topic~1
+range-diff main..topic~1 main..topic
+# Flags: --no-patch drops the inner diff, leaving only the pairing table,
+# which is the part most likely to be right when the diff is not.
+range-diff --no-patch main..topic main..rebased
+range-diff -s main..topic main..rebased
+range-diff --creation-factor=100 main..topic main..rebased
+# The three-argument form is shorthand for two ranges off a shared base.
+range-diff main topic rebased
+# Errors.
+range-diff main..topic
+range-diff main..topic nosuchref..rebased
+
+# --- log/show on a diverged shape -----------------------------------------
+# Symmetric difference and left-right marks are only meaningful when both
+# sides have unique commits, which this fixture is the first to provide.
+log --oneline --left-right topic...rebased
+log --oneline topic...rebased
+log --oneline --cherry-mark --left-right topic...rebased
+log --oneline --cherry-pick --left-right topic...rebased
+log --oneline --cherry topic...rebased
+# An unrelated root is reachable only through its own ref.
+log --oneline orphan
+log --oneline --all
+shortlog -s --all HEAD
+show orphan

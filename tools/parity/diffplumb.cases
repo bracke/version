@@ -1,0 +1,263 @@
+# --- diff-tree ---------------------------------------------------------
+# The default is a non-recursive raw diff, so a change under sub/ must be
+# reported as the changed tree rather than the changed file.
+diff-tree base tip
+diff-tree -r base tip
+# A bare commit prints its own id before the diff against its parent; with no
+# parent it prints nothing at all unless --root is given.
+diff-tree tip
+diff-tree -r tip
+diff-tree --root -r base
+diff-tree -r base
+# Every output selector over the same change set.
+diff-tree -r --name-only base tip
+diff-tree -r --name-status base tip
+diff-tree -r --raw base tip
+diff-tree -r --stat base tip
+diff-tree -r --shortstat base tip
+diff-tree -r --numstat base tip
+diff-tree -r --summary base tip
+diff-tree -r --compact-summary base tip
+diff-tree -r -p base tip
+diff-tree -r -s base tip
+# Rename detection changes both the raw record and the name-status letter, so
+# it has to be probed with and without -M.
+diff-tree -r -M base tip
+diff-tree -r -M --name-status base tip
+diff-tree -r -M --summary base tip
+diff-tree -r --no-renames --name-status base tip
+diff-tree -r -M50% --name-status base tip
+# -t asks for the tree entries themselves alongside the blobs.
+diff-tree -t base tip
+diff-tree -r -t base tip
+# Object-id width is a formatting knob that shows up in every raw record.
+diff-tree -r --abbrev=12 base tip
+diff-tree -r --full-index base tip
+# Pathspecs restrict the walk; a directory, a list, and a glob each take a
+# different code path in the matcher.
+diff-tree -r base tip -- sub
+diff-tree -r base tip -- a.txt keep.txt
+diff-tree -r base tip -- '*.txt'
+diff-tree -r base tip -- nosuchpath
+# --diff-filter selects by change letter, including the R that only exists
+# once rename detection is on.
+diff-tree -r --diff-filter=D --name-only base tip
+diff-tree -r --diff-filter=A --name-only base tip
+diff-tree -r --diff-filter=M --name-only base tip
+diff-tree -r -M --diff-filter=R --name-only base tip
+diff-tree -r --diff-filter=AD --name-status base tip
+# Reversing the endpoints must invert every classification.
+diff-tree -r --name-status tip base
+# Tree ids are accepted in place of commits.
+diff-tree -r base^{tree} tip^{tree}
+# Error paths: no arguments at all, and an unresolvable revision.
+diff-tree
+diff-tree -r base nosuchrev
+
+# --- diff-index --------------------------------------------------------
+# Without --cached the comparison is tree-versus-worktree, so the unstaged
+# a.txt edit and the twice-changed keep.txt must both appear; with --cached
+# only what the index holds counts.
+diff-index HEAD
+diff-index --cached HEAD
+diff-index -p HEAD
+diff-index --cached -p HEAD
+diff-index --name-only HEAD
+diff-index --name-status HEAD
+diff-index --cached --name-status HEAD
+diff-index --stat HEAD
+diff-index --cached --stat HEAD
+diff-index --numstat HEAD
+diff-index --cached --numstat HEAD
+diff-index --raw HEAD
+diff-index -s HEAD
+# Against an older tree the index also carries the whole c1->c2 change set.
+diff-index --cached base
+diff-index base
+diff-index --cached -M --name-status base
+diff-index --cached --summary base
+# Pathspec limiting on both sides of --cached.
+diff-index HEAD -- keep.txt
+diff-index --cached HEAD -- staged.txt
+diff-index HEAD -- sub
+diff-index --cached --diff-filter=A --name-only HEAD
+# --exit-code turns the diff into a predicate; a clean path must exit 0.
+diff-index --exit-code --cached HEAD -- a.txt
+diff-index --exit-code --cached HEAD -- staged.txt
+diff-index --quiet HEAD
+# Error path: diff-index requires a tree-ish argument.
+diff-index
+diff-index --cached nosuchrev
+
+# --- patch-id ----------------------------------------------------------
+# patch-id must hash the diff content and ignore line numbers and blob ids;
+# each patch shape (single hunk, whole tree, rename, binary) is a separate
+# parser path.
+patch-id < p-mod.patch
+patch-id < p-all.patch
+patch-id < p-rename.patch
+patch-id < p-bin.patch
+patch-id < p-mode.patch
+# The three hashing modes disagree deliberately, so all three are pinned.
+patch-id --stable < p-all.patch
+patch-id --unstable < p-all.patch
+patch-id --verbatim < p-all.patch
+patch-id --stable < p-mod.patch
+patch-id --unstable < p-mod.patch
+# Input that contains no diff at all must produce no id rather than a bogus
+# one, and must not be an error.
+patch-id < p-junk.patch
+patch-id < /dev/null
+
+# --- apply -------------------------------------------------------------
+# --check is the read-only predicate: it must accept a patch that applies and
+# reject one already applied, one whose context is wrong, and one that is not
+# a patch.
+apply --check p-mod.patch
+apply --check p-all.patch
+apply --check p-fwd.patch
+apply --check p-bad.patch
+apply --check p-junk.patch
+apply --check -R p-fwd.patch
+apply --check -R p-mod.patch
+# The reporting modes print to stdout without touching the tree, so they are
+# the part of apply this harness can compare exactly.
+apply --stat p-all.patch
+apply --stat p-mod.patch
+apply --stat p-bin.patch
+apply --stat p-rename.patch
+apply --summary p-all.patch
+apply --summary p-rename.patch
+apply --summary p-mode.patch
+apply --numstat p-all.patch
+apply --numstat p-bin.patch
+apply --stat --summary p-all.patch
+apply --stat < p-all.patch
+# Real applications: every change type the patch format encodes.
+apply p-mod.patch
+apply p-add.patch
+apply p-del.patch
+apply p-rename.patch
+apply p-mode.patch
+apply p-bin.patch
+apply p-all.patch
+apply -R p-fwd.patch
+# --index and --cached change what gets updated and add their own preflight
+# checks against the index state.
+apply --index p-mod.patch
+apply --cached p-mod.patch
+apply --index p-all.patch
+apply --cached p-all.patch
+# -p controls how many leading path components are stripped; the wrong count
+# must fail rather than silently create a stray file.
+apply -p2 --check p-mod.patch
+apply -p0 --check p-mod.patch
+apply --directory=d --stat p-all.patch
+# Path filters applied to the patch itself.
+apply --exclude=a.txt --stat p-all.patch
+apply --include=a.txt --stat p-all.patch
+apply --include=nosuch --stat p-all.patch
+# Whitespace policy: the same patch has to be accepted, warned about, fixed,
+# or refused depending on the mode.
+apply --whitespace=nowarn p-ws.patch
+apply --whitespace=warn p-ws.patch
+apply --whitespace=fix p-ws.patch
+apply --whitespace=error p-ws.patch
+apply --check --whitespace=error p-ws.patch
+# Fuzz and context controls.
+apply -C1 --check p-mod.patch
+apply --unidiff-zero --check p-mod.patch
+apply --recount --check p-mod.patch
+# Error paths: a missing file, and a patch that would recreate a file that
+# is already present.
+apply missing.patch
+apply --check missing.patch
+apply p-fwd.patch
+apply --3way --check p-bad.patch
+
+# --- merge-tree --------------------------------------------------------
+# The real merge form: a clean merge prints just the tree, a conflicted one
+# prints the tree plus conflict records and exits non-zero.
+merge-tree main side
+merge-tree main other
+merge-tree side other
+merge-tree main main
+merge-tree --write-tree main side
+merge-tree --write-tree main other
+merge-tree --name-only main other
+merge-tree --write-tree --name-only main other
+merge-tree --messages main other
+merge-tree --no-messages main other
+merge-tree -z main other
+# An explicit merge base overrides the computed one.
+merge-tree --merge-base=base main other
+merge-tree --merge-base=base main side
+# The historical three-argument trivial-merge form is still accepted.
+merge-tree base main side
+merge-tree base main other
+merge-tree --trivial-merge base main side
+# Error paths.
+merge-tree main nosuchrev
+merge-tree
+
+# --- diff (forms not exercised elsewhere) ------------------------------
+# The three implicit endpoints: worktree vs index, index vs HEAD, worktree
+# vs HEAD.
+diff
+diff --cached
+diff --staged
+diff HEAD
+diff --name-status HEAD
+# Explicit endpoints, including the two-dot and three-dot spellings and the
+# reversed order.
+diff base tip
+diff base..tip
+diff base...tip
+diff tip base
+diff HEAD^ HEAD
+# Output selectors over a fixed change set.
+diff --raw base tip
+diff --patch-with-raw base tip
+diff --stat base tip
+diff --stat=40 base tip
+diff --shortstat base tip
+diff --numstat base tip
+diff --dirstat base tip
+diff --summary base tip
+diff --compact-summary base tip
+diff --patch-with-stat base tip
+diff -s base tip
+# Rename detection and its thresholds.
+diff -M base tip
+diff -M --name-status base tip
+diff --no-renames --name-status base tip
+diff --find-renames=90% --name-status base tip
+diff -B -M --name-status base tip
+diff --find-copies-harder --name-status base tip
+# Context width around a single-line change.
+diff -U0 base tip -- a.txt
+diff -U1 base tip -- a.txt
+diff --unified=7 base tip -- a.txt
+# Binary blobs: refused, forced, encoded, and counted.
+diff base tip -- bin.dat
+diff --text base tip -- bin.dat
+diff --binary base tip -- bin.dat
+diff --numstat base tip -- bin.dat
+diff --stat base tip -- bin.dat
+# Predicates and filters.
+diff --exit-code base tip
+diff --exit-code base base
+diff --quiet base tip
+diff --diff-filter=M --name-only base tip
+diff --diff-filter=AD --name-status base tip
+# Two paths compared outside the repository entirely.
+diff --no-index a.txt keep.txt
+diff --no-index a.txt a.txt
+# Presentation knobs that must not alter content when disabled.
+diff --color=never base tip
+diff --no-color base tip
+diff --word-diff base tip -- a.txt
+diff --word-diff=porcelain base tip -- a.txt
+diff --src-prefix=X/ --dst-prefix=Y/ base tip -- a.txt
+diff --no-prefix base tip -- a.txt
+diff --abbrev=12 --raw base tip

@@ -1,0 +1,20 @@
+# A merge whose edits fall in different hunks of the same file is clean.
+merge --no-edit side
+merge --no-edit --no-ff side
+merge --no-edit --squash side
+# Nothing to do: the other side is already an ancestor.
+merge --no-edit HEAD
+merge --no-edit main
+# What a merge would be, without doing it.
+merge --no-commit --no-edit side
+merge-base main side
+merge-base --is-ancestor main side
+merge-base --is-ancestor HEAD HEAD
+# Naming a revision that does not exist.
+merge --no-edit nosuchbranch
+# KNOWN GAP, deliberately not enabled: with no operand and no upstream, git
+# dies with exit 128 and we exit 1. The diagnostic comes from
+# Version.Tracking.Upstream, which raises a plain Data_Error shared with
+# pull, push and status; giving it git's status means making it a distinct
+# die-exception and checking every caller, not editing this line.
+#   merge --no-edit

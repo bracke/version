@@ -1,0 +1,68 @@
+# A repo shaped for the refs & branches family: several heads at different
+# points of history, both tag flavours, remote-tracking refs, a configured
+# upstream, and a branch whose commit is patch-equivalent to one on main.
+# Each commit gets its own increasing timestamp so that any date-ordered
+# output (for-each-ref --sort=committerdate, branch --sort) is a real
+# ordering rather than a tie-break artifact of the harness's single pinned
+# date.
+c () { # $1 = message, $2 = seconds past the base date
+  GIT_AUTHOR_DATE="$((1700000000 + $2)) +0000" \
+  GIT_COMMITTER_DATE="$((1700000000 + $2)) +0000" \
+  git commit -qm "$1"
+}
+
+printf 'a\n' > a.txt
+git add -A && c "c1 add a" 10
+# Both tag flavours at the same commit: a lightweight tag peels to itself,
+# an annotated one to a tag object, which for-each-ref/show-ref/describe all
+# have to distinguish.
+# Tagger dates are set explicitly too: name-rev and describe rank candidate
+# tags by tagger date, and leaving every tag on the harness's single pinned
+# date would turn those cases into a tie-break coin flip rather than a
+# behaviour worth matching.
+git tag light1
+GIT_COMMITTER_DATE='1700000011 +0000' git tag -a v1.0 -m "release one"
+
+printf 'b\n' > b.txt
+git add -A && c "c2 add b" 20
+# An ancestor branch, so `branch --merged` has something to report.
+git branch merged-br
+
+# A side branch off c1 that is never merged, for --no-merged and for
+# name-rev/describe having to reach through a non-linear graph.
+git checkout -q -b topic v1.0
+printf 'topic\n' > t.txt
+git add -A && c "c3 topic adds t" 30
+
+git checkout -q main
+printf 'a2\n' >> a.txt
+git add -A && c "c4 main edits a" 40
+GIT_COMMITTER_DATE='1700000041 +0000' git tag -a v2.0 -m "release two"
+# A second, strictly newer annotated tag on the same commit, so name-rev and
+# describe have to choose between two candidates on a defined criterion.
+GIT_COMMITTER_DATE='1700000042 +0000' git tag -a v2.0-extra -m "release two again"
+
+# A branch that is exactly HEAD, so `branch -d` refuses it as merged-but-current
+# and `describe` on it is an exact match.
+git branch feature
+
+# A branch carrying a patch-equivalent copy of c2, which is what `cherry`
+# exists to detect.
+git checkout -q -b dup v1.0
+GIT_COMMITTER_DATE='1700000050 +0000' git cherry-pick main~1
+printf 'own\n' > own.txt
+git add -A && c "c5 dup adds own" 60
+git checkout -q main
+
+# Remote-tracking refs and a configured upstream, so `branch -r`, `branch -a`,
+# `branch -vv` and %(upstream) all have input. The remote is a relative path
+# that is never contacted; it exists only so that git can map refs/heads/main
+# onto refs/remotes/origin/main via the fetch refspec.
+git remote add origin ../origin.git
+# origin/main deliberately lags one commit behind main, so the ahead/behind
+# annotation is non-empty.
+git update-ref refs/remotes/origin/main main~1
+git update-ref refs/remotes/origin/topic refs/heads/topic
+git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+git config branch.main.remote origin
+git config branch.main.merge refs/heads/main

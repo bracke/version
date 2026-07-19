@@ -1,0 +1,96 @@
+# Working-tree mutation on a clean tree. Nothing here is unrecoverable, so a
+# refusal has to be a refusal on principle and a success has to land exactly
+# where git lands it.
+
+# mv: the ordinary renames, into a directory, and a directory rename.
+mv a.txt renamed.txt
+mv a.txt dir/
+mv a.txt dir
+mv a.txt sub/deep
+mv dir dir2
+mv sub/deep dir
+mv a.txt dir/b.txt sub
+# mv refuses when the destination is already tracked, and -f overrides it.
+mv a.txt dir/b.txt
+mv -f a.txt dir/b.txt
+# A source git has never seen, and a source equal to its own destination.
+mv missing.txt x.txt
+mv a.txt a.txt
+# git refuses to invent the destination directory; the rename must fail rather
+# than scatter the file somewhere the user did not ask for.
+mv a.txt nodir/x.txt
+# -n is the dry run: it must report and change nothing.
+mv -n a.txt renamed.txt
+
+# reset: every mode, with and without an explicit revision.
+reset
+reset --soft
+reset --hard
+reset HEAD~1
+reset --soft HEAD~1
+reset --mixed HEAD~1
+reset --hard HEAD~1
+reset --hard v1
+reset side
+# Path-limited reset only ever touches the index, so it has no mode.
+reset -- a.txt
+reset HEAD -- a.txt
+reset -- nosuchfile.txt
+# git rejects combining a non-mixed mode with paths, and rejects two revisions.
+reset --soft HEAD~1 -- a.txt
+reset --hard HEAD~1 -- a.txt
+reset --hard HEAD~1 HEAD~2
+reset --hard --soft HEAD~1
+# The remaining modes and the quiet flag.
+reset --keep HEAD~1
+reset --merge HEAD~1
+reset -q HEAD~1
+# An unresolvable revision must leave HEAD, the index and the tree alone.
+reset nosuchrev
+reset --hard nosuchrev
+
+# revert and cherry-pick on a clean tree. core.editor is set to `true` in the
+# fixture so git never blocks on an editor and the run stays deterministic.
+revert HEAD
+revert HEAD HEAD~1
+cherry-pick side
+# HEAD~1 and HEAD both touch a.txt, so this revert conflicts by construction.
+revert HEAD~1
+# Replaying a commit that is already in HEAD produces an empty commit.
+cherry-pick HEAD
+# --no-edit and -n are the two flags every scripted caller reaches for.
+revert --no-edit HEAD
+revert -n HEAD
+cherry-pick -n side
+# Nothing is in progress, so --abort and --continue have nothing to act on.
+revert --abort
+cherry-pick --abort
+revert nosuchrev
+cherry-pick nosuchrev
+
+# notes: the fixture already carries a note on HEAD, so add must refuse and
+# -f must overwrite.
+notes show HEAD
+notes show
+notes add -m x HEAD
+notes add -f -m x HEAD
+notes add -m y HEAD~1
+notes show HEAD~1
+# The rest of the notes subcommands, including the bare form that lists.
+notes
+notes list
+notes remove HEAD
+notes append -m z HEAD
+notes copy HEAD HEAD~1
+notes prune
+
+# sparse-checkout on a worktree that is not yet sparse: list and reapply have
+# nothing to read, and add has nothing to add to.
+sparse-checkout list
+sparse-checkout reapply
+sparse-checkout add dir
+sparse-checkout init
+sparse-checkout set dir
+sparse-checkout set --no-cone dir
+sparse-checkout set nosuchdir
+sparse-checkout disable

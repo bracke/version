@@ -1,0 +1,55 @@
+# The parity suites, as <fixture> <cases> [subdir] triples.
+#
+# Fixture and case names do not always match -- one fixture often serves
+# several case files, and one case file is sometimes worth running twice from
+# different directories -- so the pairing is listed here rather than guessed
+# from the filenames. run_all.sh reads this file; add a line here when you add
+# a suite, or it will not run in the gate.
+#
+# A third field runs every case in that suite from that subdirectory of the
+# worktree instead of from its root.
+
+basic.fixture           status.cases
+status-ahead.fixture    status-ahead.cases
+status-behind.fixture   status-behind.cases
+status-detached.fixture status-detached.cases
+status-diverged.fixture status-diverged.cases
+status-initial.fixture  status-initial.cases
+status-merge.fixture    status-merge.cases
+status-tracking.fixture status-tracking.cases
+tag.fixture             tag.cases
+revparse.fixture        rev-parse.cases
+revlist.fixture         rev-list.cases
+revlist.fixture         log.cases
+grepclean.fixture       grep.cases
+grepclean.fixture       clean.cases
+rm.fixture              rm.cases
+rmdir.fixture           rmdir.cases
+blame.fixture           blame.cases
+output.fixture          output.cases
+prefix.fixture          prefix.cases
+
+# git resolves pathspecs against the current directory and relativises some
+# output to it, so the same cases are worth running from below the root.
+prefix.fixture          prefix.cases          sub
+subdir.fixture          subdir.cases          sub
+output.fixture          output.cases          sub
+
+# --- Suites added in the coverage expansion. The fourth field records how
+# --- many cases are KNOWN to diverge today, so the gate catches regressions
+# --- while the backlog is worked down. Lower these as bugs get fixed.
+
+merge.fixture           merge.cases           -     0
+mergeconflict.fixture   mergeconflict.cases   -     0
+refs.fixture            refs.cases            -   203
+refs2.fixture           refs2.cases           -     7
+plumbing.fixture        plumbing.cases        -    81
+histinspect.fixture     histinspect.cases     -    91
+histinspect2.fixture    histinspect2.cases    -    50
+configtext.fixture      configtext.cases      -    96
+configtext.fixture      configtext2.cases     -    45
+diffplumb.fixture       diffplumb.cases       -   129
+diffplumb2.fixture      diffplumb2.cases      -    44
+wtmutate.fixture        wtmutate.cases        -    43
+wtmutate2.fixture       wtmutate2.cases       -    20
+wtmutate3.fixture       wtmutate3.cases       -    15

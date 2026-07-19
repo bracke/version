@@ -1,0 +1,10 @@
+# The conflicting merge itself: git reports Auto-merging, the CONFLICT line
+# and the closing verdict, and exits 1.
+merge --no-edit side
+# Resolving in favour of one side is clean again.
+merge --no-edit -Xours side
+merge --no-edit -Xtheirs side
+merge --no-edit --strategy=ours side
+# What the conflict looks like without touching the working tree.
+merge-tree --write-tree main side
+merge-base main side

@@ -1,0 +1,186 @@
+# --- shortlog -------------------------------------------------------------
+# Every case names its revision explicitly. With no revision and a
+# non-terminal stdin, git reads a log stream from stdin instead of walking
+# HEAD -- and the harness feeds the case file itself to stdin, so a bare
+# `shortlog` both diverges for an uninteresting reason and eats the rest of
+# the file. The one case below pins that difference down in isolation.
+shortlog < /dev/null
+# The default groups commits under "Author (n):" headings, indents each
+# subject, and sorts the groups by name; -s collapses each group to a count
+# and -n re-sorts by that count, so the three forms exercise three different
+# orderings of the same data.
+shortlog HEAD
+shortlog -s HEAD
+shortlog -n HEAD
+shortlog -s -n HEAD
+shortlog -sn HEAD
+# -e appends the address, which is the only thing distinguishing two authors
+# who share a name, so it must survive the grouping.
+shortlog -s -e HEAD
+shortlog -e HEAD
+# shortlog is a log walker underneath, so revision selection and the
+# merge filters have to reach it too.
+shortlog -s HEAD~2
+shortlog -s v1
+shortlog -s v1..HEAD
+shortlog -s --no-merges HEAD
+shortlog -s side
+# A path limit means only the commits touching that path are counted.
+shortlog -s HEAD -- a.txt
+shortlog -s HEAD -- s.txt
+# An empty range has no authors at all, so the output is empty rather than a
+# heading with nothing under it.
+shortlog -s HEAD..HEAD
+
+# --- reflog ---------------------------------------------------------------
+# The fixture checks out branches and merges, so HEAD's reflog holds commit,
+# checkout and merge entries; the default form abbreviates and numbers them.
+reflog
+reflog show
+reflog show HEAD
+reflog -n 3
+reflog show main
+# A ref with no reflog is an error rather than empty output.
+reflog show side
+reflog show v1
+reflog show nosuchref
+# HEAD@{n} resolves through the reflog, and walking past its end fails.
+log --oneline -1 HEAD@{0}
+log --oneline -1 HEAD@{2}
+rev-parse HEAD@{0}
+rev-parse HEAD@{99}
+
+# --- show -----------------------------------------------------------------
+# Plain show is the tip commit with its patch; the flags below each replace
+# or trim that patch.
+show
+show HEAD
+show --stat
+show --stat --oneline
+show --name-only
+show --name-status
+show --numstat
+show --shortstat
+show --raw
+show -s
+show -s --format=%s
+show --format=%H%n%an%n%s
+show --oneline
+show --pretty=oneline
+show -s --date=iso --format=%ad
+show -s --date=short --format=%ad
+show -s --date=raw --format=%ad
+# A merge commit shows no patch by default, which is the single most
+# commonly mis-implemented case; -m and --first-parent turn one on.
+show HEAD~1
+show --stat HEAD~1
+show -m --oneline HEAD~1
+show --first-parent HEAD~1
+# Non-commit objects: an annotated tag shows the tag then its commit, a tree
+# lists its entries, and a blob is dumped verbatim.
+show v1
+show v2
+show HEAD:a.txt
+show HEAD^{tree}
+# sub/ still exists at HEAD~1 but was dropped by the tip commit, so these two
+# separate a real subtree listing from a genuine "no such path" error.
+show HEAD~1:sub
+show HEAD:sub
+# Several revisions in one invocation are shown in the order given.
+show HEAD~1 HEAD
+show v1 v2
+# Errors: an unknown revision and a path that is not in that commit.
+show nosuchrev
+show HEAD:nosuch.txt
+
+# --- log flags not covered by log.cases -----------------------------------
+# Name/stat summaries.
+log --name-only --oneline
+log --name-status --oneline
+log --numstat --oneline
+log --shortstat --oneline
+log --raw --oneline
+log --oneline --abbrev-commit
+log --oneline --parents
+log --oneline --children
+# Decoration is what attaches ref names to the graph, and it has three modes.
+log --oneline --decorate
+log --oneline --decorate=full
+log --oneline --decorate=short
+log --oneline --no-decorate
+# --all and friends widen the selection beyond HEAD.
+log --oneline --all
+log --oneline --branches
+log --oneline --tags
+log --oneline --not main
+# Filtering by author, committer and message; -i makes the match
+# case-insensitive and --invert-grep negates it.
+log --oneline --author=Alice
+log --oneline --author=alice
+log --oneline -i --author=alice
+log --oneline --committer=T
+log --oneline --grep=side
+log --oneline --grep=SIDE
+log --oneline -i --grep=SIDE
+log --oneline --invert-grep --grep=side
+log --oneline --grep=side --grep=edits
+log --oneline --all-match --grep=side --grep=edits
+# Date windows. The fixture pins every timestamp, so these are exact.
+log --oneline --since=1700000035
+log --oneline --until=1700000035
+log --oneline --after=1700000045 --before=1700000065
+# Pickaxe: -S counts occurrences of a string, -G matches the diff text.
+log --oneline -S side
+log --oneline -G side
+log --oneline -S a2
+log --oneline -S nowhere
+# Date formatting in the body.
+log -1 --date=iso
+log -1 --date=short
+log -1 --date=raw
+log --format=%ad --date=short
+log --format=%cd --date=unix
+log --format=%at
+log --format=%s%x09%an
+log --format=%p
+log --format=%P
+log --format=%T
+log --format=%d --decorate
+log --format=%D --decorate
+# --no-walk shows only the named commits, in the order given.
+log --oneline --no-walk HEAD v1
+log --oneline --no-walk=unsorted HEAD v1
+# Boundary and symmetric-difference selection.
+log --oneline --boundary HEAD~2..HEAD
+log --oneline --left-right main...side
+log --oneline main...side
+# A graph is the only output where the log walk order is visible as layout.
+log --graph --oneline
+log --graph --oneline --all
+# Combinations that have to compose rather than override each other.
+log --oneline --no-merges --author=Alice
+log --oneline --reverse --max-count=3
+log --oneline --first-parent --name-only
+# Empty and error selections.
+log --oneline HEAD..HEAD
+log --oneline nosuchrev
+log --oneline -- nosuch.txt
+
+# --- merge-base -----------------------------------------------------------
+merge-base main side
+merge-base side main
+merge-base HEAD HEAD
+merge-base --all main side
+merge-base --is-ancestor v1 HEAD
+merge-base --is-ancestor HEAD v1
+merge-base --is-ancestor HEAD HEAD
+merge-base main nosuchrev
+
+# --- last-modified --------------------------------------------------------
+# Reports the last commit to touch each path; the ordering and the set of
+# paths reported are both part of the contract.
+last-modified
+last-modified HEAD
+last-modified v1
+last-modified -- a.txt
+last-modified HEAD~2

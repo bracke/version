@@ -1,0 +1,17 @@
+# Refs that live outside refs/heads, refs/tags and refs/remotes. Real
+# repositories are full of them — refs/notes/*, refs/stash, refs/pull/* from a
+# fetch refspec, refs/bisect/* — and every ref-enumerating command has to walk
+# past them without tripping. This is deliberately a separate fixture from
+# refs.fixture: if the enumerators choke on such a ref, a single shared fixture
+# would fail every case in the family and hide everything else.
+printf 'a\n' > a.txt
+git add -A && git commit -qm "c1 add a"
+git tag -a v1.0 -m "release one"
+printf 'b\n' > b.txt
+git add -A && git commit -qm "c2 add b"
+git branch topic HEAD~1
+
+git update-ref refs/custom/odd refs/heads/topic
+git update-ref refs/notes/commits refs/heads/main
+git update-ref refs/pull/7/head refs/heads/topic
+git update-ref refs/stash refs/heads/main

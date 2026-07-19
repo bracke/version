@@ -1,0 +1,40 @@
+# A cherry-pick that real git paused on a conflict. The sequencer state on
+# disk was written by git, so these cases test whether the paused operation is
+# recognised at all, and whether the mutations that git defines as clearing it
+# actually clear it.
+
+# The pause must be visible before anything else is judged.
+status --short
+status
+
+# Resuming, abandoning, and abandoning under the wrong command name.
+cherry-pick --continue
+cherry-pick --abort
+cherry-pick --skip
+revert --abort
+revert --continue
+
+# git refuses to start a second replay while unmerged entries exist.
+cherry-pick other
+revert HEAD
+cherry-pick main
+
+# reset is git's documented way out of a paused cherry-pick: --hard and --merge
+# clear the sequencer state as well as the conflicted index.
+reset --hard
+reset --hard HEAD
+reset
+reset --merge
+reset --hard HEAD~1
+# Unstaging a single conflicted path drops it back to its HEAD stage.
+reset -- a.txt
+reset HEAD -- a.txt
+
+# Mutating a path that has nothing to do with the conflict must still work.
+mv keep.txt moved.txt
+# ... but moving the conflicted path itself is not resolvable.
+mv a.txt moved.txt
+mv -f a.txt moved.txt
+
+# notes never look at the index, so a conflicted one must not block them.
+notes add -m x HEAD

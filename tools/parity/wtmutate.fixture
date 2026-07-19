@@ -1,0 +1,29 @@
+# A clean worktree with a linear history, a side branch that touches a
+# different file, tags, nested directories and one pre-existing note. Every
+# working-tree mutation therefore has a well-defined "nothing to preserve"
+# baseline: any refusal here is a refusal on principle, not on dirty state.
+# Each commit gets its own increasing timestamp so revision ordering is not a
+# tie-break artifact of the harness's single pinned date.
+c () { # $1 = message, $2 = seconds past the base date
+  GIT_AUTHOR_DATE="$((1700000000 + $2)) +0000" \
+  GIT_COMMITTER_DATE="$((1700000000 + $2)) +0000" \
+  git commit -qm "$1"
+}
+mkdir -p dir sub/deep
+printf 'a\n' > a.txt
+printf 'b\n' > dir/b.txt
+printf 'd\n' > sub/deep/d.txt
+git add -A && c "c1 add files" 10
+printf 'a2\n' >> a.txt
+git add -A && c "c2 edit a" 20
+git tag v1
+git checkout -q -b side
+printf 'side\n' > s.txt
+git add -A && c "c3 side adds s" 30
+git checkout -q main
+printf 'a3\n' >> a.txt
+git add -A && c "c4 edit a again" 40
+GIT_AUTHOR_DATE='1700000050 +0000' GIT_COMMITTER_DATE='1700000050 +0000' \
+  git notes add -m "note on head" HEAD
+
+git config core.editor true

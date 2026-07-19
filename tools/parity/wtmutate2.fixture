@@ -1,0 +1,32 @@
+# The same history as wtmutate.fixture, but left dirty on purpose: one file
+# modified only in the working tree, one modified only in the index, one
+# modified in both (so the staged content matches neither HEAD nor the file),
+# and one untracked. This is the state that decides whether a mutation is
+# recoverable, so it is where a refusal has to happen and where a command that
+# proceeds anyway destroys something the object store cannot give back.
+c () { # $1 = message, $2 = seconds past the base date
+  GIT_AUTHOR_DATE="$((1700000000 + $2)) +0000" \
+  GIT_COMMITTER_DATE="$((1700000000 + $2)) +0000" \
+  git commit -qm "$1"
+}
+mkdir -p dir
+printf 'base\n' > local.txt
+printf 'base\n' > staged.txt
+printf 'base\n' > both.txt
+printf 'base\n' > clean.txt
+printf 'b\n' > dir/b.txt
+git add -A && c "c1 add files" 10
+printf 'a\n' > a.txt
+git add -A && c "c2 add a" 20
+git tag v1
+git checkout -q -b side
+printf 'side\n' > s.txt
+git add -A && c "c3 side adds s" 30
+git checkout -q main
+printf 'a2\n' >> a.txt
+git add -A && c "c4 edit a" 40
+printf 'local\n' > local.txt
+printf 'staged\n' > staged.txt && git add staged.txt
+printf 'x\n' > both.txt && git add both.txt && printf 'y\n' > both.txt
+printf 'untracked\n' > untracked.txt
+git config core.editor true

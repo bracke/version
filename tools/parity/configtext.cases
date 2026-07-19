@@ -1,0 +1,280 @@
+# --- config: reading -------------------------------------------------------
+# The plain form prints one value and exits 0.
+config user.name
+config core.abbrev
+# A key set to the empty string still exists, so it must exit 0 with a blank
+# line rather than be reported as missing.
+config section.emptyvalue
+# An absent key is the documented exit-1-with-no-output case.
+config no.such.key
+config nosuchsection.key
+# A malformed key name (no section) is a usage error, distinct from "absent".
+config nosectionkey
+# Case-insensitive section and variable names, case-sensitive subsection.
+config USER.NAME
+config user.NAME
+config Section.Number
+# --get is the explicit spelling of the plain form.
+config --get user.email
+config --get no.such.key
+# A multi-valued key: --get errors, --get-all lists all, the plain form and
+# --get return the last.
+config remote.origin.fetch
+config --get remote.origin.fetch
+config --get-all remote.origin.fetch
+config --get-all no.such.key
+# --default supplies a value only when the key is absent.
+config --default fallback --get no.such.key
+config --default fallback --get user.name
+# Type filters must parse and canonicalise the stored spelling.
+config --type=bool section.boolTrue
+config --type=bool section.boolFalse
+config --type=bool core.bare
+config --type=int section.number
+config --type=int core.bigFileThreshold
+config --type=bool-or-int section.number
+config --type=bool-or-int section.boolTrue
+# A type filter that cannot be satisfied is an error, not a silent pass.
+config --type=int user.name
+config --type=bool user.name
+# The deprecated single-dash spellings must still work.
+config --bool section.boolTrue
+config --int section.number
+# Subsection names are case-sensitive and may contain dots and '@'.
+config url.git@example.invalid:.insteadOf
+config branch.main.remote
+# --get-regexp lists key/value pairs for every matching name.
+config --get-regexp 'alias\..*'
+config --get-regexp '^remote\.'
+config --get-regexp 'nomatch'
+# --get-urlmatch resolves the most specific URL-keyed section.
+config --get-urlmatch remote https://example.invalid/r.git
+# --name-only strips the values from a listing.
+config --name-only --get-regexp 'alias\..*'
+# --list dumps the whole file; --list --name-only dumps just the keys.
+config --list
+config -l
+config --list --name-only
+config --list --null
+# Explicit file scopes.
+config --local --list
+config --local user.name
+config --global --list
+config --global user.name
+config --system user.name
+config --file .git/config --get user.name
+config --file nosuchfile --get user.name
+config --get-color no.such.color red
+config --get-colorbool color.ui false
+
+# --- config: writing -------------------------------------------------------
+# A plain set replaces the single value and prints nothing.
+config user.name Other && cat .git/config
+config new.key value && cat .git/config
+# Setting a multi-valued key without --add or a value-pattern is an error.
+config remote.origin.fetch replaced
+config --add remote.origin.fetch third && cat .git/config
+# --replace-all collapses every value into one.
+config --replace-all remote.origin.fetch only && cat .git/config
+# --unset removes one value; on a multi-valued key without a pattern it errors.
+config --unset user.name && cat .git/config
+config --unset no.such.key
+config --unset remote.origin.fetch
+config --unset-all remote.origin.fetch && cat .git/config
+# Renaming and removing whole sections.
+config --rename-section section newsection && cat .git/config
+config --rename-section nosuch other
+config --remove-section section && cat .git/config
+config --remove-section nosuch
+# Writing with a type filter must canonicalise before storing.
+config --type=bool new.flag yes && cat .git/config
+config --type=int new.size 3 && cat .git/config
+config --type=bool new.flag notabool
+
+# --- var -------------------------------------------------------------------
+# The ident variables are fully determined by user.* and the *_DATE env vars
+# the harness pins, so they are comparable by construction.
+var GIT_AUTHOR_IDENT
+var GIT_COMMITTER_IDENT
+var GIT_DEFAULT_BRANCH
+# An unknown variable is an error.
+var NO_SUCH_VAR
+var < /dev/null
+
+# --- check-ref-format ------------------------------------------------------
+# Well-formed and ill-formed multi-level refs.
+check-ref-format refs/heads/main
+check-ref-format refs/heads/feature/x
+check-ref-format refs/heads/
+check-ref-format refs/heads/.hidden
+check-ref-format refs/heads/x..y
+check-ref-format refs/heads/x.lock
+check-ref-format 'refs/heads/x y'
+check-ref-format 'refs/heads/x~1'
+check-ref-format 'refs/heads/x^'
+check-ref-format 'refs/heads/x:y'
+check-ref-format 'refs/heads/x?'
+check-ref-format 'refs/heads/x*'
+check-ref-format 'refs/heads/x['
+check-ref-format 'refs/heads/x\\y'
+check-ref-format refs/heads/x//y
+check-ref-format refs/heads/x/
+check-ref-format @
+check-ref-format 'refs/heads/@{'
+# A single-level name is rejected unless --allow-onelevel is given.
+check-ref-format main
+check-ref-format --allow-onelevel main
+check-ref-format --allow-onelevel HEAD
+check-ref-format --no-allow-onelevel refs/heads/main
+# '*' is only legal under --refspec-pattern, and only once.
+check-ref-format --refspec-pattern 'refs/heads/*'
+check-ref-format --refspec-pattern 'refs/heads/*/*'
+check-ref-format --refspec-pattern --allow-onelevel '*'
+# --normalize collapses slashes and strips a leading one, printing the result.
+check-ref-format --normalize refs/heads//main
+check-ref-format --normalize /refs/heads/main
+check-ref-format --normalize --allow-onelevel /main
+check-ref-format --normalize refs/heads/x..y
+# --branch resolves a branch shorthand.
+check-ref-format --branch main
+check-ref-format --branch @{-1}
+check-ref-format --branch 'bad~name'
+# Missing operand is a usage error.
+check-ref-format < /dev/null
+
+# --- check-attr ------------------------------------------------------------
+# A single attribute on a matching and a non-matching path.
+check-attr text a.txt
+check-attr text a.bin
+check-attr text nomatch.log
+check-attr diff a.md
+check-attr diff unset.txt
+check-attr binary a.bin
+# Several attributes at once, and several paths at once.
+check-attr text diff a.txt a.md
+check-attr text -- a.txt a.bin
+# -a lists every attribute that applies to the path.
+check-attr -a a.txt
+check-attr -a a.bin
+check-attr -a nomatch.log
+check-attr --all a.md
+# -z uses NUL separators.
+check-attr -z text a.txt
+check-attr -z -a a.md
+# --cached reads the index copy of .gitattributes rather than the worktree.
+check-attr --cached text a.txt
+# Directory patterns and paths below them.
+check-attr export-ignore sub/nested.txt
+check-attr export-ignore a.txt
+# An attribute nobody sets is "unspecified".
+check-attr nosuchattr a.txt
+# Missing operands.
+check-attr < /dev/null
+check-attr text < /dev/null
+
+# --- check-mailmap ---------------------------------------------------------
+# Each of the four .mailmap entry shapes, plus a contact it does not rewrite.
+check-mailmap 'Commit Name <commit@example.com>'
+check-mailmap 'Whoever <other@example.com>'
+check-mailmap 'Old Name <old@example.com>'
+check-mailmap 'Different <old@example.com>'
+check-mailmap 'Unknown <nobody@example.com>'
+check-mailmap '<commit@example.com>'
+# Several contacts in one invocation.
+check-mailmap 'Commit Name <commit@example.com>' 'Unknown <nobody@example.com>'
+# A bare address with no angle brackets is unparseable.
+check-mailmap 'no-brackets'
+check-mailmap < /dev/null
+
+# --- stripspace ------------------------------------------------------------
+# Leading/trailing blank lines collapse, runs of blanks fold to one, and the
+# result always ends with exactly one newline.
+stripspace < msg.txt
+stripspace < plain.txt
+stripspace < empty.txt
+stripspace < ws.txt
+# -s drops comment lines entirely; -c turns every line into a comment.
+stripspace -s < cmsg.txt
+stripspace --strip-comments < cmsg.txt
+stripspace -c < plain.txt
+stripspace --comment-lines < msg.txt
+stripspace -c < empty.txt
+# -s and -c together is contradictory.
+stripspace -s -c < plain.txt
+
+# --- interpret-trailers ----------------------------------------------------
+# With no options the input is echoed with its trailer block normalised.
+interpret-trailers trailers.txt
+interpret-trailers notrailer.txt
+interpret-trailers < trailers.txt
+# --only-trailers prints just the block; --only-input suppresses added ones.
+interpret-trailers --only-trailers trailers.txt
+interpret-trailers --only-trailers notrailer.txt
+interpret-trailers --only-input --trailer 'Fixes=#1' trailers.txt
+# --unfold joins a continuation line back onto its trailer.
+interpret-trailers --only-trailers --unfold folded.txt
+interpret-trailers --only-trailers folded.txt
+# --parse is shorthand for --only-trailers --only-input --unfold.
+interpret-trailers --parse trailers.txt
+interpret-trailers --parse folded.txt
+# Adding trailers, and controlling where they land.
+interpret-trailers --trailer 'Fixes=#1' trailers.txt
+interpret-trailers --trailer 'Fixes=#1' --trailer 'Cc=C <c@e>' trailers.txt
+interpret-trailers --where before --trailer 'Fixes=#1' trailers.txt
+interpret-trailers --where after --trailer 'Fixes=#1' trailers.txt
+interpret-trailers --trailer 'Fixes: #1' trailers.txt
+# Adding a trailer to a message that has none at all.
+interpret-trailers --trailer 'Fixes=#1' notrailer.txt
+interpret-trailers --trailer 'Fixes=#1' plain.txt
+# if-exists / if-missing policies against an already-present token.
+interpret-trailers --if-exists addIfDifferent --trailer 'Signed-off-by=A <a@e>' trailers.txt
+interpret-trailers --if-exists replace --trailer 'Signed-off-by=Z <z@e>' trailers.txt
+interpret-trailers --if-exists doNothing --trailer 'Signed-off-by=Z <z@e>' trailers.txt
+interpret-trailers --if-missing doNothing --trailer 'Fixes=#1' trailers.txt
+interpret-trailers --if-missing add --trailer 'Fixes=#1' trailers.txt
+# A missing input file is an error.
+interpret-trailers nosuchfile.txt
+
+# --- mailsplit -------------------------------------------------------------
+# Splitting an mbox writes numbered files and prints the count. git spells
+# the output directory as an attached -o<dir>; the fixture pre-creates them.
+mailsplit -oout box.mbox && ls out
+mailsplit -oout box.mbox > /dev/null && cat out/0002
+mailsplit -oout2 < box.mbox && ls out2
+mailsplit -b -oout3 box.mbox && ls out3
+# A bare mail with no From_ line still yields one message.
+mailsplit -oout4 one.mail && ls out4
+# -f offsets the first number and -d widens it.
+mailsplit -f2 -oout5 box.mbox && ls out5
+mailsplit -d3 -oout6 box.mbox && ls out6
+mailsplit --keep-cr -oout7 box.mbox && ls out7
+mailsplit --mboxrd -oout8 box.mbox && ls out8
+# A detached "-o dir" is not git's spelling, and the directory must exist.
+mailsplit -o out9 box.mbox && ls out9
+mailsplit -onosuchdir box.mbox
+# An mbox whose From_ line carries no date is corrupt.
+mailsplit -oout10 nodate.mbox
+# Without -o there is no output directory at all.
+mailsplit box.mbox < /dev/null
+
+# --- mailinfo --------------------------------------------------------------
+# mailinfo writes the message to <msg> and the patch to <patch> and prints
+# the parsed headers on stdout.
+mailinfo m.out p.out < one.mail
+mailinfo -k m.out p.out < one.mail
+mailinfo -b m.out p.out < one.mail
+mailinfo -u m.out p.out < one.mail
+mailinfo --scissors m.out p.out < one.mail
+# Missing operands.
+mailinfo m.out < one.mail
+mailinfo < /dev/null
+
+# --- hook ------------------------------------------------------------------
+# Running an installed hook forwards its stdout and exit status.
+hook run post-checkout
+hook run post-checkout -- one two
+# An absent hook is silently a no-op only with --ignore-missing.
+hook run pre-commit
+hook run --ignore-missing pre-commit
+hook run < /dev/null
+hook nosuchsub

@@ -1,0 +1,22 @@
+# A repository left paused in the middle of a conflicted cherry-pick, set up
+# by real git. Everything after this point is an interoperability test: the
+# sequencer state on disk is git's (CHERRY_PICK_HEAD, MERGE_MSG, .git/sequencer,
+# stage 1/2/3 index entries), so --continue/--abort/--skip and any other
+# mutation has to read a state it did not write itself. A tool that keeps its
+# own private pause marker will silently disagree here.
+c () { # $1 = message, $2 = seconds past the base date
+  GIT_AUTHOR_DATE="$((1700000000 + $2)) +0000" \
+  GIT_COMMITTER_DATE="$((1700000000 + $2)) +0000" \
+  git commit -qm "$1"
+}
+printf 'one\n' > a.txt
+printf 'keep\n' > keep.txt
+git add -A && c "c1 base" 10
+git checkout -q -b other
+printf 'other\n' > a.txt
+git add -A && c "c2 other edits a" 20
+git checkout -q main
+printf 'main\n' > a.txt
+git add -A && c "c3 main edits a" 30
+git config core.editor true
+git cherry-pick other
