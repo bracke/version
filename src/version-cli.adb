@@ -15525,7 +15525,15 @@ package body Version.CLI is
                                  Bad_Text := To_Unbounded_String ("-m");
                                  exit;
                               end if;
-                              Msg := To_Unbounded_String (Arg (I + 1));
+                              --  git joins repeated -m with a blank line,
+                              --  as it does for commit; overwriting kept
+                              --  only the last and silently dropped the
+                              --  rest of the note.
+                              if Has_Msg then
+                                 Append (Msg, Character'Val (10));
+                                 Append (Msg, Character'Val (10));
+                              end if;
+                              Append (Msg, Arg (I + 1));
                               Has_Msg := True;
                               I := I + 1;
                            elsif A = "-f" or else A = "--force" then
@@ -23172,7 +23180,20 @@ package body Version.CLI is
                              Full (Ops (2));
                            Ref : constant String := "refs/replace/" & Obj;
                         begin
-                           if Version.Refs.Ref_Exists (Repo, Ref)
+                           --  git refuses to map an object to one of a
+                           --  different type: every reader would then find a
+                           --  tag where it expected a commit. Recording it
+                           --  silently is a corruption the repository carries
+                           --  until something trips over it.
+                           if Version.Objects.Kind
+                                (Version.Objects.Read_Object
+                                   (Repo, Version.Objects.To_Object_Id (Obj)))
+                              /= Version.Objects.Kind
+                                   (Version.Objects.Read_Object (Repo, Rep))
+                           then
+                              Error_Line ("Objects must be of the same type.");
+                              Set_Command_Failure;
+                           elsif Version.Refs.Ref_Exists (Repo, Ref)
                              and then not Force
                            then
                               Error_Line
