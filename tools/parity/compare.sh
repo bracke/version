@@ -41,6 +41,12 @@ while IFS= read -r line; do
   # output would differ spuriously; canonicalise both to the same token.
   sed -i "s#$WORK/g#<REPO>#g" "$WORK/g.out" "$WORK/g.err" 2>/dev/null
   sed -i "s#$WORK/o#<REPO>#g" "$WORK/o.out" "$WORK/o.err" 2>/dev/null
+  # `blame` stamps a line that is not committed yet with the CURRENT time, and
+  # the two tools run a moment apart, so a second boundary between them would
+  # fail the case for no reason. Canonicalise that one timestamp -- and only
+  # it, so a wrong committed date is still caught.
+  sed -i -E "s/\(Not Committed Yet [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} [+-][0-9]{4}/(Not Committed Yet <NOW>/g" \
+    "$WORK/g.out" "$WORK/o.out" 2>/dev/null
   ge=$([ -s "$WORK/g.err" ] && echo 1 || echo 0)
   oe=$([ -s "$WORK/o.err" ] && echo 1 || echo 0)
   if cmp -s "$WORK/g.out" "$WORK/o.out" && [ "$gr" = "$orr" ] && [ "$ge" = "$oe" ]; then
