@@ -4731,20 +4731,34 @@ package body Version.CLI is
       end if;
 
       declare
+         --  `filter-branch <A>..<B>` rewrites only the commits in the range.
+         --  The whole operand used to be taken as a branch name, so a range
+         --  became the nonexistent ref "refs/heads/<A>..<B>".
+         Spec  : constant String := Revs.First_Element;
+         Range_At : constant Natural :=
+           Ada.Strings.Fixed.Index (Spec, "..");
+         Positive_Rev : constant String :=
+           (if Range_At = 0 then Spec
+            else Spec (Range_At + 2 .. Spec'Last));
+         Negative_Rev : constant String :=
+           (if Range_At = 0 then ""
+            else Spec (Spec'First .. Range_At - 1));
+
          Ref_Name : constant String :=
-           (if Revs.First_Element = "HEAD"
-              or else Revs.First_Element = "--all"
+           (if Positive_Rev = "HEAD"
+              or else Positive_Rev = "--all"
+              or else Positive_Rev = ""
             then (declare
                     Branch : constant String :=
                       Version.Refs.Current_Branch_Name (Repo);
                   begin
                     "refs/heads/" & Branch)
-            elsif Revs.First_Element'Length > 5
-              and then Revs.First_Element
-                         (Revs.First_Element'First
-                          .. Revs.First_Element'First + 4) = "refs/"
-            then Revs.First_Element
-            else "refs/heads/" & Revs.First_Element);
+            elsif Positive_Rev'Length > 5
+              and then Positive_Rev
+                         (Positive_Rev'First .. Positive_Rev'First + 4)
+                       = "refs/"
+            then Positive_Rev
+            else "refs/heads/" & Positive_Rev);
 
          Backup : constant String := "refs/original/" & Ref_Name;
 
@@ -4770,7 +4784,36 @@ package body Version.CLI is
             Seen    : Version.Trailers.String_Vectors.Vector;
             Total   : Natural := 0;
             Done    : Natural := 0;
+            --  The far side of a range is excluded along with everything it
+            --  reaches, so those commits keep their identity and only the
+            --  range itself is rewritten.
+            Excluded : Version.Trailers.String_Vectors.Vector;
          begin
+            if Negative_Rev /= "" then
+               declare
+                  Stop : constant Version.Objects.Hex_Object_Id :=
+                    Version.Revisions.Resolve_Commit (Repo, Negative_Rev);
+                  Walk : Version.Trailers.String_Vectors.Vector;
+               begin
+                  Walk.Append (Version.Objects.To_String (Stop));
+                  while not Walk.Is_Empty loop
+                     declare
+                        C : constant String := Walk.Last_Element;
+                     begin
+                        Walk.Delete_Last;
+                        if not Excluded.Contains (C) then
+                           Excluded.Append (C);
+                           for P of Version.History.Parent_Commits
+                                      (Repo, Version.Objects.To_Object_Id (C))
+                           loop
+                              Walk.Append (Version.Objects.To_String (P));
+                           end loop;
+                        end if;
+                     end;
+                  end loop;
+               end;
+            end if;
+
             Pending.Append (Version.Objects.To_String (Tip));
 
             while not Pending.Is_Empty loop
@@ -4779,7 +4822,9 @@ package body Version.CLI is
                begin
                   Pending.Delete_Last;
 
-                  if not Seen.Contains (C) then
+                  if not Seen.Contains (C)
+                    and then not Excluded.Contains (C)
+                  then
                      Seen.Append (C);
 
                      for P of Version.History.Parent_Commits
@@ -5128,6 +5173,11 @@ package body Version.CLI is
                               Parents.Append
                                 (Version.Objects.To_Object_Id
                                    (Map.Element (Hex)));
+                           elsif not Seen.Contains (Hex) then
+                              --  Outside the rewritten set (the far side of a
+                              --  range): it keeps its identity, and dropping
+                              --  it would leave the boundary commit a root.
+                              Parents.Append (P);
                            end if;
                         end;
                      end loop;
@@ -5188,6 +5238,27 @@ package body Version.CLI is
                  (Repo, Ref_Name,
                   Version.Objects.To_Object_Id
                     (Map.Element (Version.Objects.To_String (Tip))));
+
+               --  git leaves the working tree and index matching the
+               --  rewritten history. Without this the old files stay staged
+               --  against the new tip -- `status` shows the filtered-out
+               --  paths as additions, ready to be committed straight back.
+               declare
+                  Head : constant Version.Refs.Head_Info :=
+                    Version.Refs.Read_Head (Repo);
+                  New_Tip : constant Version.Objects.Hex_Object_Id :=
+                    Version.Objects.To_Object_Id
+                      (Map.Element (Version.Objects.To_String (Tip)));
+               begin
+                  if Version.Refs.Is_Attached (Head)
+                    and then "refs/heads/" & Version.Refs.Branch_Name (Head)
+                             = Ref_Name
+                  then
+                     Version.Restore.Restore_Working_Tree_For_Commit
+                       (Repo, New_Tip);
+                     Version.Restore.Write_Index_For_Commit (Repo, New_Tip);
+                  end if;
+               end;
 
                Stderr_Line ("Ref '" & Ref_Name & "' was rewritten");
             end if;
