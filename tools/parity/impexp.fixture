@@ -1,0 +1,208 @@
+# A repository for the import/export and object-construction plumbing:
+# `am`, `fast-export`, `fast-import`, `mktag`, `commit-tree` and `diff-pairs`.
+#
+# Shape:
+#   * three linear commits on main that add, modify, rename and delete files,
+#     so every raw-diff status letter (A, M, D, R) is reachable and a rename is
+#     present for the rename-detecting modes of fast-export and diff-pairs;
+#   * a `feature` branch forked at the first commit, exported as a mailbox, so
+#     `am` has real format-patch input that applies cleanly to a branch that
+#     never saw those commits;
+#   * a second, deliberately non-applying mailbox, so the failure path of `am`
+#     is reached without needing a second fixture;
+#   * an annotated tag, a lightweight tag and a tag of a blob, because
+#     fast-export handles each differently and mktag has to be checked against
+#     a payload real git accepts;
+#   * a binary file and an executable, so the fast-* streams carry a mode
+#     change and a non-text blob rather than only ASCII.
+#
+# Every commit gets its own increasing timestamp seeded from the date the
+# harness pins, so ids stay reproducible across the two runs while the history
+# stays strictly ordered -- fast-export writes those dates into its stream and
+# commit-tree hashes them, so any drift would show up as a spurious diff.
+c () { # $1 = message, $2 = seconds past the base date
+  GIT_AUTHOR_DATE="$((1700000000 + $2)) +0000" \
+  GIT_COMMITTER_DATE="$((1700000000 + $2)) +0000" \
+  git commit -qm "$1"
+}
+
+printf 'l1\nl2\nl3\nl4\nl5\n' > a.txt
+printf 'base\n' > b.txt
+mkdir -p sub
+printf 'nested\n' > sub/nested.txt
+printf '#!/bin/sh\necho hi\n' > run.sh && chmod +x run.sh
+printf 'bin\000\001\002data\n' > blob.bin
+git add -A && c "first commit" 0
+
+printf 'l1\nl2 changed\nl3\nl4\nl5\n' > a.txt
+printf 'added\n' > added.txt
+git add -A && c "second commit" 60
+
+# A rename plus a delete plus a mode change in one commit: -M has something to
+# find, and the raw output carries three different status letters at once.
+git mv sub/nested.txt sub/renamed.txt
+git rm -q b.txt
+chmod -x run.sh && git add run.sh
+git add -A && c "third commit" 120
+
+git tag -a v1 -m "annotated tag" HEAD
+git tag lightweight HEAD^
+# A tag that does not point at a commit at all: fast-export has to either skip
+# it or rewrite it, and it is a second shape for cat-file/mktag round-trips.
+git tag -a blobtag -m "tag of a blob" HEAD:a.txt
+
+# ---- am input --------------------------------------------------------------
+# `feature` forks at the first commit, so its patches apply to a branch that
+# has none of them. It is exported and then deleted; only the mailbox is left.
+git checkout -q -b feature HEAD~2
+printf 'l1\nl2\nl3\nl4\nl5\nl6\n' > a.txt
+printf 'feature\n' > f.txt
+git add a.txt f.txt && c "feature one" 200
+printf 'l1\nl2\nl3\nl4\nl5\nl6\nl7\n' > a.txt
+git add a.txt && c "feature two" 260
+git format-patch -q --stdout --no-signature main~2..feature > patches.mbox
+git format-patch -q --stdout --no-signature -1 feature~1 > one.mbox
+git format-patch -q --stdout --no-signature -1 --subject-prefix='PATCH v2' feature > two.mbox
+
+# A mailbox whose patch was made against content main never had, so the hunk
+# context cannot match and `am` must fail rather than apply it.
+git checkout -q -b divergent main~2
+printf 'X1\nX2\nX3\nX4\nX5\n' > a.txt
+git add a.txt && c "divergent base" 300
+printf 'X1\nX2\nX3 conflicting\nX4\nX5\n' > a.txt
+git add a.txt && c "divergent change" 360
+git format-patch -q --stdout --no-signature -1 divergent > conflict.mbox
+
+git checkout -q main
+git branch -q -D feature divergent
+
+# A mail that is not a patch at all, and a file that is not a mailbox.
+{ printf 'From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001\n'
+  printf 'From: T <t@e>\n'
+  printf 'Date: Tue, 14 Nov 2023 22:13:20 +0000\n'
+  printf 'Subject: [PATCH] empty commit by mail\n\n'
+  printf 'A patchless mail still describes a commit.\n'
+  printf -- '-- \n2.0\n'; } > empty.mbox
+printf 'this is not a mailbox at all\n' > notamailbox.txt
+
+# ---- diff-pairs input ------------------------------------------------------
+# diff-pairs reads the NUL-terminated raw pairs that diff-tree writes, so the
+# fixture records the real thing rather than a hand-written approximation.
+git diff-tree -r -z --raw HEAD^ HEAD > pairs.z
+git diff-tree -r -z --raw -M HEAD^ HEAD > pairs-rename.z
+git diff-tree -r -z --raw HEAD~2 HEAD > pairs-two.z
+git diff-tree -r -z --raw --root HEAD~2 > pairs-root.z
+printf ':100644 100644 %s %s M\000a.txt\000' \
+  0000000000000000000000000000000000000000 \
+  0000000000000000000000000000000000000000 > pairs-null.z
+printf 'not a pair at all\n' > pairs-bad.z
+
+# ---- mktag input -----------------------------------------------------------
+# The canonical payload is taken from a tag real git wrote, so an accepted
+# payload is known-good and each rejected one differs from it in exactly one
+# way.
+git cat-file tag v1 > tag-ok.txt
+sed 's/^type commit$/type blob/' tag-ok.txt > tag-badtype.txt
+sed 's/^tag v1$/tag v2/' tag-ok.txt > tag-rename.txt
+grep -v '^tagger ' tag-ok.txt > tag-notagger.txt
+sed 's/^object .*/object 1111111111111111111111111111111111111111/' tag-ok.txt > tag-missing.txt
+sed 's/^object .*/object nothexatall/' tag-ok.txt > tag-badobject.txt
+git cat-file tag blobtag > tag-blob.txt
+{ head -4 tag-ok.txt; } > tag-nomessage.txt
+
+# ---- fast-import input -----------------------------------------------------
+# One stream that uses the commands a real exporter emits: inline blobs, marked
+# blobs, a merge, a delete, a copy, a rename, a lightweight ref reset and an
+# annotated tag.
+cat > import.fi <<'EOF'
+blob
+mark :1
+data 5
+imp1
+
+commit refs/heads/imported
+mark :2
+author T <t@e> 1700001000 +0000
+committer T <t@e> 1700001000 +0000
+data 15
+imported first
+M 100644 :1 i.txt
+M 100755 inline i.sh
+data 10
+#!/bin/sh
+
+commit refs/heads/imported
+mark :3
+author T <t@e> 1700001060 +0000
+committer T <t@e> 1700001060 +0000
+data 16
+imported second
+from :2
+M 100644 inline i.txt
+data 5
+imp2
+C i.txt copy.txt
+D i.sh
+R copy.txt moved.txt
+
+commit refs/heads/imported-side
+mark :4
+author T <t@e> 1700001080 +0000
+committer T <t@e> 1700001080 +0000
+data 14
+imported side
+from :2
+M 100644 inline s.txt
+data 5
+side
+
+commit refs/heads/imported
+mark :5
+author T <t@e> 1700001100 +0000
+committer T <t@e> 1700001100 +0000
+data 15
+imported merge
+from :3
+merge :4
+M 100644 inline s.txt
+data 5
+side
+
+tag imported-tag
+from :5
+tagger T <t@e> 1700001120 +0000
+data 11
+import tag
+
+reset refs/heads/imported-alias
+from :2
+
+EOF
+
+# A stream that grows the existing history instead of starting a new root, so
+# the importer has to resolve a real commit id rather than only its own marks.
+cat > ontop.fi <<'EOF'
+commit refs/heads/ontop
+author T <t@e> 1700002000 +0000
+committer T <t@e> 1700002000 +0000
+data 7
+on top
+from refs/heads/main^0
+M 100644 inline ontop.txt
+data 4
+new
+D added.txt
+
+EOF
+
+# A stream that is malformed in a way the importer must reject: it names a mark
+# that was never set.
+cat > broken.fi <<'EOF'
+commit refs/heads/broken
+committer T <t@e> 1700002000 +0000
+data 4
+bad
+M 100644 :99 missing.txt
+
+EOF
+printf 'this is not a stream\n' > notastream.fi

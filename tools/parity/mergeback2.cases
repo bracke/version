@@ -1,0 +1,29 @@
+# `merge-index` walks the unmerged entries the fixture left in the index and
+# runs a merge program per path; `merge-one-file` is that program, and is also
+# callable directly with the stages spelled out. Both are pure index/worktree
+# operations -- no commit is involved.
+
+# Every unmerged path at once. Without -o the first failure stops the walk.
+merge-index git-merge-one-file -a
+merge-index -o git-merge-one-file -a
+merge-index -o -q git-merge-one-file -a
+# One path at a time, so each stage shape is seen on its own: all three stages
+# and a clean merge, ours-modified/theirs-deleted,
+# ours-deleted/theirs-modified, and a path that is not unmerged at all.
+merge-index git-merge-one-file clean.txt
+merge-index git-merge-one-file modrm.txt
+merge-index git-merge-one-file rmmod.txt
+merge-index git-merge-one-file same.txt
+# Operand errors.
+merge-index git-merge-one-file
+merge-index -a
+
+# merge-one-file, driven directly. Blob ids are content hashes, so they do not
+# move with the fixture's dates; the empty operands mean "missing on that side".
+merge-one-file c01c727651aecbe0985c27dba395dcab3c150d31 ec23fdb1fb27d6f2547324328ef1395e520a6fd8 68b0f3d045d99b7c554d46d79f7e44f23e91ec6d clean.txt 100644 100644 100644
+merge-one-file a52ef2749cf75ef78cc19a23edb04982ec54ab95 e688437143ae6cb11c581086189056c1c2f28f91 2786c78f4dfe06267e37bce1a4c0ea547dfc4029 c.txt 100644 100644 100644
+merge-one-file '' 0b453394eea2a82d237d120d1db8cf220e0214e6 4acc3fe5b237e2f846eb98b1f0b931fa81b815d9 both.txt '' 100644 100644
+merge-one-file 2680cfddbd9fa03c059ac60d2bec5e59a1c34281 a3fe26a10d75c3a690b5e6ac3a1027fd6839add6 '' modrm.txt 100644 100644 ''
+# Same content on both sides, different mode: a permissions conflict.
+merge-one-file c01c727651aecbe0985c27dba395dcab3c150d31 ec23fdb1fb27d6f2547324328ef1395e520a6fd8 68b0f3d045d99b7c554d46d79f7e44f23e91ec6d clean.txt 100644 100644 100755
+merge-one-file

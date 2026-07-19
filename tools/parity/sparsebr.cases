@@ -1,0 +1,71 @@
+# show-branch, stage and sparse-checkout.
+#
+# `stage` is git's own alias for `add`, so the cases here are only the ones
+# that prove the alias reaches the same code, not a second copy of add.cases.
+#
+# Some sparse-checkout cases use the
+#
+#     --version|grep -q '^version' && T=$V || T=git;
+#
+# prefix explained at the top of rebase.cases: it leaves the name of the tool
+# under test in $T so a case can invoke it twice, which is the only way to ask
+# a tool to read back the sparse specification it just wrote. Reading it with
+# plain `git` instead would prove the file is git-shaped but not that the tool
+# can parse its own output.
+
+# --- show-branch -------------------------------------------------------------
+# With no arguments every local branch is a head, and the matrix underneath is
+# the whole point: alpha, beta and gamma forked from three different commits of
+# main, so no two columns agree.
+show-branch
+# Naming two heads restricts both the legend and the matrix to those two.
+show-branch main alpha
+# --list prints only the legend, with no matrix at all.
+show-branch --list
+# --independent drops the heads that are reachable from another head; main is
+# an ancestor of gamma, so it must not survive.
+show-branch --independent main alpha beta gamma
+# A head that does not exist is an error, not an empty matrix.
+show-branch nosuchbranch
+
+# --- stage (git's alias for add) ---------------------------------------------
+# The fixture leaves one modified file, one deleted file and one untracked
+# file, which is exactly the set -A, -u and a pathspec disagree about.
+stage -n .
+stage -A && git update-index -q --refresh; git status --porcelain
+stage -u && git update-index -q --refresh; git status --porcelain
+stage notes.txt && git update-index -q --refresh; git status --porcelain
+
+# --- sparse-checkout ---------------------------------------------------------
+# Listing before anything is sparse is an error rather than empty output.
+sparse-checkout list
+# The fixture's working tree is dirty. git narrows it anyway -- a modified file
+# inside the cone is simply kept -- so this is the one sparse case that is left
+# dirty on purpose; every case below starts by restoring the tree, because a
+# tool that refuses here would otherwise hide every later difference.
+--version|grep -q '^version' && T=$V || T=git; "$T" sparse-checkout set src >/dev/null 2>&1; echo rc=$?; git update-index -q --refresh; git status --porcelain
+# init turns the worktree sparse with only the root level present.
+--version|grep -q '^version' && T=$V || T=git; git checkout -q -- .; rm -f notes.txt; "$T" sparse-checkout init >/dev/null 2>&1; echo rc=$?; "$T" sparse-checkout list; find . -path ./.git -prune -o -type f -print | sort
+# set replaces the specification wholesale; README.md is at the root and must
+# stay regardless, while tools/ must disappear from the working tree.
+--version|grep -q '^version' && T=$V || T=git; git checkout -q -- .; rm -f notes.txt; "$T" sparse-checkout set src >/dev/null 2>&1; echo rc=$?; "$T" sparse-checkout list; find . -path ./.git -prune -o -type f -print | sort
+# add is set's incremental sibling: docs comes back, src stays.
+--version|grep -q '^version' && T=$V || T=git; git checkout -q -- .; rm -f notes.txt; "$T" sparse-checkout set src >/dev/null 2>&1; "$T" sparse-checkout add docs >/dev/null 2>&1; echo rc=$?; "$T" sparse-checkout list; find . -path ./.git -prune -o -type f -print | sort
+# reapply re-runs the current specification over a working tree that has drifted
+# back to full.
+--version|grep -q '^version' && T=$V || T=git; git checkout -q -- .; rm -f notes.txt; "$T" sparse-checkout set src >/dev/null 2>&1; git checkout -q main -- tools; "$T" sparse-checkout reapply >/dev/null 2>&1; echo rc=$?; find . -path ./.git -prune -o -type f -print | sort
+# disable must restore every file and stop the worktree being sparse.
+--version|grep -q '^version' && T=$V || T=git; git checkout -q -- .; rm -f notes.txt; "$T" sparse-checkout set src >/dev/null 2>&1; "$T" sparse-checkout disable >/dev/null 2>&1; echo rc=$?; "$T" sparse-checkout list; find . -path ./.git -prune -o -type f -print | sort
+# --no-cone takes gitignore-style patterns rather than directories, which is a
+# separate matcher: keep everything at the root, exclude docs.
+--version|grep -q '^version' && T=$V || T=git; git checkout -q -- .; rm -f notes.txt; "$T" sparse-checkout set --no-cone '/*' '!/docs/' >/dev/null 2>&1; echo rc=$?; "$T" sparse-checkout list; find . -path ./.git -prune -o -type f -print | sort
+
+# --- refs, repo, backfill ----------------------------------------------------
+# git 2.45 and later have these as real commands, so they can be compared even
+# though `version` reached them by a different route. Only the subcommands both
+# tools implement are probed; `refs migrate` has no second backend to migrate
+# to here, and `backfill` has nothing to fetch outside a partial clone, which
+# is exactly why it is worth checking that it says nothing rather than failing.
+refs list
+repo info --all
+backfill

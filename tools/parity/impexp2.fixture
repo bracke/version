@@ -1,0 +1,45 @@
+# The same repository as impexp.fixture, but left with a failed `git am`
+# in progress.
+#
+# The recovery half of `am` (--abort, --skip, --continue, --quit,
+# --show-current-patch) can only be reached when .git/rebase-apply already
+# exists, and a fixture that is clean at case time can never get there. Real
+# git builds the state here, so the cases additionally check that our
+# implementation can read the on-disk am state git itself writes -- not just
+# state it produced for itself.
+c () { # $1 = message, $2 = seconds past the base date
+  GIT_AUTHOR_DATE="$((1700000000 + $2)) +0000" \
+  GIT_COMMITTER_DATE="$((1700000000 + $2)) +0000" \
+  git commit -qm "$1"
+}
+
+printf 'l1\nl2\nl3\nl4\nl5\n' > a.txt
+printf 'base\n' > b.txt
+git add -A && c "first commit" 0
+
+printf 'l1\nl2 changed\nl3\nl4\nl5\n' > a.txt
+git add a.txt && c "second commit" 60
+
+# Two patches against content main never had: the first cannot apply, so `am`
+# stops on it with the second still queued. That is what makes --skip and
+# --continue different from --abort here.
+git checkout -q -b divergent main^
+printf 'X1\nX2\nX3\nX4\nX5\n' > a.txt
+git add a.txt && c "divergent base" 300
+printf 'X1\nX2\nX3 conflicting\nX4\nX5\n' > a.txt
+git add a.txt && c "divergent one" 360
+printf 'X1\nX2\nX3 conflicting\nX4\nX5\nX6\n' > a.txt
+git add a.txt && c "divergent two" 420
+git format-patch -q --stdout --no-signature -2 divergent > conflict.mbox
+git checkout -q main
+git branch -q -D divergent
+
+# Leave the failure in place. `am` exits non-zero here, so the fixture must
+# not let that abort the rest of it.
+git am conflict.mbox > /dev/null 2>&1 || true
+
+# Stage a resolution of the patch that failed, so --continue has something
+# valid to finish with rather than only ever refusing. --abort, --skip and
+# --quit are unaffected by it: they never look at the staged content.
+printf 'l1\nl2 changed\nl3 conflicting\nl4\nl5\n' > a.txt
+git add a.txt

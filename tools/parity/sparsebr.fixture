@@ -1,0 +1,67 @@
+# A branchy, directory-shaped repository for `show-branch`, `stage` and
+# `sparse-checkout`.
+#
+# Shape:
+#   * three top-level directories (src, docs, tools) plus a nested docs/api,
+#     because a cone-mode sparse-checkout is defined in terms of directories
+#     and a one-directory repository cannot tell "kept" from "everything";
+#   * a file at the root as well, which cone mode always keeps regardless of
+#     what was set, so a tool that drops it is caught;
+#   * three branches forked from three DIFFERENT points of main (alpha from
+#     c1, beta from c2, gamma from c3). show-branch's whole output is the
+#     matrix of which commit is reachable from which head, so branches that
+#     all forked at the same place would make most of the matrix trivial;
+#   * beta and gamma both touch docs/guide.md, so --independent and
+#     --merge-base have a non-degenerate answer;
+#   * a tag on c2, for `show-branch --all`, which lists tags as well as
+#     branches;
+#   * one file left modified-but-unstaged, one deleted-but-not-staged and one
+#     untracked, so `stage` (git's alias for `add`) has all three of the
+#     states -A, -u and a plain pathspec are meant to distinguish.
+#
+# Commit timestamps are pinned and increasing so the fixture is byte-identical
+# in the two clones; show-branch prints subjects, not dates, but the commit
+# ids appear in --sha1-name output.
+c () { # $1 = message, $2 = seconds past the base date
+  GIT_AUTHOR_DATE="$((1700000000 + $2)) +0000" \
+  GIT_COMMITTER_DATE="$((1700000000 + $2)) +0000" \
+  git commit -qm "$1"
+}
+mkdir -p src docs/api tools
+printf 'root\n' > README.md
+printf 'int one(void);\n' > src/one.c
+printf 'int two(void);\n' > src/two.c
+printf '# guide\n' > docs/guide.md
+printf '# api\n' > docs/api/ref.md
+printf 'echo build\n' > tools/build.sh
+git add -A && c "c1 lay out the tree" 10
+printf 'int three(void);\n' > src/three.c
+git add -A && c "c2 add src/three" 20
+git tag v1
+printf '# guide\nmore\n' > docs/guide.md
+git add -A && c "c3 extend the guide" 30
+
+# Forked at c1: knows nothing about src/three.c or the extended guide.
+git checkout -q -b alpha main~2
+printf 'int four(void);\n' > src/four.c
+git add -A && c "a1 alpha adds src/four" 40
+
+# Forked at c2: shares c2 with main but not c3.
+git checkout -q -b beta main~1
+printf '# guide\nbeta\n' > docs/guide.md
+git add -A && c "b1 beta rewrites the guide" 50
+
+# Forked at the tip, so main is an ancestor of gamma and show-branch has one
+# head that is strictly ahead of another.
+git checkout -q -b gamma main
+printf '# guide\nmore\ngamma\n' > docs/guide.md
+git add -A && c "g1 gamma extends the guide again" 60
+printf 'echo test\n' > tools/test.sh
+git add -A && c "g2 gamma adds a tool" 70
+
+git checkout -q main
+
+# The three working-tree states `stage` has to tell apart.
+printf 'int one(void);\nedited\n' > src/one.c
+rm -f docs/api/ref.md
+printf 'scratch\n' > notes.txt

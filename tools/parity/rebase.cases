@@ -1,0 +1,101 @@
+# rebase.
+#
+# Two things make this file look unlike the others.
+#
+# First, `rebase` says almost nothing on stdout -- git writes its progress,
+# its "Successfully rebased" line and its conflict report to stderr -- so a
+# case that only runs the command compares two empty files and proves nothing.
+# Most cases here therefore silence the rebase, print its exit status, and
+# then inspect the repository with plain `git`, which is what actually says
+# whether the right commits ended up in the right order.
+#
+# Second, a rebase that stops on a conflict needs a SECOND invocation of the
+# same tool to continue or abort it, and the harness only ever prefixes the
+# first word of a case line. The leading
+#
+#     --version|grep -q '^version' && T=$V || T=git;
+#
+# asks the tool being tested to identify itself and leaves its name in $T
+# ($V is the version binary, which compare.sh has in scope on both sides), so
+# the rest of the line can invoke it again. It costs one wasted --version per
+# case and buys the whole --continue/--skip/--abort family.
+#
+# Every case that can reach an editor pins GIT_SEQUENCE_EDITOR and GIT_EDITOR
+# to a non-interactive script; a case that opened a terminal would wedge the
+# entire run.
+#
+# `git update-index -q --refresh` before a `git status` is not decoration: a
+# rebase rewrites a file in the same second it writes the index, so the stat
+# data can be racily clean and status is then free to report the file either
+# way. Refreshing first makes the comparison depend on content, which is what
+# these cases are actually about.
+
+# --- what rebase prints ------------------------------------------------------
+# HEAD is on `topic`, forked at c1 and touching only t.txt, so this is the
+# clean path. git's stdout is empty here; anything we print is a divergence.
+rebase main
+# An upstream that is already an ancestor is a no-op, not an error.
+rebase topic
+# A branch that does not exist must fail before touching anything.
+rebase nosuchbranch
+# --stat is the one form that is meant to write to stdout.
+rebase --stat main
+
+# --- the clean rebase, by result ---------------------------------------------
+# The two topic commits must be replayed on top of c3, in order.
+--version|grep -q '^version' && T=$V || T=git; "$T" rebase main >/dev/null 2>&1; echo rc=$?; git log --oneline
+# Rebase preserves the author date and takes a fresh committer date, so a tool
+# that copies both (or neither) shows up here and nowhere else.
+--version|grep -q '^version' && T=$V || T=git; "$T" rebase main >/dev/null 2>&1; git log --format='%s|%ad|%cd' --date=raw
+# An untracked file is not a reason to refuse: git rebases straight past it.
+--version|grep -q '^version' && T=$V || T=git; echo junk > junk.txt; "$T" rebase main >/dev/null 2>&1; echo rc=$?; git log --oneline
+
+# --- conflicts ---------------------------------------------------------------
+# `clash` edits the same line c3 did, so the replay stops with a conflicted
+# index, a marked-up a.txt and a rebase state directory.
+--version|grep -q '^version' && T=$V || T=git; git checkout -q clash; "$T" rebase main >/dev/null 2>&1; echo rc=$?; git update-index -q --refresh; git status --porcelain; cat a.txt
+--version|grep -q '^version' && T=$V || T=git; git checkout -q clash; "$T" rebase main >/dev/null 2>&1; ls .git | grep rebase
+# Resolving and continuing must commit the resolution and finish the rebase.
+--version|grep -q '^version' && T=$V || T=git; git checkout -q clash; "$T" rebase main >/dev/null 2>&1; printf '1\nM\nX\n' > a.txt; git add a.txt; GIT_EDITOR=true "$T" rebase --continue >/dev/null 2>&1; echo rc=$?; git log --oneline; git update-index -q --refresh; git status --porcelain
+# Continuing without resolving is a refusal, and must leave the rebase alone.
+--version|grep -q '^version' && T=$V || T=git; git checkout -q clash; "$T" rebase main >/dev/null 2>&1; GIT_EDITOR=true "$T" rebase --continue >/dev/null 2>&1; echo rc=$?; git update-index -q --refresh; git status --porcelain
+# --skip drops the conflicting commit entirely, leaving main's version.
+--version|grep -q '^version' && T=$V || T=git; git checkout -q clash; "$T" rebase main >/dev/null 2>&1; "$T" rebase --skip >/dev/null 2>&1; echo rc=$?; git log --oneline; cat a.txt
+# --abort must restore the branch and the working tree exactly.
+--version|grep -q '^version' && T=$V || T=git; git checkout -q clash; "$T" rebase main >/dev/null 2>&1; "$T" rebase --abort >/dev/null 2>&1; echo rc=$?; git log --oneline; git update-index -q --refresh; git status --porcelain; cat a.txt
+
+# --- commits that need not be replayed ---------------------------------------
+# dup's first commit is c2 replayed; rebasing onto main must notice the patch
+# is already upstream and keep only d1.
+--version|grep -q '^version' && T=$V || T=git; git checkout -q dup; "$T" rebase main >/dev/null 2>&1; echo rc=$?; git log --oneline
+# An empty commit is dropped by default and kept with --keep-empty.
+--version|grep -q '^version' && T=$V || T=git; git checkout -q empties; "$T" rebase main >/dev/null 2>&1; echo rc=$?; git log --format=%s
+--version|grep -q '^version' && T=$V || T=git; git checkout -q empties; "$T" rebase --keep-empty main >/dev/null 2>&1; echo rc=$?; git log --format=%s
+
+# --- --onto ------------------------------------------------------------------
+# feature forks from base which forks from main, so --onto has to take f1 and
+# nothing else. A plain `rebase main` would take b1 too, which is the bug this
+# case exists to catch.
+--version|grep -q '^version' && T=$V || T=git; "$T" rebase --onto main base feature >/dev/null 2>&1; echo rc=$?; git log --oneline feature
+# --root replays even the first commit of the branch onto a new base.
+--version|grep -q '^version' && T=$V || T=git; "$T" rebase --root --onto main >/dev/null 2>&1; echo rc=$?; git log --oneline
+
+# --- interactive, with a scripted sequence editor ----------------------------
+# An unedited todo list is an ordinary rebase that happens to go through the
+# interactive machinery.
+--version|grep -q '^version' && T=$V || T=git; GIT_SEQUENCE_EDITOR=.git/keep.sh GIT_EDITOR=true "$T" rebase -i main >/dev/null 2>&1; echo rc=$?; git log --oneline
+# Squashing the second todo line into the first leaves one commit.
+--version|grep -q '^version' && T=$V || T=git; git checkout -q squashy; GIT_SEQUENCE_EDITOR=.git/sq.sh GIT_EDITOR=true "$T" rebase -i main >/dev/null 2>&1; echo rc=$?; git log --format=%s
+# `edit` stops the rebase after the first commit with a clean tree, which is a
+# different paused state from the conflicted one above.
+--version|grep -q '^version' && T=$V || T=git; GIT_SEQUENCE_EDITOR=.git/ed.sh GIT_EDITOR=true "$T" rebase -i main >/dev/null 2>&1; echo rc=$?; git log --oneline; git update-index -q --refresh; git status --porcelain
+# Deleting a todo line drops that commit.
+--version|grep -q '^version' && T=$V || T=git; git checkout -q squashy; GIT_SEQUENCE_EDITOR=.git/drop.sh GIT_EDITOR=true "$T" rebase -i main >/dev/null 2>&1; echo rc=$?; git log --format=%s
+# --autosquash reorders the fixup!/squash! commits under s1 without any editing
+# at all, so the todo the editor is handed is already correct.
+--version|grep -q '^version' && T=$V || T=git; git checkout -q squashy; GIT_SEQUENCE_EDITOR=true GIT_EDITOR=true "$T" rebase -i --autosquash main >/dev/null 2>&1; echo rc=$?; git log --format=%s
+# -i with no upstream at all: there is no tracking branch, so this must fail.
+rebase -i
+# --rebase-merges on a linear branch has nothing to preserve, so it must come
+# out the same as a plain rebase.
+--version|grep -q '^version' && T=$V || T=git; GIT_SEQUENCE_EDITOR=true "$T" rebase --rebase-merges main >/dev/null 2>&1; echo rc=$?; git log --oneline

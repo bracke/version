@@ -1,0 +1,83 @@
+# Auxiliary commands. Several neighbours of these are deliberately absent:
+#   --version   prints a tool-specific version string; git's can never match.
+#   man, completion, doctor
+#               are not git commands at all, so there is nothing to compare.
+#   lfs         is git-lfs, a separate third-party program, not git.
+#   http-fetch  needs a network peer, so it cannot be made deterministic here.
+#   help <topic>, help -a, help -g, help -c
+#               print git's own manual pages and command list.
+# Every case pins its own stdin: the harness reads the case file on stdin, so
+# a command that read stdin freely would eat the rest of this file.
+
+# --- fmt-merge-msg ---------------------------------------------------------
+# The description field of a FETCH_HEAD line decides the entire wording.
+fmt-merge-msg < fm-branch.txt
+fmt-merge-msg < fm-tag.txt
+fmt-merge-msg < fm-local.txt
+fmt-merge-msg < fm-head.txt
+fmt-merge-msg < fm-commit.txt
+# Two mergeable heads collapse into one subject naming both.
+fmt-merge-msg < fm-two.txt
+# not-for-merge lines are ignored, so a file of only those yields nothing.
+fmt-merge-msg < fm-nfm.txt
+# No input at all is not an error.
+fmt-merge-msg < fm-empty.txt
+# -F reads the same data from a file instead of stdin.
+fmt-merge-msg -F fm-branch.txt < /dev/null
+fmt-merge-msg -F nosuchfile.txt < /dev/null
+# -m overrides the generated subject.
+fmt-merge-msg -m 'my own subject' < fm-branch.txt
+# --log appends a shortlog of the commits being merged; --no-log suppresses it.
+fmt-merge-msg --log < fm-branch.txt
+fmt-merge-msg --no-log < fm-branch.txt
+
+# --- credential ------------------------------------------------------------
+# fill consults the configured helper and echoes the completed credential.
+printf 'protocol=https\nhost=example.invalid\n\n' | credential fill
+# The url= form is expanded into its component fields first.
+printf 'url=https://example.invalid/repo.git\n\n' | credential fill
+# A username already supplied must be honoured, not replaced.
+printf 'protocol=https\nhost=example.invalid\nusername=u\n\n' | credential fill
+# git refuses to fill a request it cannot key on. (A request for an unknown
+# host is not tested: git would fall back to prompting on the terminal.)
+printf 'protocol=https\n\n' | credential fill
+printf 'host=example.invalid\n\n' | credential fill
+# approve stores a new credential; reject removes an existing one.
+printf 'protocol=https\nhost=new.invalid\nusername=nu\npassword=np\n\n' | credential approve && cat .git/creds
+printf 'protocol=https\nhost=example.invalid\nusername=u\npassword=p\n\n' | credential reject && cat .git/creds
+# An unknown operation is a usage error.
+credential bogus < /dev/null
+
+# --- difftool --------------------------------------------------------------
+# --extcmd with a script that prints only base names and contents is fully
+# deterministic; the temporary directories it is handed are not.
+difftool --no-prompt --extcmd ./tool.sh main topic < /dev/null
+# A pathspec limits which files the tool is invoked for.
+difftool --no-prompt --extcmd ./tool.sh main topic -- f.txt < /dev/null
+# No difference at all means the tool is never run.
+difftool --no-prompt --extcmd ./tool.sh main main < /dev/null
+# A tool name with no configured command is a hard error.
+difftool --no-prompt --tool=nosuchtool main topic < /dev/null
+
+# --- for-each-repo ---------------------------------------------------------
+# The named config key holds the repositories; the arguments after -- are run
+# in each of them.
+for-each-repo --config=parity.repos -- rev-parse --abbrev-ref HEAD < /dev/null
+# An unset key is simply an empty list, not an error.
+for-each-repo --config=nosuch.key -- rev-parse HEAD < /dev/null
+# A failing inner command propagates its failure.
+for-each-repo --config=parity.repos -- nosuchsubcmd < /dev/null
+# The key is mandatory.
+for-each-repo < /dev/null
+
+# --- repo ------------------------------------------------------------------
+repo info object.format < /dev/null
+repo info --keys < /dev/null
+repo info nosuch.key < /dev/null
+repo bogus < /dev/null
+
+# --- help ------------------------------------------------------------------
+# Only the failure paths are comparable: everything else prints git's own
+# manual pages or its own command list.
+help --nosuchopt < /dev/null
+help nosuchcommand < /dev/null

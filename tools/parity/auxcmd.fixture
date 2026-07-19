@@ -1,0 +1,78 @@
+# Fixture for the auxiliary commands: fmt-merge-msg, credential, difftool,
+# for-each-repo, repo and the error paths of help.
+#
+# Everything here is built with real `git`, so the two clones are byte
+# identical and every object id below is the same in both.
+
+git config user.name T
+git config user.email t@e
+
+printf 'a\n' > f.txt
+printf 'one\n' > g.txt
+git add -A && git commit -qm base
+
+# A side branch with two commits, so `fmt-merge-msg --log` has something to
+# summarise and difftool has a real content difference to show.
+git checkout -q -b topic
+printf 'b\n' >> f.txt
+git commit -qam 'topic: first change'
+printf 'c\n' >> f.txt
+git commit -qam 'topic: second change'
+
+# A second side branch, for the multi-head merge message shapes.
+git checkout -q -b other main
+printf 'two\n' >> g.txt
+git commit -qam 'other: a change'
+
+git checkout -q main
+git tag -a v1 -m 'release one' topic
+
+# ---------------------------------------------------------------------------
+# FETCH_HEAD-shaped inputs for fmt-merge-msg. The format is
+#   <sha> TAB <"not-for-merge"|""> TAB <description>
+# and the description decides the whole wording of the message.
+T=$(git rev-parse topic)
+O=$(git rev-parse other)
+V=$(git rev-parse v1^{commit})
+
+printf '%s\t\tbranch '"'"'topic'"'"' of ../src\n' "$T" > fm-branch.txt
+printf '%s\t\ttag '"'"'v1'"'"' of ../src\n' "$V" > fm-tag.txt
+printf '%s\t\tbranch '"'"'topic'"'"' of ../src\n%s\t\tbranch '"'"'other'"'"' of ../src\n' \
+  "$T" "$O" > fm-two.txt
+printf '%s\tnot-for-merge\tbranch '"'"'topic'"'"' of ../src\n' "$T" > fm-nfm.txt
+printf '%s\t\tbranch '"'"'topic'"'"' of ../src\n%s\tnot-for-merge\tbranch '"'"'other'"'"' of ../src\n' \
+  "$T" "$O" > fm-mixed.txt
+# A local branch has no "of <url>" suffix at all.
+printf '%s\t\tbranch '"'"'topic'"'"'\n' "$T" > fm-local.txt
+# Merging the remote's default head is spelled differently again.
+printf '%s\t\tHEAD of ../src\n' "$T" > fm-head.txt
+# A commit fetched by raw object name.
+printf '%s\t\tcommit '"'"'%s'"'"' of ../src\n' "$T" "$T" > fm-commit.txt
+printf '' > fm-empty.txt
+
+# ---------------------------------------------------------------------------
+# A deterministic external diff tool. `--extcmd` is handed two temporary
+# paths whose directories are random, so the script must print only the base
+# names and the contents.
+cat > tool.sh <<'EOF'
+#!/bin/sh
+echo "TOOL $(basename "$1") $(basename "$2")"
+echo "--L--"; cat "$1" 2>/dev/null
+echo "--R--"; cat "$2" 2>/dev/null
+EOF
+chmod +x tool.sh
+
+# ---------------------------------------------------------------------------
+# A credential store inside the repo, so `fill`/`approve`/`reject` are purely
+# local and each case gets a pristine copy of it. A store in $HOME would leak
+# between cases.
+git config credential.helper 'store --file=.git/creds'
+cat > .git/creds <<'EOF'
+https://u:p@example.invalid
+https://other:pw@second.invalid
+EOF
+
+# ---------------------------------------------------------------------------
+# for-each-repo reads a multi-valued config key holding repository paths.
+# $PWD differs between the two clones, but the harness canonicalises it.
+git config --add parity.repos "$PWD"

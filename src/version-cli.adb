@@ -12319,12 +12319,73 @@ package body Version.CLI is
 
                elsif Arg (2) = "add" then
                   declare
-                     Url  : Unbounded_String;
-                     Path : Unbounded_String;
-                     Bad  : Boolean := False;
+                     Url    : Unbounded_String;
+                     Path   : Unbounded_String;
+                     Branch : Unbounded_String;
+                     Name   : Unbounded_String;
+                     Force  : Boolean := False;
+                     Bad    : Boolean := False;
+                     I      : Positive := 3;
+
+                     --  An option value reaches us three ways: "-b main",
+                     --  "-bmain" and "--branch=main". Take_Value accepts all
+                     --  three so each option site does not have to.
+                     --  Into is in out, not out: this is called speculatively
+                     --  on every argument, so a probe that does not match
+                     --  must leave the value an earlier option already stored
+                     --  alone rather than clearing it.
+                     function Take_Value
+                       (Short : String;
+                        Long  : String;
+                        Into  : in out Unbounded_String) return Boolean
+                     is
+                        A : constant String := Arg (I);
+                     begin
+                        if (Short'Length > 0 and then A = Short)
+                          or else A = Long
+                        then
+                           if I = Count then
+                              Usage_Error
+                                ("submodule add: " & A & " needs a value",
+                                 Usage);
+                              Bad := True;
+                              return True;
+                           end if;
+                           I := I + 1;
+                           Into := To_Unbounded_String (Arg (I));
+                           return True;
+                        end if;
+
+                        if Short'Length = 2
+                          and then A'Length > 2
+                          and then A (A'First .. A'First + 1) = Short
+                        then
+                           Into :=
+                             To_Unbounded_String (A (A'First + 2 .. A'Last));
+                           return True;
+                        end if;
+
+                        if A'Length > Long'Length
+                          and then A (A'First .. A'First + Long'Length - 1)
+                                   = Long
+                          and then A (A'First + Long'Length) = '='
+                        then
+                           Into := To_Unbounded_String
+                             (A (A'First + Long'Length + 1 .. A'Last));
+                           return True;
+                        end if;
+
+                        return False;
+                     end Take_Value;
                   begin
-                     for I in 3 .. Count loop
-                        if Arg (I)'Length > 0
+                     while I <= Count loop
+                        if Arg (I) = "-f" or else Arg (I) = "--force" then
+                           Force := True;
+                        elsif Take_Value ("-b", "--branch", Branch) then
+                           exit when Bad;
+                        elsif Take_Value ("", "--name", Name) then
+                           exit when Bad;
+                        elsif Arg (I)'Length > 0
                           and then Arg (I) (Arg (I)'First) = '-'
                         then
                            Usage_Error
@@ -12342,6 +12403,8 @@ package body Version.CLI is
                            Bad := True;
                            exit;
                         end if;
+
+                        I := I + 1;
                      end loop;
 
                      if not Bad then
@@ -12391,16 +12454,46 @@ package body Version.CLI is
                               Repo : constant
                                 Version.Repository.Repository_Handle :=
                                   Version.Repository.Open;
+                              --  An existing repository is adopted rather
+                              --  than cloned, and git narrates the two
+                              --  differently -- and on different streams:
+                              --  the clone on stderr, the adoption on
+                              --  stdout, since adoption is the result.
+                              Adopting : constant Boolean :=
+                                Ada.Directories.Exists
+                                  (Version.Files.To_Native_Path
+                                     (Version.Files.Join
+                                        (Version.Files.Join
+                                           (Version.Repository.Root_Path
+                                              (Repo),
+                                            Target),
+                                         ".git")));
                            begin
-                              --  git narrates the clone on stderr.
-                              Stderr_Line
-                                ("Cloning into '"
-                                 & Version.Files.Join
-                                     (Version.Repository.Root_Path (Repo),
-                                      Target)
-                                 & "'...");
-                              Version.Submodules.Add (Repo, U, Target);
-                              Stderr_Line ("done.");
+                              if Adopting then
+                                 Version.Console.Put
+                                   ("Adding existing repo at '"
+                                    & Target & "' to the index"
+                                    & Character'Val (10));
+                              else
+                                 Stderr_Line
+                                   ("Cloning into '"
+                                    & Version.Files.Join
+                                        (Version.Repository.Root_Path (Repo),
+                                         Target)
+                                    & "'...");
+                              end if;
+
+                              Version.Submodules.Add
+                                (Repo   => Repo,
+                                 Url    => U,
+                                 Path   => Target,
+                                 Branch => To_String (Branch),
+                                 Name   => To_String (Name),
+                                 Force  => Force);
+
+                              if not Adopting then
+                                 Stderr_Line ("done.");
+                              end if;
                            end;
                         end if;
                      end if;

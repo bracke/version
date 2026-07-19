@@ -1,0 +1,128 @@
+# Every case redirects stdin explicitly. The harness feeds this very file to
+# its own loop on stdin, so a command that reads stdin when it was not meant
+# to would swallow the remaining cases and silently truncate the run.
+
+# ---------------------------------------------------------------- mktag --
+# mktag hashes a tag payload read from stdin, so the accepted case must
+# reproduce the very id of the tag real git wrote that payload for.
+mktag < tag-ok.txt
+mktag < tag-blob.txt
+mktag < tag-rename.txt
+mktag < tag-nomessage.txt
+# Each rejection is a separate validation rule with its own code path.
+mktag < tag-badtype.txt
+mktag < tag-notagger.txt
+mktag < tag-missing.txt
+mktag < tag-badobject.txt
+mktag < /dev/null
+mktag < a.txt
+
+# ---------------------------------------------------------- commit-tree --
+# The tree and the dates are pinned, so the printed id is the whole answer.
+commit-tree HEAD^{tree} -m "made by commit-tree" < /dev/null
+commit-tree 831e672a5ff2a5b634d8ff5898476414c6416d6b -m "by raw tree id" < /dev/null
+commit-tree HEAD^{tree} -p HEAD -m "with one parent" < /dev/null
+commit-tree HEAD^{tree} -p HEAD -p HEAD^ -m "with two parents" < /dev/null
+commit-tree HEAD~2^{tree} -m "an older tree" < /dev/null
+# Several -m are joined as paragraphs, not concatenated.
+commit-tree HEAD^{tree} -m first -m second < /dev/null
+commit-tree HEAD^{tree} -m "" -m body < /dev/null
+# The message can come from a file or from stdin instead of from -m.
+commit-tree HEAD^{tree} -F a.txt < /dev/null
+commit-tree HEAD^{tree} < a.txt
+commit-tree HEAD^{tree} < /dev/null
+# The written object has to be readable back and must record the parent.
+commit-tree HEAD^{tree} -p HEAD -m msg < /dev/null && git cat-file commit $(git commit-tree HEAD^{tree} -p HEAD -m msg)
+# Errors: a non-tree argument, an unknown parent, a missing argument.
+commit-tree HEAD -m msg < /dev/null
+commit-tree 1111111111111111111111111111111111111111 -m msg < /dev/null
+commit-tree HEAD^{tree} -p 1111111111111111111111111111111111111111 -m msg < /dev/null
+commit-tree < /dev/null
+
+# ------------------------------------------------------------ diff-pairs --
+# diff-pairs re-renders the raw pairs diff-tree emitted, so its output must
+# equal what diff-tree itself would have produced for the same range.
+diff-pairs -z < pairs.z
+diff-pairs -z --raw < pairs.z
+diff-pairs -z --name-status < pairs.z
+diff-pairs -z --numstat < pairs.z
+diff-pairs -z --stat < pairs.z
+diff-pairs -z --summary < pairs.z
+diff-pairs -z -s < pairs.z
+diff-pairs -z -U0 < pairs.z
+# A rename pair, a multi-commit range and a root pair are three different
+# shapes of input record.
+diff-pairs -z < pairs-rename.z
+diff-pairs -z --summary < pairs-rename.z
+diff-pairs -z < pairs-two.z
+diff-pairs -z < pairs-root.z
+# Malformed and empty input, and the missing -z that diff-pairs insists on.
+diff-pairs -z < /dev/null
+diff-pairs -z < pairs-bad.z
+diff-pairs < pairs.z
+
+# ----------------------------------------------------------- fast-export --
+# The stream is the whole output, so one case covers the blob, commit, tag
+# and reset writers at once.
+fast-export HEAD < /dev/null
+fast-export --all < /dev/null
+fast-export HEAD~2..HEAD < /dev/null
+fast-export v1 < /dev/null
+# The data-suppressing and rename-detecting modes change the stream shape.
+fast-export --no-data HEAD < /dev/null
+fast-export -M HEAD < /dev/null
+# Tag handling has several policies and each writes something different.
+fast-export --signed-tags=strip --all < /dev/null
+fast-export --tag-of-filtered-object=drop --all < /dev/null
+# Marks are how an incremental export is resumed; the file is the answer.
+fast-export --export-marks=marks.out HEAD < /dev/null && sort marks.out
+# Path limiting, original ids, and the error cases.
+fast-export HEAD -- a.txt < /dev/null
+fast-export --show-original-ids HEAD~2 < /dev/null
+fast-export nosuchref < /dev/null
+fast-export < /dev/null
+
+# ----------------------------------------------------------- fast-import --
+# fast-import writes refs and objects but almost nothing to stdout, so each
+# case has real git read back what our importer wrote.
+fast-import --quiet < import.fi && git log --oneline --all
+fast-import --quiet < import.fi && git rev-parse refs/heads/imported refs/heads/imported-alias refs/tags/imported-tag
+fast-import --quiet < import.fi && git ls-tree -r refs/heads/imported
+fast-import --quiet < import.fi && git cat-file commit refs/heads/imported
+fast-import --quiet < import.fi && git cat-file tag refs/tags/imported-tag
+fast-import --quiet < ontop.fi && git log --oneline refs/heads/ontop
+fast-import --quiet < ontop.fi && git ls-tree -r --name-only refs/heads/ontop
+fast-import --quiet --export-marks=im.out < import.fi && sort im.out
+fast-import --dry-run --quiet < import.fi && git rev-parse --verify -q refs/heads/imported
+# A stream that names an undefined mark, and one that is not a stream at all.
+fast-import --quiet < broken.fi
+fast-import --quiet < notastream.fi
+# Exporting what we imported must round-trip back to the same stream.
+fast-import --quiet < import.fi && git fast-export refs/heads/imported
+
+# -------------------------------------------------------------------- am --
+# Each case re-reads the result with real git, because the value of `am` is
+# the commits it creates, not the two lines it prints.
+am patches.mbox < /dev/null
+am patches.mbox < /dev/null && git log --oneline
+am patches.mbox < /dev/null && git log --format='%H %an %ae %at %cn %ce %s'
+am one.mbox < /dev/null && git log --format=%s -1
+am < patches.mbox && git log --oneline
+# Message-shaping flags.
+am -s patches.mbox < /dev/null && git log --format=%B -1
+am -k one.mbox < /dev/null && git log --format=%s -1
+am --committer-date-is-author-date one.mbox < /dev/null && git log --format='%at %ct' -1
+am -q patches.mbox < /dev/null && git log --oneline
+# A mail without a diff, and mailboxes that must be refused.
+am --empty=drop empty.mbox < /dev/null && git log --oneline
+am --empty=keep empty.mbox < /dev/null && git log --oneline
+am empty.mbox < /dev/null
+am notamailbox.txt < /dev/null
+am nosuchfile.mbox < /dev/null
+# The failure path: a patch that cannot apply, with and without the 3-way
+# fallback, and a recovery command with no `am` in progress at all.
+am conflict.mbox < /dev/null
+am conflict.mbox < /dev/null; git status --short
+am -3 conflict.mbox < /dev/null
+am --abort < /dev/null
+am --continue < /dev/null

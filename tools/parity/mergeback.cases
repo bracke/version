@@ -1,0 +1,55 @@
+# The strategy backends behind `git merge -s <strategy>`. They take their
+# operands positionally -- `<base>... -- <head> <remote>...` -- and write the
+# result into the index and worktree without committing, so what is compared
+# here is the narration each one emits and the status it exits with.
+
+# --- merge-recursive: the default strategy, and the only backend that does
+# --- rename detection.
+merge-recursive base -- main side
+merge-recursive base -- main side3
+# Nothing to do: the other side is the base.
+merge-recursive base -- main base
+# -X options, spelled the way the backend takes them (long, not -X).
+merge-recursive --ours base -- main side
+merge-recursive --theirs base -- main side
+merge-recursive --diff-algorithm=histogram base -- main side
+merge-recursive --subtree=sub base -- main side3
+# Operand errors.
+merge-recursive base -- main
+merge-recursive base -- main nosuchbranch
+
+# --- merge-recursive-ours / -theirs: named as if they favoured a side, but
+# --- git implements them as plain recursive -- the suffix is not honoured.
+merge-recursive-ours base -- main side
+merge-recursive-theirs base -- main side
+
+# --- merge-subtree: recursive with the trees shifted into alignment.
+merge-subtree base -- main side
+
+# --- merge-ours: keeps our tree whatever the other side did, and so never
+# --- conflicts, even against a side that rewrote everything.
+merge-ours base -- main side
+
+# --- merge-resolve: a shell script over read-tree and merge-index. No rename
+# --- detection, so side's rename shows up as a case it "does not handle".
+merge-resolve base -- main side
+merge-resolve base -- main side3
+
+# --- merge-octopus: refuses anything with fewer than two remotes, and bails
+# --- out entirely rather than leave a conflicted octopus behind.
+merge-octopus base -- main side2 side3
+merge-octopus base -- main side side2
+merge-octopus base -- main side2
+
+# --- merge-file: a three-way merge of files on disk, with no repository
+# --- involved. m1's edits are far apart and merge; m2's collide.
+merge-file -p m1.our m1.base m1.their
+merge-file -p m2.our m2.base m2.their
+merge-file -p --diff3 m2.our m2.base m2.their
+merge-file -p --union m2.our m2.base m2.their
+merge-file -p -L a -L o -L b m2.our m2.base m2.their
+# No -p: the result is written back over the first file, and only the status
+# says whether it merged.
+merge-file m2.our m2.base m2.their
+merge-file -p --object-id 59ce5b3d9b52bbf39a4165c08f21a0ca007e4561 2348b23667ff551c2f24830978edd2f368e9bc0d 9f4fb32284de34aabc2bf1abd867c5bace6df833
+merge-file -p nosuch.txt m2.base m2.their

@@ -1,0 +1,98 @@
+# A fork-heavy history for `rebase`.
+#
+# Shape:
+#   * a three-commit main (c1..c3) whose last commit edits a.txt, so a branch
+#     that also edits a.txt has a real content conflict rather than a
+#     tree-level one;
+#   * `topic`, forked at c1 and touching only its own file, so the clean
+#     fast-path can be told apart from every failure path;
+#   * `clash`, forked at the same commit but editing a.txt, so a rebase onto
+#     main stops mid-way and leaves a rebase in progress for --continue,
+#     --skip and --abort to act on;
+#   * `dup`, which carries a cherry-pick of a commit that is already on main,
+#     so rebase has to notice the duplicate and drop it instead of replaying
+#     it;
+#   * `empties`, holding a genuinely empty commit, which is the only thing
+#     --keep-empty / --no-empty differ about;
+#   * `squashy`, with a `fixup!` and a `squash!` naming its own first commit,
+#     which is the whole input to --autosquash;
+#   * `base` -> `feature`, a two-level fork so the three-argument
+#     `--onto <newbase> <upstream> <branch>` form has an upstream that is
+#     neither the new base nor the branch. Without that split, --onto is
+#     indistinguishable from a plain rebase.
+#
+# HEAD is left on `topic` so the single-argument form (`rebase main`), which
+# is all `version` accepts, works without a preparatory checkout.
+#
+# Every commit gets its own increasing timestamp seeded from the date the
+# harness pins, so the fixture commit ids are identical in the two clones and
+# the ids rebase prints in its "could not apply" line can be compared.
+c () { # $1 = message, $2 = seconds past the base date
+  GIT_AUTHOR_DATE="$((1700000000 + $2)) +0000" \
+  GIT_COMMITTER_DATE="$((1700000000 + $2)) +0000" \
+  git commit -qm "$1"
+}
+printf '1\n' > a.txt
+git add -A && c "c1 base" 10
+printf 'm\n' > m.txt
+git add -A && c "c2 main adds m" 20
+printf '1\nM\n' > a.txt
+git add -A && c "c3 main edits a" 30
+
+# Clean: touches nothing main touched.
+git checkout -q -b topic main~2
+printf 't1\n' > t.txt
+git add -A && c "t1 topic adds t" 40
+printf 't2\n' >> t.txt
+git add -A && c "t2 topic edits t" 50
+
+# Conflicting: edits the same line of a.txt that c3 edited.
+git checkout -q -b clash main~2
+printf '1\nX\n' > a.txt
+git add -A && c "x1 clash edits a" 60
+
+# Already applied: the first commit here is c2 replayed, so rebasing dup onto
+# main must drop it and keep only d1.
+git checkout -q -b dup main~2
+GIT_AUTHOR_DATE="1700000070 +0000" GIT_COMMITTER_DATE="1700000070 +0000" \
+  git cherry-pick main~1 > /dev/null
+printf 'd\n' > d.txt
+git add -A && c "d1 dup adds d" 80
+
+# An empty commit, plus a non-empty one after it so the branch is not empty
+# as a whole.
+git checkout -q -b empties main~2
+GIT_AUTHOR_DATE="1700000090 +0000" GIT_COMMITTER_DATE="1700000090 +0000" \
+  git commit -q --allow-empty -m "e1 empty"
+printf 'e\n' > e.txt
+git add -A && c "e2 empties adds e" 100
+
+# fixup!/squash! subjects naming s1, which --autosquash reorders.
+git checkout -q -b squashy main~2
+printf 's\n' > s.txt
+git add -A && c "s1 squashy adds s" 110
+printf 's2\n' >> s.txt
+git add -A && c "fixup! s1 squashy adds s" 120
+printf 's3\n' >> s.txt
+git add -A && c "squash! s1 squashy adds s" 130
+
+# Two-level fork for the three-argument --onto form.
+git checkout -q -b base main~2
+printf 'b\n' > b.txt
+git add -A && c "b1 base adds b" 140
+git checkout -q -b feature
+printf 'f\n' > f.txt
+git add -A && c "f1 feature adds f" 150
+
+git checkout -q topic
+
+# Non-interactive sequence editors. They live inside .git/ rather than in the
+# working tree on purpose: they must survive every checkout a rebase performs,
+# which rules out tracking them, and an untracked file in the working tree is
+# itself something rebase has an opinion about -- one case below probes that
+# deliberately, and the rest must not be perturbed by it.
+printf '#!/bin/sh\nexit 0\n' > .git/keep.sh
+printf '#!/bin/sh\nsed -i "2s/^pick/squash/" "$1"\n' > .git/sq.sh
+printf '#!/bin/sh\nsed -i "1s/^pick/edit/" "$1"\n' > .git/ed.sh
+printf '#!/bin/sh\nsed -i "1d" "$1"\n' > .git/drop.sh
+chmod +x .git/keep.sh .git/sq.sh .git/ed.sh .git/drop.sh

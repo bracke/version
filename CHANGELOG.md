@@ -1,3 +1,5 @@
+- Add: `submodule add` accepts `-b/--branch`, `--name` and `-f/--force`, in the attached, glued and `=` forms. The `.gitmodules` section, administrative directory, config keys and checked-out branch now all match git.
+- Fix: `submodule add` on a path that is already a repository adopts it and prints git's `Adding existing repo at '<path>' to the index` on stdout, rather than refusing.
 - Add: `worktree move` and `worktree repair`. Output, `worktree list` and the on-disk `gitdir` pointer all match git, and a worktree moved by either command is usable by real git afterwards.
 - Fix: `repack` and `gc` consolidate the object store rather than adding to it. A repack published its pack beside the existing ones, storing every object twice, so neither command could ever reclaim space. The result now matches git's -- one pack, the same object count -- and `git fsck` reads it clean.
 - Fix: a relative submodule URL now resolves the way git resolves it -- against the base treated as a directory, so `../libfoo.git` under a remote of `https://example.com/group/super.git` is `https://example.com/group/libfoo.git`. It previously landed one directory higher.

@@ -1,0 +1,22 @@
+# A failed `git am` is already in progress; every case starts from that state.
+# See impexp2.fixture. Cases redirect stdin because the harness reads this
+# file on stdin.
+
+# What the in-progress state looks like from the outside.
+status < /dev/null
+status --short < /dev/null
+rev-parse --verify -q HEAD < /dev/null
+am --show-current-patch < /dev/null
+am --show-current-patch=raw < /dev/null
+am --show-current-patch=diff < /dev/null
+# Starting a new am on top of an unfinished one must be refused.
+am conflict.mbox < /dev/null
+# --abort rewinds to where the am started; --quit leaves the tree alone but
+# forgets the am; --skip drops the current patch and moves to the next.
+am --abort < /dev/null && git log --oneline && git status --short
+am --quit < /dev/null && git log --oneline && git status --short
+am --skip < /dev/null && git log --oneline
+am --skip < /dev/null; git status --short
+# --continue with nothing resolved must not invent a commit.
+am --continue < /dev/null
+am --continue < /dev/null; git log --oneline

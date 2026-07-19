@@ -1,0 +1,41 @@
+# Fixture for `merge-index` and `merge-one-file`, which do not merge histories:
+# they merge the stages that are ALREADY in the index. So the fixture leaves
+# the index unmerged, via a three-way `read-tree`, and the cases pick it up
+# from there.
+#
+# The paths cover every stage shape merge-one-file switches on: all three
+# stages present (content merge, clean and conflicting), stage 1 missing
+# (add/add), stage 3 missing (modify/delete), stage 2 missing (delete/modify),
+# and a mode change.
+export EDITOR=true GIT_MERGE_AUTOEDIT=no
+
+printf 'l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\n' > c.txt
+printf 'a1\na2\na3\na4\na5\na6\na7\na8\n' > clean.txt
+printf 'mod\n' > modrm.txt
+printf 'rmmod\n' > rmmod.txt
+printf 'same\n' > same.txt
+printf '#!/bin/sh\necho x\n' > x.sh
+git add -A && git commit -qm base
+git branch base
+
+printf 'l1\nl2\nl3\nl4\nMAIN\nl6\nl7\nl8\n' > c.txt
+printf 'MAIN\na2\na3\na4\na5\na6\na7\na8\n' > clean.txt
+printf 'mod-main\n' > modrm.txt
+rm -f rmmod.txt
+printf 'main adds this\n' > both.txt
+chmod +x x.sh
+git add -A && git commit -qm "main edit"
+
+git checkout -q -b side base
+printf 'l1\nl2\nl3\nl4\nSIDE\nl6\nl7\nl8\n' > c.txt
+printf 'a1\na2\na3\na4\na5\na6\na7\nSIDE\n' > clean.txt
+rm -f modrm.txt
+printf 'rmmod-side\n' > rmmod.txt
+printf 'side adds this\n' > both.txt
+git add -A && git commit -qm "side edit"
+
+git checkout -q main
+# Leave the index unmerged: stages 1/2/3 populated straight from the trees,
+# with no attempt to resolve anything. This is exactly the state `git merge`
+# hands to a merge program.
+git read-tree -m base main side

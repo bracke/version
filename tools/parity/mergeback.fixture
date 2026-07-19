@@ -1,0 +1,69 @@
+# Fixture for the low-level merge STRATEGY backends (merge-recursive and
+# friends), which take trees/commits positionally and act on the index and
+# worktree rather than on a branch.
+#
+# Three heads diverge from one base so an octopus has something to chew on,
+# and the base-to-side edits deliberately cover every class the backends
+# disagree about: a clean same-file merge, a content conflict, an add/add, a
+# modify/delete, a delete/delete and a rename (which `recursive` detects and
+# `resolve` does not).
+#
+# `base`, `side` and `side2` are branches so a case can name them without
+# embedding an object id; HEAD is left on main.
+export EDITOR=true GIT_MERGE_AUTOEDIT=no
+
+printf 'l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\n' > c.txt
+printf 'a1\na2\na3\na4\na5\na6\na7\na8\n' > clean.txt
+printf 'gone\n' > del.txt
+printf 'mod\n' > modrm.txt
+printf 'r1\nr2\nr3\nr4\n' > old.txt
+mkdir -p sub
+printf 's1\ns2\ns3\ns4\ns5\ns6\ns7\ns8\n' > sub/s.txt
+
+# Three standalone files for merge-file, which merges files on disk and never
+# looks at history: m1 merges cleanly (the edits are far apart), m2 cannot
+# (both sides rewrote the same line).
+printf 'm1\nm2\nm3\nm4\nm5\nm6\nm7\nm8\n' > m1.base
+printf 'OUR\nm2\nm3\nm4\nm5\nm6\nm7\nm8\n' > m1.our
+printf 'm1\nm2\nm3\nm4\nm5\nm6\nm7\nTHEIR\n' > m1.their
+printf 'p1\np2\np3\np4\n' > m2.base
+printf 'p1\nOUR\np3\np4\n' > m2.our
+printf 'p1\nTHEIR\np3\np4\n' > m2.their
+
+git add -A && git commit -qm base
+git branch base
+git branch side
+git branch side2
+git branch side3
+
+# main: edits c.txt line 5, the top of clean.txt, deletes del.txt, modifies
+# modrm.txt, edits the file side renames, and adds both.txt.
+printf 'l1\nl2\nl3\nl4\nMAIN\nl6\nl7\nl8\n' > c.txt
+printf 'MAIN\na2\na3\na4\na5\na6\na7\na8\n' > clean.txt
+rm -f del.txt
+printf 'mod-main\n' > modrm.txt
+printf 'r1\nr2\nR3-main\nr4\n' > old.txt
+printf 'main adds this\n' > both.txt
+printf 's1\nS2-main\ns3\ns4\ns5\ns6\ns7\ns8\n' > sub/s.txt
+git add -A && git commit -qm "main edit"
+
+git checkout -q side
+printf 'l1\nl2\nl3\nl4\nSIDE\nl6\nl7\nl8\n' > c.txt
+printf 'a1\na2\na3\na4\na5\na6\na7\nSIDE\n' > clean.txt
+rm -f del.txt modrm.txt
+git mv old.txt new.txt
+printf 'side adds this\n' > both.txt
+git add -A && git commit -qm "side edit"
+
+# side2 and side3 touch only their own files, so an octopus of main+side2+side3
+# is clean while any octopus pulling in `side` is not.
+git checkout -q side2
+printf 'o1\no2\n' > oct.txt
+git add -A && git commit -qm "side2 edit"
+
+git checkout -q side3
+printf 'q1\nq2\n' > oct3.txt
+printf 's1\ns2\ns3\ns4\ns5\ns6\nS7-side3\ns8\n' > sub/s.txt
+git add -A && git commit -qm "side3 edit"
+
+git checkout -q main
