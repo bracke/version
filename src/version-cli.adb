@@ -1246,6 +1246,59 @@ package body Version.CLI is
       return Result;
    end Filter_Commits;
 
+   --  Write the local ref a fetch refspec's destination half names, from the
+   --  id the remote advertises for its source half. Without this the
+   --  destination is silently dropped and the caller is told the fetch
+   --  succeeded.
+   procedure Write_Fetched_Ref
+     (Repo        : Version.Repository.Repository_Handle;
+      Remote_Name : String;
+      Source      : String;
+      Dest        : String)
+   is
+      Full_Dest : constant String :=
+        (if Dest'Length > 5
+           and then Dest (Dest'First .. Dest'First + 4) = "refs/"
+         then Dest else "refs/heads/" & Dest);
+
+      Wanted : constant String :=
+        (if Source'Length > 5
+           and then Source (Source'First .. Source'First + 4) = "refs/"
+         then Source else "refs/heads/" & Source);
+
+      Found : Boolean := False;
+      Id    : Version.Objects.Object_Id_Storage;
+   begin
+      for R of Version.Fetch.List_Remote_Refs (Remote_Name) loop
+         if To_String (R.Name) = Wanted then
+            Id := R.Id;
+            Found := True;
+            exit;
+         end if;
+      end loop;
+
+      if not Found then
+         raise Ada.IO_Exceptions.Data_Error with
+           "couldn't find remote ref " & Source;
+      end if;
+
+      declare
+         Tx : Version.Ref_Transaction.Transaction;
+      begin
+         Version.Ref_Transaction.Start (Tx, Repo);
+         Version.Ref_Transaction.Add_Update
+           (Item         => Tx,
+            Ref_Name     => Full_Dest,
+            New_Id       => Id,
+            Expected_Old => "");
+         Version.Ref_Transaction.Commit (Tx);
+      exception
+         when others =>
+            Version.Ref_Transaction.Cancel (Tx);
+            raise;
+      end;
+   end Write_Fetched_Ref;
+
    procedure Run_Archive_Command is
       Usage           : constant String :=
         "version archive REV [--output PATH] [--format tar|zip] [--prefix PATH] [--] [PATHSPEC...]";
@@ -19369,11 +19422,29 @@ package body Version.CLI is
                      end if;
 
                      if Have_Ref then
-                        --  Explicit `fetch <remote> <ref>`: git reports the
-                        --  FETCH_HEAD form plus opportunistic tracking updates.
-                        Print_Fetch_Head_Summary
-                          (Repo, To_String (Remote_Name),
-                           To_String (Ref_Name), Before);
+                        --  A refspec's destination half is a request to write
+                        --  a local ref, not decoration: `fetch <remote>
+                        --  <src>:<dst>` that reports success without creating
+                        --  <dst> looks exactly like one that worked.
+                        declare
+                           Spec  : constant String := To_String (Ref_Name);
+                           Colon : constant Natural :=
+                             Ada.Strings.Fixed.Index (Spec, ":");
+                           Src   : constant String :=
+                             (if Colon = 0 then Spec
+                              else Spec (Spec'First .. Colon - 1));
+                           Dst   : constant String :=
+                             (if Colon = 0 then ""
+                              else Spec (Colon + 1 .. Spec'Last));
+                        begin
+                           if Dst'Length > 0 then
+                              Write_Fetched_Ref
+                                (Repo, To_String (Remote_Name), Src, Dst);
+                           end if;
+
+                           Print_Fetch_Head_Summary
+                             (Repo, To_String (Remote_Name), Src, Before);
+                        end;
                      else
                         Write_Fetch_Head_All (Repo, To_String (Remote_Name));
                         Print_Fetch_Summary

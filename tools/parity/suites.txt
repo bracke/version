@@ -65,4 +65,4 @@ histtools2.fixture      histtools2.cases      -    14
 histtools3.fixture      histtools3.cases      -     5
 maint.fixture           maint.cases           -    74
 maint2.fixture          maint2.cases          -    12
-transport.fixture       transport.cases       -    82
+transport.fixture       transport.cases       -    80
