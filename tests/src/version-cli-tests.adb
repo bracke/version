@@ -3664,6 +3664,17 @@ package body Version.CLI.Tests is
             Context & " output");
       end Check_Success;
 
+      procedure Check_Silent (Command, Context : String) is
+         Output : Ada.Strings.Unbounded.Unbounded_String;
+         Status : Integer;
+      begin
+         Run_CLI_Capture (Root, Command, Output, Status);
+         Assert (Status = 0, Context & " must succeed");
+         Assert
+           (Ada.Strings.Unbounded.Length (Output) = 0,
+            Context & " must print nothing, as git does");
+      end Check_Silent;
+
       Old_Dir : constant String := Ada.Directories.Current_Directory;
    begin
       Check_Usage_Failure
@@ -3730,13 +3741,12 @@ package body Version.CLI.Tests is
       Commit_File (Root, "a.txt", "one" & Character'Val (10), "base");
 
       Check_Success ("sparse status", "disabled", "sparse status disabled");
-      Check_Success ("sparse init", "initialized sparse checkout", "sparse init");
-      Check_Success ("sparse set a.txt", "updated sparse checkout", "sparse set");
+      Check_Silent ("sparse init", "sparse init");
+      Check_Silent ("sparse set a.txt", "sparse set");
       Check_Success ("sparse list", "a.txt", "sparse list");
-      Check_Success ("sparse add -- --literal", "updated sparse checkout", "sparse add separator");
+      Check_Silent ("sparse add -- --literal", "sparse add separator");
       Check_Success ("sparse status", "enabled", "sparse status enabled");
-      Check_Success
-        ("sparse disable", "disabled sparse checkout", "sparse disable");
+      Check_Silent ("sparse disable", "sparse disable");
 
       Ada.Directories.Set_Directory (Old_Dir);
    exception

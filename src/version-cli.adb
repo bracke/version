@@ -12709,7 +12709,6 @@ package body Version.CLI is
                         Version.Restore.Restore_Working_Tree (Repo);
                         Version.Restore.Apply_Sparse_Skip_Worktree (Repo);
                      end;
-                     Success_Line ("updated sparse checkout");
                   end;
 
                elsif Subcommand = "add" then
@@ -12743,6 +12742,17 @@ package body Version.CLI is
                      begin
                         Require_Born (Repo);
 
+                        --  `add` extends an existing pattern set. With none
+                        --  to extend it would be `set` in disguise, and the
+                        --  materialisation below would strip the worktree
+                        --  down to the added paths -- deleting everything
+                        --  else the caller never mentioned. git refuses.
+                        if not Version.Sparse.Enabled (Repo) then
+                           Stderr_Line ("fatal: no sparse-checkout to add to");
+                           Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                           return;
+                        end if;
+
                         --  git's `add` keeps the repository's current mode
                         --  unless overridden by an explicit --cone/--no-cone.
                         if not Explicit then
@@ -12773,7 +12783,6 @@ package body Version.CLI is
                         Version.Restore.Restore_Working_Tree (Repo);
                         Version.Restore.Apply_Sparse_Skip_Worktree (Repo);
                      end;
-                     Success_Line ("updated sparse checkout");
                   end;
 
                elsif Subcommand = "reapply" then
@@ -12799,7 +12808,6 @@ package body Version.CLI is
                         Version.Restore.Restore_Working_Tree (Repo);
                         Version.Restore.Apply_Sparse_Skip_Worktree (Repo);
                      end;
-                     Success_Line ("updated sparse checkout");
                   end;
 
                elsif Subcommand = "disable" then
@@ -12822,7 +12830,6 @@ package body Version.CLI is
                         Version.Restore.Restore_Working_Tree (Repo);
                         Version.Restore.Clear_Skip_Worktree (Repo);
                      end;
-                     Success_Line ("disabled sparse checkout");
                   end;
 
                elsif Subcommand = "init" then
@@ -12870,7 +12877,6 @@ package body Version.CLI is
                         Version.Restore.Restore_Working_Tree (Repo);
                         Version.Restore.Apply_Sparse_Skip_Worktree (Repo);
                      end;
-                     Success_Line ("initialized sparse checkout");
                   end;
 
                elsif Is_Option (Subcommand) then
@@ -13874,6 +13880,25 @@ package body Version.CLI is
                           and then Ada.Directories.Kind (Src)
                                    = Ada.Directories.Directory;
                      begin
+                        --  git renames a directory with one rename(2), so the
+                        --  new directory appears but its parent must already
+                        --  exist. Replaying that as a file-by-file move would
+                        --  happily create the whole chain, so the check that
+                        --  rename(2) would have made is made here, once, on
+                        --  the destination the caller actually named.
+                        if Src_Is_Dir then
+                           declare
+                              Parent : constant String :=
+                                Ada.Directories.Containing_Directory (Dest);
+                           begin
+                              if not Ada.Directories.Exists (Parent) then
+                                 raise Ada.IO_Exceptions.Data_Error with
+                                   "renaming '" & Src
+                                   & "' failed: No such file or directory";
+                              end if;
+                           end;
+                        end if;
+
                         if Src_Is_Dir then
                            declare
                               Prefix  : constant String := Src & "/";
@@ -13903,7 +13928,8 @@ package body Version.CLI is
                                     Version.Files.Join
                                       (Dest,
                                        P (P'First + Prefix'Length .. P'Last)),
-                                    Force);
+                                    Force,
+                                    Create_Parents => True);
                               end loop;
 
                               --  Drop the emptied source directory tree.
@@ -16700,12 +16726,66 @@ package body Version.CLI is
 
          elsif Command = "write-tree" then
             declare
-               Repo : constant Version.Repository.Repository_Handle :=
+               Usage : constant String :=
+                 "version write-tree [--prefix=PATH] [--missing-ok]";
+               Prefix : Unbounded_String;
+               Repo   : constant Version.Repository.Repository_Handle :=
                  Version.Repository.Open;
             begin
-               Success_Line
-                 (To_String (Version.Write.Write_Tree_From_Index
-                            (Repo, Version.Staging.Load (Repo))));
+               for I in 2 .. Count loop
+                  if Arg (I)'Length > 9
+                    and then Arg (I) (Arg (I)'First .. Arg (I)'First + 8)
+                             = "--prefix="
+                  then
+                     Prefix :=
+                       To_Unbounded_String
+                         (Arg (I) (Arg (I)'First + 9 .. Arg (I)'Last));
+                  elsif Arg (I) = "--missing-ok" then
+                     --  Every object the index names is written by the time
+                     --  we get here, so this is already the behaviour.
+                     null;
+                  else
+                     Usage_Error
+                       ("unknown write-tree option: " & Arg (I), Usage);
+                     return;
+                  end if;
+               end loop;
+
+               declare
+                  Full : constant String :=
+                    To_String (Version.Write.Write_Tree_From_Index
+                                 (Repo, Version.Staging.Load (Repo)));
+               begin
+                  if Length (Prefix) = 0 then
+                     Success_Line (Full);
+                  else
+                     --  git writes the whole index out and then reports the
+                     --  subtree at the prefix, so the objects for the rest of
+                     --  the tree exist either way. A prefix naming nothing is
+                     --  a die(), not the root tree -- which is what version
+                     --  used to print, a plausible but wrong id.
+                     declare
+                        Dir : constant String := To_String (Prefix);
+                        Bare : constant String :=
+                          (if Dir'Length > 0
+                             and then Dir (Dir'Last) = '/'
+                           then Dir (Dir'First .. Dir'Last - 1)
+                           else Dir);
+                     begin
+                        Success_Line
+                          (Version.Objects.To_String
+                             (Version.Revisions.Resolve_Tree
+                                (Repo, Full & ":" & Bare)));
+                     exception
+                        when others =>
+                           Stderr_Line
+                             ("fatal: git-write-tree: prefix "
+                              & Bare & " not found");
+                           Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                           return;
+                     end;
+                  end if;
+               end;
             end;
 
          elsif Command = "commit-tree" then
@@ -20854,22 +20934,30 @@ package body Version.CLI is
                      return;
                   end if;
                   if not Force and then Ada.Directories.Exists (Dest) then
-                     --  git leaves an existing file alone, and says so.
-                     if not Quiet then
-                        Stderr_Line (Path & " already exists, no checkout");
-                     end if;
+                     --  git leaves an existing file alone, silently.
                      return;
                   end if;
                   Version.Files.Create_Directory_If_Missing
                     (Ada.Directories.Containing_Directory (Dest));
-                  Version.Files.Write_Binary_File_Atomic
-                    (Path    => Dest,
-                     Content =>
+
+                  declare
+                     Content : constant String :=
                        Version.Objects.Content
-                         (Version.Objects.Read_Object (Repo, E.Id)));
-                  if To_String (E.Mode) = "100755" then
-                     Version.Files.Set_Executable (Dest, True);
-                  end if;
+                         (Version.Objects.Read_Object (Repo, E.Id));
+                  begin
+                     --  A mode 120000 entry stores its target as the blob
+                     --  content: written as a regular file it silently
+                     --  becomes a file whose text happens to be a path.
+                     if To_String (E.Mode) = "120000" then
+                        Version.Files.Write_Symlink (Dest, Content);
+                     else
+                        Version.Files.Write_Binary_File_Atomic
+                          (Path => Dest, Content => Content);
+                        if To_String (E.Mode) = "100755" then
+                           Version.Files.Set_Executable (Dest, True);
+                        end if;
+                     end if;
+                  end;
                end Write_One;
             begin
                for I in 2 .. Count loop
