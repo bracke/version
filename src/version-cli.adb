@@ -5937,6 +5937,8 @@ package body Version.CLI is
       Keep_CR    : Boolean := False;
       Allow_Bare : Boolean := False;
       Failed     : Boolean := False;
+      Skip_Count : Natural := 0;   --  -f<n>
+      Name_Width : Natural := 4;   --  -d<n>
 
       --  git's is_from_line: "From <who> <hh:mm:ss> <year>", loosely checked.
       function Is_From_Line (Line : String) return Boolean is
@@ -6021,6 +6023,22 @@ package body Version.CLI is
                Keep_CR := True;
             elsif A = "-b" then
                Allow_Bare := True;
+            elsif A'Length > 2 and then A (A'First .. A'First + 1) = "-f" then
+               --  git's -f<n> skips n, so the first file written is n+1.
+               begin
+                  Skip_Count := Natural'Value (A (A'First + 2 .. A'Last));
+               exception
+                  when others =>
+                     null;
+               end;
+            elsif A'Length > 2 and then A (A'First .. A'First + 1) = "-d" then
+               --  git's -d<n> is the zero-padded width of the file names.
+               begin
+                  Name_Width := Natural'Value (A (A'First + 2 .. A'Last));
+               exception
+                  when others =>
+                     null;
+               end;
             elsif A = "-f" or else A = "-d" then
                null;
             elsif A'Length > 0 and then A (A'First) = '-' then
@@ -6037,10 +6055,11 @@ package body Version.CLI is
          --  Write one message, numbered from 1 across every input.
          procedure Emit (Mail : String) is
             N    : constant String :=
-              Ada.Strings.Fixed.Trim (Natural'Image (Written + 1),
-                                      Ada.Strings.Both);
+              Ada.Strings.Fixed.Trim
+                (Natural'Image (Skip_Count + Written + 1),
+                 Ada.Strings.Both);
             Name : constant String :=
-              [1 .. 4 - N'Length => '0'] & N;
+              [1 .. Natural'Max (Name_Width - N'Length, 0) => '0'] & N;
          begin
             Written := Written + 1;
             Version.Files.Write_Binary_File
@@ -6223,13 +6242,16 @@ package body Version.CLI is
    --  stdout, its commit message to <msg>, and the patch to <patch>.
    procedure Run_Mailinfo_Command is
       Files : Version.Trailers.String_Vectors.Vector;
+      Keep  : Boolean := False;
    begin
       for I in 2 .. Count loop
          declare
             A : constant String := Arg (I);
          begin
-            if A'Length > 0 and then A (A'First) = '-' then
-               null;   --  -k, -u, --encoding=..., --scissors: accepted
+            if A = "-k" then
+               Keep := True;
+            elsif A'Length > 0 and then A (A'First) = '-' then
+               null;   --  -u, --encoding=..., --scissors: accepted
             else
                Files.Append (A);
             end if;
@@ -6244,7 +6266,7 @@ package body Version.CLI is
 
       declare
          Mail : constant Version.Mailbox.Message :=
-           Version.Mailbox.Parse (Read_All_Stdin);
+           Version.Mailbox.Parse (Read_All_Stdin, Keep_Subject => Keep);
       begin
          Success_Line ("Author: " & To_String (Mail.Author_Name));
          Success_Line ("Email: " & To_String (Mail.Author_Email));
@@ -21919,8 +21941,29 @@ package body Version.CLI is
             begin
                for I in 2 .. Count loop
                   if Arg (I) = "-s" or else Arg (I) = "--strip-comments" then
+                     --  Removing comments and turning text into comments are
+                     --  opposite requests; git rejects the pair rather than
+                     --  silently honouring whichever came last.
+                     if Version.Stripspace."="
+                          (Kind, Version.Stripspace.Comment_Lines)
+                     then
+                        Usage_Error
+                          ("options '-c' and '-s' cannot be used together",
+                           Usage);
+                        Bad := True;
+                        exit;
+                     end if;
                      Kind := Version.Stripspace.Strip_Comments;
                   elsif Arg (I) = "-c" or else Arg (I) = "--comment-lines" then
+                     if Version.Stripspace."="
+                          (Kind, Version.Stripspace.Strip_Comments)
+                     then
+                        Usage_Error
+                          ("options '-c' and '-s' cannot be used together",
+                           Usage);
+                        Bad := True;
+                        exit;
+                     end if;
                      Kind := Version.Stripspace.Comment_Lines;
                   else
                      Usage_Error

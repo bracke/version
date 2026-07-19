@@ -46,7 +46,7 @@ refs2.fixture           refs2.cases           -     5
 plumbing.fixture        plumbing.cases        -    74
 histinspect.fixture     histinspect.cases     -    88
 histinspect2.fixture    histinspect2.cases    -    50
-configtext.fixture      configtext.cases      -    65
+configtext.fixture      configtext.cases      -    62
 configtext.fixture      configtext2.cases     -    42
 diffplumb.fixture       diffplumb.cases       -   126
 diffplumb2.fixture      diffplumb2.cases      -    40
