@@ -1012,6 +1012,160 @@ package body Version.CLI is
         or else Ends_With (Lower, ".rar");
    end Looks_Like_Unsupported_Archive_Output;
 
+   --  `git config` has two interfaces: the modern subcommands (get/set/list
+   --  ...) and the classic option form that predates them and that virtually
+   --  every script and manual page still uses. A subcommand name never
+   --  contains a dot and never begins with a dash, so the two are told apart
+   --  without ambiguity.
+   function Is_Classic_Config_Invocation return Boolean is
+      A : constant String := Arg (2);
+   begin
+      if A'Length = 0 then
+         return False;
+      elsif A (A'First) = '-' then
+         return True;
+      else
+         return Ada.Strings.Fixed.Index (A, ".") /= 0;
+      end if;
+   end Is_Classic_Config_Invocation;
+
+   procedure Run_Classic_Config_Command is
+      Usage : constant String :=
+        "version config [--get|--unset] NAME [VALUE] | config --list";
+
+      Repo : constant Version.Repository.Repository_Handle :=
+        Version.Repository.Open;
+
+      List_Mode    : Boolean := False;
+      Name_Only    : Boolean := False;
+      Want_Get     : Boolean := False;
+      Want_Unset   : Boolean := False;
+      Remove_Sect  : Boolean := False;
+      As_Bool      : Boolean := False;
+      As_Int       : Boolean := False;
+      Have_Default : Boolean := False;
+      Default_Text : Unbounded_String;
+      Key          : Unbounded_String;
+      Value        : Unbounded_String;
+      Have_Key     : Boolean := False;
+      Have_Value   : Boolean := False;
+      I            : Positive := 2;
+
+      --  git prints a boolean canonically whatever spelling is stored.
+      function Bool_Text (Raw : String) return String is
+         Lower : constant String := Lower_ASCII (Version.Config.Trim (Raw));
+      begin
+         if Lower = "true" or else Lower = "yes" or else Lower = "on"
+           or else Lower = "1"
+         then
+            return "true";
+         else
+            return "false";
+         end if;
+      end Bool_Text;
+
+      function Typed (Raw : String) return String is
+      begin
+         if As_Bool then
+            return Bool_Text (Raw);
+         elsif As_Int then
+            return Ada.Strings.Fixed.Trim
+              (Long_Long_Integer'Image
+                 (Long_Long_Integer'Value (Version.Config.Trim (Raw))),
+               Ada.Strings.Left);
+         else
+            return Raw;
+         end if;
+      end Typed;
+   begin
+      while I <= Count loop
+         declare
+            A : constant String := Arg (I);
+         begin
+            if A = "--list" or else A = "-l" then
+               List_Mode := True;
+            elsif A = "--name-only" then
+               Name_Only := True;
+            elsif A = "--get" then
+               Want_Get := True;
+            elsif A = "--unset" then
+               Want_Unset := True;
+            elsif A = "--remove-section" then
+               Remove_Sect := True;
+            elsif A = "--bool" or else A = "--type=bool" then
+               As_Bool := True;
+            elsif A = "--int" or else A = "--type=int" then
+               As_Int := True;
+            elsif A = "--default" then
+               if I = Count then
+                  Usage_Error ("--default requires a value", Usage);
+                  return;
+               end if;
+               Have_Default := True;
+               Default_Text := To_Unbounded_String (Arg (I + 1));
+               I := I + 1;
+            elsif A'Length > 0 and then A (A'First) = '-' then
+               Usage_Error ("unknown config option: " & A, Usage);
+               return;
+            elsif not Have_Key then
+               Key := To_Unbounded_String (A);
+               Have_Key := True;
+            elsif not Have_Value then
+               Value := To_Unbounded_String (A);
+               Have_Value := True;
+            else
+               Usage_Error ("too many config arguments", Usage);
+               return;
+            end if;
+         end;
+         I := I + 1;
+      end loop;
+
+      if List_Mode then
+         Version.Console.Put
+           (if Name_Only then Version.Config.Keys_Text (Repo)
+            else Version.Config.List_Text (Repo));
+         return;
+      end if;
+
+      if not Have_Key then
+         Usage_Error ("missing config key", Usage);
+         return;
+      end if;
+
+      if Remove_Sect then
+         Version.Config.Remove_Section (Repo, To_String (Key));
+         return;
+      end if;
+
+      if Want_Unset then
+         --  git distinguishes "nothing to unset" (5) from a real failure.
+         if not Version.Config.Has_Key (Repo, To_String (Key)) then
+            Ada.Command_Line.Set_Exit_Status
+              (Ada.Command_Line.Exit_Status (5));
+            return;
+         end if;
+         Version.Config.Unset_Key (Repo, To_String (Key));
+         return;
+      end if;
+
+      if Have_Value and then not Want_Get then
+         Version.Config.Set_Key (Repo, To_String (Key), To_String (Value));
+         return;
+      end if;
+
+      --  A read. An absent key is not an error worth a message: git exits 1
+      --  silently so `if git config x; then` works.
+      if Version.Config.Has_Key (Repo, To_String (Key)) then
+         Success_Line
+           (Typed (Version.Config.Get_Value (Repo, To_String (Key))));
+      elsif Have_Default then
+         Success_Line (Typed (To_String (Default_Text)));
+      else
+         Set_Command_Failure;
+      end if;
+   end Run_Classic_Config_Command;
+
    procedure Run_Archive_Command is
       Usage           : constant String :=
         "version archive REV [--output PATH] [--format tar|zip] [--prefix PATH] [--] [PATHSPEC...]";
@@ -18473,6 +18627,12 @@ package body Version.CLI is
 
             end if;
 
+         elsif Command = "config"
+           and then Count >= 2
+           and then Is_Classic_Config_Invocation
+         then
+            Run_Classic_Config_Command;
+
          elsif Command = "config" then
             declare
                Subcommand : constant String :=
@@ -18601,11 +18761,9 @@ package body Version.CLI is
                      elsif WT then
                         Version.Config.Set_Key_Worktree
                           (Version.Repository.Open, Arg (Base), Arg (Base + 1));
-                        Success_Line ("set config " & Arg (Base));
                      else
                         Version.Config.Set_Key
                           (Version.Repository.Open, Arg (Base), Arg (Base + 1));
-                        Success_Line ("set config " & Arg (Base));
                      end if;
                   end;
 
@@ -18626,11 +18784,9 @@ package body Version.CLI is
                      elsif WT then
                         Version.Config.Unset_Key_Worktree
                           (Version.Repository.Open, Arg (Base));
-                        Success_Line ("unset config " & Arg (Base));
                      else
                         Version.Config.Unset_Key
                           (Version.Repository.Open, Arg (Base));
-                        Success_Line ("unset config " & Arg (Base));
                      end if;
                   exception
                      when Version.Config.Ambiguous_Key =>

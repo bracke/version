@@ -144,7 +144,18 @@ version config get KEY
 version config has KEY
 version config set KEY VALUE
 version config unset KEY
+
+version config NAME                 # classic interface
+version config NAME VALUE
+version config --get NAME
+version config --unset NAME
+version config --list | -l [--name-only]
+version config --remove-section SECTION
 ```
+
+git has two interfaces here: these subcommands, and the classic option form that predates them and that most scripts and manual pages still use. Both are accepted -- a subcommand name never contains a dot and never begins with a dash, so they are told apart without ambiguity. The classic reads honour `--bool`/`--int`/`--type=bool|int` (a boolean prints canonically whatever spelling is stored) and `--default VALUE`, and follow git's exit statuses: reading an absent key exits 1 silently, so `if version config x; then` works, and `--unset` of an absent key exits 5. `set` and `unset` print nothing, as git does.
+
+Not yet implemented on either interface: multi-valued keys (`--get-all`, `--add`, `--replace-all`, `--unset-all`), scope selection (`--global`, `--system`, `--file`), `--get-regexp`, `--show-scope`/`--show-origin`, and `--rename-section`.
 
 Purpose: print local repository config entries in stable `section.key=value` form, print only flattened config keys, print the value for one local config key, quietly test whether a key exists, set one local config key, or remove one local config key. Quoted subsections are rendered as dotted names, for example `remote.origin.url=...` and `branch.main.merge=refs/heads/main`; section and variable names are lower-cased (subsection case preserved) as git canonicalises them. When reading the effective config, `list`/`keys`/`get` read git's full scope stack in order — system (`/etc/gitconfig` or `GIT_CONFIG_SYSTEM`, unless `GIT_CONFIG_NOSYSTEM`), global (`$XDG_CONFIG_HOME/git/config` then `~/.gitconfig`, or `GIT_CONFIG_GLOBAL` replacing both), then the repository's local `.git/config` and per-worktree `config.worktree` — and follow `[include]` and matching `[includeIf "gitdir:...|gitdir/i:...|onbranch:...|hasconfig:remote.*.url:..."]` directives (the include `path` resolves relative to the including file, with `~` expansion; the directive itself stays a readable key such as `include.path`). A single-valued `get` resolves to the last matching value in read order — matching git. The inspection commands are read-only. Config injected via `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_<n>`/`GIT_CONFIG_VALUE_<n>` is not yet consulted. Writes (`set`/`unset`) still target only the local `.git/config`. `version config has KEY` prints nothing, exits successfully when the key exists, and exits with command failure when the key is absent. `version config set KEY VALUE` creates or updates the selected key in local `.git/config` using deterministic rewrite semantics. `version config unset KEY` rewrites the local config without the selected key and preserves unrelated entries.
 

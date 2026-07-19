@@ -3531,6 +3531,17 @@ package body Version.CLI.Tests is
             Context & " output");
       end Check_Success;
 
+      procedure Check_Silent (Command, Context : String) is
+         Output : Ada.Strings.Unbounded.Unbounded_String;
+         Status : Integer;
+      begin
+         Run_CLI_Capture (Root, Command, Output, Status);
+         Assert (Status = 0, Context & " must succeed");
+         Assert
+           (Ada.Strings.Unbounded.Length (Output) = 0,
+            Context & " must print nothing, as git does");
+      end Check_Silent;
+
       procedure Check_Status_Success (Command, Context : String) is
          Output : Ada.Strings.Unbounded.Unbounded_String;
          Status : Integer;
@@ -3546,10 +3557,12 @@ package body Version.CLI.Tests is
          "missing config subcommand",
          "version config <subcommand>",
          "config missing subcommand");
+      --  A leading dash selects git's classic option interface, so the usage
+      --  shown is that one's rather than the subcommand summary.
       Check_Usage_Failure
         ("config --global",
          "unknown config option: --global",
-         "version config <subcommand>",
+         "version config [--get|--unset] NAME [VALUE] | config --list",
          "config unknown top-level option");
       Check_Usage_Failure
         ("config edit",
@@ -3606,10 +3619,7 @@ package body Version.CLI.Tests is
       Configure_User (Root);
       Ada.Directories.Set_Directory (Root);
 
-      Check_Success
-        ("config set core.editor ed",
-         "set config core.editor",
-         "config set");
+      Check_Silent ("config set core.editor ed", "config set");
       Check_Success
         ("config list",
          "core.editor=ed",
@@ -3623,10 +3633,7 @@ package body Version.CLI.Tests is
          "ed",
          "config get");
       Check_Status_Success ("config has core.editor", "config has");
-      Check_Success
-        ("config unset core.editor",
-         "unset config core.editor",
-         "config unset");
+      Check_Silent ("config unset core.editor", "config unset");
 
       Ada.Directories.Set_Directory (Old_Dir);
    exception
