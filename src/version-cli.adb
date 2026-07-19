@@ -1056,12 +1056,23 @@ package body Version.CLI is
       Prefix          : Unbounded_String;
       Format_Text     : Unbounded_String;   --  explicit --format value
       Specs           : Version.Pathspec.Pathspec_Vectors.Vector;
-      I               : Positive := 3;
+      Revision        : Unbounded_String;
+      Revision_Seen   : Boolean := False;
+      I               : Positive := 2;
 
       function Is_Option (Text : String) return Boolean is
       begin
          return Text'Length > 0 and then Text (Text'First) = '-';
       end Is_Option;
+
+      --  git spells every archive option both ways -- "--format tar" and
+      --  "--format=tar" -- and an empty value ("--prefix=") is legal.
+      function Is_Long (Text, Leader : String) return Boolean is
+        (Text'Length >= Leader'Length
+         and then Text (Text'First .. Text'First + Leader'Length - 1) = Leader);
+
+      function Long_Value (Text, Leader : String) return String is
+        (Text (Text'First + Leader'Length .. Text'Last));
 
       --  git tar filter: pipe In_Path through Command's shell to Out_Path.
       procedure Run_Filter (Command, In_Path, Out_Path : String) is
@@ -1111,18 +1122,46 @@ package body Version.CLI is
          if After_Dash_Dash then
             Version.Pathspec.Append_Parse (Specs, Arg (I), Repo_Prefix);
             I := I + 1;
-         elsif Arg (I) = "--output" then
+         elsif Arg (I) = "--output" or else Arg (I) = "-o" then
             if Output_Explicit then
-               Usage_Error ("duplicate option: --output", Usage);
+               Usage_Error ("duplicate option: " & Arg (I), Usage);
                return;
             elsif I = Count then
-               Usage_Error ("--output requires a path", Usage);
+               Usage_Error (Arg (I) & " requires a path", Usage);
                return;
             end if;
 
             Output_Explicit := True;
             Output := To_Unbounded_String (Arg (I + 1));
             I := I + 2;
+         elsif Is_Long (Arg (I), "--output=") then
+            if Output_Explicit then
+               Usage_Error ("duplicate option: --output", Usage);
+               return;
+            end if;
+
+            Output_Explicit := True;
+            Output := To_Unbounded_String (Long_Value (Arg (I), "--output="));
+            I := I + 1;
+         elsif Is_Long (Arg (I), "--format=") then
+            if Format_Explicit then
+               Usage_Error ("duplicate option: --format", Usage);
+               return;
+            end if;
+
+            Format_Explicit := True;
+            Format_Text :=
+              To_Unbounded_String (Long_Value (Arg (I), "--format="));
+            I := I + 1;
+         elsif Is_Long (Arg (I), "--prefix=") then
+            if Prefix_Explicit then
+               Usage_Error ("duplicate option: --prefix", Usage);
+               return;
+            end if;
+
+            Prefix_Explicit := True;
+            Prefix := To_Unbounded_String (Long_Value (Arg (I), "--prefix="));
+            I := I + 1;
          elsif Arg (I) = "--format" then
             if Format_Explicit then
                Usage_Error ("duplicate option: --format", Usage);
@@ -1154,10 +1193,23 @@ package body Version.CLI is
             Usage_Error ("unknown archive option: " & Arg (I), Usage);
             return;
          else
-            Version.Pathspec.Append_Parse (Specs, Arg (I), Repo_Prefix);
+            --  git takes the first non-option operand as the tree-ish and the
+            --  rest as pathspecs, wherever the options fall around them.
+            if Revision_Seen then
+               Version.Pathspec.Append_Parse (Specs, Arg (I), Repo_Prefix);
+            else
+               Revision := To_Unbounded_String (Arg (I));
+               Revision_Seen := True;
+            end if;
+
             I := I + 1;
          end if;
       end loop;
+
+      if not Revision_Seen then
+         Usage_Error ("missing archive revision", Usage);
+         return;
+      end if;
 
       if Length (Output) > 0
         and then Looks_Like_Unsupported_Archive_Output (To_String (Output))
@@ -1198,7 +1250,7 @@ package body Version.CLI is
             begin
                Version.Archive.Create
                  (Repository => Repo,
-                  Revision   => Arg (2),
+                  Revision   => To_String (Revision),
                   Output     => Tar_Temp,
                   Format     => Version.Archive.Tar_Format,
                   Pathspecs  => Specs,
@@ -1243,7 +1295,7 @@ package body Version.CLI is
                   Version.Files.Delete_File_If_Exists (Name (Name'First .. Last));
                   Version.Archive.Create
                     (Repository => Repo,
-                     Revision   => Arg (2),
+                     Revision   => To_String (Revision),
                      Output     => Temp,
                      Format     => Format,
                      Pathspecs  => Specs,
@@ -1257,7 +1309,7 @@ package body Version.CLI is
 
          Version.Archive.Create
            (Repository => Repo,
-            Revision   => Arg (2),
+            Revision   => To_String (Revision),
             Output     => To_String (Output),
             Format     => Format,
             Pathspecs  => Specs,
@@ -14894,7 +14946,13 @@ package body Version.CLI is
                         then Version.Revisions.Resolve_Commit (Repo, Arg (2))
                         else Version.Objects.To_Object_Id
                                (Version.Refs.Current_Commit_Id (Repo)));
-                     File : constant String := (if Two then Arg (3) else Arg (2));
+                     --  blame names its file from the directory it was run
+                     --  in, like every other path operand -- so ".." reaches
+                     --  above it. git reads the magic prefixes literally
+                     --  here, so resolve the path without parsing them.
+                     File : constant String :=
+                       Version.Pathspec.Resolve_Against_Prefix
+                         (Repo_Prefix, (if Two then Arg (3) else Arg (2)));
                      Lines : constant Version.Blame.Blame_Vectors.Vector :=
                        Version.Blame.Blame_File (Repo, Tip, File);
 
@@ -15875,18 +15933,18 @@ package body Version.CLI is
                            declare
                               Shown : constant String := To_String (E.Path);
                            begin
-                           if Name_Only then
-                              Success_Line (Shown);
-                           else
-                              Success_Line
-                                (Mode6 (To_String (E.Mode)) & " "
-                                 & (case E.Kind is
-                                       when Tree_Directory => "tree",
-                                       when Tree_Gitlink   => "commit",
-                                       when Tree_Blob      => "blob")
-                                 & " " & To_String (E.Id)
-                                 & Character'Val (9) & Shown);
-                           end if;
+                              if Name_Only then
+                                 Success_Line (Shown);
+                              else
+                                 Success_Line
+                                   (Mode6 (To_String (E.Mode)) & " "
+                                    & (case E.Kind is
+                                          when Tree_Directory => "tree",
+                                          when Tree_Gitlink   => "commit",
+                                          when Tree_Blob      => "blob")
+                                    & " " & To_String (E.Id)
+                                    & Character'Val (9) & Shown);
+                              end if;
                            end;
                         end if;
                      end loop;

@@ -1,0 +1,15 @@
+# Like prefix.fixture, plus the state the remaining path-taking commands
+# need: an ignore rule to query, a staged change to restore, and a file
+# above the subdirectory to reach back to.
+mkdir -p sub/deep
+printf '*.log\n' > .gitignore
+printf 'r\n' > root.txt
+printf 'n\n' > sub/nested.txt
+printf 'd\n' > sub/deep/deeper.txt
+git add -A && git commit -qm base
+printf 'changed\n' > root.txt
+printf 'changed\n' > sub/nested.txt
+git add sub/nested.txt
+printf 'again\n' >> sub/nested.txt
+printf 'u\n' > sub/untracked.txt
+printf 'l\n' > sub/skip.log

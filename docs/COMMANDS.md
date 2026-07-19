@@ -643,6 +643,8 @@ Common failures: malformed `.gitmodules`, unsafe path, relative URL without a co
 
 Syntax: `version archive REV`, `version archive REV --output PATH`, `version archive REV --format tar|zip`, `version archive REV [--] PATHSPEC...`.
 
+Options may appear before or after `REV`, as in git: `REV` is the first non-option operand and any later operand is a pathspec. `--output` is also spelled `-o`, and `--output`, `--format`, and `--prefix` each accept the `--name=value` form as well as `--name value`.
+
 Purpose: export the tree referenced by `REV` directly from repository objects without reading the working tree, index, sparse checkout materialization, or linked-worktree state.
 
 Default output is `archive.tar`. `--format zip` defaults to `archive.zip`; format names are accepted case-insensitively. The format is inferred from the `--output` suffix when `--format` is omitted (`.zip`→zip, `.tar.gz`/`.tgz`→tar.gz, `.tar.xz`/`.txz`→tar.xz, `.tar.bz2`/`.tbz2`/`.tbz`→tar.bz2). Proprietary container suffixes `.zipx`, `.7z`, and `.rar` are rejected. Unknown `--long-option` values are rejected before `--`; pathspecs that intentionally start with `--` must follow the `--` separator.

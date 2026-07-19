@@ -1,0 +1,21 @@
+# Remaining path-taking commands, run from sub/.
+restore nested.txt
+restore --staged nested.txt
+restore ../root.txt
+checkout HEAD -- nested.txt
+rm nested.txt
+rm -n nested.txt
+stash push -- nested.txt
+stash list
+diff-files
+diff-files nested.txt
+check-ignore skip.log
+check-ignore -v skip.log
+archive --format=tar HEAD -o /dev/null
+ls-tree --name-only HEAD
+ls-tree --name-only -r HEAD
+diff --stat
+diff HEAD
+diff --name-only HEAD
+show --stat HEAD
+blame nested.txt
