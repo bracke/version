@@ -1,0 +1,18 @@
+# Naming a directory needs -r; naming a file does not.
+rm d
+rm -r d
+rm e
+rm e/deep
+rm -r e/deep
+rm d/f1.txt
+rm .
+rm -r .
+# A glob is already an explicit statement of breadth. Quoted, so the
+# pathspec reaches the tool instead of being expanded by the shell.
+rm '*.txt'
+rm 'd/*'
+rm '*'
+rm -n d
+rm -f d
+# Mixed: the directory operand is fatal even beside a valid file operand.
+rm top.txt d

@@ -12923,19 +12923,25 @@ package body Version.CLI is
          elsif Command = "remove" then
             declare
                Usage : constant String :=
-                 "version remove [-f] [--cached] [-n] [--] PATHSPEC...";
+                 "version remove [-f] [--cached] [-n] [-r] [--] PATHSPEC...";
                Force         : Boolean := False;
                Cached_Only   : Boolean := False;
                Dry_Run       : Boolean := False;
+               Recursive     : Boolean := False;
                After_Sep     : Boolean := False;
                Operand_Count : Natural := 0;
                Specs         : Version.Pathspec.Pathspec_Vectors.Vector;
+               --  The operands as typed. git names the pathspec in its
+               --  diagnostics the way the caller wrote it, which is not
+               --  always how it resolves against the run directory.
+               Spec_Text     : Version.Path_Safety.Path_Vector;
             begin
                for I in 2 .. Count loop
                   if After_Sep then
                      Operand_Count := Operand_Count + 1;
                      Version.Pathspec.Append_Parse
                        (Specs, Arg (I), Repo_Prefix);
+                     Spec_Text.Append (Arg (I));
                   elsif Arg (I) = "--" then
                      After_Sep := True;
                   elsif Arg (I) = "-f" or else Arg (I) = "--force" then
@@ -12944,6 +12950,8 @@ package body Version.CLI is
                      Cached_Only := True;
                   elsif Arg (I) = "-n" or else Arg (I) = "--dry-run" then
                      Dry_Run := True;
+                  elsif Arg (I) = "-r" then
+                     Recursive := True;
                   elsif Arg (I) = "-q" or else Arg (I) = "--quiet" then
                      null;
                   elsif Arg (I)'Length > 0
@@ -12955,6 +12963,7 @@ package body Version.CLI is
                      Operand_Count := Operand_Count + 1;
                      Version.Pathspec.Append_Parse
                        (Specs, Arg (I), Repo_Prefix);
+                     Spec_Text.Append (Arg (I));
                   end if;
                end loop;
 
@@ -12973,19 +12982,60 @@ package body Version.CLI is
                   --  one that matches nothing is fatal even when the others
                   --  matched, and nothing is removed. It is a die(), so the
                   --  status is 128 rather than an ordinary command failure.
-                  for S of Specs loop
+                  --  Naming a directory is fatal the same way unless -r was
+                  --  given, so that `rm <dir>` cannot take a subtree with it
+                  --  by accident. Only a literal pathspec counts: a glob is
+                  --  already an explicit statement of breadth, and git lets
+                  --  `rm '*.txt'` sweep subdirectories without -r.
+                  for I in Specs.First_Index .. Specs.Last_Index loop
                      declare
-                        One : Version.Pathspec.Pathspec_Vectors.Vector;
+                        S    : constant Version.Pathspec.Pathspec_Item :=
+                          Specs.Element (I);
+                        Text : constant String := Spec_Text.Element (I);
+                        One  : Version.Pathspec.Pathspec_Vectors.Vector;
                      begin
                         One.Append (S);
-                        if Matching_Candidates (Candidates, One).Is_Empty then
-                           Stderr_Line
-                             ("fatal: pathspec '"
-                              & Version.Pathspec.To_Text (S)
-                              & "' did not match any files");
-                           Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
-                           return;
-                        end if;
+                        declare
+                           Hit : constant Version.Path_Safety.Path_Vector :=
+                             Matching_Candidates (Candidates, One);
+                           Pattern : constant String :=
+                             To_String (S.Pattern);
+
+                           --  Matched below a directory it named, rather than
+                           --  naming a tracked path itself.
+                           function Matched_A_Directory return Boolean is
+                           begin
+                              if not Version.Pathspec."="
+                                       (S.Mode,
+                                        Version.Pathspec.Literal_Mode)
+                              then
+                                 return False;
+                              end if;
+
+                              for P of Hit loop
+                                 if P = Pattern then
+                                    return False;
+                                 end if;
+                              end loop;
+
+                              return True;
+                           end Matched_A_Directory;
+                        begin
+                           if Hit.Is_Empty then
+                              Stderr_Line
+                                ("fatal: pathspec '"
+                                 & Version.Pathspec.To_Text (S)
+                                 & "' did not match any files");
+                              Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                              return;
+                           elsif not Recursive and then Matched_A_Directory then
+                              Stderr_Line
+                                ("fatal: not removing '" & Text
+                                 & "' recursively without -r");
+                              Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                              return;
+                           end if;
+                        end;
                      end;
                   end loop;
 
@@ -15166,109 +15216,183 @@ package body Version.CLI is
                      --  in, like every other path operand -- so ".." reaches
                      --  above it. git reads the magic prefixes literally
                      --  here, so resolve the path without parsing them.
+                     Typed : constant String :=
+                       (if Two then Arg (3) else Arg (2));
                      File : constant String :=
                        Version.Pathspec.Resolve_Against_Prefix
-                         (Repo_Prefix, (if Two then Arg (3) else Arg (2)));
-                     Lines : constant Version.Blame.Blame_Vectors.Vector :=
-                       Version.Blame.Blame_File (Repo, Tip, File);
+                         (Repo_Prefix, Typed);
 
-                     --  Per-commit metadata (author name, iso date, boundary),
-                     --  cached so each distinct commit is read once.
-                     type Meta is record
-                        Hex      : Unbounded_String;
-                        Author   : Unbounded_String;
-                        Date     : Unbounded_String;
-                        Boundary : Boolean := False;
-                     end record;
-                     package Meta_Vectors is new Ada.Containers.Vectors
-                       (Index_Type => Positive, Element_Type => Meta);
-                     Cache : Meta_Vectors.Vector;
-
-                     function Meta_For (Hex : String) return Meta is
+                     --  git blames only a path it tracks. One in the index
+                     --  but not yet in any commit is fine -- every line is
+                     --  simply uncommitted -- but an untracked file is a
+                     --  die(), not a file of uncommitted lines.
+                     function Is_Tracked return Boolean is
                      begin
-                        for M of Cache loop
-                           if To_String (M.Hex) = Hex then
-                              return M;
+                        for P of Index_Candidates loop
+                           if P = File then
+                              return True;
                            end if;
                         end loop;
-                        declare
-                           Obj : constant Version.Objects.Git_Object :=
-                             Version.Objects.Read_Object
-                               (Repo, Version.Objects.To_Object_Id (Hex));
-                           C   : constant String := Version.Objects.Content (Obj);
-                           P   : constant Natural :=
-                             Ada.Strings.Fixed.Index (C, "author ");
-                           EOL : Natural :=
-                             (if P = 0 then 0
-                              else Ada.Strings.Fixed.Index
-                                     (C (P .. C'Last), "" & LF));
-                           Result : Meta;
+
+                        for P of Tree_Candidates (Tip) loop
+                           if P = File then
+                              return True;
+                           end if;
+                        end loop;
+
+                        return False;
+                     end Is_Tracked;
+                  begin
+                     if not Is_Tracked then
+                        Stderr_Line
+                          ("fatal: no such path '" & Typed & "' in HEAD");
+                        Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                        return;
+                     end if;
+
+                     declare
+                        --  Without a revision git blames the file as it stands
+                        --  in the working tree, so lines edited but not yet
+                        --  committed show up as "Not Committed Yet" rather than
+                        --  as whatever HEAD happens to hold. Named a revision,
+                        --  it blames that revision's copy instead.
+                        Working : constant String :=
+                          Version.Files.Join
+                            (Version.Repository.Root_Path (Repo), File);
+                        Use_Working : constant Boolean :=
+                          not Two
+                          and then Version.Files.Is_Ordinary_File (Working);
+                        Lines : constant Version.Blame.Blame_Vectors.Vector :=
+                          (if Use_Working
+                           then Version.Blame.Blame_Working_File
+                                  (Repo, Tip, File,
+                                   Version.Files.Read_Binary_File (Working))
+                           else Version.Blame.Blame_File (Repo, Tip, File));
+
+                        --  Per-commit metadata (author name, iso date, boundary),
+                        --  cached so each distinct commit is read once.
+                        type Meta is record
+                           Hex      : Unbounded_String;
+                           Author   : Unbounded_String;
+                           Date     : Unbounded_String;
+                           Boundary : Boolean := False;
+                        end record;
+                        package Meta_Vectors is new Ada.Containers.Vectors
+                          (Index_Type => Positive, Element_Type => Meta);
+                        Cache : Meta_Vectors.Vector;
+
+                        function Is_Zero (Hex : String) return Boolean is
+                          (for all C of Hex => C = '0');
+
+                        function Meta_For (Hex : String) return Meta is
                         begin
-                           Result.Hex := To_Unbounded_String (Hex);
-                           Result.Boundary :=
-                             Version.Objects.Commit_Parent_Ids (Obj).Is_Empty;
-                           if P /= 0 then
-                              if EOL = 0 then
-                                 EOL := C'Last + 1;
+                           for M of Cache loop
+                              if To_String (M.Hex) = Hex then
+                                 return M;
                               end if;
+                           end loop;
+
+                           --  A line not in any commit: there is no object to
+                           --  read, and git labels it with the current time.
+                           if Is_Zero (Hex) then
                               declare
-                                 Ident : constant String := C (P + 7 .. EOL - 1);
-                                 Lt : constant Natural :=
-                                   Ada.Strings.Fixed.Index (Ident, " <");
-                                 Gt : constant Natural :=
-                                   Ada.Strings.Fixed.Index (Ident, "> ");
+                                 Result : Meta;
                               begin
-                                 Result.Author := To_Unbounded_String
-                                   (if Lt > 0
-                                    then Ident (Ident'First .. Lt - 1)
-                                    else Ident);
-                                 if Gt > 0 then
-                                    Result.Date := To_Unbounded_String
-                                      (Version.Ref_Format.Git_Date
-                                         (Ident (Gt + 2 .. Ident'Last), "iso"));
-                                 end if;
+                                 Result.Hex := To_Unbounded_String (Hex);
+                                 Result.Author :=
+                                   To_Unbounded_String ("Not Committed Yet");
+                                 Result.Date := To_Unbounded_String
+                                   (Version.Ref_Format.Git_Date
+                                      (Ada.Strings.Fixed.Trim
+                                         (Long_Long_Integer'Image
+                                            (Version.Timestamps.Unix_Now),
+                                          Ada.Strings.Left)
+                                       & " " & Version.Timestamps.Local_Zone,
+                                       "iso"));
+                                 Cache.Append (Result);
+                                 return Result;
                               end;
                            end if;
-                           Cache.Append (Result);
-                           return Result;
-                        end;
-                     end Meta_For;
 
-                     Author_W : Natural := 0;
-                     Line_W   : constant Natural := Img (Natural (Lines.Length))'Length;
-                  begin
-                     --  Pass 1: resolve metadata and size the author column.
-                     for L of Lines loop
-                        declare
-                           M : constant Meta := Meta_For (To_String (L.Commit));
-                        begin
-                           Author_W :=
-                             Natural'Max (Author_W, Length (M.Author));
-                        end;
-                     end loop;
-
-                     --  Pass 2: emit git's default annotation format.
-                     declare
-                        N : Natural := 0;
-                     begin
-                        for L of Lines loop
-                           N := N + 1;
                            declare
-                              M   : constant Meta :=
-                                Meta_For (To_String (L.Commit));
-                              Hex : constant String := To_String (L.Commit);
-                              Sha : constant String :=
-                                (if M.Boundary then "^" & Hex (1 .. 7)
-                                 else Hex (1 .. 8));
+                              Obj : constant Version.Objects.Git_Object :=
+                                Version.Objects.Read_Object
+                                  (Repo, Version.Objects.To_Object_Id (Hex));
+                              C   : constant String := Version.Objects.Content (Obj);
+                              P   : constant Natural :=
+                                Ada.Strings.Fixed.Index (C, "author ");
+                              EOL : Natural :=
+                                (if P = 0 then 0
+                                 else Ada.Strings.Fixed.Index
+                                        (C (P .. C'Last), "" & LF));
+                              Result : Meta;
                            begin
-                              Success_Line
-                                (Sha & " ("
-                                 & Pad_Right (To_String (M.Author), Author_W)
-                                 & " " & To_String (M.Date)
-                                 & " " & Pad_Left (Img (N), Line_W)
-                                 & ") " & To_String (L.Text));
+                              Result.Hex := To_Unbounded_String (Hex);
+                              Result.Boundary :=
+                                Version.Objects.Commit_Parent_Ids (Obj).Is_Empty;
+                              if P /= 0 then
+                                 if EOL = 0 then
+                                    EOL := C'Last + 1;
+                                 end if;
+                                 declare
+                                    Ident : constant String := C (P + 7 .. EOL - 1);
+                                    Lt : constant Natural :=
+                                      Ada.Strings.Fixed.Index (Ident, " <");
+                                    Gt : constant Natural :=
+                                      Ada.Strings.Fixed.Index (Ident, "> ");
+                                 begin
+                                    Result.Author := To_Unbounded_String
+                                      (if Lt > 0
+                                       then Ident (Ident'First .. Lt - 1)
+                                       else Ident);
+                                    if Gt > 0 then
+                                       Result.Date := To_Unbounded_String
+                                         (Version.Ref_Format.Git_Date
+                                            (Ident (Gt + 2 .. Ident'Last), "iso"));
+                                    end if;
+                                 end;
+                              end if;
+                              Cache.Append (Result);
+                              return Result;
+                           end;
+                        end Meta_For;
+
+                        Author_W : Natural := 0;
+                        Line_W   : constant Natural := Img (Natural (Lines.Length))'Length;
+                     begin
+                        --  Pass 1: resolve metadata and size the author column.
+                        for L of Lines loop
+                           declare
+                              M : constant Meta := Meta_For (To_String (L.Commit));
+                           begin
+                              Author_W :=
+                                Natural'Max (Author_W, Length (M.Author));
                            end;
                         end loop;
+
+                        --  Pass 2: emit git's default annotation format.
+                        declare
+                           N : Natural := 0;
+                        begin
+                           for L of Lines loop
+                              N := N + 1;
+                              declare
+                                 M   : constant Meta :=
+                                   Meta_For (To_String (L.Commit));
+                                 Hex : constant String := To_String (L.Commit);
+                                 Sha : constant String :=
+                                   (if M.Boundary then "^" & Hex (1 .. 7)
+                                    else Hex (1 .. 8));
+                              begin
+                                 Success_Line
+                                   (Sha & " ("
+                                    & Pad_Right (To_String (M.Author), Author_W)
+                                    & " " & To_String (M.Date)
+                                    & " " & Pad_Left (Img (N), Line_W)
+                                    & ") " & To_String (L.Text));
+                              end;
+                           end loop;
+                        end;
                      end;
                   end;
                end if;

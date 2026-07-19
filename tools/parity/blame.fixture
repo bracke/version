@@ -1,0 +1,10 @@
+# Two commits touching the same file, so lines have distinct origins, plus a
+# working-tree edit on top.
+printf 'alpha\nbeta\n' > f.txt
+printf 'once\n' > g.txt
+git add -A && git commit -qm first
+printf 'alpha\nbeta\ngamma\n' > f.txt
+git add -A && git commit -qm second
+printf 'alpha\nEDITED\ngamma\nAPPENDED\n' > f.txt
+printf 'untracked\n' > u.txt
+printf 'staged\n' > s.txt && git add s.txt

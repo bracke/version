@@ -1,0 +1,13 @@
+# Default blames the working tree, so edited lines are not committed yet.
+blame f.txt
+# A named revision blames that revision's copy instead.
+blame HEAD f.txt
+blame HEAD~1 f.txt
+# An unmodified file reads the same either way.
+blame g.txt
+blame HEAD g.txt
+# In the index but in no commit: every line is simply uncommitted.
+blame s.txt
+# Untracked, or absent entirely: a die(), not a file of uncommitted lines.
+blame u.txt
+blame nosuch.txt

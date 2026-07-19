@@ -189,7 +189,7 @@ Common failures: no match, path outside repository, unsupported file type, spars
 
 ### remove
 
-Syntax: `version remove [-f|--force] [--cached] [-n|--dry-run] [-q|--quiet] [--] PATHSPEC...`.
+Syntax: `version remove [-f|--force] [--cached] [-n|--dry-run] [-r] [-q|--quiet] [--] PATHSPEC...`.
 
 Purpose: remove matching tracked paths from the index and working tree. Reports `rm '<path>'` per path, as `git rm` does.
 
@@ -197,7 +197,7 @@ Example: `version remove obsolete.txt`.
 
 Removal is refused, as git's `check_local_mod` refuses it, for any path whose content the object store could not give back: one with changes staged in the index, one with local modifications, or one whose staged content differs from both the file and HEAD. Every path is classified before any is deleted, so a refusal removes nothing at all. `-f` overrides all three. `--cached` drops the index entry and keeps the working file, so a difference on one side alone is allowed and only the differs-from-both case is still refused. `-n` reports what would be removed and changes nothing.
 
-A pathspec matching no tracked path is fatal (`fatal: pathspec '<text>' did not match any files`, exit 128) even when other pathspecs on the same command line matched.
+A pathspec matching no tracked path is fatal (`fatal: pathspec '<text>' did not match any files`, exit 128) even when other pathspecs on the same command line matched. A **literal** pathspec naming a directory is fatal the same way without `-r` (`fatal: not removing '<text>' recursively without -r`), so `remove <dir>` cannot take a subtree with it by accident; a glob is already an explicit statement of breadth, so `remove '*.txt'` sweeps subdirectories without `-r`, as in git.
 
 Common failures: pathspec matching nothing (exit 128), a path that would lose content (exit 1), unsafe deletion target, repository not open.
 
@@ -383,7 +383,7 @@ Purpose: attach or show a text note on a commit (default HEAD), stored in refs/n
 
 Syntax: `version blame [REV] FILE`.
 
-Purpose: show, for each line of FILE at REV (default HEAD), the abbreviated commit that introduced it. Attribution uses git's **line-tracking** approach: each version of the file is diffed against its first parent (common prefix/suffix plus a longest-common-subsequence match on the middle), unchanged lines are followed up the history, and a line is blamed to the commit that first introduced it at that position — so duplicate and re-added lines are attributed correctly. Merges are followed along the first parent.
+Purpose: show, for each line of FILE, the abbreviated commit that introduced it. Without REV the file is blamed **as it stands in the working tree**, as git does, so a line edited but not yet committed is reported against the all-zero id as `Not Committed Yet` at the current time; naming a REV blames that revision's copy instead. The path must be tracked — one in the index but in no commit yet is fine and simply has no committed lines, while an untracked or absent path is a `die()` (`fatal: no such path '<text>' in HEAD`, exit 128). Attribution uses git's **line-tracking** approach: each version of the file is diffed against its first parent (common prefix/suffix plus a longest-common-subsequence match on the middle), unchanged lines are followed up the history, and a line is blamed to the commit that first introduced it at that position — so duplicate and re-added lines are attributed correctly. Merges are followed along the first parent.
 
 ## Plumbing
 
@@ -483,7 +483,12 @@ Commands not listed above have not been checked from a subdirectory and may stil
 | `rm` | `remove` |
 | `fsck` | `verify` |
 
-These are convenience aliases for the command *name* only. The aliased commands keep this CLI's flags and output, which differ from git's: `stage` and `remove` report what they did where git is silent, `verify` prints an object count, and git-only flags such as `add -A`/`-u`/`-n`, `rm -r`/`--cached`/`-n`, and `commit -a`/`--allow-empty` are not accepted. Do not read `version add` as `git add`.
+These are convenience aliases for the command *name*. How closely the aliased command then matches git varies, so do not assume `version add` behaves as `git add`:
+
+- `remove` **does** match `git rm` — its flags (`-f`, `--cached`, `-n`, `-r`, `-q`), its `rm '<path>'` output, its refusal to delete unrecoverable content, and its exit statuses are git's.
+- `stage` reports `staged X` where `git add` is silent, and does not accept `-A`/`-u`/`-n`.
+- `save` does not accept `commit -a`/`--allow-empty`.
+- `verify` prints an object count where `git fsck` does not.
 
 ## History
 

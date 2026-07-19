@@ -1,0 +1,8 @@
+# A directory with tracked files under it, plus a nested one, so a literal
+# pathspec can name a directory at two depths.
+mkdir -p d e/deep
+printf 'x\n' > d/f1.txt
+printf 'y\n' > d/f2.txt
+printf 'q\n' > e/deep/g.txt
+printf 'z\n' > top.txt
+git add -A && git commit -qm base

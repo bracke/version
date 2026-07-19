@@ -3918,17 +3918,17 @@ package body Version.CLI.Tests is
       Check_Usage_Failure
         ("remove",
          "missing remove pathspec",
-         "version remove [-f] [--cached] [-n] [--] PATHSPEC...",
+         "version remove [-f] [--cached] [-n] [-r] [--] PATHSPEC...",
          "remove missing pathspec");
       Check_Usage_Failure
         ("remove --",
          "missing remove pathspec",
-         "version remove [-f] [--cached] [-n] [--] PATHSPEC...",
+         "version remove [-f] [--cached] [-n] [-r] [--] PATHSPEC...",
          "remove separator only");
       Check_Usage_Failure
         ("remove --definitely-not-supported a.txt",
          "unknown remove option: --definitely-not-supported",
-         "version remove [-f] [--cached] [-n] [--] PATHSPEC...",
+         "version remove [-f] [--cached] [-n] [-r] [--] PATHSPEC...",
          "remove unknown option");
 
       Version.Init.Init (Root);
