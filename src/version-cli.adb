@@ -1299,6 +1299,25 @@ package body Version.CLI is
       end;
    end Write_Fetched_Ref;
 
+   --  git's `worktree add` closes with the commit the new worktree landed on,
+   --  in the same shape as a detaching checkout.
+   procedure Report_Worktree_Head (Rev : String) is
+      Repo : constant Version.Repository.Repository_Handle :=
+        Version.Repository.Open;
+      Id   : constant Version.Objects.Hex_Object_Id :=
+        Version.Revisions.Resolve_Commit (Repo, Rev);
+      Hex  : constant String := Version.Objects.To_String (Id);
+      Obj  : constant Version.Objects.Git_Object :=
+        Version.Objects.Read_Object (Repo, Id);
+   begin
+      Success_Line
+        ("HEAD is now at " & Hex (Hex'First .. Hex'First + 6) & " "
+         & Version.Objects.Commit_Message_First_Line (Obj));
+   exception
+      when others =>
+         null;
+   end Report_Worktree_Head;
+
    procedure Run_Archive_Command is
       Usage           : constant String :=
         "version archive REV [--output PATH] [--format tar|zip] [--prefix PATH] [--] [PATHSPEC...]";
@@ -12294,15 +12313,24 @@ package body Version.CLI is
                         Usage_Error ("missing worktree branch", Add_Usage);
                         return;
                      elsif Detached then
+                        --  git narrates the preparation on stderr and reports
+                        --  the commit landed on, on stdout -- the same split
+                        --  as a detaching checkout.
+                        Stderr_Line
+                          ("Preparing worktree (detached HEAD "
+                           & To_String (Branch_Or_Rev) & ")");
                         Version.Worktrees.Add_Detached
-                          (Path => To_String (Path), Rev => To_String (Branch_Or_Rev));
-                        Success_Line
-                          ("added detached worktree " & To_String (Path));
+                          (Path => To_String (Path),
+                           Rev  => To_String (Branch_Or_Rev));
+                        Report_Worktree_Head (To_String (Branch_Or_Rev));
                      else
+                        Stderr_Line
+                          ("Preparing worktree (checking out '"
+                           & To_String (Branch_Or_Rev) & "')");
                         Version.Worktrees.Add
                           (Path   => To_String (Path),
                            Branch => To_String (Branch_Or_Rev));
-                        Success_Line ("added worktree " & To_String (Path));
+                        Report_Worktree_Head (To_String (Branch_Or_Rev));
                      end if;
                   end;
 
@@ -12314,8 +12342,55 @@ package body Version.CLI is
                      Usage_Error ("too many worktree remove arguments", Usage);
                      return;
                   end if;
+                  --  git removes a worktree silently.
                   Version.Worktrees.Remove (Arg (3));
-                  Success_Line ("removed worktree " & Arg (3));
+
+               elsif Arg (2) = "prune" then
+                  --  Without this a worktree whose directory was deleted
+                  --  could not be reclaimed at all: its admin entry stayed,
+                  --  and with it the claim on the branch it had checked out.
+                  declare
+                     Dry_Run : Boolean := False;
+                     Verbose : Boolean := False;
+                     Bad     : Boolean := False;
+                  begin
+                     for I in 3 .. Count loop
+                        if Arg (I) = "-n" or else Arg (I) = "--dry-run" then
+                           Dry_Run := True;
+                        elsif Arg (I) = "-v" or else Arg (I) = "--verbose" then
+                           Verbose := True;
+                        elsif Arg (I)'Length > 9
+                          and then Arg (I) (Arg (I)'First .. Arg (I)'First + 8)
+                                   = "--expire="
+                        then
+                           --  Age-based expiry needs mtimes to compare; the
+                           --  entries reported here are broken regardless of
+                           --  age, so the flag is accepted and ignored.
+                           null;
+                        else
+                           Usage_Error
+                             ("unknown worktree prune option: " & Arg (I),
+                              Usage);
+                           Bad := True;
+                           exit;
+                        end if;
+                     end loop;
+
+                     if not Bad then
+                        if Dry_Run or else Verbose then
+                           for Item of Version.Worktrees.Prunable loop
+                              Success_Line
+                                ("Removing worktrees/"
+                                 & To_String (Item.Name) & ": "
+                                 & To_String (Item.Reason));
+                           end loop;
+                        end if;
+
+                        if not Dry_Run then
+                           Version.Worktrees.Prune;
+                        end if;
+                     end if;
+                  end;
 
                else
                   Usage_Error

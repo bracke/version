@@ -3319,13 +3319,16 @@ package body Version.CLI.Tests is
       Ada.Directories.Set_Directory (Root);
       Commit_File (Root, "a.txt", "one" & Character'Val (10), "base");
       Version.Branch.Create_Branch ("feature");
+      --  git narrates the preparation on stderr and closes with the commit
+      --  landed on, as a detaching checkout does; it does not announce the
+      --  worktree itself. Run_CLI_Capture folds both streams together.
       Check_Success
         ("worktree add " & Shell_Quote (Normal_Path) & " feature",
-         "added worktree " & Normal_Path,
+         "Preparing worktree (checking out 'feature')",
          "worktree add normal");
       Check_Success
         ("worktree add " & Shell_Quote (Detached_Path) & " --detach HEAD",
-         "added detached worktree " & Detached_Path,
+         "HEAD is now at ",
          "worktree add trailing detach");
       Ada.Directories.Set_Directory (Old_Dir);
    exception
