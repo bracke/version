@@ -41,7 +41,7 @@ output.fixture          output.cases          sub
 
 merge.fixture           merge.cases           -     0
 mergeconflict.fixture   mergeconflict.cases   -     0
-refs.fixture            refs.cases            -   203
+refs.fixture            refs.cases            -   201
 refs2.fixture           refs2.cases           -     7
 plumbing.fixture        plumbing.cases        -    74
 histinspect.fixture     histinspect.cases     -    91
