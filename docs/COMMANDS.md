@@ -386,9 +386,11 @@ Purpose: name REV (default HEAD) relative to the nearest reachable tag — the t
 
 ### notes
 
-Syntax: `version notes add [-f|--force] -m MSG [REV]`, `version notes show [REV]`.
+Syntax: `version notes [--ref=REF] (list [REV] | show [REV] | add [-f|--force] -m MSG [REV] | append -m MSG [REV] | copy [-f] FROM TO | remove [REV] | prune)`.
 
-Purpose: attach or show a text note on a commit (default HEAD), stored in refs/notes/commits. Notes are written flat (one entry per commit id), which git reads. As git does, `add` refuses to replace an existing note unless `-f`/`--force` is given.
+Purpose: attach, show and manage text notes on commits (default HEAD), stored in a notes ref -- `refs/notes/commits` unless `--ref=<name>` selects another, where a bare name means `refs/notes/<name>`. Notes are written flat (one entry per commit id), which git reads.
+
+Bare `notes` lists, as git does. `list` prints `<note-blob> <commit>` per noted commit, or just the blob id for a single revision. `add` refuses to replace an existing note unless `-f`, and reports the overwrite on stderr when it does; `append` joins its message to an existing note with a blank line between, as git joins them; `copy` refuses a destination that already has a note unless `-f`; `remove` reports the absence and exits 1 rather than announcing a removal it did not make; `prune` drops notes whose commit no longer exists. Repeated `-m` are joined by a blank line.
 
 ### blame
 

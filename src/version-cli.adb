@@ -15564,128 +15564,230 @@ package body Version.CLI is
          elsif Command = "notes" then
             declare
                Usage : constant String :=
-                 "version notes add [-f] -m MSG [REV]"
-                 & " | version notes show [REV]";
+                 "version notes [--ref=REF] (list [REV] | show [REV]"
+                 & " | add [-f] -m MSG [REV] | append -m MSG [REV]"
+                 & " | copy [-f] FROM TO | remove [REV] | prune)";
+
+               --  `--ref=<name>` precedes the subcommand, so the operands are
+               --  collected rather than read at fixed positions.
+               Notes_Ref : Unbounded_String :=
+                 To_Unbounded_String (Version.Notes.Default_Ref);
+               Sub       : Unbounded_String;
+               Msg       : Unbounded_String;
+               Has_Msg   : Boolean := False;
+               Force     : Boolean := False;
+               Ops       : Version.Trailers.String_Vectors.Vector;
+               Bad       : Boolean := False;
+               Bad_Text  : Unbounded_String;
+               I         : Positive := 2;
             begin
-               if Count < 2 then
-                  Usage_Error ("notes requires a subcommand", Usage);
-               elsif Arg (2) = "add" then
+               while I <= Count loop
                   declare
-                     Msg      : Unbounded_String;
-                     Has_Msg  : Boolean := False;
-                     Force    : Boolean := False;
-                     Bad_Opt  : Boolean := False;
-                     Bad_Text : Unbounded_String;
-                     Rev_Idx  : Natural := 0;
-                     I        : Positive := 3;
+                     A : constant String := Arg (I);
                   begin
-                     while I <= Count loop
+                     if A'Length > 6
+                       and then A (A'First .. A'First + 5) = "--ref="
+                     then
+                        Notes_Ref := To_Unbounded_String
+                          (A (A'First + 6 .. A'Last));
+                     elsif A = "-m" then
+                        if I = Count then
+                           Bad := True;
+                           Bad_Text := To_Unbounded_String ("-m");
+                           exit;
+                        end if;
+                        --  git joins repeated -m with a blank line.
+                        if Has_Msg then
+                           Append (Msg, Character'Val (10));
+                           Append (Msg, Character'Val (10));
+                        end if;
+                        Append (Msg, Arg (I + 1));
+                        Has_Msg := True;
+                        I := I + 1;
+                     elsif A = "-f" or else A = "--force" then
+                        Force := True;
+                     elsif A'Length >= 1 and then A (A'First) = '-' then
+                        Bad := True;
+                        Bad_Text := To_Unbounded_String (A);
+                        exit;
+                     elsif Sub = Null_Unbounded_String then
+                        Sub := To_Unbounded_String (A);
+                     else
+                        Ops.Append (A);
+                     end if;
+                  end;
+                  I := I + 1;
+               end loop;
+
+               if Bad then
+                  Usage_Error
+                    ("unknown notes argument: " & To_String (Bad_Text), Usage);
+               else
+                  declare
+                     Repo : constant Version.Repository.Repository_Handle :=
+                       Version.Repository.Open;
+                     Ref  : constant String := To_String (Notes_Ref);
+                     Name : constant String := To_String (Sub);
+
+                     function Operand (N : Positive) return String is
+                       (if Natural (Ops.Length) >= N then Ops (N) else "");
+
+                     --  The revision an operand names, defaulting to HEAD --
+                     --  which is what every notes subcommand does when the
+                     --  revision is left out.
+                     function Rev_Or_Head (Text : String)
+                       return Version.Objects.Hex_Object_Id is
+                       (if Text'Length > 0
+                        then Version.Revisions.Resolve_Commit (Repo, Text)
+                        else Version.Objects.To_Object_Id
+                               (Version.Refs.Current_Commit_Id (Repo)));
+                  begin
+                     --  Bare `notes` lists, as git does.
+                     if Name = "" or else Name = "list" then
+                        if Name = "list" and then Operand (1) /= "" then
+                           declare
+                              C : constant Version.Objects.Hex_Object_Id :=
+                                Rev_Or_Head (Operand (1));
+                              Found : Boolean := False;
+                           begin
+                              for E of Version.Notes.List (Repo, Ref) loop
+                                 if To_String (E.Commit)
+                                    = Version.Objects.To_String (C)
+                                 then
+                                    Success_Line (To_String (E.Note_Blob));
+                                    Found := True;
+                                 end if;
+                              end loop;
+                              if not Found then
+                                 Set_Command_Failure;
+                              end if;
+                           end;
+                        else
+                           for E of Version.Notes.List (Repo, Ref) loop
+                              Success_Line
+                                (To_String (E.Note_Blob) & " "
+                                 & To_String (E.Commit));
+                           end loop;
+                        end if;
+
+                     elsif Name = "show" then
                         declare
-                           A : constant String := Arg (I);
+                           C : constant Version.Objects.Hex_Object_Id :=
+                             Rev_Or_Head (Operand (1));
+                           Note : constant String :=
+                             Version.Notes.Show (Repo, C, Ref);
                         begin
-                           if A = "-m" then
-                              if I = Count then
-                                 Bad_Opt := True;
-                                 Bad_Text := To_Unbounded_String ("-m");
-                                 exit;
-                              end if;
-                              --  git joins repeated -m with a blank line,
-                              --  as it does for commit; overwriting kept
-                              --  only the last and silently dropped the
-                              --  rest of the note.
-                              if Has_Msg then
-                                 Append (Msg, Character'Val (10));
-                                 Append (Msg, Character'Val (10));
-                              end if;
-                              Append (Msg, Arg (I + 1));
-                              Has_Msg := True;
-                              I := I + 1;
-                           elsif A = "-f" or else A = "--force" then
-                              Force := True;
-                           elsif A'Length >= 1 and then A (A'First) = '-' then
-                              Bad_Opt := True;
-                              Bad_Text := To_Unbounded_String (A);
-                              exit;
-                           elsif Rev_Idx /= 0 then
-                              Bad_Opt := True;
-                              Bad_Text := To_Unbounded_String (A);
-                              exit;
+                           if Note = "" then
+                              Error_Line
+                                ("no note found for "
+                                 & Version.Objects.To_String (C));
+                              Set_Command_Failure;
                            else
-                              Rev_Idx := I;
+                              --  Emit the blob verbatim, like git. Console.Put
+                              --  avoids GNAT Text_IO's spurious terminator,
+                              --  which doubled the note's own final newline.
+                              Version.Console.Put (Note);
                            end if;
                         end;
-                        I := I + 1;
-                     end loop;
 
-                     if Bad_Opt then
-                        Usage_Error
-                          ("unknown notes argument: " & To_String (Bad_Text),
-                           Usage);
-                     elsif not Has_Msg then
-                        Usage_Error ("notes add requires -m MESSAGE", Usage);
-                     else
-                        declare
-                           Repo : constant
-                             Version.Repository.Repository_Handle :=
-                               Version.Repository.Open;
-                           Commit : constant Version.Objects.Hex_Object_Id :=
-                             (if Rev_Idx /= 0
-                              then Version.Revisions.Resolve_Commit
-                                     (Repo, Arg (Rev_Idx))
-                              else Version.Objects.To_Object_Id (Version.Refs.Current_Commit_Id (Repo)));
-                        begin
-                           --  git refuses to add over an existing note unless
-                           --  -f/--force is given, and announces the clobber
-                           --  on stderr when it is.
+                     elsif Name = "add" then
+                        if not Has_Msg then
+                           Usage_Error ("notes add requires -m", Usage);
+                        else
                            declare
+                              C : constant Version.Objects.Hex_Object_Id :=
+                                Rev_Or_Head (Operand (1));
                               Existing : constant Boolean :=
-                                Version.Notes.Show (Repo, Commit) /= "";
+                                Version.Notes.Has_Note (Repo, C, Ref);
                            begin
                               if Existing and then not Force then
                                  Error_Line
                                    ("Cannot add notes. Found existing notes "
                                     & "for object "
-                                    & Version.Objects.To_String (Commit)
+                                    & Version.Objects.To_String (C)
                                     & ". Use '-f' to overwrite existing notes");
                                  Set_Command_Failure;
                               else
                                  if Existing then
                                     Stderr_Line
                                       ("Overwriting existing notes for object "
-                                       & Version.Objects.To_String (Commit));
+                                       & Version.Objects.To_String (C));
                                  end if;
                                  Version.Notes.Add
-                                   (Repo, Commit, To_String (Msg));
+                                   (Repo, C, To_String (Msg), Ref);
                               end if;
                            end;
+                        end if;
+
+                     elsif Name = "append" then
+                        if not Has_Msg then
+                           Usage_Error ("notes append requires -m", Usage);
+                        else
+                           Version.Notes.Append
+                             (Repo, Rev_Or_Head (Operand (1)),
+                              To_String (Msg), Ref);
+                        end if;
+
+                     elsif Name = "copy" then
+                        if Natural (Ops.Length) < 2 then
+                           Usage_Error ("notes copy requires FROM and TO",
+                                        Usage);
+                        else
+                           declare
+                              Dest : constant Version.Objects.Hex_Object_Id :=
+                                Rev_Or_Head (Operand (2));
+                           begin
+                              if Force
+                                and then Version.Notes.Has_Note
+                                           (Repo, Dest, Ref)
+                              then
+                                 Stderr_Line
+                                   ("Overwriting existing notes for object "
+                                    & Version.Objects.To_String (Dest));
+                              end if;
+
+                              Version.Notes.Copy
+                                (Repo,
+                                 From  => Rev_Or_Head (Operand (1)),
+                                 To    => Dest,
+                                 Force => Force,
+                                 Ref   => Ref);
+                           end;
+                        end if;
+
+                     elsif Name = "remove" then
+                        declare
+                           C : constant Version.Objects.Hex_Object_Id :=
+                             Rev_Or_Head (Operand (1));
+                        begin
+                           --  Announce only what is actually removed: git
+                           --  reports the absence instead, and says nothing
+                           --  about removing.
+                           if not Version.Notes.Has_Note (Repo, C, Ref) then
+                              Stderr_Line
+                                ("Object "
+                                 & (if Operand (1) /= "" then Operand (1)
+                                    else Version.Objects.To_String (C))
+                                 & " has no note");
+                              Set_Command_Failure;
+                           else
+                              --  git names the object as the caller wrote it.
+                              Stderr_Line
+                                ("Removing note for object "
+                                 & (if Operand (1) /= "" then Operand (1)
+                                    else Version.Objects.To_String (C)));
+                              Version.Notes.Remove (Repo, C, Ref);
+                           end if;
                         end;
-                     end if;
-                  end;
-               elsif Arg (2) = "show" then
-                  declare
-                     Repo : constant Version.Repository.Repository_Handle :=
-                       Version.Repository.Open;
-                     Commit : constant Version.Objects.Hex_Object_Id :=
-                       (if Count >= 3
-                        then Version.Revisions.Resolve_Commit (Repo, Arg (3))
-                        else Version.Objects.To_Object_Id (Version.Refs.Current_Commit_Id (Repo)));
-                     Note : constant String :=
-                       Version.Notes.Show (Repo, Commit);
-                  begin
-                     if Note = "" then
-                        Error_Line ("no note found for " & To_String (Commit));
-                        Set_Command_Failure;
+
+                     elsif Name = "prune" then
+                        Version.Notes.Prune (Repo, Ref);
+
                      else
-                        --  Emit the note blob verbatim, like git (which cats
-                        --  the note object). Version.Console.Put avoids GNAT
-                        --  Text_IO's spurious trailing terminator, which was
-                        --  doubling the note's own final newline.
-                        Version.Console.Put (Note);
+                        Usage_Error
+                          ("unknown notes subcommand: " & Name, Usage);
                      end if;
                   end;
-               else
-                  Usage_Error
-                    ("unknown notes subcommand: " & Arg (2), Usage);
                end if;
             end;
 

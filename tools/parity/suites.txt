@@ -50,7 +50,7 @@ configtext.fixture      configtext.cases      -    62
 configtext.fixture      configtext2.cases     -    42
 diffplumb.fixture       diffplumb.cases       -   126
 diffplumb2.fixture      diffplumb2.cases      -    40
-wtmutate.fixture        wtmutate.cases        -    37
+wtmutate.fixture        wtmutate.cases        -    31
 wtmutate2.fixture       wtmutate2.cases       -    20
 wtmutate3.fixture       wtmutate3.cases       -    15
 
@@ -60,7 +60,7 @@ wtmutate3.fixture       wtmutate3.cases       -    15
 multirepo.fixture       multirepo.cases       -    54
 multirepo2.fixture      multirepo2.cases      -    63
 multirepo3.fixture      multirepo3.cases      -    25
-histtools.fixture       histtools.cases       -    58
+histtools.fixture       histtools.cases       -    39
 histtools2.fixture      histtools2.cases      -    14
 histtools3.fixture      histtools3.cases      -     5
 maint.fixture           maint.cases           -    74
