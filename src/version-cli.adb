@@ -14273,6 +14273,8 @@ package body Version.CLI is
                      Opts.Update_Index := True;
                   elsif Arg (I) = "--cached" then
                      Opts.Cached := True;
+                  elsif Arg (I) = "--allow-empty" then
+                     Opts.Allow_Empty := True;
                   elsif Arg (I)'Length >= 2
                     and then Arg (I) (Arg (I)'First .. Arg (I)'First + 1) = "-p"
                   then
