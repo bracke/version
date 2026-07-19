@@ -4469,6 +4469,7 @@ package body Version.CLI is
         Version.Repository.Open;
 
       Force    : Boolean := False;
+      Dry_Run  : Boolean := False;
       Source   : Unbounded_String;
       Refspecs : Version.Trailers.String_Vectors.Vector;
    begin
@@ -4478,6 +4479,10 @@ package body Version.CLI is
          begin
             if A = "--force" or else A = "-f" then
                Force := True;
+            elsif A = "--dry-run" or else A = "-n" then
+               --  Swallowed by the catch-all below until now, so a dry run
+               --  reported what it would do and then did it -- to a remote.
+               Dry_Run := True;
             elsif A'Length > 0 and then A (A'First) = '-' then
                null;
             elsif Source = "" then
@@ -4537,11 +4542,13 @@ package body Version.CLI is
                end if;
             end loop;
 
-            Version.Push.Push_Refspec_To
-              (Repository => To_String (Source),
-               Source     => Src,
-               Dest_Ref   => Full_Dst,
-               Force      => Force or else Plus);
+            if not Dry_Run then
+               Version.Push.Push_Refspec_To
+                 (Repository => To_String (Source),
+                  Source     => Src,
+                  Dest_Ref   => Full_Dst,
+                  Force      => Force or else Plus);
+            end if;
 
             declare
                After : constant Version.Objects.Hex_Object_Id :=
