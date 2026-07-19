@@ -1031,6 +1031,9 @@ package body Version.CLI is
             else
                Success_Line ("branch refs/heads/" & To_String (It.Branch));
             end if;
+            if It.Locked then
+               Success_Line ("locked");
+            end if;
             Success_Line ("");
          end loop;
          return;
@@ -1049,7 +1052,8 @@ package body Version.CLI is
             Success_Line
               (Path & Pad & " " & Abbrev (To_String (It.Head)) & " "
                & (if It.Detached then "(detached HEAD)"
-                  else "[" & To_String (It.Branch) & "]"));
+                  else "[" & To_String (It.Branch) & "]")
+               & (if It.Locked then " locked" else ""));
          end;
       end loop;
    end Print_Worktree_List;
@@ -12425,6 +12429,50 @@ package body Version.CLI is
                   end if;
                   --  git removes a worktree silently.
                   Version.Worktrees.Remove (Arg (3));
+
+               elsif Arg (2) = "lock" or else Arg (2) = "unlock" then
+                  declare
+                     Reason  : Unbounded_String;
+                     Target  : Unbounded_String;
+                     Bad     : Boolean := False;
+                  begin
+                     for I in 3 .. Count loop
+                        if Arg (I)'Length > 9
+                          and then Arg (I) (Arg (I)'First .. Arg (I)'First + 8)
+                                   = "--reason="
+                        then
+                           Reason := To_Unbounded_String
+                             (Arg (I) (Arg (I)'First + 9 .. Arg (I)'Last));
+                        elsif Arg (I)'Length > 0
+                          and then Arg (I) (Arg (I)'First) = '-'
+                        then
+                           Usage_Error
+                             ("unknown worktree " & Arg (2) & " option: "
+                              & Arg (I), Usage);
+                           Bad := True;
+                           exit;
+                        elsif Length (Target) = 0 then
+                           Target := To_Unbounded_String (Arg (I));
+                        else
+                           Usage_Error
+                             ("too many worktree " & Arg (2) & " arguments",
+                              Usage);
+                           Bad := True;
+                           exit;
+                        end if;
+                     end loop;
+
+                     if not Bad then
+                        if Length (Target) = 0 then
+                           Usage_Error ("missing worktree path", Usage);
+                        elsif Arg (2) = "lock" then
+                           Version.Worktrees.Lock
+                             (To_String (Target), To_String (Reason));
+                        else
+                           Version.Worktrees.Unlock (To_String (Target));
+                        end if;
+                     end if;
+                  end;
 
                elsif Arg (2) = "prune" then
                   --  Without this a worktree whose directory was deleted
