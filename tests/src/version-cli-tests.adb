@@ -1887,7 +1887,7 @@ package body Version.CLI.Tests is
       Log_Usage : constant String :=
         "version log [--oneline] [--stat] [--show-signature]"
         & " [--format=<fmt>] [-<n>|-n <count>|--max-count=<n>] [REV]";
-      Show_Usage : constant String := "version show [--stat] [REV]";
+      Show_Usage : constant String := "version show [--stat] [-s] [--oneline] [--format=<fmt>] [REV]";
       History_Usage : constant String := "version history";
 
       procedure Check_Usage_Failure

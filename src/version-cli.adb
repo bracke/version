@@ -8715,6 +8715,9 @@ package body Version.CLI is
                Operands   : Version.Rev_Args.String_Vectors.Vector;
                Only_Paths : Boolean := False;
                Topo_Order : Boolean := False;
+               Seed_All   : Boolean := False;
+               Seed_Heads : Boolean := False;
+               Seed_Tags  : Boolean := False;
 
                function Starts (S, P : String) return Boolean is
                  (S'Length >= P'Length
@@ -8824,6 +8827,16 @@ package body Version.CLI is
                      Max_Count :=
                        Natural'Value
                          (Arg (I) (Arg (I)'First + 1 .. Arg (I)'Last));
+                  elsif Arg (I) = "--all" then
+                     --  Same ref seeding as rev-list: `log --oneline --all`
+                     --  is the everyday spelling and simply failed.
+                     Seed_All := True;
+                  elsif Arg (I) = "--branches" then
+                     Seed_Heads := True;
+                  elsif Arg (I) = "--tags" then
+                     Seed_Tags := True;
+                  elsif Arg (I) = "-s" or else Arg (I) = "--no-patch" then
+                     Patch := False;
                   elsif Arg (I)'Length > 0
                     and then Arg (I) (Arg (I)'First) = '-'
                   then
@@ -8855,6 +8868,28 @@ package body Version.CLI is
                      Include   : Version.History.Commit_Id_Vectors.Vector :=
                        Parsed.Include;
                   begin
+                     if Seed_All then
+                        for Tip of Version.Rev_Args.Ref_Tips (Repo) loop
+                           Include.Append (Tip);
+                        end loop;
+                     end if;
+
+                     if Seed_Heads then
+                        for Tip of Version.Rev_Args.Ref_Tips
+                          (Repo, "refs/heads/")
+                        loop
+                           Include.Append (Tip);
+                        end loop;
+                     end if;
+
+                     if Seed_Tags then
+                        for Tip of Version.Rev_Args.Ref_Tips
+                          (Repo, "refs/tags/")
+                        loop
+                           Include.Append (Tip);
+                        end loop;
+                     end if;
+
                      --  Bare `log` starts at HEAD.
                      if Include.Is_Empty then
                         Include.Append
@@ -8924,8 +8959,13 @@ package body Version.CLI is
 
          elsif Command = "show" then
             declare
-               Usage    : constant String := "version show [--stat] [REV]";
+               Usage    : constant String :=
+                 "version show [--stat] [-s] [--oneline] [--format=<fmt>]"
+                 & " [REV]";
                Stat     : Boolean := False;
+               No_Patch : Boolean := False;
+               Oneline  : Boolean := False;
+               Fmt      : Unbounded_String;
                Rev      : Unbounded_String := To_Unbounded_String ("HEAD");
                Have_Rev : Boolean := False;
                Bad      : Boolean := False;
@@ -8933,6 +8973,16 @@ package body Version.CLI is
                for I in 2 .. Count loop
                   if Arg (I) = "--stat" then
                      Stat := True;
+                  elsif Arg (I) = "-s" or else Arg (I) = "--no-patch" then
+                     No_Patch := True;
+                  elsif Arg (I) = "--oneline" then
+                     Oneline := True;
+                  elsif Arg (I)'Length > 9
+                    and then Arg (I) (Arg (I)'First .. Arg (I)'First + 8)
+                             = "--format="
+                  then
+                     Fmt := To_Unbounded_String
+                       (Arg (I) (Arg (I)'First + 9 .. Arg (I)'Last));
                   elsif Arg (I)'Length > 0
                     and then Arg (I) (Arg (I)'First) = '-'
                   then
@@ -9050,7 +9100,10 @@ package body Version.CLI is
                           (Version.Show.Show_Commit
                              (Repo,
                               Version.Show.Resolve_Revision (Repo, Spec),
-                              Opts));
+                              Opts,
+                              No_Patch => No_Patch,
+                              Oneline  => Oneline,
+                              Format   => To_String (Fmt)));
                      end if;
                   end;
                end if;

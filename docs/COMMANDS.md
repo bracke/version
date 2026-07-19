@@ -505,13 +505,13 @@ These are convenience aliases for the command *name*. How closely the aliased co
 
 ### log
 
-Syntax: `version log [--oneline] [--stat] [-p|--patch] [-U<n>|--unified=<n>] [--show-signature] [--format=<fmt>] [-<n>|-n <count>|--max-count=<n>] [--skip=<n>] [--reverse] [--merges|--no-merges] [--first-parent] [--topo-order|--date-order] [<REV>...] [--] [PATH...]`.
+Syntax: `version log [--all|--branches|--tags] [-s|--no-patch] [--oneline] [--stat] [-p|--patch] [-U<n>|--unified=<n>] [--show-signature] [--format=<fmt>] [-<n>|-n <count>|--max-count=<n>] [--skip=<n>] [--reverse] [--merges|--no-merges] [--first-parent] [--topo-order|--date-order] [<REV>...] [--] [PATH...]`.
 
 Purpose: show commit history from HEAD or a revision. Author dates render in git's default format (`Www Mmm D HH:MM:SS YYYY ±HHMM`, in the commit's timezone). `--oneline` prints one compact `<short-id> <subject>` line per commit (short id abbreviated to git's shortest-unique length, 7-char floor). `-<n>`, `-n <count>`, or `--max-count=<n>` limits the number of commits shown. Revision selection is the same as `rev-list`'s and shares its implementation: several revisions list their union, ranges (`A..B`, `A...B`) and exclusions (`^X`) work, `--skip`, `--reverse`, `--merges`/`--no-merges`, `--first-parent` and `--topo-order` apply, and paths after `--` limit the history with git's default simplification. The walk follows every parent by default, not only the first.
 
 ### show
 
-Syntax: `version show [--stat] [REV | REV:PATH]`.
+Syntax: `version show [--stat] [-s|--no-patch] [--oneline] [--format=<fmt>] [REV | REV:PATH]`.
 
 `REV:PATH` prints the object at that path: a blob's contents verbatim, or git's `tree <spec>` listing for a directory.
 
