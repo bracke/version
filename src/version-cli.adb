@@ -124,7 +124,7 @@ package body Version.CLI is
    end Print_Usage;
 
    Usage_Exit : constant Ada.Command_Line.Exit_Status :=
-     Ada.Command_Line.Exit_Status (2);
+     Ada.Command_Line.Exit_Status (129);
 
    Command_Failure_Exit : constant Ada.Command_Line.Exit_Status :=
      Ada.Command_Line.Exit_Status (1);
@@ -2977,6 +2977,10 @@ package body Version.CLI is
                Keep_Going := True;
             elsif Program = "" and then A = "-q" then
                Quiet := True;
+            elsif A = "-a" and then Program = "" then
+               --  -a is a mode, never the merge program's name; taking it as
+               --  one would leave the command with nothing to run.
+               All_Paths := True;
             elsif Program = "" then
                Program := To_Unbounded_String (A);
             elsif A = "-a" then
@@ -2991,7 +2995,9 @@ package body Version.CLI is
          I := I + 1;
       end loop;
 
-      if Program = "" then
+      --  A program with neither -a nor a path names nothing to merge; git
+      --  treats that as a usage error rather than doing nothing quietly.
+      if Program = "" or else (not All_Paths and then Wanted.Is_Empty) then
          Error_Line ("usage: version merge-index <merge-program> (-a | file...)");
          Set_Usage_Failure;
          return;
@@ -3011,15 +3017,17 @@ package body Version.CLI is
 
          Paths : Version.Trailers.String_Vectors.Vector;
       begin
-         --  git errors on a named path that is not unmerged, before running
-         --  the merge program for anything.
+         --  git errors on a named path that is not in the index at all,
+         --  before running the merge program for anything. A path that IS in
+         --  the index but already merged is not an error -- there is simply
+         --  nothing to do for it -- so the test is presence, not stage.
          if not All_Paths then
             for Want of Wanted loop
                declare
                   Present : Boolean := False;
                begin
                   for E of Index loop
-                     if To_String (E.Path) = Want and then E.Stage /= 0 then
+                     if To_String (E.Path) = Want then
                         Present := True;
                      end if;
                   end loop;
@@ -5413,6 +5421,7 @@ package body Version.CLI is
             Use_NUL : Boolean := False;
             Want    : Version.Trailers.String_Vectors.Vector;
             Show_All : Boolean := False;
+            Show_Keys : Boolean := False;
          begin
             for I in 3 .. Count loop
                declare
@@ -5420,6 +5429,8 @@ package body Version.CLI is
                begin
                   if A = "--all" then
                      Show_All := True;
+                  elsif A = "--keys" then
+                     Show_Keys := True;
                   elsif A = "-z" or else A = "--format=nul" then
                      Use_NUL := True;
                   elsif A = "--format=lines" then
@@ -5429,6 +5440,19 @@ package body Version.CLI is
                   end if;
                end;
             end loop;
+
+            --  `--keys` enumerates the keys rather than reporting values, so
+            --  a caller can discover what `repo info` can be asked for.
+            if Show_Keys then
+               for K of All_Keys loop
+                  if Use_NUL then
+                     Version.Console.Put (K.all & ASCII.NUL);
+                  else
+                     Success_Line (K.all);
+                  end if;
+               end loop;
+               return;
+            end if;
 
             if Show_All then
                Want.Clear;

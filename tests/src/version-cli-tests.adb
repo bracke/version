@@ -330,9 +330,13 @@ package body Version.CLI.Tests is
    is
       pragma Unreferenced (T);
    begin
+      --  129, not 2: git's parse-options exits 129 on a usage error, and
+      --  matching it moved 60 parity cases from differing to matching. The
+      --  earlier 2 was this tool's own convention, frozen before it was
+      --  checked against git.
       Assert
-        (Version.CLI.Usage_Exit_Status = Ada.Command_Line.Exit_Status (2),
-         "usage and argument errors must keep exit status 2");
+        (Version.CLI.Usage_Exit_Status = Ada.Command_Line.Exit_Status (129),
+         "usage and argument errors must keep git's exit status 129");
       Assert
         (Version.CLI.Command_Failure_Exit_Status
          = Ada.Command_Line.Exit_Status (1),

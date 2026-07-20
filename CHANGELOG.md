@@ -1,3 +1,6 @@
+- Fix: usage and argument errors exit 129, as git'''s parse-options does, not 2. This was the tool'''s own convention, frozen before it was ever checked against git; correcting it moved 60 parity cases across 14 suites from differing to matching.
+- Add: `repo info --keys` lists the keys `repo info` accepts; the option was silently ignored.
+- Fix: `merge-index` faults only on a path missing from the index. A path already merged is not an error -- there is simply nothing to do for it -- and a program given neither `-a` nor a path is a usage error rather than a silent success.
 - Fix: the merge backends (`merge-recursive`, `merge-subtree`, `merge-resolve`) narrate a path at a time, so each CONFLICT line follows the `Auto-merging` line for the same path instead of all of one kind preceding all of the other; a path both sides created is now reported as add/add rather than a content conflict.
 - Fix: `commit-tree` requires an actual tree. It peeled a commit to its tree, so `commit-tree HEAD` silently built a commit git refuses to build.
 - Fix: an unknown command no longer prints the usage banner on stdout. It put a hundred lines into the stdout of anything that mistyped a command, `for-each-repo` running an unknown subcommand among them, and exits 1 as git does rather than 2.
