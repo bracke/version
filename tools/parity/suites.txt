@@ -41,14 +41,14 @@ output.fixture          output.cases          sub
 
 merge.fixture           merge.cases           -     0
 mergeconflict.fixture   mergeconflict.cases   -     0
-refs.fixture            refs.cases            -   165
-refs2.fixture           refs2.cases           -     5
+refs.fixture            refs.cases            -   138
+refs2.fixture           refs2.cases           -     3
 plumbing.fixture        plumbing.cases        -    58
 histinspect.fixture     histinspect.cases     -    73
 histinspect2.fixture    histinspect2.cases    -    42
 configtext.fixture      configtext.cases      -    47
 configtext.fixture      configtext2.cases     -    38
-diffplumb.fixture       diffplumb.cases       -   115
+diffplumb.fixture       diffplumb.cases       -   107
 diffplumb2.fixture      diffplumb2.cases      -    40
 wtmutate.fixture        wtmutate.cases        -    23
 wtmutate2.fixture       wtmutate2.cases       -    14
@@ -60,7 +60,7 @@ wtmutate3.fixture       wtmutate3.cases       -    13
 multirepo.fixture       multirepo.cases       -    26
 multirepo2.fixture      multirepo2.cases      -    37
 multirepo3.fixture      multirepo3.cases      -    25
-histtools.fixture       histtools.cases       -    38
+histtools.fixture       histtools.cases       -    36
 histtools2.fixture      histtools2.cases      -    12
 histtools3.fixture      histtools3.cases      -     4
 maint.fixture           maint.cases           -    58

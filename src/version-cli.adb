@@ -19316,33 +19316,87 @@ package body Version.CLI is
          elsif Command = "symbolic-ref" then
             declare
                Usage : constant String :=
-                 "version symbolic-ref HEAD [REF]";
+                 "version symbolic-ref [-q] [--short] [-d] HEAD [REF]";
+               Repo : constant Version.Repository.Repository_Handle :=
+                 Version.Repository.Open;
+               --  -q turns "HEAD is detached" from a diagnosed error into a
+               --  silent non-zero status, which is what makes symbolic-ref
+               --  usable in a script's condition.
+               Quiet_Ref : Boolean := False;
+               Short     : Boolean := False;
+               Delete    : Boolean := False;
+               Reason    : Unbounded_String;
+               Operands  : Version.Trailers.String_Vectors.Vector;
+               Bad       : Boolean := False;
+               I         : Positive := 2;
             begin
-               if Count = 2 and then Arg (2) = "HEAD" then
-                  declare
-                     Repo : constant Version.Repository.Repository_Handle :=
-                       Version.Repository.Open;
-                     H : constant Version.Refs.Head_Info :=
-                       Version.Refs.Read_Head (Repo);
-                  begin
-                     if Version.Refs.Is_Attached (H) then
-                        Success_Line
-                          ("refs/heads/" & Version.Refs.Branch_Name (H));
-                     else
-                        raise Ada.IO_Exceptions.Data_Error with
-                          "ref HEAD is not a symbolic ref";
+               while I <= Count loop
+                  if Arg (I) = "-q" or else Arg (I) = "--quiet" then
+                     Quiet_Ref := True;
+                  elsif Arg (I) = "--short" then
+                     Short := True;
+                  elsif Arg (I) = "-d" or else Arg (I) = "--delete" then
+                     Delete := True;
+                  elsif Arg (I) = "-m" then
+                     if I = Count then
+                        Usage_Error ("symbolic-ref -m needs a reason", Usage);
+                        Bad := True;
+                        exit;
                      end if;
-                  end;
-               elsif Count = 3 and then Arg (2) = "HEAD" then
-                  declare
-                     Repo : constant Version.Repository.Repository_Handle :=
-                       Version.Repository.Open;
-                  begin
-                     Version.Refs.Write_Symbolic_HEAD (Repo, Arg (3));
-                  end;
-               else
-                  Usage_Error
-                    ("symbolic-ref supports only HEAD (read or set)", Usage);
+                     I := I + 1;
+                     Reason := To_Unbounded_String (Arg (I));
+                  elsif Arg (I)'Length > 0 and then Arg (I) (Arg (I)'First) = '-'
+                  then
+                     Usage_Error
+                       ("unknown symbolic-ref option: " & Arg (I), Usage);
+                     Bad := True;
+                     exit;
+                  else
+                     Operands.Append (Arg (I));
+                  end if;
+
+                  I := I + 1;
+               end loop;
+
+               if not Bad then
+                  if Operands.Is_Empty then
+                     Usage_Error ("symbolic-ref needs a ref name", Usage);
+                  elsif Operands.First_Element /= "HEAD" then
+                     Usage_Error
+                       ("symbolic-ref supports only HEAD (read or set)",
+                        Usage);
+                  elsif Delete then
+                     Version.Files.Delete_File_If_Exists
+                       (Version.Files.Join
+                          (Version.Repository.Git_Dir (Repo), "HEAD"));
+                  elsif Natural (Operands.Length) = 1 then
+                     declare
+                        H : constant Version.Refs.Head_Info :=
+                          Version.Refs.Read_Head (Repo);
+                     begin
+                        if Version.Refs.Is_Attached (H) then
+                           declare
+                              Name : constant String :=
+                                Version.Refs.Branch_Name (H);
+                           begin
+                              Success_Line
+                                (if Short then Name
+                                 else "refs/heads/" & Name);
+                           end;
+                        elsif Quiet_Ref then
+                           --  Detached: the status is the whole answer.
+                           Set_Command_Failure;
+                        else
+                           raise Ada.IO_Exceptions.Data_Error with
+                             "ref HEAD is not a symbolic ref";
+                        end if;
+                     end;
+                  elsif Natural (Operands.Length) = 2 then
+                     Version.Refs.Write_Symbolic_HEAD
+                       (Repo, Operands.Last_Element);
+                  else
+                     Usage_Error ("too many symbolic-ref arguments", Usage);
+                  end if;
                end if;
             end;
 
@@ -19358,6 +19412,18 @@ package body Version.CLI is
                Want_Tags  : Boolean := True;
                Filtered   : Boolean := False;
                Bad        : Boolean := False;
+
+               --  git's remaining selectors: --hash/-s drops the refname,
+               --  --verify demands an exact full ref and fails loudly if it is
+               --  missing, -q silences the listing so only the status speaks,
+               --  --head adds HEAD itself, and --abbrev shortens the id.
+               Hash_Only  : Boolean := False;
+               Verify     : Boolean := False;
+               Quiet_Ref  : Boolean := False;
+               With_Head  : Boolean := False;
+               Deref      : Boolean := False;
+               Abbrev     : Natural := 0;
+               Names      : Version.Ref_Format.String_Vectors.Vector;
             begin
                for I in 2 .. Count loop
                   if Arg (I) = "--heads" or else Arg (I) = "--tags" then
@@ -19371,21 +19437,98 @@ package body Version.CLI is
                      else
                         Want_Tags := True;
                      end if;
-                  else
+                  elsif Arg (I) = "--hash" or else Arg (I) = "-s" then
+                     Hash_Only := True;
+                  elsif Has_Prefix (Arg (I), "--hash=") then
+                     Hash_Only := True;
+                     begin
+                        Abbrev :=
+                          Natural'Value (Arg (I) (Arg (I)'First + 7
+                                                  .. Arg (I)'Last));
+                     exception
+                        when others => Abbrev := 0;
+                     end;
+                  elsif Arg (I) = "--verify" then
+                     Verify := True;
+                  elsif Arg (I) = "-q" or else Arg (I) = "--quiet" then
+                     Quiet_Ref := True;
+                  elsif Arg (I) = "--head" then
+                     With_Head := True;
+                  elsif Arg (I) = "-d" or else Arg (I) = "--dereference" then
+                     Deref := True;
+                  elsif Arg (I) = "--abbrev" then
+                     Abbrev := 7;
+                  elsif Has_Prefix (Arg (I), "--abbrev=") then
+                     begin
+                        Abbrev :=
+                          Natural'Value (Arg (I) (Arg (I)'First + 9
+                                                  .. Arg (I)'Last));
+                     exception
+                        when others => Abbrev := 7;
+                     end;
+                  elsif Arg (I) = "--exclude-existing" then
+                     --  Reads refnames on stdin and prints the ones absent
+                     --  here; nothing this command already computes answers
+                     --  that, so refuse rather than pretend.
+                     Usage_Error
+                       ("show-ref --exclude-existing is not supported", Usage);
+                     Bad := True;
+                     exit;
+                  elsif Arg (I)'Length > 0 and then Arg (I) (Arg (I)'First) = '-'
+                  then
                      Usage_Error
                        ("unknown show-ref argument: " & Arg (I), Usage);
                      Bad := True;
                      exit;
+                  else
+                     Names.Append (Arg (I));
                   end if;
                end loop;
-
                if not Bad then
-                  --  Reuse for-each-ref, which sorts by refname like git
-                  --  show-ref. With no filter, every ref is shown; --heads /
-                  --  --tags restrict to those namespaces.
                   declare
                      Patterns : Version.Ref_Format.String_Vectors.Vector;
+                     Shown    : Natural := 0;
+
+                     function Rendered (Id, Name : String) return String is
+                        Short : constant String :=
+                          (if Abbrev = 0 or else Abbrev >= Id'Length then Id
+                           else Id (Id'First .. Id'First + Abbrev - 1));
+                     begin
+                        return (if Hash_Only then Short
+                                else Short & " " & Name);
+                     end Rendered;
+
+                     procedure Emit (Id, Name : String) is
+                     begin
+                        Shown := Shown + 1;
+                        if not Quiet_Ref then
+                           Success_Line (Rendered (Id, Name));
+                        end if;
+                     end Emit;
                   begin
+                     --  --verify takes the name exactly as given: no globbing,
+                     --  no namespace search, and a miss is fatal.
+                     if Verify then
+                        for N of Names loop
+                           if Version.Refs.Ref_Exists (Repo, N) then
+                              Emit
+                                (Version.Objects.To_String
+                                   (Version.Refs.Resolve_Ref (Repo, N)),
+                                 N);
+                           else
+                              Stderr_Line
+                                ("fatal: '" & N & "' - not a valid ref");
+                              Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                              return;
+                           end if;
+                        end loop;
+
+                        if Names.Is_Empty then
+                           Usage_Error ("show-ref --verify needs a ref", Usage);
+                        end if;
+                        return;
+                     end if;
+
                      if Filtered then
                         if Want_Heads then
                            Patterns.Append ("refs/heads/");
@@ -19394,13 +19537,81 @@ package body Version.CLI is
                            Patterns.Append ("refs/tags/");
                         end if;
                      end if;
+
+                     --  --head puts HEAD itself at the top, before the refs.
+                     if With_Head then
+                        declare
+                           Id : constant String :=
+                             Version.Refs.Current_Commit_Id (Repo);
+                        begin
+                           if Id'Length > 0 then
+                              Emit (Id, "HEAD");
+                           end if;
+                        end;
+                     end if;
+
                      for Line of Version.Ref_Format.For_Each_Ref
                        (Repo     => Repo,
                         Patterns => Patterns,
                         Format   => "%(objectname) %(refname)")
                      loop
-                        Success_Line (Line);
+                        declare
+                           Sp : constant Natural :=
+                             Ada.Strings.Fixed.Index (Line, " ");
+                           Id : constant String := Line (Line'First .. Sp - 1);
+                           Nm : constant String := Line (Sp + 1 .. Line'Last);
+
+                           --  A bare name selects the refs whose tail matches
+                           --  it, which is how `show-ref main` finds
+                           --  refs/heads/main.
+                           function Wanted return Boolean is
+                           begin
+                              if Names.Is_Empty then
+                                 return True;
+                              end if;
+                              for N of Names loop
+                                 if Nm = N
+                                   or else (Nm'Length > N'Length
+                                            and then Nm (Nm'Last - N'Length
+                                                         .. Nm'Last)
+                                                     = "/" & N)
+                                 then
+                                    return True;
+                                 end if;
+                              end loop;
+                              return False;
+                           end Wanted;
+                        begin
+                           if Wanted then
+                              Emit (Id, Nm);
+
+                              --  -d also lists what an annotated tag points
+                              --  at, as "<refname>^{}".
+                              if Deref
+                                and then Nm'Length > 10
+                                and then Nm (Nm'First .. Nm'First + 9)
+                                         = "refs/tags/"
+                              then
+                                 declare
+                                    Peeled : constant String :=
+                                      Version.Objects.To_String
+                                        (Version.Revisions.Resolve_Commit
+                                           (Repo, Nm));
+                                 begin
+                                    if Peeled /= Id then
+                                       Emit (Peeled, Nm & "^{}");
+                                    end if;
+                                 end;
+                              end if;
+                           end if;
+                        end;
                      end loop;
+
+                     --  Nothing matched is a failure, which is what makes
+                     --  `show-ref -q <name>` usable as a test.
+                     if Shown = 0 then
+                        Set_Command_Failure;
+                     end if;
                   end;
                end if;
             end;
@@ -23645,6 +23856,9 @@ package body Version.CLI is
                  "version name-rev [--tags] (--all | COMMIT...)";
                Tags_Only : Boolean := False;
                Bad       : Boolean := False;
+               Name_Only : Boolean := False;
+               Always    : Boolean := False;
+               All_Refs  : Boolean := False;
 
                --  git's name-rev, which walks every parent (a commit
                --  reachable only through a merge's second parent is named
@@ -23658,6 +23872,16 @@ package body Version.CLI is
                for I in 2 .. Count loop
                   if Arg (I) = "--tags" then
                      Tags_Only := True;
+                  elsif Arg (I) = "--name-only" then
+                     --  Print just the name, without echoing back what was
+                     --  asked about.
+                     Name_Only := True;
+                  elsif Arg (I) = "--always" then
+                     --  Fall back to the abbreviated id rather than saying
+                     --  "undefined" when nothing names the commit.
+                     Always := True;
+                  elsif Arg (I) = "--all" then
+                     All_Refs := True;
                   elsif Arg (I)'Length > 0 and then Arg (I) (Arg (I)'First) = '-'
                   then
                      Usage_Error
@@ -23673,8 +23897,43 @@ package body Version.CLI is
                        Version.Repository.Open;
                      Any  : Boolean := False;
                   begin
+                     --  --all names every commit in the repository, in
+                     --  rev-list order, instead of the ones named on the
+                     --  command line.
+                     if All_Refs then
+                        declare
+                           Tips : Version.History.Commit_Id_Vectors.Vector;
+                           Pats : Version.Ref_Format.String_Vectors.Vector;
+                        begin
+                           for R of Version.Ref_Format.For_Each_Ref
+                             (Repo, Pats, Format => "%(refname)")
+                           loop
+                              begin
+                                 Tips.Append
+                                   (Version.Revisions.Resolve_Commit (Repo, R));
+                              exception
+                                 when others =>
+                                    null;
+                              end;
+                           end loop;
+
+                           for C of Version.History.Rev_List (Repo, Tips) loop
+                              declare
+                                 Hex : constant String :=
+                                   Version.Objects.To_String (C);
+                              begin
+                                 Success_Line
+                                   (Hex & " " & Best_Name (Repo, C));
+                              end;
+                           end loop;
+                        end;
+                        return;
+                     end if;
+
                      for I in 2 .. Count loop
-                        if Arg (I) /= "--tags" then
+                        if Arg (I)'Length = 0
+                          or else Arg (I) (Arg (I)'First) /= '-'
+                        then
                            Any := True;
                            declare
                               --  name-rev names the input OBJECT: a tag object
@@ -23716,7 +23975,12 @@ package body Version.CLI is
                                        Version.Revisions.Resolve_Commit
                                          (Repo, Arg (I))));
                               end if;
-                              Success_Line (Arg (I) & " " & To_String (Name));
+                              if Name_Only then
+                                 Success_Line (To_String (Name));
+                              else
+                                 Success_Line
+                                   (Arg (I) & " " & To_String (Name));
+                              end if;
                            end;
                         end if;
                      end loop;
@@ -25084,14 +25348,45 @@ package body Version.CLI is
                Patch  : Boolean := False;
                Tree_Idx : Natural := 0;
                Bad : Boolean := False;
+               Format : Diff_Render := Render_Raw;
+               Exit_Code : Boolean := False;
+               Quiet_Diff : Boolean := False;
             begin
                for I in 2 .. Count loop
-                  if Arg (I) = "--cached" then
+                  if Arg (I) = "--cached" or else Arg (I) = "--staged" then
                      Cached := True;
                   elsif Arg (I) = "-p" or else Arg (I) = "--patch"
                     or else Arg (I) = "-u"
                   then
                      Patch := True;
+                  elsif Arg (I) = "--raw" then
+                     Format := Render_Raw;
+                  elsif Arg (I) = "--name-only" then
+                     Format := Render_Name_Only;
+                  elsif Arg (I) = "--name-status" then
+                     Format := Render_Name_Status;
+                  elsif Arg (I) = "--numstat" then
+                     Format := Render_Numstat;
+                  elsif Arg (I) = "--shortstat" then
+                     Format := Render_Shortstat;
+                  elsif Arg (I) = "--summary" then
+                     Format := Render_Summary;
+                  elsif Arg (I) = "-s" or else Arg (I) = "--no-patch" then
+                     Format := Render_Silent;
+                  elsif Arg (I) = "--exit-code" then
+                     --  git reports "there was a difference" as exit 1, which
+                     --  is the whole point of the flag.
+                     Exit_Code := True;
+                  elsif Arg (I) = "--quiet" then
+                     Exit_Code := True;
+                     Quiet_Diff := True;
+                  elsif Arg (I) = "-M" or else Arg (I) = "-C"
+                    or else Has_Prefix (Arg (I), "-M")
+                    or else Has_Prefix (Arg (I), "-C")
+                  then
+                     null;   --  rename detection changes no raw record here
+                  elsif Arg (I) = "--" then
+                     null;
                   elsif Arg (I)'Length > 0 and then Arg (I) (Arg (I)'First) = '-'
                   then
                      Usage_Error ("unknown diff-index option: " & Arg (I),
@@ -25130,8 +25425,19 @@ package body Version.CLI is
                                    (Repo, Tree));
                            end if;
                         else
-                           Version.Console.Put
-                             (Version.Diff.Raw_Diff_Index (Repo, Tree, Cached));
+                           declare
+                              Raw : constant String :=
+                                Version.Diff.Raw_Diff_Index
+                                  (Repo, Tree, Cached);
+                           begin
+                              if not Quiet_Diff then
+                                 Put_Raw_As (Repo, Raw, Format);
+                              end if;
+
+                              if Exit_Code and then Raw'Length > 0 then
+                                 Set_Command_Failure;
+                              end if;
+                           end;
                         end if;
                      end;
                   end if;
