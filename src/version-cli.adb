@@ -9935,6 +9935,9 @@ package body Version.CLI is
                LArgs  : array (1 .. Integer'Max (NArgs, 1)) of Unbounded_String;
                LCount : Natural := 1;
                Stat   : Boolean := False;
+               Numstat : Boolean := False;
+               Shortstat : Boolean := False;
+               Summary : Boolean := False;
                Name_Only   : Boolean := False;
                Name_Status : Boolean := False;
                Rename_Mode  : Version.Diff.Rename_Detection :=
@@ -10011,6 +10014,12 @@ package body Version.CLI is
                for I in 2 .. Count loop
                   if Arg (I) = "--stat" then
                      Stat := True;
+                  elsif Arg (I) = "--numstat" then
+                     Numstat := True;
+                  elsif Arg (I) = "--shortstat" then
+                     Shortstat := True;
+                  elsif Arg (I) = "--summary" then
+                     Summary := True;
                   elsif Arg (I) = "--no-renames" then
                      Rename_Mode := Version.Diff.Renames_Off;
                   elsif Arg (I) = "-M" or else Arg (I) = "--find-renames" then
@@ -10064,6 +10073,9 @@ package body Version.CLI is
                   end if;
                end loop;
                Opts := (Stat => Stat,
+                        Numstat => Numstat,
+                        Shortstat => Shortstat,
+                        Summary => Summary,
                         Name_Only => Name_Only,
                         Name_Status => Name_Status,
                         Context_Lines => Context,
