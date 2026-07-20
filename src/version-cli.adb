@@ -14510,8 +14510,12 @@ package body Version.CLI is
          elsif Command = "stage" then
             declare
                Usage : constant String :=
-                 "version stage [-f|--force] [--] PATHSPEC...";
+                 "version stage [-f|--force] [-A|--all] [-u|--update]"
+                 & " [-n|--dry-run] [--] PATHSPEC...";
                Force         : Boolean := False;
+               All_Changes   : Boolean := False;
+               Update_Only   : Boolean := False;
+               Dry_Run       : Boolean := False;
                After_Separator : Boolean := False;
                Specs         : Version.Pathspec.Pathspec_Vectors.Vector;
             begin
@@ -14529,6 +14533,19 @@ package body Version.CLI is
 
                         Force := True;
                      elsif not After_Separator
+                       and then (Arg (I) = "-A" or else Arg (I) = "--all"
+                                 or else Arg (I) = "--no-ignore-removal")
+                     then
+                        All_Changes := True;
+                     elsif not After_Separator
+                       and then (Arg (I) = "-u" or else Arg (I) = "--update")
+                     then
+                        Update_Only := True;
+                     elsif not After_Separator
+                       and then (Arg (I) = "-n" or else Arg (I) = "--dry-run")
+                     then
+                        Dry_Run := True;
+                     elsif not After_Separator
                        and then Arg (I)'Length > 0
                        and then Arg (I) (Arg (I)'First) = '-'
                      then
@@ -14540,34 +14557,127 @@ package body Version.CLI is
                   end loop;
                end if;
 
-               if Specs.Is_Empty then
+               --  -A and -u name the whole worktree when no pathspec is
+               --  given; without them a bare `stage` still has nothing to do.
+               if Specs.Is_Empty
+                 and then not (All_Changes or else Update_Only)
+               then
+                  --  git says so and exits 0 for a dry run: asking what would
+                  --  happen with nothing named is a question, not a misuse.
+                  if Dry_Run then
+                     Success_Line ("Nothing specified, nothing added.");
+                     return;
+                  end if;
+
                   Usage_Error ("missing stage pathspec", Usage);
                   return;
                end if;
 
                declare
-                  Matches : constant Version.Path_Safety.Path_Vector :=
-                    Matching_Candidates
-                      (Working_Candidates (Include_Ignored => Force), Specs);
+                  --  A file that is gone has to leave the index too, which a
+                  --  worktree scan can never find; -A and -u exist precisely
+                  --  to pick those up, so the removals come from status.
+                  St : constant Version.Status.Status_Result :=
+                    Version.Status.Current_Status;
+
+                  Matches : Version.Path_Safety.Path_Vector :=
+                    (if All_Changes or else Update_Only
+                     then (if Specs.Is_Empty
+                           then Working_Candidates (Include_Ignored => Force)
+                           else Matching_Candidates
+                                  (Working_Candidates
+                                     (Include_Ignored => Force), Specs))
+                     else Matching_Candidates
+                            (Working_Candidates (Include_Ignored => Force),
+                             Specs));
+
+                  Removals : Version.Path_Safety.Path_Vector;
+                  Staged_N : Natural := 0;
+
+                  function Is_Tracked (Path : String) return Boolean is
+                    (Version.Staging.Find_Path
+                       (Version.Staging.Load (Version.Repository.Open), Path)
+                     /= Natural'Last);
                begin
-                  if Matches.Is_Empty then
+                  if All_Changes or else Update_Only then
+                     for C of St.Changes loop
+                        if Version.Status."="
+                             (C.Kind, Version.Status.Deleted_File)
+                        then
+                           declare
+                              P : constant String := To_String (C.Path);
+                              One : Version.Path_Safety.Path_Vector;
+                           begin
+                              One.Append (P);
+                              if Specs.Is_Empty
+                                or else not Matching_Candidates (One, Specs)
+                                             .Is_Empty
+                              then
+                                 Removals.Append (P);
+                              end if;
+                           end;
+                        end if;
+                     end loop;
+                  end if;
+
+                  --  -u never adds a path the index does not already have.
+                  if Update_Only then
+                     declare
+                        Kept : Version.Path_Safety.Path_Vector;
+                     begin
+                        for P of Matches loop
+                           if Is_Tracked (P) then
+                              Kept.Append (P);
+                           end if;
+                        end loop;
+                        Matches := Kept;
+                     end;
+                  end if;
+
+                  if Matches.Is_Empty and then Removals.Is_Empty then
+                     if All_Changes or else Update_Only then
+                        return;
+                     end if;
                      Raise_If_Explicit_Sparse_Missing_Stage (2);
                      raise Ada.IO_Exceptions.Data_Error
                        with Pathspec_No_Files_Text;
                   end if;
 
                   for I in Matches.First_Index .. Matches.Last_Index loop
-                     Stage_Path (Matches.Element (I));
+                     if Dry_Run then
+                        Success_Line ("add '" & Matches.Element (I) & "'");
+                     else
+                        Stage_Path (Matches.Element (I));
+                     end if;
+                     Staged_N := Staged_N + 1;
                   end loop;
 
-                  if Natural (Matches.Length) = 1 then
-                     Success_Line
-                       ("staged " & Matches.Element (Matches.First_Index));
-                  else
-                     Success_Line
-                       ("staged "
-                        & Natural_Image (Natural (Matches.Length))
-                        & " paths");
+                  for P of Removals loop
+                     if Dry_Run then
+                        Success_Line ("remove '" & P & "'");
+                     else
+                        declare
+                           Repo : constant
+                             Version.Repository.Repository_Handle :=
+                               Version.Repository.Open;
+                           Entries : Version.Staging.Index_Entry_Vectors.Vector
+                             := Version.Staging.Load (Repo);
+                        begin
+                           Version.Staging.Remove_Path (Entries, P);
+                           Version.Staging.Write (Repo, Entries);
+                        end;
+                     end if;
+                     Staged_N := Staged_N + 1;
+                  end loop;
+
+                  if not Dry_Run then
+                     if Staged_N = 1 and then not Matches.Is_Empty then
+                        Success_Line
+                          ("staged " & Matches.Element (Matches.First_Index));
+                     else
+                        Success_Line
+                          ("staged " & Natural_Image (Staged_N) & " paths");
+                     end if;
                   end if;
                end;
             end;
@@ -25045,6 +25155,13 @@ package body Version.CLI is
                Cached : Boolean := False;
                Bad    : Boolean := False;
 
+               --  --extcmd runs a command of the caller's choosing instead of
+               --  a configured tool, and the two revisions say what to compare.
+               Ext_Cmd   : Unbounded_String;
+               Ext_Taken : Natural := 0;
+               Rev_A     : Unbounded_String;
+               Rev_B     : Unbounded_String;
+
                function Has_Pfx (L, P : String) return Boolean is
                  (L'Length >= P'Length
                   and then L (L'First .. L'First + P'Length - 1) = P);
@@ -25122,6 +25239,28 @@ package body Version.CLI is
                   GNAT.OS_Lib.Free (Args (2));
                   return Status;
                end Invoke;
+
+               --  --extcmd is handed the two files positionally, as $1 and
+               --  $2, where a configured tool reads them from $LOCAL/$REMOTE.
+               function Invoke_Ext
+                 (Cmd, Local, Remote : String) return Integer
+               is
+                  Args   : GNAT.OS_Lib.Argument_List (1 .. 5);
+                  Status : Integer;
+               begin
+                  Args (1) := new String'("-c");
+                  Args (2) := new String'(Cmd & " ""$@""");
+                  Args (3) := new String'("sh");
+                  Args (4) := new String'(Local);
+                  Args (5) := new String'(Remote);
+                  Status :=
+                    GNAT.OS_Lib.Spawn
+                      (Program_Name => "/bin/sh", Args => Args);
+                  for A of Args loop
+                     GNAT.OS_Lib.Free (A);
+                  end loop;
+                  return Status;
+               end Invoke_Ext;
             begin
                for I in 2 .. Count loop
                   if Has_Pfx (Arg (I), "--tool=") then
@@ -25135,6 +25274,40 @@ package body Version.CLI is
                     and then (Arg (I) = "--cached" or else Arg (I) = "--staged")
                   then
                      Cached := True;
+                  elsif Has_Pfx (Arg (I), "--extcmd=") then
+                     Ext_Cmd :=
+                       To_Unbounded_String (Drop_Pfx (Arg (I), "--extcmd="));
+                  elsif Arg (I) = "-x" or else Arg (I) = "--extcmd" then
+                     if I = Count then
+                        Usage_Error
+                          (Command & " --extcmd needs a command", Usage);
+                        Bad := True;
+                        exit;
+                     end if;
+                     Ext_Cmd := To_Unbounded_String (Arg (I + 1));
+                     Ext_Taken := I + 1;
+                  elsif I = Ext_Taken then
+                     null;   --  the value consumed by --extcmd above
+                  elsif Arg (I)'Length > 0 and then Arg (I) (Arg (I)'First) = '-'
+                  then
+                     Usage_Error
+                       ("unknown " & Command & " option: " & Arg (I), Usage);
+                     Bad := True;
+                     exit;
+                  elsif not Is_Merge then
+                     --  A non-option operand is a revision to compare, which
+                     --  difftool refused outright before -- so it could only
+                     --  ever look at the working tree.
+                     if Length (Rev_A) = 0 then
+                        Rev_A := To_Unbounded_String (Arg (I));
+                     elsif Length (Rev_B) = 0 then
+                        Rev_B := To_Unbounded_String (Arg (I));
+                     else
+                        Usage_Error
+                          ("too many " & Command & " arguments", Usage);
+                        Bad := True;
+                        exit;
+                     end if;
                   else
                      Usage_Error
                        ("unknown " & Command & " option: " & Arg (I), Usage);
@@ -25149,7 +25322,7 @@ package body Version.CLI is
                        (Cfg (if Is_Merge then "merge.tool" else "diff.tool"));
                   end if;
 
-                  if Length (Tool) = 0 then
+                  if Length (Tool) = 0 and then Length (Ext_Cmd) = 0 then
                      Error_Line
                        ("no tool configured: set "
                         & (if Is_Merge then "merge.tool" else "diff.tool")
@@ -25158,9 +25331,13 @@ package body Version.CLI is
                   else
                      declare
                         T   : constant String := To_String (Tool);
+                        --  An explicit --extcmd is the command; otherwise it
+                        --  comes from the tool's configuration.
                         Cmd : constant String :=
-                          Cfg ((if Is_Merge then "mergetool." else "difftool.")
-                               & T & ".cmd");
+                          (if Length (Ext_Cmd) > 0 then To_String (Ext_Cmd)
+                           else Cfg
+                                  ((if Is_Merge then "mergetool."
+                                    else "difftool.") & T & ".cmd"));
                      begin
                         if Cmd'Length = 0 then
                            Error_Line
@@ -25260,7 +25437,142 @@ package body Version.CLI is
                               List : constant
                                 Version.Status.File_Change_Vectors.Vector :=
                                   (if Cached then St.Staged else St.Changes);
+
+                              --  Two revisions name a comparison of their
+                              --  trees rather than of the working tree.
+                              Comparing_Revs : constant Boolean :=
+                                Length (Rev_A) > 0 and then Length (Rev_B) > 0;
+
+                              function Blob_At
+                                (Rev, Path : String) return String
+                              is
+                                 Items : constant
+                                   Version.Objects.Tree_Entry_Vectors.Vector :=
+                                     Version.Objects.Flatten_Tree
+                                       (Repo,
+                                        Version.Revisions.Resolve_Tree
+                                          (Repo, Rev));
+                              begin
+                                 for E of Items loop
+                                    if To_String (E.Path) = Path then
+                                       return Version.Objects.Content
+                                         (Version.Objects.Read_Object
+                                            (Repo, E.Id));
+                                    end if;
+                                 end loop;
+                                 return "";
+                              exception
+                                 when others =>
+                                    return "";
+                              end Blob_At;
                            begin
+                              if Comparing_Revs then
+                                 declare
+                                    A : constant String := To_String (Rev_A);
+                                    B : constant String := To_String (Rev_B);
+                                    Changed : constant String :=
+                                      Version.Diff.Diff_Commits
+                                        (Repo,
+                                         Version.Revisions.Resolve_Commit
+                                           (Repo, A),
+                                         Version.Revisions.Resolve_Commit
+                                           (Repo, B));
+                                    First : Natural := Changed'First;
+
+                                    --  Carried from the "---" line so a
+                                    --  deletion still knows its path.
+                                    Pending_Path : Unbounded_String;
+
+                                    function Base_Name (P : String)
+                                       return String
+                                    is
+                                       Slash : Natural := 0;
+                                    begin
+                                       for K in reverse P'Range loop
+                                          if P (K) = '/' then
+                                             Slash := K;
+                                             exit;
+                                          end if;
+                                       end loop;
+                                       return (if Slash = 0 then P
+                                               else P (Slash + 1 .. P'Last));
+                                    end Base_Name;
+                                 begin
+                                    --  Every path the diff names, once, in
+                                    --  the order the diff presents them.
+                                    while First <= Changed'Last loop
+                                       declare
+                                          Last : Natural := First;
+                                       begin
+                                          while Last <= Changed'Last
+                                            and then Changed (Last) /= ASCII.LF
+                                          loop
+                                             Last := Last + 1;
+                                          end loop;
+
+                                          declare
+                                             L : constant String :=
+                                               Changed (First .. Last - 1);
+                                          begin
+                                             --  A deletion's "+++" is
+                                             --  /dev/null, so the path has to
+                                             --  come from whichever side has
+                                             --  one; taking only "+++ b/"
+                                             --  skipped every deleted file.
+                                             if Has_Pfx (L, "--- a/") then
+                                                Pending_Path :=
+                                                  To_Unbounded_String
+                                                    (L (L'First + 6 .. L'Last));
+                                             end if;
+
+                                             if Has_Pfx (L, "+++ b/")
+                                               or else (L = "+++ /dev/null"
+                                                        and then Length
+                                                                   (Pending_Path)
+                                                                 > 0)
+                                             then
+                                                declare
+                                                   P : constant String :=
+                                                     (if Has_Pfx (L, "+++ b/")
+                                                      then L (L'First + 6
+                                                              .. L'Last)
+                                                      else To_String
+                                                             (Pending_Path));
+                                                   --  git hands the absent
+                                                   --  side of an add or a
+                                                   --  delete /dev/null.
+                                                   Old_T : constant String :=
+                                                     Blob_At (A, P);
+                                                   New_T : constant String :=
+                                                     Blob_At (B, P);
+                                                   Status : Integer;
+                                                   pragma Unreferenced
+                                                     (Status);
+                                                begin
+                                                   Status :=
+                                                     Invoke_Ext
+                                                       (Cmd,
+                                                        (if Old_T'Length = 0
+                                                         then "/dev/null"
+                                                         else Scratch
+                                                                (Base_Name (P),
+                                                                 Old_T)),
+                                                        (if New_T'Length = 0
+                                                         then "/dev/null"
+                                                         else Scratch
+                                                                (Base_Name (P),
+                                                                 New_T)));
+                                                end;
+                                             end if;
+                                          end;
+
+                                          First := Last + 1;
+                                       end;
+                                    end loop;
+                                 end;
+                                 return;
+                              end if;
+
                               for C of List loop
                                  declare
                                     Path : constant String :=

@@ -174,7 +174,10 @@ package body Version.CLI.Help is
    begin
       if Name = "stage" then
          Append_Line (Text, "Usage:");
-         Append_Line (Text, "  version stage [-f|--force] [--] PATHSPEC...");
+         Append_Line
+           (Text,
+            "  version stage [-f|--force] [-A|--all] [-u|--update]"
+            & " [-n|--dry-run] [--] PATHSPEC...");
          Append_Line (Text);
          Append_Line
            (Text, "Add one or more matching working tree paths to the index.");
@@ -762,7 +765,8 @@ package body Version.CLI.Help is
            ("Inspection commands are read-only; config has is quiet and reports existence by exit status.");
       elsif Name = "stage" then
          Line ("Usage:");
-         Line ("  version stage [-f|--force] [--] PATHSPEC...");
+         Line ("  version stage [-f|--force] [-A|--all] [-u|--update]"
+               & " [-n|--dry-run] [--] PATHSPEC...");
          Line;
          Line ("Add one or more matching working tree paths to the index.");
          Line ("Use -f or --force to stage ignored matches.");

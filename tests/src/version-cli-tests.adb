@@ -614,7 +614,8 @@ package body Version.CLI.Tests is
         (Version.CLI.Help.Command_Text ("stage")
          = "Usage:"
            & Character'Val (10)
-           & "  version stage [-f|--force] [--] PATHSPEC..."
+           & "  version stage [-f|--force] [-A|--all] [-u|--update]"
+           & " [-n|--dry-run] [--] PATHSPEC..."
            & Character'Val (10)
            & Character'Val (10)
            & "Add one or more matching working tree paths to the index."
@@ -794,8 +795,10 @@ package body Version.CLI.Tests is
          = "error: unknown command: frobnicate",
          "unknown command diagnostic must remain stable");
       Assert
-        (Version.CLI.Expected_Output_Text ("version stage [-f|--force] [--] PATHSPEC...")
-         = "error: expected: version stage [-f|--force] [--] PATHSPEC...",
+        (Version.CLI.Expected_Output_Text ("version stage [-f|--force] [-A|--all] [-u|--update]"
+        & " [-n|--dry-run] [--] PATHSPEC...")
+         = "error: expected: version stage [-f|--force] [-A|--all]"
+           & " [-u|--update] [-n|--dry-run] [--] PATHSPEC...",
          "missing operand diagnostic must remain stable");
    end CLI_Usage_And_Unknown_Output_Are_Frozen;
 
@@ -3932,22 +3935,26 @@ package body Version.CLI.Tests is
       Check_Usage_Failure
         ("stage",
          "missing stage pathspec",
-         "version stage [-f|--force] [--] PATHSPEC...",
+         "version stage [-f|--force] [-A|--all] [-u|--update]"
+        & " [-n|--dry-run] [--] PATHSPEC...",
          "stage missing pathspec");
       Check_Usage_Failure
         ("stage --",
          "missing stage pathspec",
-         "version stage [-f|--force] [--] PATHSPEC...",
+         "version stage [-f|--force] [-A|--all] [-u|--update]"
+        & " [-n|--dry-run] [--] PATHSPEC...",
          "stage separator only");
       Check_Usage_Failure
         ("stage --patch a.txt",
          "unknown stage option: --patch",
-         "version stage [-f|--force] [--] PATHSPEC...",
+         "version stage [-f|--force] [-A|--all] [-u|--update]"
+        & " [-n|--dry-run] [--] PATHSPEC...",
          "stage unknown option");
       Check_Usage_Failure
         ("stage --force -f a.txt",
          "duplicate option: -f",
-         "version stage [-f|--force] [--] PATHSPEC...",
+         "version stage [-f|--force] [-A|--all] [-u|--update]"
+        & " [-n|--dry-run] [--] PATHSPEC...",
          "stage duplicate force option");
       Check_Usage_Failure
         ("remove",
