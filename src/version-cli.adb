@@ -8347,7 +8347,7 @@ package body Version.CLI is
    function Failure_Is_Ordinary (Command : String) return Boolean is
      (Command in "apply" | "checkout" | "restore" | "switch" | "notes"
                  | "bisect" | "merge" | "cherry-pick" | "revert"
-                 | "stage" | "stash");
+                 | "rebase" | "stage" | "stash");
 
    procedure Run is
    begin
