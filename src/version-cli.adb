@@ -4153,9 +4153,19 @@ package body Version.CLI is
    --  Understands the commands git's own `fast-export` emits: blob/mark/data,
    --  commit (author/committer/data/from/merge, then M and D changes), reset,
    --  and tag.
+   function Has_Prefix (Text, Prefix : String) return Boolean is
+     (Text'Length >= Prefix'Length
+      and then Text (Text'First .. Text'First + Prefix'Length - 1) = Prefix);
+
    procedure Run_Fast_Import_Command is
       Repo : constant Version.Repository.Repository_Handle :=
         Version.Repository.Open;
+
+      --  git rejects an option it does not know rather than importing the
+      --  stream anyway -- `--dry-run`, which git has never had here, used to
+      --  be accepted and ignored, so a caller expecting a rehearsal got a
+      --  real import.
+      Bad_Option : Boolean := False;
 
       Text : constant String := Read_All_Stdin;
       Pos  : Natural := Text'First;
@@ -4205,6 +4215,9 @@ package body Version.CLI is
          return Content;
       end Read_Data;
 
+      --  A mark the stream never defined is a broken stream. Returning ""
+      --  and carrying on wrote a ref whose tree named an object that was
+      --  never created -- a repository git cannot read, produced silently.
       function Resolve_Mark (Token : String) return String is
       begin
          if Token'Length > 1 and then Token (Token'First) = ':' then
@@ -4212,11 +4225,27 @@ package body Version.CLI is
                return Marks.Element (Token);
             end if;
 
-            return "";
+            raise Ada.IO_Exceptions.Data_Error with
+              "fast-import: undefined mark " & Token;
          end if;
 
          return Token;
       end Resolve_Mark;
+
+      function Starts_With (Line, Prefix : String) return Boolean is
+        (Line'Length >= Prefix'Length
+         and then Line (Line'First .. Line'First + Prefix'Length - 1)
+                  = Prefix);
+
+      --  Which lines belong to a commit's file-change section. Anything else
+      --  ends it -- including the next `commit`, which a data payload's
+      --  optional trailing newline can leave sitting where the blank
+      --  separator was expected.
+      function Is_File_Command (Line : String) return Boolean is
+        (Line = "deleteall"
+         or else (Line'Length >= 2
+                  and then Line (Line'First) in 'M' | 'D' | 'C' | 'R' | 'N'
+                  and then Line (Line'First + 1) = ' '));
 
       procedure Set_File (Path : String; Mode : String; Id : String) is
          Kept : Version.Staging.Index_Entry_Vectors.Vector;
@@ -4282,6 +4311,33 @@ package body Version.CLI is
       end Load_Files;
 
    begin
+      for I in 2 .. Count loop
+         declare
+            A : constant String := Arg (I);
+         begin
+            --  The flags that change nothing this implementation does; every
+            --  other one is refused rather than quietly dropped.
+            if A = "--quiet" or else A = "--stats" or else A = "--force"
+              or else A = "--done" or else A = "--allow-unsafe-features"
+              or else Starts_With (A, "--date-format=")
+              or else Starts_With (A, "--max-pack-size=")
+              or else Starts_With (A, "--big-file-threshold=")
+              or else Starts_With (A, "--depth=")
+              or else Starts_With (A, "--active-branches=")
+            then
+               null;
+            else
+               Error_Line ("fatal: unknown option " & A);
+               Bad_Option := True;
+            end if;
+         end;
+      end loop;
+
+      if Bad_Option then
+         Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+         return;
+      end if;
+
       while not At_End loop
          declare
             Line : constant String := Next_Line;
@@ -4429,10 +4485,10 @@ package body Version.CLI is
                      end if;
                   end if;
 
-                  --  The file changes, until the blank line.
+                  --  The file changes, until something that is not one.
                   loop
                      exit when At_End;
-                     exit when Peek_Line'Length = 0;
+                     exit when not Is_File_Command (Peek_Line);
 
                      declare
                         Change : constant String := Next_Line;
@@ -4612,14 +4668,38 @@ package body Version.CLI is
                      end;
                   end if;
                end;
+
+            --  Stream directives that carry no repository change. They are
+            --  accepted and skipped so a real exporter's output imports, but
+            --  they are named rather than swallowed by a catch-all.
+            elsif Line = "done"
+              or else Line = "checkpoint"
+              or else Starts_With (Line, "progress ")
+              or else Starts_With (Line, "feature ")
+              or else Starts_With (Line, "option ")
+              or else Starts_With (Line, "alias")
+              or else Starts_With (Line, "cat-blob ")
+              or else Starts_With (Line, "get-mark ")
+              or else Starts_With (Line, "ls ")
+            then
+               null;
+
+            else
+               --  Anything else means the stream is not what it claims to be.
+               --  Skipping it built a repository out of the parts that
+               --  happened to parse, which is worse than importing nothing.
+               raise Ada.IO_Exceptions.Data_Error with
+                 "fast-import: unsupported command: " & Line;
             end if;
          end;
       end loop;
    exception
       when E : Ada.IO_Exceptions.Data_Error | Ada.IO_Exceptions.Name_Error
          | Ada.IO_Exceptions.Use_Error | Constraint_Error =>
+         --  A stream this tool cannot import is a die(), which git reports as
+         --  128; nothing about a bad stream is an ordinary negative result.
          Error_Line (Ada.Exceptions.Exception_Message (E));
-         Set_Command_Failure;
+         Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
    end Run_Fast_Import_Command;
 
    --  `send-pack [--force] <repository> <refspec>...` -- push, and report as
@@ -15631,16 +15711,61 @@ package body Version.CLI is
                   elsif Sub = "--abort" then
                      Version.Am.Abort_Am (Repo);
                   else
-                     if Count < 2 then
-                        Mailbox := To_Unbounded_String (Read_Stdin);
-                     else
+                     declare
+                        Opts  : Version.Am.Am_Options;
+                        Files : Natural := 0;
+                        Bad   : Boolean := False;
+                     begin
+                        --  Options were read as filenames until now, so `am
+                        --  -s patch` tried to open a file called "-s".
                         for J in 2 .. Count loop
-                           Append
-                             (Mailbox,
-                              Version.Files.Read_Binary_File (Arg (J)));
+                           declare
+                              A : constant String := Arg (J);
+                           begin
+                              if A = "-q" or else A = "--quiet" then
+                                 Opts.Quiet := True;
+                              elsif A = "-s" or else A = "--signoff" then
+                                 Opts.Signoff := True;
+                              elsif A = "-k" or else A = "--keep" then
+                                 Opts.Keep := True;
+                              elsif A = "--committer-date-is-author-date" then
+                                 Opts.Committer_Date_Is_Author_Date := True;
+                              elsif A = "-3" or else A = "--3way"
+                                or else A = "--no-3way"
+                                or else A = "--whitespace=fix"
+                                or else Has_Prefix (A, "--empty=")
+                                or else Has_Prefix (A, "--whitespace=")
+                                or else Has_Prefix (A, "-C")
+                                or else Has_Prefix (A, "-p")
+                              then
+                                 --  Accepted and without effect here: they
+                                 --  select how a patch is applied, and this
+                                 --  applies it one way.
+                                 null;
+                              elsif A'Length > 0 and then A (A'First) = '-' then
+                                 Error_Line ("unknown am option: " & A);
+                                 Bad := True;
+                              else
+                                 Files := Files + 1;
+                                 Append
+                                   (Mailbox,
+                                    Version.Files.Read_Binary_File (A));
+                              end if;
+                           end;
                         end loop;
-                     end if;
-                     Version.Am.Apply_Mailbox (Repo, To_String (Mailbox));
+
+                        if Bad then
+                           Set_Usage_Failure;
+                           return;
+                        end if;
+
+                        if Files = 0 then
+                           Mailbox := To_Unbounded_String (Read_Stdin);
+                        end if;
+
+                        Version.Am.Apply_Mailbox
+                          (Repo, To_String (Mailbox), Opts);
+                     end;
                   end if;
                exception
                   when E : Version.Am.Am_Conflict =>
