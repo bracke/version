@@ -11123,6 +11123,103 @@ package body Version.CLI is
                      end if;
                   end;
 
+               --  More of git's own spellings for what the long subcommands
+               --  do: --show-current prints the checked-out branch, -m/-M
+               --  rename, and the upstream flags set or clear tracking.
+               elsif Arg (2) = "--show-current" then
+                  declare
+                     Repo : constant Version.Repository.Repository_Handle :=
+                       Version.Repository.Open;
+                     H : constant Version.Refs.Head_Info :=
+                       Version.Refs.Read_Head (Repo);
+                  begin
+                     if Version.Refs.Is_Attached (H) then
+                        Success_Line (Version.Refs.Branch_Name (H));
+                     end if;
+                  end;
+
+               elsif Arg (2) = "-m" or else Arg (2) = "-M"
+                 or else Arg (2) = "--move"
+               then
+                  --  `-m <new>` renames the current branch; `-m <old> <new>`
+                  --  renames a named one.
+                  declare
+                     Names : Version.Trailers.String_Vectors.Vector;
+                  begin
+                     for I in 3 .. Count loop
+                        if Arg (I) = "-f" or else Arg (I) = "--force" then
+                           null;
+                        elsif Arg (I)'Length > 0
+                          and then Arg (I) (Arg (I)'First) = '-'
+                        then
+                           Usage_Error
+                             ("unknown branch option: " & Arg (I), Usage);
+                           return;
+                        else
+                           Names.Append (Arg (I));
+                        end if;
+                     end loop;
+
+                     if Natural (Names.Length) = 1 then
+                        Version.Branch.Rename_Current_Branch
+                          (Names.First_Element);
+                     elsif Natural (Names.Length) = 2 then
+                        Version.Branch.Rename_Branch
+                          (Names.First_Element, Names.Last_Element);
+                     else
+                        Usage_Error ("branch -m needs a name", Usage);
+                        return;
+                     end if;
+                  end;
+
+               elsif Has_Prefix (Arg (2), "--set-upstream-to=")
+                 or else Arg (2) = "-u"
+                 or else Arg (2) = "--set-upstream-to"
+               then
+                  declare
+                     Repo : constant Version.Repository.Repository_Handle :=
+                       Version.Repository.Open;
+                     --  --set-upstream-to=<remote>/<branch>: git splits the
+                     --  value at the last "/" into remote and merge ref.
+                     Value : constant String :=
+                       (if Has_Prefix (Arg (2), "--set-upstream-to=")
+                        then Arg (2) (Arg (2)'First + 18 .. Arg (2)'Last)
+                        elsif Count >= 3 then Arg (3) else "");
+                     Slash : constant Natural :=
+                       Ada.Strings.Fixed.Index (Value, "/", Ada.Strings.Backward);
+                     Branch_Name : constant String :=
+                       (if Has_Prefix (Arg (2), "--set-upstream-to=")
+                          and then Count >= 3 then Arg (3)
+                        elsif not Has_Prefix (Arg (2), "--set-upstream-to=")
+                          and then Count >= 4 then Arg (4)
+                        else Version.Refs.Current_Branch_Name (Repo));
+                  begin
+                     if Slash = 0 then
+                        Usage_Error
+                          ("branch --set-upstream-to needs <remote>/<branch>",
+                           Usage);
+                        return;
+                     end if;
+                     Version.Tracking.Set_Upstream
+                       (Repo        => Repo,
+                        Branch_Name => Branch_Name,
+                        Remote_Name => Value (Value'First .. Slash - 1),
+                        Merge_Ref   =>
+                          "refs/heads/" & Value (Slash + 1 .. Value'Last));
+                  end;
+
+               elsif Arg (2) = "--unset-upstream" then
+                  declare
+                     Repo : constant Version.Repository.Repository_Handle :=
+                       Version.Repository.Open;
+                     Name : constant String :=
+                       (if Count >= 3 then Arg (3)
+                        else Version.Refs.Current_Branch_Name (Repo));
+                  begin
+                     Version.Tracking.Unset_Upstream
+                       (Repo => Repo, Branch_Name => Name);
+                  end;
+
                elsif Arg (2) = "list" then
                   if Count = 2 then
                      Print_Branch_List;
@@ -20307,6 +20404,17 @@ package body Version.CLI is
                Sort_Key : Unbounded_String;
                Ref_Cnt  : Natural := 0;
 
+               --  git can narrow the refs to those pointing at an object, or
+               --  merged into / containing a commit. The format engine has no
+               --  notion of these, so a matching ref list is computed first
+               --  and passed as exact patterns.
+               Points_At : Unbounded_String;
+               Merged_At : Unbounded_String;
+               Contains  : Unbounded_String;
+               Filtering : Boolean := False;
+               Bad_FER   : Boolean := False;
+               Skip_Next : Boolean := False;
+
                function Option_Value
                  (A : String; Name : String) return String is
                begin
@@ -20317,39 +20425,171 @@ package body Version.CLI is
                   declare
                      A : constant String := Arg (I);
                   begin
-                     if A'Length >= 9
-                       and then A (A'First .. A'First + 8) = "--format="
-                     then
+                     if Skip_Next then
+                        Skip_Next := False;   --  value consumed by its option
+                     elsif Has_Prefix (A, "--format=") then
                         Format := To_Unbounded_String (Option_Value (A, "--format="));
-                     elsif A'Length >= 7
-                       and then A (A'First .. A'First + 6) = "--sort="
-                     then
+                     elsif Has_Prefix (A, "--sort=") then
                         Sort_Key := To_Unbounded_String (Option_Value (A, "--sort="));
-                     elsif A'Length >= 8
-                       and then A (A'First .. A'First + 7) = "--count="
-                     then
+                     elsif Has_Prefix (A, "--count=") then
                         Ref_Cnt := Natural'Value (Option_Value (A, "--count="));
-                     elsif A'Length >= 2 and then A (A'First .. A'First + 1) = "--"
+                     elsif Has_Prefix (A, "--points-at=") then
+                        Points_At :=
+                          To_Unbounded_String (Option_Value (A, "--points-at="));
+                        Filtering := True;
+                     elsif A = "--points-at" and then I < Count then
+                        Points_At := To_Unbounded_String (Arg (I + 1));
+                        Skip_Next := True;
+                        Filtering := True;
+                     elsif Has_Prefix (A, "--merged=") then
+                        Merged_At :=
+                          To_Unbounded_String (Option_Value (A, "--merged="));
+                        Filtering := True;
+                     elsif A = "--merged" then
+                        if I < Count and then Arg (I + 1) (Arg (I + 1)'First) /= '-'
+                        then
+                           Skip_Next := True;
+                        end if;
+                        Merged_At :=
+                          To_Unbounded_String
+                            (if I < Count and then Arg (I + 1) (Arg (I + 1)'First) /= '-'
+                             then Arg (I + 1) else "HEAD");
+                        Filtering := True;
+                     elsif Has_Prefix (A, "--contains=") then
+                        Contains :=
+                          To_Unbounded_String (Option_Value (A, "--contains="));
+                        Filtering := True;
+                     elsif A = "--contains" then
+                        if I < Count and then Arg (I + 1) (Arg (I + 1)'First) /= '-'
+                        then
+                           Skip_Next := True;
+                        end if;
+                        Contains :=
+                          To_Unbounded_String
+                            (if I < Count and then Arg (I + 1) (Arg (I + 1)'First) /= '-'
+                             then Arg (I + 1) else "HEAD");
+                        Filtering := True;
+                     elsif A = "--ignore-case" or else A = "-i" then
+                        null;   --  sort/match case folding; refs here are ASCII
+                     elsif A = "--shell" or else A = "--perl"
+                       or else A = "--python" or else A = "--tcl"
                      then
+                        --  These quote each field for a host language; not
+                        --  implemented, and refused rather than emitted raw.
+                        Error_Line
+                          ("for-each-ref " & A & " is not supported");
+                        Bad_FER := True;
+                        exit;
+                     elsif A = "--points-at" or else A = "--no-merged"
+                       or else A = "--no-contains"
+                     then
+                        --  A bare --points-at with no value, or the negated
+                        --  forms this does not implement.
+                        Error_Line ("for-each-ref " & A & " is not supported");
+                        Bad_FER := True;
+                        exit;
+                     elsif Has_Prefix (A, "--") then
                         Usage_Error
                           ("unknown for-each-ref option: " & A,
                            "version for-each-ref [--format=<fmt>] [--sort=<key>]"
-                           & " [--count=<n>] [<pattern>...]");
+                           & " [--count=<n>] [--points-at=<obj>]"
+                           & " [--merged[=<c>]] [--contains[=<c>]] [<pattern>...]");
+                        Bad_FER := True;
+                        exit;
                      else
                         Patterns.Append (A);
                      end if;
                   end;
                end loop;
 
-               for Line of Version.Ref_Format.For_Each_Ref
-                 (Repo     => Repo,
-                  Patterns => Patterns,
-                  Format   => To_String (Format),
-                  Sort_Key => To_String (Sort_Key),
-                  Count    => Ref_Cnt)
-               loop
-                  Success_Line (Line);
-               end loop;
+               if Bad_FER then
+                  Set_Usage_Failure;
+               else
+                  --  Narrow to the refs that pass the filter, if any, by
+                  --  resolving each candidate's target and testing it.
+                  if Filtering then
+                     declare
+                        All_Names : constant
+                          Version.Ref_Format.String_Vectors.Vector :=
+                            Version.Ref_Format.For_Each_Ref
+                              (Repo, Patterns, "%(refname)");
+                        Kept : Version.Ref_Format.String_Vectors.Vector;
+
+                        function Passes (Ref : String) return Boolean is
+                           Target : Version.Objects.Hex_Object_Id;
+                        begin
+                           Target := Version.Refs.Resolve_Ref (Repo, Ref);
+
+                           if Length (Points_At) > 0 then
+                              --  git matches the ref's direct target or, for
+                              --  an annotated tag, the commit it peels to.
+                              declare
+                                 Want : constant String :=
+                                   Version.Objects.To_String
+                                     (Version.Revisions.Resolve
+                                        (Repo, To_String (Points_At)));
+                                 Peeled : constant String :=
+                                   Version.Objects.To_String
+                                     (Version.Revisions.Resolve_Commit
+                                        (Repo, Ref));
+                              begin
+                                 return Version.Objects.To_String (Target) = Want
+                                   or else Peeled = Want;
+                              end;
+                           elsif Length (Merged_At) > 0 then
+                              --  merged: the ref's commit is an ancestor of the
+                              --  target. An annotated tag counts by the commit
+                              --  it peels to, so resolve to a commit.
+                              return Version.History.Is_Ancestor
+                                (Repo,
+                                 Base_Id    =>
+                                   Version.Revisions.Resolve_Commit (Repo, Ref),
+                                 Derived_Id => Version.Revisions.Resolve_Commit
+                                                 (Repo, To_String (Merged_At)));
+                           else
+                              --  contains: the commit is an ancestor of the ref.
+                              return Version.History.Is_Ancestor
+                                (Repo,
+                                 Base_Id    => Version.Revisions.Resolve_Commit
+                                                 (Repo, To_String (Contains)),
+                                 Derived_Id =>
+                                   Version.Revisions.Resolve_Commit (Repo, Ref));
+                           end if;
+                        exception
+                           when others =>
+                              return False;
+                        end Passes;
+                     begin
+                        for Name of All_Names loop
+                           if Passes (Name) then
+                              Kept.Append (Name);
+                           end if;
+                        end loop;
+
+                        --  Nothing passed means no output, not "all refs".
+                        if Kept.Is_Empty then
+                           null;
+                        else
+                           for Line of Version.Ref_Format.For_Each_Ref
+                             (Repo, Kept, To_String (Format),
+                              To_String (Sort_Key), Ref_Cnt)
+                           loop
+                              Success_Line (Line);
+                           end loop;
+                        end if;
+                     end;
+                  else
+                     for Line of Version.Ref_Format.For_Each_Ref
+                       (Repo     => Repo,
+                        Patterns => Patterns,
+                        Format   => To_String (Format),
+                        Sort_Key => To_String (Sort_Key),
+                        Count    => Ref_Cnt)
+                     loop
+                        Success_Line (Line);
+                     end loop;
+                  end if;
+               end if;
             end;
 
          elsif Command = "rev-list" then
@@ -21735,9 +21975,26 @@ package body Version.CLI is
                   end if;
                end Parse_One_Remote_Name;
             begin
-               if Count = 1 then
-                  Usage_Error
-                    ("missing remote subcommand", "version remote <subcommand>");
+               if Count = 1
+                 or else Subcommand = "-v" or else Subcommand = "--verbose"
+               then
+                  --  Bare `remote` lists the remote names; `-v` follows each
+                  --  name with its URL and whether it is the fetch or push
+                  --  side, which is git's default listing.
+                  if Subcommand = "-v" or else Subcommand = "--verbose" then
+                     for R of Version.Remotes.List_Remotes loop
+                        Success_Line
+                          (To_String (R.Name) & ASCII.HT
+                           & To_String (R.Url) & " (fetch)");
+                        Success_Line
+                          (To_String (R.Name) & ASCII.HT
+                           & To_String (R.Url) & " (push)");
+                     end loop;
+                  else
+                     for R of Version.Remotes.List_Remotes loop
+                        Success_Line (To_String (R.Name));
+                     end loop;
+                  end if;
                   return;
 
                elsif Subcommand = "list" then

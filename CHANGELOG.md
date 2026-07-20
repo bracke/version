@@ -1,3 +1,6 @@
+- Add: `branch` accepts `--show-current`, `-m`/`-M` (rename), `--set-upstream-to=<u>`/`-u`, and `--unset-upstream`, on top of the delete and list flags.
+- Add: bare `remote` lists the remote names and `remote -v`/`--verbose` follows each with its URL and fetch/push side, as git does; neither was a usage error before this.
+- Add: `for-each-ref` accepts `--points-at[=<obj>]`, `--merged[=<c>]`, `--contains[=<c>]` and `--ignore-case`, matching an annotated tag by the commit it peels to. `--shell`/`--perl`/`--python`/`--tcl` quote for a host language and are refused rather than emitted raw.
 - Add: `config` accepts `--get-all`, `--get-regexp`, `--add`, `--unset-all`, `--replace-all`, `--null`/`-z`, and `--local`/`--global`/`--system`/`--file`. This tool keeps one config file, so `--local` reads it and `--global`/`--system`/`--file` read a config it does not keep (a get there finds nothing, a list is empty) rather than being rejected.
 - Add: `describe` accepts `--long`, `--abbrev[=<n>]`, `--always`, `--all`, `--dirty[=<mark>]` and `--match=<pat>`. `--contains`, a different search this does not implement, is refused rather than answered in the wrong direction.
 - Add: `hash-object` accepts `-t blob`, `--path=`, `--no-filters` and `--literally`.

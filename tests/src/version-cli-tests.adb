@@ -3393,14 +3393,12 @@ package body Version.CLI.Tests is
 
       Old_Dir : constant String := Ada.Directories.Current_Directory;
    begin
+      --  Bare `remote` and `remote -v`/`--verbose` now list the remotes, as
+      --  git does, rather than being usage errors; a genuinely unknown
+      --  top-level option stands in for the rejection.
       Check_Usage_Failure
-        ("remote",
-         "missing remote subcommand",
-         "version remote <subcommand>",
-         "remote missing subcommand");
-      Check_Usage_Failure
-        ("remote --verbose",
-         "unknown remote option: --verbose",
+        ("remote --nonsense",
+         "unknown remote option: --nonsense",
          "version remote <subcommand>",
          "remote unknown top-level option");
       Check_Usage_Failure
