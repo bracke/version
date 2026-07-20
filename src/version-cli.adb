@@ -16,6 +16,7 @@ with Ada.Containers.Vectors;
 with Interfaces.C;
 with System;
 
+with GNAT.Regpat;
 with GNAT.OS_Lib;
 
 with Version.Archive; use Version.Archive;
@@ -1098,6 +1099,10 @@ package body Version.CLI is
    --  every script and manual page still uses. A subcommand name never
    --  contains a dot and never begins with a dash, so the two are told apart
    --  without ambiguity.
+   function Has_Prefix (Text, Prefix : String) return Boolean is
+     (Text'Length >= Prefix'Length
+      and then Text (Text'First .. Text'First + Prefix'Length - 1) = Prefix);
+
    function Is_Classic_Config_Invocation return Boolean is
       A : constant String := Arg (2);
    begin
@@ -1119,9 +1124,26 @@ package body Version.CLI is
 
       List_Mode    : Boolean := False;
       Name_Only    : Boolean := False;
+      Null_Term    : Boolean := False;
       Want_Get     : Boolean := False;
+      Want_Get_All : Boolean := False;
+      Want_Get_Regexp : Boolean := False;
       Want_Unset   : Boolean := False;
+      Want_Unset_All : Boolean := False;
+      Want_Add     : Boolean := False;
+      Want_Replace : Boolean := False;
+      Global_Scope : Boolean := False;
       Remove_Sect  : Boolean := False;
+
+      --  git's config key-regex is a POSIX ERE over the whole "section.key".
+      function Regex_Matches (Pattern, Text : String) return Boolean is
+      begin
+         return GNAT.Regpat.Match
+                  (GNAT.Regpat.Compile (Pattern), Text) >= Text'First;
+      exception
+         when others =>
+            return False;
+      end Regex_Matches;
       As_Bool      : Boolean := False;
       As_Int       : Boolean := False;
       Have_Default : Boolean := False;
@@ -1167,16 +1189,53 @@ package body Version.CLI is
                List_Mode := True;
             elsif A = "--name-only" then
                Name_Only := True;
+            elsif A = "--null" or else A = "-z" then
+               --  Terminate each value with NUL instead of a newline, and put
+               --  a newline between name and value, which is git's -z form.
+               Null_Term := True;
             elsif A = "--get" then
                Want_Get := True;
+            elsif A = "--get-all" then
+               Want_Get_All := True;
+            elsif A = "--get-regexp" then
+               Want_Get_Regexp := True;
             elsif A = "--unset" then
                Want_Unset := True;
+            elsif A = "--unset-all" then
+               Want_Unset_All := True;
+            elsif A = "--add" then
+               Want_Add := True;
+            elsif A = "--replace-all" then
+               Want_Replace := True;
             elsif A = "--remove-section" then
                Remove_Sect := True;
+            elsif A = "--local" or else A = "--worktree" then
+               --  This tool has one config file, so naming which one to read
+               --  or write changes nothing; accepted so scripts that scope a
+               --  read to --local still work.
+               null;
+            elsif A = "--global" or else A = "--system" then
+               --  Reading the user's global config is out of scope here, but
+               --  refusing the flag would break `config --global --get`;
+               --  treat it as a read of nothing rather than an error.
+               Global_Scope := True;
+            elsif Has_Prefix (A, "--file=") or else A = "--file"
+              or else A = "-f"
+            then
+               if A = "--file" or else A = "-f" then
+                  I := I + 1;   --  skip the path; only this repo's config is read
+               end if;
+               Global_Scope := True;
             elsif A = "--bool" or else A = "--type=bool" then
                As_Bool := True;
-            elsif A = "--int" or else A = "--type=int" then
+            elsif A = "--int" or else A = "--type=int"
+              or else A = "--type=bool-or-int"
+            then
                As_Int := True;
+            elsif A = "--path" or else A = "--type=path"
+              or else A = "--type=string" or else A = "--type=color"
+            then
+               null;   --  stored form is already what these want here
             elsif A = "--default" then
                if I = Count then
                   Usage_Error ("--default requires a value", Usage);
@@ -1202,10 +1261,37 @@ package body Version.CLI is
          I := I + 1;
       end loop;
 
+      --  --global/--system/--file read a config this tool does not keep, so a
+      --  get there finds nothing (exit 1) and a list is empty.
+      if Global_Scope and then not Have_Key then
+         if not List_Mode then
+            Set_Command_Failure;
+         end if;
+         return;
+      end if;
+
       if List_Mode then
-         Version.Console.Put
-           (if Name_Only then Version.Config.Keys_Text (Repo)
-            else Version.Config.List_Text (Repo));
+         if Global_Scope then
+            return;
+         end if;
+         if Null_Term then
+            for E of Version.Config.Read_All (Repo) loop
+               declare
+                  Nm : constant String := Version.Config.Config_Entry_Name (E);
+               begin
+                  if Name_Only then
+                     Version.Console.Put (Nm & ASCII.NUL);
+                  else
+                     Version.Console.Put
+                       (Nm & ASCII.LF & To_String (E.Value) & ASCII.NUL);
+                  end if;
+               end;
+            end loop;
+         else
+            Version.Console.Put
+              (if Name_Only then Version.Config.Keys_Text (Repo)
+               else Version.Config.List_Text (Repo));
+         end if;
          return;
       end if;
 
@@ -1214,19 +1300,83 @@ package body Version.CLI is
          return;
       end if;
 
+      --  --get-regexp keys off a regex over the whole name; the others match a
+      --  name exactly. Both walk every entry so multi-valued keys come out in
+      --  order.
+      if Want_Get_All or else Want_Get_Regexp then
+         declare
+            Pat   : constant String := To_String (Key);
+            Found : Boolean := False;
+         begin
+            for E of Version.Config.Read_All (Repo) loop
+               declare
+                  Nm : constant String :=
+                    Version.Config.Config_Entry_Name (E);
+                  Hit : constant Boolean :=
+                    (if Want_Get_Regexp
+                     then Regex_Matches (Pat, Nm)
+                     else Nm = Pat);
+               begin
+                  if Hit then
+                     Found := True;
+                     if Want_Get_Regexp then
+                        Version.Console.Put
+                          (Nm & " " & Typed (To_String (E.Value))
+                           & (if Null_Term then "" & ASCII.NUL
+                              else "" & ASCII.LF));
+                     else
+                        Version.Console.Put
+                          (Typed (To_String (E.Value))
+                           & (if Null_Term then "" & ASCII.NUL
+                              else "" & ASCII.LF));
+                     end if;
+                  end if;
+               end;
+            end loop;
+
+            if not Found then
+               if Have_Default then
+                  Success_Line (Typed (To_String (Default_Text)));
+               else
+                  Set_Command_Failure;
+               end if;
+            end if;
+         end;
+         return;
+      end if;
+
       if Remove_Sect then
          Version.Config.Remove_Section (Repo, To_String (Key));
          return;
       end if;
 
-      if Want_Unset then
+      if Want_Unset or else Want_Unset_All then
          --  git distinguishes "nothing to unset" (5) from a real failure.
          if not Version.Config.Has_Key (Repo, To_String (Key)) then
             Ada.Command_Line.Set_Exit_Status
               (Ada.Command_Line.Exit_Status (5));
             return;
          end if;
-         Version.Config.Unset_Key (Repo, To_String (Key));
+         --  --unset-all clears every value; --unset removes the single value
+         --  and refuses a multivar, which Unset_Key already enforces.
+         if Want_Unset_All then
+            Version.Config.Unset_All (Repo, To_String (Key));
+         else
+            Version.Config.Unset_Key (Repo, To_String (Key));
+         end if;
+         return;
+      end if;
+
+      --  --add appends another value for the key rather than replacing it;
+      --  --replace-all collapses the key to the single value given.
+      if Want_Add and then Have_Value then
+         Version.Config.Add_Value
+           (Repo, To_String (Key), To_String (Value));
+         return;
+      end if;
+
+      if Want_Replace and then Have_Value then
+         Version.Config.Set_Key (Repo, To_String (Key), To_String (Value));
          return;
       end if;
 
@@ -3626,10 +3776,6 @@ package body Version.CLI is
       Equivalent_Keys => "=");
 
    --  `fast-export [--all] [<ref>...]` -- the history as a fast-import stream.
-   function Has_Prefix (Text, Prefix : String) return Boolean is
-     (Text'Length >= Prefix'Length
-      and then Text (Text'First .. Text'First + Prefix'Length - 1) = Prefix);
-
    --  git's diff output selectors, rendered from the raw format every
    --  tree-to-tree diff already produces: ":<m1> <m2> <id1> <id2> <status>"
    --  TAB "<path>". Keeping one renderer means diff-tree, diff-index and the

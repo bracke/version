@@ -3568,10 +3568,12 @@ package body Version.CLI.Tests is
          "version config <subcommand>",
          "config missing subcommand");
       --  A leading dash selects git's classic option interface, so the usage
-      --  shown is that one's rather than the subcommand summary.
+      --  shown is that one's rather than the subcommand summary. --global is
+      --  now accepted (as git accepts it, reading a config this tool does not
+      --  keep), so a genuinely unknown option stands in for the rejection.
       Check_Usage_Failure
-        ("config --global",
-         "unknown config option: --global",
+        ("config --nonsense-flag",
+         "unknown config option: --nonsense-flag",
          "version config [--get|--unset] NAME [VALUE] | config --list",
          "config unknown top-level option");
       Check_Usage_Failure
