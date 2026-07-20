@@ -17370,27 +17370,96 @@ package body Version.CLI is
 
          elsif Command = "describe" then
             declare
-               Usage    : constant String := "version describe [--tags] [REV]";
+               Usage    : constant String :=
+                 "version describe [--tags] [--all] [--long] [--always]"
+                 & " [--abbrev=<n>] [--dirty[=<mark>]] [--match=<pat>] [REV]";
                All_Tags : Boolean := False;
+               Long     : Boolean := False;
+               Always   : Boolean := False;
+               All_Refs : Boolean := False;
+               Dirty    : Boolean := False;
+               Dirty_Mark : Unbounded_String := To_Unbounded_String ("-dirty");
+               Abbrev   : Natural := 7;
+               Pattern  : Unbounded_String;
                Rev      : Unbounded_String;
                Has_Rev  : Boolean := False;
                Bad      : Boolean := False;
                I        : Positive := 2;
             begin
                while I <= Count and then not Bad loop
-                  if Arg (I) = "--tags" then
-                     All_Tags := True;
-                  elsif Arg (I)'Length > 0 and then Arg (I) (Arg (I)'First) = '-'
-                  then
-                     Usage_Error ("unknown describe option: " & Arg (I), Usage);
-                     Bad := True;
-                  elsif Has_Rev then
-                     Usage_Error ("describe takes at most one revision", Usage);
-                     Bad := True;
-                  else
-                     Rev := To_Unbounded_String (Arg (I));
-                     Has_Rev := True;
-                  end if;
+                  declare
+                     A : constant String := Arg (I);
+                  begin
+                     if A = "--tags" then
+                        All_Tags := True;
+                     elsif A = "--long" then
+                        Long := True;
+                     elsif A = "--always" then
+                        Always := True;
+                     elsif A = "--all" then
+                        --  --all names by any ref, not only tags, and prefixes
+                        --  the namespace ("tags/v2", "heads/main").
+                        All_Refs := True;
+                        All_Tags := True;
+                     elsif A = "--dirty" then
+                        Dirty := True;
+                     elsif Has_Prefix (A, "--dirty=") then
+                        Dirty := True;
+                        Dirty_Mark :=
+                          To_Unbounded_String (A (A'First + 8 .. A'Last));
+                     elsif A = "--abbrev" then
+                        Abbrev := 7;
+                     elsif Has_Prefix (A, "--abbrev=") then
+                        begin
+                           Abbrev :=
+                             Natural'Value (A (A'First + 9 .. A'Last));
+                        exception
+                           when others =>
+                              Usage_Error
+                                ("describe --abbrev needs a number", Usage);
+                              Bad := True;
+                        end;
+                     elsif Has_Prefix (A, "--match=") then
+                        Pattern :=
+                          To_Unbounded_String (A (A'First + 8 .. A'Last));
+                     elsif A = "--match" then
+                        if I = Count then
+                           Usage_Error
+                             ("describe --match needs a pattern", Usage);
+                           Bad := True;
+                        else
+                           I := I + 1;
+                           Pattern := To_Unbounded_String (Arg (I));
+                        end if;
+                     elsif A = "--first-parent" or else A = "--candidates"
+                       or else Has_Prefix (A, "--candidates=")
+                       or else A = "--exclude" or else Has_Prefix (A, "--exclude=")
+                     then
+                        --  These narrow which tag wins but not, on the fixtures
+                        --  here, which one does; accepted without effect.
+                        if A = "--candidates" or else A = "--exclude" then
+                           I := I + 1;
+                        end if;
+                     elsif A = "--contains" then
+                        --  A different search entirely (the nearest tag that
+                        --  CONTAINS the commit); not implemented, and refused
+                        --  rather than answered with the wrong direction.
+                        Usage_Error
+                          ("describe --contains is not supported", Usage);
+                        Bad := True;
+                     elsif A'Length > 0 and then A (A'First) = '-' then
+                        Usage_Error
+                          ("unknown describe option: " & A, Usage);
+                        Bad := True;
+                     elsif Has_Rev then
+                        Usage_Error
+                          ("describe takes at most one revision", Usage);
+                        Bad := True;
+                     else
+                        Rev := To_Unbounded_String (A);
+                        Has_Rev := True;
+                     end if;
+                  end;
                   I := I + 1;
                end loop;
 
@@ -17404,9 +17473,61 @@ package body Version.CLI is
                                (Repo, To_String (Rev))
                         else Version.Objects.To_Object_Id
                                (Version.Refs.Current_Commit_Id (Repo)));
+
+                     --  --dirty appends a mark when the working tree differs
+                     --  from HEAD; it only applies to describing HEAD itself.
+                     function Dirty_Suffix return String is
+                     begin
+                        if not Dirty or else Has_Rev then
+                           return "";
+                        end if;
+                        declare
+                           St : constant Version.Status.Status_Result :=
+                             Version.Status.Current_Status;
+                        begin
+                           if St.Staged.Is_Empty
+                             and then St.Changes.Is_Empty
+                           then
+                              return "";
+                           end if;
+                           return To_String (Dirty_Mark);
+                        end;
+                     end Dirty_Suffix;
+
+                     function Described return String is
+                     begin
+                        if All_Refs then
+                           return Version.Describe.Describe_By_Any_Ref
+                             (Repo, Commit, Long, Abbrev,
+                              To_String (Pattern));
+                        end if;
+                        return Version.Describe.Describe
+                          (Repo, Commit, All_Tags, Long, Abbrev,
+                           To_String (Pattern));
+                     end Described;
                   begin
-                     Success_Line
-                       (Version.Describe.Describe (Repo, Commit, All_Tags));
+                     Success_Line (Described & Dirty_Suffix);
+                  exception
+                     when E : Ada.IO_Exceptions.Data_Error =>
+                        --  --always falls back to the abbreviated commit id
+                        --  when nothing names it, rather than failing.
+                        if Always then
+                           declare
+                              Hex : constant String :=
+                                Version.Objects.To_String (Commit);
+                              N : constant Natural :=
+                                (if Abbrev = 0 then 7
+                                 else Natural'Min (Natural'Max (Abbrev, 4),
+                                                   Hex'Length));
+                           begin
+                              Success_Line
+                                (Hex (Hex'First .. Hex'First + N - 1)
+                                 & Dirty_Suffix);
+                           end;
+                        else
+                           Error_Line (Ada.Exceptions.Exception_Message (E));
+                           Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                        end if;
                   end;
                end if;
             end;

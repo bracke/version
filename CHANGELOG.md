@@ -1,3 +1,4 @@
+- Add: `describe` accepts `--long`, `--abbrev[=<n>]`, `--always`, `--all`, `--dirty[=<mark>]` and `--match=<pat>`. `--contains`, a different search this does not implement, is refused rather than answered in the wrong direction.
 - Add: `hash-object` accepts `-t blob`, `--path=`, `--no-filters` and `--literally`.
 - Add: `read-tree` accepts `-m`/`--reset` (as a wholesale index read), `-u` (also update the working tree) and `--prefix=<dir>/` (graft a tree under a directory, keeping the rest of the index). The unsupported multi-tree merge form and `-i` without `-m` are refused with git's wording rather than silently reading only the first tree.
 - Add: `update-index` accepts `-v`, `--really-refresh`, `--assume-unchanged`/`--no-assume-unchanged` and `--skip-worktree`/`--no-skip-worktree`. Skip-worktree is a real index bit and is recorded; assume-unchanged only suppresses stat calls this tool never makes, so it is accepted without a false claim of effect.
