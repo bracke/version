@@ -2402,7 +2402,76 @@ package body Version.CLI is
       end;
    end Print_Remote_Branch_List;
 
-   procedure Print_Branch_List is
+   --  git's branch patterns are shell globs against the short name; only `*`
+   --  and `?` are worth supporting here, which is what real patterns use.
+   function Glob_Match (Text, Pattern : String) return Boolean is
+      function Match (T, P : Natural) return Boolean is
+      begin
+         if P > Pattern'Last then
+            return T > Text'Last;
+         end if;
+
+         case Pattern (P) is
+            when '*' =>
+               --  Try every split; patterns here are short.
+               for K in T - 1 .. Text'Last loop
+                  if Match (K + 1, P + 1) then
+                     return True;
+                  end if;
+               end loop;
+               return False;
+            when '?' =>
+               return T <= Text'Last and then Match (T + 1, P + 1);
+            when others =>
+               return T <= Text'Last
+                 and then Text (T) = Pattern (P)
+                 and then Match (T + 1, P + 1);
+         end case;
+      end Match;
+   begin
+      return Match (Text'First, Pattern'First);
+   end Glob_Match;
+
+   --  The filtering forms print the same shape as a plain listing -- two
+   --  spaces, or "* " on the branch you are on. The *_Text helpers behind
+   --  them yield bare names, which is a different answer to the same question.
+   procedure Print_Marked_Branches (Names_Text : String) is
+      Repo : constant Version.Repository.Repository_Handle :=
+        Version.Repository.Open;
+      Head : constant Version.Refs.Head_Info := Version.Refs.Read_Head (Repo);
+      Current : constant String :=
+        (if Version.Refs.Is_Attached (Head)
+         then Version.Refs.Branch_Name (Head) else "");
+      First : Natural := Names_Text'First;
+   begin
+      while First <= Names_Text'Last loop
+         declare
+            Last : Natural := First;
+         begin
+            while Last <= Names_Text'Last
+              and then Names_Text (Last) /= ASCII.LF
+            loop
+               Last := Last + 1;
+            end loop;
+
+            declare
+               Name : constant String := Names_Text (First .. Last - 1);
+            begin
+               if Name'Length > 0 then
+                  if Name = Current then
+                     Ada.Text_IO.Put_Line ("* " & Name);
+                  else
+                     Ada.Text_IO.Put_Line ("  " & Name);
+                  end if;
+               end if;
+            end;
+
+            First := Last + 1;
+         end;
+      end loop;
+   end Print_Marked_Branches;
+
+   procedure Print_Branch_List (Pattern : String := "") is
       Repo : constant Version.Repository.Repository_Handle :=
         Version.Repository.Open;
 
@@ -2423,10 +2492,12 @@ package body Version.CLI is
          declare
             Name : constant String := To_String (Branches.Element (I));
          begin
-            if Name = Current then
-               Ada.Text_IO.Put_Line ("* " & Name);
-            else
-               Ada.Text_IO.Put_Line ("  " & Name);
+            if Pattern'Length = 0 or else Glob_Match (Name, Pattern) then
+               if Name = Current then
+                  Ada.Text_IO.Put_Line ("* " & Name);
+               else
+                  Ada.Text_IO.Put_Line ("  " & Name);
+               end if;
             end if;
          end;
       end loop;
@@ -3559,6 +3630,213 @@ package body Version.CLI is
      (Text'Length >= Prefix'Length
       and then Text (Text'First .. Text'First + Prefix'Length - 1) = Prefix);
 
+   --  git's diff output selectors, rendered from the raw format every
+   --  tree-to-tree diff already produces: ":<m1> <m2> <id1> <id2> <status>"
+   --  TAB "<path>". Keeping one renderer means diff-tree, diff-index and the
+   --  rest cannot drift apart on what --name-status or --numstat mean.
+   type Diff_Render is
+     (Render_Patch, Render_Raw, Render_Name_Only, Render_Name_Status,
+      Render_Numstat, Render_Shortstat, Render_Summary, Render_Silent);
+
+   procedure Put_Raw_As
+     (Repo   : Version.Repository.Repository_Handle;
+      Raw    : String;
+      Format : Diff_Render)
+   is
+      Files_Changed : Natural := 0;
+      Total_Added   : Natural := 0;
+      Total_Deleted : Natural := 0;
+      Summary_Text  : Unbounded_String;
+      Zero          : constant String := [1 .. 40 => '0'];
+      First         : Natural := Raw'First;
+
+      function Blob_Text (Id : String) return String is
+        (if Id = Zero or else Id'Length = 0 then ""
+         else Version.Objects.Content
+                (Version.Objects.Read_Object
+                   (Repo, Version.Objects.To_Object_Id (Id))));
+   begin
+      while First <= Raw'Last loop
+         declare
+            Last : Natural := First;
+         begin
+            while Last <= Raw'Last and then Raw (Last) /= ASCII.LF loop
+               Last := Last + 1;
+            end loop;
+
+            declare
+               Line : constant String := Raw (First .. Last - 1);
+               Tab  : constant Natural :=
+                 Ada.Strings.Fixed.Index (Line, "" & ASCII.HT);
+            begin
+               if Line'Length > 0 and then Line (Line'First) = ':'
+                 and then Tab /= 0
+               then
+                  declare
+                     Head : constant String :=
+                       Line (Line'First + 1 .. Tab - 1);
+                     Path : constant String := Line (Tab + 1 .. Line'Last);
+
+                     function Field (N : Positive) return String is
+                        Start : Natural := Head'First;
+                        Stop  : Natural;
+                     begin
+                        for K in 1 .. N - 1 loop
+                           Start :=
+                             Ada.Strings.Fixed.Index (Head, " ", Start) + 1;
+                        end loop;
+                        Stop := Ada.Strings.Fixed.Index (Head, " ", Start);
+                        return Head (Start ..
+                                     (if Stop = 0 then Head'Last
+                                      else Stop - 1));
+                     end Field;
+
+                     Old_Mode : constant String := Field (1);
+                     New_Mode : constant String := Field (2);
+                     Old_Id   : constant String := Field (3);
+                     New_Id   : constant String := Field (4);
+                     Status   : constant String := Field (5);
+
+                     procedure Count (Added, Deleted : out Natural) is
+                        Patch : constant String :=
+                          Version.Diff.Unified_Blob_Diff
+                            (Path        => Path,
+                             Old_Text    => Blob_Text (Old_Id),
+                             New_Text    => Blob_Text (New_Id),
+                             Old_Present => Old_Id /= Zero,
+                             New_Present => New_Id /= Zero,
+                             Old_Id      =>
+                               Version.Objects.To_Object_Id (Old_Id),
+                             New_Id      =>
+                               Version.Objects.To_Object_Id (New_Id),
+                             Old_Mode    => Old_Mode,
+                             New_Mode    => New_Mode,
+                             Context     => 3);
+                        P : Natural := Patch'First;
+                        In_Hunk : Boolean := False;
+                     begin
+                        Added := 0;
+                        Deleted := 0;
+                        while P <= Patch'Last loop
+                           declare
+                              E : Natural := P;
+                           begin
+                              while E <= Patch'Last
+                                and then Patch (E) /= ASCII.LF
+                              loop
+                                 E := E + 1;
+                              end loop;
+
+                              declare
+                                 L : constant String := Patch (P .. E - 1);
+                              begin
+                                 if L'Length >= 2
+                                   and then L (L'First .. L'First + 1) = "@@"
+                                 then
+                                    In_Hunk := True;
+                                 elsif In_Hunk and then L'Length > 0 then
+                                    if L (L'First) = '+' then
+                                       Added := Added + 1;
+                                    elsif L (L'First) = '-' then
+                                       Deleted := Deleted + 1;
+                                    end if;
+                                 end if;
+                              end;
+
+                              P := E + 1;
+                           end;
+                        end loop;
+                     end Count;
+                  begin
+                     Files_Changed := Files_Changed + 1;
+
+                     case Format is
+                        when Render_Raw | Render_Patch =>
+                           Version.Console.Put (Line & ASCII.LF);
+
+                        when Render_Name_Only =>
+                           Version.Console.Put (Path & ASCII.LF);
+
+                        when Render_Name_Status =>
+                           Version.Console.Put
+                             (Status & ASCII.HT & Path & ASCII.LF);
+
+                        when Render_Numstat =>
+                           declare
+                              A, D : Natural;
+                           begin
+                              Count (A, D);
+                              Total_Added := Total_Added + A;
+                              Total_Deleted := Total_Deleted + D;
+                              Version.Console.Put
+                                (Natural_Image (A) & ASCII.HT
+                                 & Natural_Image (D) & ASCII.HT
+                                 & Path & ASCII.LF);
+                           end;
+
+                        when Render_Shortstat =>
+                           declare
+                              A, D : Natural;
+                           begin
+                              Count (A, D);
+                              Total_Added := Total_Added + A;
+                              Total_Deleted := Total_Deleted + D;
+                           end;
+
+                        when Render_Summary =>
+                           if Old_Id = Zero then
+                              Append
+                                (Summary_Text,
+                                 " create mode " & New_Mode & " " & Path
+                                 & ASCII.LF);
+                           elsif New_Id = Zero then
+                              Append
+                                (Summary_Text,
+                                 " delete mode " & Old_Mode & " " & Path
+                                 & ASCII.LF);
+                           elsif Old_Mode /= New_Mode then
+                              Append
+                                (Summary_Text,
+                                 " mode change " & Old_Mode & " => "
+                                 & New_Mode & " " & Path & ASCII.LF);
+                           end if;
+
+                        when Render_Silent =>
+                           null;
+                     end case;
+                  end;
+               end if;
+            end;
+
+            First := Last + 1;
+         end;
+      end loop;
+
+      case Format is
+         when Render_Shortstat =>
+            if Files_Changed > 0 then
+               Version.Console.Put
+                 (" " & Natural_Image (Files_Changed) & " file"
+                  & (if Files_Changed = 1 then "" else "s") & " changed"
+                  & (if Total_Added > 0
+                     then ", " & Natural_Image (Total_Added) & " insertion"
+                          & (if Total_Added = 1 then "" else "s") & "(+)"
+                     else "")
+                  & (if Total_Deleted > 0
+                     then ", " & Natural_Image (Total_Deleted) & " deletion"
+                          & (if Total_Deleted = 1 then "" else "s") & "(-)"
+                     else "")
+                  & ASCII.LF);
+            end if;
+
+         when Render_Summary =>
+            Version.Console.Put (To_String (Summary_Text));
+
+         when others =>
+            null;
+      end case;
+   end Put_Raw_As;
+
    procedure Run_Fast_Export_Command is
       Repo : constant Version.Repository.Repository_Handle :=
         Version.Repository.Open;
@@ -3575,6 +3853,7 @@ package body Version.CLI is
 
       Marks_File : Unbounded_String;
       No_Data    : Boolean := False;
+      Detect_Renames : Boolean := False;
       Bad_Option : Boolean := False;
 
       --  Commits an `<a>..<b>` range excludes: everything reachable from a.
@@ -3728,6 +4007,11 @@ package body Version.CLI is
 
             elsif A = "--no-data" then
                No_Data := True;
+
+            elsif A = "-M" or else A = "-C" or else Has_Prefix (A, "-M")
+              or else Has_Prefix (A, "-C")
+            then
+               Detect_Renames := True;
 
             elsif A = "--reencode=yes" or else A = "--reencode=no"
               or else A = "--reencode=abort"
@@ -4163,6 +4447,92 @@ package body Version.CLI is
                                  end;
                               end if;
                            end loop;
+
+                           --  -M: a path that vanished and one that appeared
+                           --  carrying the identical blob is the same file
+                           --  moved, and git says so with one R line instead
+                           --  of a D and an M. Only exact content is matched
+                           --  here -- a rename that also edited the file is
+                           --  still reported as a delete and an add.
+                           if Detect_Renames then
+                              declare
+                                 procedure Drop (Key : String) is
+                                    Kept : Version.Trailers.String_Vectors
+                                             .Vector;
+                                 begin
+                                    for Item of Changes loop
+                                       if Ada.Strings.Fixed.Index
+                                            (Item, "" & ASCII.NUL) = 0
+                                         or else Item
+                                                   (Item'First
+                                                    .. Ada.Strings.Fixed.Index
+                                                         (Item,
+                                                          "" & ASCII.NUL) - 1)
+                                                 /= Key
+                                       then
+                                          Kept.Append (Item);
+                                       end if;
+                                    end loop;
+                                    Changes := Kept;
+                                 end Drop;
+                              begin
+                                 for P of Parent_Items loop
+                                    if P.Kind = Version.Objects.Tree_Blob then
+                                       declare
+                                          Old_Path : constant String :=
+                                            To_String (P.Path);
+                                          Gone : Boolean := True;
+                                       begin
+                                          for E of Items loop
+                                             if E.Path = P.Path then
+                                                Gone := False;
+                                             end if;
+                                          end loop;
+
+                                          if Gone then
+                                             for E of Items loop
+                                                if E.Kind
+                                                   = Version.Objects.Tree_Blob
+                                                  and then
+                                                    Version.Objects.To_String
+                                                      (E.Id)
+                                                    = Version.Objects.To_String
+                                                        (P.Id)
+                                                then
+                                                   declare
+                                                      New_Path : constant
+                                                        String :=
+                                                          To_String (E.Path);
+                                                      Was_There : Boolean :=
+                                                        False;
+                                                   begin
+                                                      for Q of Parent_Items
+                                                      loop
+                                                         if Q.Path = E.Path
+                                                         then
+                                                            Was_There := True;
+                                                         end if;
+                                                      end loop;
+
+                                                      if not Was_There then
+                                                         Drop (Old_Path);
+                                                         Drop (New_Path);
+                                                         Changes.Append
+                                                           (Old_Path
+                                                            & ASCII.NUL
+                                                            & "R " & Old_Path
+                                                            & " " & New_Path);
+                                                         exit;
+                                                      end if;
+                                                   end;
+                                                end if;
+                                             end loop;
+                                          end if;
+                                       end;
+                                    end if;
+                                 end loop;
+                              end;
+                           end if;
 
                            --  Plain insertion sort: a commit's change list is
                            --  short.
@@ -10457,6 +10827,156 @@ package body Version.CLI is
                   --  -a lists both, remote-tracking ones under "remotes/".
                   Print_Branch_List;
                   Print_Remote_Branch_List (With_Prefix => True);
+               --  git's own spellings for the operations this command already
+               --  had under long names: -d/-D delete, and -r scopes the
+               --  deletion to remote-tracking refs.
+               elsif Arg (2) = "-d" or else Arg (2) = "-D"
+                 or else Arg (2) = "--delete"
+               then
+                  declare
+                     Force  : Boolean := Arg (2) = "-D";
+                     Remote : Boolean := False;
+                     Names  : Version.Trailers.String_Vectors.Vector;
+                     Repo   : constant Version.Repository.Repository_Handle :=
+                       Version.Repository.Open;
+                  begin
+                     for I in 3 .. Count loop
+                        if Arg (I) = "-f" or else Arg (I) = "--force" then
+                           Force := True;
+                        elsif Arg (I) = "-r" or else Arg (I) = "--remotes" then
+                           Remote := True;
+                        elsif Arg (I) = "-q" or else Arg (I) = "--quiet" then
+                           null;
+                        elsif Arg (I)'Length > 0
+                          and then Arg (I) (Arg (I)'First) = '-'
+                        then
+                           Usage_Error
+                             ("unknown branch option: " & Arg (I), Usage);
+                           return;
+                        else
+                           Names.Append (Arg (I));
+                        end if;
+                     end loop;
+
+                     if Names.Is_Empty then
+                        Usage_Error ("missing branch name", Usage);
+                        return;
+                     end if;
+
+                     --  A failed delete is exit 1 in git, unlike branch's
+                     --  other failures, which are die()s at 128. The status
+                     --  belongs to the operation, not to the command.
+                     begin
+                     for N of Names loop
+                        declare
+                           Ref : constant String :=
+                             (if Remote then "refs/remotes/" & N
+                              else "refs/heads/" & N);
+
+                           --  git reports where the branch stood, so the user
+                           --  can put it back; it is read before the delete.
+                           function Was return String is
+                              Id : constant Version.Objects.Hex_Object_Id :=
+                                Version.Refs.Resolve_Ref (Repo, Ref);
+                           begin
+                              return Version.Objects.To_String (Id)
+                                (1 .. Version.Revisions.Unique_Abbrev_Length
+                                        (Repo, Id, 7));
+                           exception
+                              when others =>
+                                 return "";
+                           end Was;
+
+                           Short : constant String := Was;
+                        begin
+                           if Remote then
+                              declare
+                                 Tx : Version.Ref_Transaction.Transaction;
+                              begin
+                                 Version.Ref_Transaction.Start (Tx, Repo);
+                                 Version.Ref_Transaction.Add_Delete
+                                   (Tx, Ref, "");
+                                 Version.Ref_Transaction.Commit (Tx);
+                              end;
+                              Success_Line
+                                ("Deleted remote-tracking branch " & N
+                                 & " (was " & Short & ").");
+                           else
+                              Version.Branch.Delete_Branch
+                                (Name => N, Force => Force);
+                              Success_Line
+                                ("Deleted branch " & N
+                                 & " (was " & Short & ").");
+                           end if;
+                        end;
+                     end loop;
+                     exception
+                        when E : Ada.IO_Exceptions.Data_Error
+                           | Ada.IO_Exceptions.Name_Error
+                           | Ada.IO_Exceptions.Use_Error =>
+                           Error_Line (User_Error_Text (E));
+                           Set_Command_Failure;
+                     end;
+                  end;
+
+               --  The filtering forms git spells as options on `branch`
+               --  itself, over the same listings the long subcommands print.
+               elsif Arg (2) = "--merged" or else Arg (2) = "--no-merged"
+                 or else Arg (2) = "--contains" or else Arg (2) = "--list"
+                 or else Has_Prefix (Arg (2), "--merged=")
+                 or else Has_Prefix (Arg (2), "--no-merged=")
+                 or else Has_Prefix (Arg (2), "--contains=")
+               then
+                  declare
+                     function Value_Of return String is
+                        A : constant String := Arg (2);
+                        Eq : constant Natural :=
+                          Ada.Strings.Fixed.Index (A, "=");
+                     begin
+                        if Eq /= 0 then
+                           return A (Eq + 1 .. A'Last);
+                        elsif Count >= 3
+                          and then Arg (3)'Length > 0
+                          and then Arg (3) (Arg (3)'First) /= '-'
+                        then
+                           return Arg (3);
+                        end if;
+                        return "";
+                     end Value_Of;
+
+                     Rev : constant String := Value_Of;
+                  begin
+                     if Has_Prefix (Arg (2), "--merged") then
+                        if Rev'Length = 0 then
+                           Print_Marked_Branches
+                             (Version.Branch.Merged_Branches_Text);
+                        else
+                           Print_Marked_Branches
+                             (Version.Branch.Merged_Branches_Text (Rev));
+                        end if;
+                     elsif Has_Prefix (Arg (2), "--no-merged") then
+                        if Rev'Length = 0 then
+                           Print_Marked_Branches
+                             (Version.Branch.Unmerged_Branches_Text);
+                        else
+                           Print_Marked_Branches
+                             (Version.Branch.Unmerged_Branches_Text (Rev));
+                        end if;
+                     elsif Has_Prefix (Arg (2), "--contains") then
+                        if Rev'Length = 0 then
+                           Usage_Error
+                             ("missing branch contains revision", Usage);
+                           return;
+                        end if;
+                        Print_Marked_Branches
+                          (Version.Branch.Branches_Containing_Text (Rev));
+                     else
+                        --  --list with no pattern is the plain listing;
+                        --  with one it is that listing globbed.
+                        Print_Branch_List (Rev);
+                     end if;
+                  end;
+
                elsif Arg (2) = "list" then
                   if Count = 2 then
                      Print_Branch_List;
@@ -24454,12 +24974,27 @@ package body Version.CLI is
                Root_Diff : Boolean := False;
                A1, A2 : Natural := 0;
                Bad : Boolean := False;
+               Format : Diff_Render := Render_Raw;
             begin
                for I in 2 .. Count loop
                   if Arg (I) = "-r" then
                      Recursive := True;
                   elsif Arg (I) = "--root" then
                      Root_Diff := True;
+                  elsif Arg (I) = "--raw" then
+                     Format := Render_Raw;
+                  elsif Arg (I) = "--name-only" then
+                     Format := Render_Name_Only;
+                  elsif Arg (I) = "--name-status" then
+                     Format := Render_Name_Status;
+                  elsif Arg (I) = "--numstat" then
+                     Format := Render_Numstat;
+                  elsif Arg (I) = "--shortstat" then
+                     Format := Render_Shortstat;
+                  elsif Arg (I) = "--summary" then
+                     Format := Render_Summary;
+                  elsif Arg (I) = "-s" or else Arg (I) = "--no-patch" then
+                     Format := Render_Silent;
                   elsif Arg (I)'Length > 0 and then Arg (I) (Arg (I)'First) = '-'
                   then
                      Usage_Error ("unknown diff-tree option: " & Arg (I),
@@ -24489,9 +25024,11 @@ package body Version.CLI is
                         T2 : constant Version.Objects.Hex_Object_Id :=
                           Version.Revisions.Resolve_Tree (Repo, Arg (A2));
                      begin
-                        Version.Console.Put
-                          (Version.Diff.Raw_Diff_Trees
-                             (Repo, T1, True, T2, Recursive));
+                        Put_Raw_As
+                          (Repo,
+                           Version.Diff.Raw_Diff_Trees
+                             (Repo, T1, True, T2, Recursive),
+                           Format);
                      end;
                   else
                      declare
@@ -24520,15 +25057,19 @@ package body Version.CLI is
                                 Version.Objects.Commit_Tree_Id (P_Obj);
                            begin
                               Success_Line (To_String (C));
-                              Version.Console.Put
-                                (Version.Diff.Raw_Diff_Trees
-                                   (Repo, P_Tree, True, Tree, Recursive));
+                              Put_Raw_As
+                                (Repo,
+                                 Version.Diff.Raw_Diff_Trees
+                                   (Repo, P_Tree, True, Tree, Recursive),
+                                 Format);
                            end;
                         elsif Root_Diff then
                            Success_Line (To_String (C));
-                           Version.Console.Put
-                             (Version.Diff.Raw_Diff_Trees
-                                (Repo, Tree, False, Tree, Recursive));
+                           Put_Raw_As
+                             (Repo,
+                              Version.Diff.Raw_Diff_Trees
+                                (Repo, Tree, False, Tree, Recursive),
+                              Format);
                         end if;
                      end;
                   end if;
