@@ -19066,6 +19066,30 @@ package body Version.CLI is
                      Write_It := True;
                   elsif Arg (I) = "--stdin" then
                      Stdin := True;
+                  elsif Arg (I) = "-t" then
+                     --  Only blob is meaningful for a file this hashes; any
+                     --  other type would need an object of that shape.
+                     if I = Count then
+                        Bad_Opt := True;
+                        Bad_Text := To_Unbounded_String (Arg (I));
+                        exit;
+                     end if;
+                     I := I + 1;
+                     if Arg (I) /= "blob" then
+                        Bad_Opt := True;
+                        Bad_Text :=
+                          To_Unbounded_String ("-t " & Arg (I));
+                        exit;
+                     end if;
+                  elsif Arg (I) = "--no-filters"
+                    or else Arg (I) = "--literally"
+                    or else Has_Prefix (Arg (I), "--path=")
+                  then
+                     --  --path names the file the content would be filtered
+                     --  as, and --no-filters/--literally switch filtering and
+                     --  object-format checks off. Nothing here filters or
+                     --  rejects, so all three describe what already happens.
+                     null;
                   else
                      Bad_Opt := True;
                      Bad_Text := To_Unbounded_String (Arg (I));
@@ -19618,19 +19642,111 @@ package body Version.CLI is
 
          elsif Command = "read-tree" then
             declare
-               Usage : constant String := "version read-tree TREE-ISH";
+               Usage : constant String :=
+                 "version read-tree [-m] [--reset] [-u] [--prefix=<dir>/]"
+                 & " TREE-ISH";
+               --  This reads a tree into the index wholesale, which is what
+               --  --reset asks for; -m's three-way behaviour is not
+               --  implemented, so it is accepted only where it agrees with a
+               --  plain read (one tree, and --reset to discard what was
+               --  there). -u additionally updates the working tree.
+               Reset_It  : Boolean := False;
+               Update_WT : Boolean := False;
+               Prefix    : Unbounded_String;
+               Trees     : Version.Trailers.String_Vectors.Vector;
+               Bad       : Boolean := False;
             begin
-               if Count /= 2 then
-                  Usage_Error ("read-tree requires a tree-ish", Usage);
-               else
-                  declare
-                     Repo : constant Version.Repository.Repository_Handle :=
-                       Version.Repository.Open;
-                  begin
-                     Version.Staging.Write_From_Tree
-                       (Repo,
-                        Version.Revisions.Resolve_Tree (Repo, Arg (2)));
-                  end;
+               for I in 2 .. Count loop
+                  if Arg (I) = "-m" or else Arg (I) = "--reset" then
+                     Reset_It := True;
+                  elsif Arg (I) = "-u" then
+                     Update_WT := True;
+                  elsif Arg (I) = "-i" then
+                     --  git: "-i is meaningless" without -m.
+                     Stderr_Line
+                       ("fatal: -i is meaningless without -m");
+                     Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                     Bad := True;
+                     exit;
+                  elsif Has_Prefix (Arg (I), "--prefix=") then
+                     Prefix :=
+                       To_Unbounded_String
+                         (Arg (I) (Arg (I)'First + 9 .. Arg (I)'Last));
+                  elsif Arg (I) = "-v" or else Arg (I) = "--quiet"
+                    or else Arg (I) = "--empty" or else Arg (I) = "--trivial"
+                    or else Arg (I) = "--aggressive"
+                  then
+                     null;
+                  elsif Arg (I)'Length > 0 and then Arg (I) (Arg (I)'First) = '-'
+                  then
+                     Usage_Error
+                       ("unknown read-tree option: " & Arg (I), Usage);
+                     Bad := True;
+                     exit;
+                  else
+                     Trees.Append (Arg (I));
+                  end if;
+               end loop;
+
+               if not Bad then
+                  if Trees.Is_Empty then
+                     Usage_Error ("read-tree requires a tree-ish", Usage);
+                  elsif Natural (Trees.Length) > 1 then
+                     --  Two or three trees is the merge form, which this does
+                     --  not do; saying so beats reading only the first.
+                     Stderr_Line
+                       ("fatal: read-tree with multiple trees is not"
+                        & " supported");
+                     Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                  else
+                     declare
+                        Repo : constant Version.Repository.Repository_Handle :=
+                          Version.Repository.Open;
+                        Tree : constant Version.Objects.Hex_Object_Id :=
+                          Version.Revisions.Resolve_Tree
+                            (Repo, Trees.First_Element);
+                     begin
+                        if Length (Prefix) > 0 then
+                           --  --prefix grafts the tree under a directory,
+                           --  keeping whatever the index already had.
+                           declare
+                              Pfx : constant String := To_String (Prefix);
+                              Base : constant String :=
+                                (if Pfx'Length > 0
+                                   and then Pfx (Pfx'Last) = '/'
+                                 then Pfx (Pfx'First .. Pfx'Last - 1)
+                                 else Pfx);
+                              Entries : Version.Staging.Index_Entry_Vectors
+                                          .Vector := Version.Staging.Load (Repo);
+                              Cache : Version.Tree_Cache.Tree_Cache;
+                           begin
+                              for E of Version.Tree_Cache.Flatten_Tree
+                                         (Repo, Cache, Tree)
+                              loop
+                                 if E.Kind /= Version.Objects.Tree_Directory
+                                 then
+                                    Version.Staging.Replace_Entry
+                                      (Entries,
+                                       (Path  => To_Unbounded_String
+                                                   (Base & "/"
+                                                    & To_String (E.Path)),
+                                        Id    => E.Id,
+                                        Mode  => E.Mode,
+                                        Stage => 0, Skip_Worktree => False));
+                                 end if;
+                              end loop;
+                              Version.Staging.Sort_By_Path (Entries);
+                              Version.Staging.Write (Repo, Entries);
+                           end;
+                        else
+                           Version.Staging.Write_From_Tree (Repo, Tree);
+                        end if;
+
+                        if Update_WT then
+                           Version.Restore.Restore_Working_Tree (Repo);
+                        end if;
+                     end;
+                  end if;
                end if;
             end;
 
@@ -19732,6 +19848,8 @@ package body Version.CLI is
                Force_Remove : Boolean := False;
                Has_Chmod    : Boolean := False;
                Chmod_Exec   : Boolean := False;
+               Skip_WT      : Boolean := False;
+               Clear_Skip_WT : Boolean := False;
                End_Opts     : Boolean := False;
                I            : Positive := 2;
 
@@ -19804,6 +19922,28 @@ package body Version.CLI is
                   if Has_Chmod and then not Force_Remove then
                      Apply_Chmod (Path);
                   end if;
+
+                  --  skip-worktree is a real index bit: it tells every reader
+                  --  to leave the file alone, so it has to be recorded.
+                  if Skip_WT or else Clear_Skip_WT then
+                     declare
+                        E : Version.Staging.Index_Entry_Vectors.Vector :=
+                          Version.Staging.Load (Repo);
+                        Pos : constant Natural :=
+                          Version.Staging.Find_Path (E, Path);
+                     begin
+                        if Pos /= Natural'Last then
+                           declare
+                              Item : Version.Staging.Index_Entry :=
+                                E.Element (Pos);
+                           begin
+                              Item.Skip_Worktree := Skip_WT;
+                              E.Replace_Element (Pos, Item);
+                              Version.Staging.Write (Repo, E);
+                           end;
+                        end if;
+                     end;
+                  end if;
                end Process_Path;
             begin
                if Count < 2 then
@@ -19821,8 +19961,30 @@ package body Version.CLI is
                         Remove_Mode := True;
                      elsif not End_Opts and then A = "--force-remove" then
                         Force_Remove := True;
-                     elsif not End_Opts and then A = "--refresh" then
+                     elsif not End_Opts
+                       and then (A = "--refresh" or else A = "--really-refresh")
+                     then
                         null;  --  up-to-date index: nothing to surface
+                     elsif not End_Opts
+                       and then (A = "--assume-unchanged"
+                                 or else A = "--no-assume-unchanged")
+                     then
+                        --  The bit only tells git not to bother stat-ing the
+                        --  file; nothing here consults it, so recording it
+                        --  would claim an effect it does not have.
+                        null;
+                     elsif not End_Opts and then A = "--skip-worktree" then
+                        Skip_WT := True;
+                     elsif not End_Opts and then A = "--no-skip-worktree" then
+                        Clear_Skip_WT := True;
+                     elsif not End_Opts
+                       and then (A = "-v" or else A = "--verbose"
+                                 or else A = "-q" or else A = "--quiet"
+                                 or else A = "--ignore-missing"
+                                 or else A = "--unmerged"
+                                 or else A = "--again" or else A = "-g")
+                     then
+                        null;
                      elsif not End_Opts and then A = "--chmod=+x" then
                         Has_Chmod := True;
                         Chmod_Exec := True;
