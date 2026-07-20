@@ -3554,6 +3554,10 @@ package body Version.CLI is
       Equivalent_Keys => "=");
 
    --  `fast-export [--all] [<ref>...]` -- the history as a fast-import stream.
+   function Has_Prefix (Text, Prefix : String) return Boolean is
+     (Text'Length >= Prefix'Length
+      and then Text (Text'First .. Text'First + Prefix'Length - 1) = Prefix);
+
    procedure Run_Fast_Export_Command is
       Repo : constant Version.Repository.Repository_Handle :=
         Version.Repository.Open;
@@ -3562,6 +3566,18 @@ package body Version.CLI is
       Next_Mark : Natural := 0;
 
       Refs : Version.Trailers.String_Vectors.Vector;
+
+      --  Which marks name commits. git's --export-marks records only those:
+      --  blob marks are an artefact of one stream, not something a later
+      --  incremental export can resume from.
+      Commit_Marks : Version.Trailers.String_Vectors.Vector;
+
+      Marks_File : Unbounded_String;
+      No_Data    : Boolean := False;
+      Bad_Option : Boolean := False;
+
+      --  Commits an `<a>..<b>` range excludes: everything reachable from a.
+      Excluded : Version.Trailers.String_Vectors.Vector;
 
       function New_Mark (Id : String) return Natural is
       begin
@@ -3645,7 +3661,10 @@ package body Version.CLI is
       procedure Ensure_Blob (Id : Version.Objects.Hex_Object_Id) is
          Hex : constant String := Version.Objects.To_String (Id);
       begin
-         if Marks.Contains (Hex) then
+         --  --no-data exports the shape of history without the file contents,
+         --  so nothing is emitted and each M line names the object id itself
+         --  rather than a mark that was never created.
+         if No_Data or else Marks.Contains (Hex) then
             return;
          end if;
 
@@ -3700,13 +3719,67 @@ package body Version.CLI is
                for Name of Version.Tags.List_Tags loop
                   Refs.Append ("refs/tags/" & To_String (Name));
                end loop;
-            elsif A'Length > 0 and then A (A'First) = '-' then
+
+            elsif Has_Prefix (A, "--export-marks=") then
+               Marks_File :=
+                 To_Unbounded_String
+                   (A (A'First + 15 .. A'Last));
+
+            elsif A = "--no-data" then
+               No_Data := True;
+
+            elsif A = "--reencode=yes" or else A = "--reencode=no"
+              or else A = "--reencode=abort"
+              or else A = "--signed-tags=verbatim"
+              or else A = "--signed-tags=strip"
+              or else A = "--signed-tags=abort"
+              or else A = "--signed-tags=warn"
+              or else A = "--signed-tags=warn-strip"
+              or else A = "--tag-of-filtered-object=abort"
+              or else A = "--tag-of-filtered-object=drop"
+              or else A = "--tag-of-filtered-object=rewrite"
+              or else A = "--use-done-feature"
+              or else A = "--no-done"
+              or else A = "--progress"
+              or else Has_Prefix (A, "--progress=")
+              or else Has_Prefix (A, "--import-marks=")
+              or else Has_Prefix (A, "--refspec=")
+              or else Has_Prefix (A, "--anonymize")
+            then
+               --  Known to git and without effect on what this emits.
                null;
+
+            elsif A'Length > 0 and then A (A'First) = '-' then
+               --  Silently ignoring these made `--no-data` and
+               --  `--export-marks=` look supported while doing nothing.
+               Error_Line ("unknown fast-export option: " & A);
+               Bad_Option := True;
+
             else
-               Refs.Append (Canonical_Ref (A));
+               --  `<a>..<b>` exports only what b has and a does not, which is
+               --  how git scopes an export to a slice of history.
+               declare
+                  Dots : constant Natural :=
+                    Ada.Strings.Fixed.Index (A, "..");
+               begin
+                  if Dots /= 0 then
+                     Excluded.Append
+                       (Version.Objects.To_String
+                          (Version.Revisions.Resolve_Commit
+                             (Repo, A (A'First .. Dots - 1))));
+                     Refs.Append (Canonical_Ref (A (Dots + 2 .. A'Last)));
+                  else
+                     Refs.Append (Canonical_Ref (A));
+                  end if;
+               end;
             end if;
          end;
       end loop;
+
+      if Bad_Option then
+         Set_Usage_Failure;
+         return;
+      end if;
 
       if Refs.Is_Empty then
          return;
@@ -3745,6 +3818,31 @@ package body Version.CLI is
             Refs.Append (R);
          end loop;
       end;
+
+      --  Everything an `<a>..<b>` range excludes is marked exported up front,
+      --  so the walk below stops where a's history begins.
+      for Tip of Excluded loop
+         declare
+            Pending : Version.Trailers.String_Vectors.Vector;
+         begin
+            Pending.Append (Tip);
+            while not Pending.Is_Empty loop
+               declare
+                  C : constant String := Pending.Last_Element;
+               begin
+                  Pending.Delete_Last;
+                  if not Exported.Contains (C) then
+                     Exported.Append (C);
+                     for P of Version.History.Parent_Commits
+                                (Repo, Version.Objects.To_Object_Id (C))
+                     loop
+                        Pending.Append (Version.Objects.To_String (P));
+                     end loop;
+                  end if;
+               end;
+            end loop;
+         end;
+      end loop;
 
       for Ref of Refs loop
          declare
@@ -3970,6 +4068,7 @@ package body Version.CLI is
 
                         Put ("commit " & Ref & ASCII.LF);
                         Put ("mark :" & Mark_Image (New_Mark (C)) & ASCII.LF);
+                        Commit_Marks.Append (C);
                         Put ("author " & Header_Line (Id, "author ")
                              & ASCII.LF);
                         Put ("committer " & Header_Line (Id, "committer ")
@@ -4030,11 +4129,14 @@ package body Version.CLI is
                                     if not Same then
                                        Changes.Append
                                          (To_String (E.Path) & ASCII.NUL
-                                          & "M " & To_String (E.Mode) & " :"
-                                          & Mark_Image
-                                              (Marks.Element
-                                                 (Version.Objects.To_String
-                                                    (E.Id)))
+                                          & "M " & To_String (E.Mode) & " "
+                                          & (if No_Data
+                                             then Version.Objects.To_String
+                                                    (E.Id)
+                                             else ":" & Mark_Image
+                                               (Marks.Element
+                                                  (Version.Objects.To_String
+                                                     (E.Id))))
                                           & " " & To_String (E.Path));
                                     end if;
                                  end;
@@ -4101,6 +4203,43 @@ package body Version.CLI is
             end if;
          end;
       end loop;
+
+      --  --export-marks records which mark stood for which object, so a later
+      --  incremental export can pick up where this one left off. The file was
+      --  never written, so the option looked supported and produced nothing.
+      if Length (Marks_File) > 0 then
+         declare
+            Text : Unbounded_String;
+
+            --  git writes them in mark order, not object order.
+            Ordered : array (1 .. Next_Mark) of Unbounded_String :=
+              [others => Null_Unbounded_String];
+         begin
+            for C in Marks.Iterate loop
+               if Mark_Maps.Element (C) in Ordered'Range
+                 and then Commit_Marks.Contains (Mark_Maps.Key (C))
+               then
+                  Ordered (Mark_Maps.Element (C)) :=
+                    To_Unbounded_String (Mark_Maps.Key (C));
+               end if;
+            end loop;
+
+            --  git lists them newest first.
+            for N in reverse Ordered'Range loop
+               if Length (Ordered (N)) > 0 then
+                  Append
+                    (Text,
+                     ":" & Mark_Image (N) & " " & To_String (Ordered (N))
+                     & ASCII.LF);
+               end if;
+            end loop;
+
+            Version.Files.Write_Binary_File_Atomic
+              (Path    => To_String (Marks_File),
+               Content => To_String (Text));
+         end;
+      end if;
+
    exception
       when E : Ada.IO_Exceptions.Data_Error | Ada.IO_Exceptions.Name_Error =>
          Error_Line (Ada.Exceptions.Exception_Message (E));
@@ -4153,10 +4292,6 @@ package body Version.CLI is
    --  Understands the commands git's own `fast-export` emits: blob/mark/data,
    --  commit (author/committer/data/from/merge, then M and D changes), reset,
    --  and tag.
-   function Has_Prefix (Text, Prefix : String) return Boolean is
-     (Text'Length >= Prefix'Length
-      and then Text (Text'First .. Text'First + Prefix'Length - 1) = Prefix);
-
    procedure Run_Fast_Import_Command is
       Repo : constant Version.Repository.Repository_Handle :=
         Version.Repository.Open;
@@ -6145,15 +6280,59 @@ package body Version.CLI is
       Repo : constant Version.Repository.Repository_Handle :=
         Version.Repository.Open;
 
+      --  What to print per pair. git's diff-pairs takes the same output
+      --  selectors the diff family does; emitting a patch regardless meant
+      --  every one of them was silently ignored.
+      type Output_Format is
+        (Format_Patch, Format_Raw, Format_Name_Only, Format_Name_Status,
+         Format_Numstat, Format_Shortstat, Format_Summary, Format_Silent);
+
       Use_NUL : Boolean := False;
+      Format  : Output_Format := Format_Patch;
+      Bad_Opt : Boolean := False;
+
+      --  Running totals, for the formats that report over the whole input.
+      Files_Changed : Natural := 0;
+      Total_Added   : Natural := 0;
+      Total_Deleted : Natural := 0;
+      Summary_Text  : Unbounded_String;
    begin
       for I in 2 .. Count loop
-         if Arg (I) = "-z" then
-            Use_NUL := True;
-         end if;
+         declare
+            A : constant String := Arg (I);
+         begin
+            if A = "-z" then
+               Use_NUL := True;
+            elsif A = "--raw" then
+               Format := Format_Raw;
+            elsif A = "--name-only" then
+               Format := Format_Name_Only;
+            elsif A = "--name-status" then
+               Format := Format_Name_Status;
+            elsif A = "--numstat" then
+               Format := Format_Numstat;
+            elsif A = "--shortstat" then
+               Format := Format_Shortstat;
+            elsif A = "--summary" then
+               Format := Format_Summary;
+            elsif A = "-s" or else A = "--no-patch" then
+               Format := Format_Silent;
+            elsif A = "-p" or else A = "--patch" then
+               Format := Format_Patch;
+            elsif A'Length > 0 and then A (A'First) = '-' then
+               Error_Line ("unknown diff-pairs option: " & A);
+               Bad_Opt := True;
+            end if;
+         end;
       end loop;
 
+      if Bad_Opt then
+         Set_Usage_Failure;
+         return;
+      end if;
+
       if not Use_NUL then
+         --  git's own restriction, and it exits 129 for it.
          Error_Line ("working without -z is not supported");
          Set_Usage_Failure;
          return;
@@ -6226,25 +6405,203 @@ package body Version.CLI is
                         else Version.Objects.Content
                                (Version.Objects.Read_Object
                                   (Repo, Version.Objects.To_Object_Id (Id))));
+                     Shown : constant String :=
+                       (if Path2 = "" then Path else Path2);
+
+                     Patch : constant String :=
+                       Version.Diff.Unified_Blob_Diff
+                         (Path        => Shown,
+                          Old_Text    => Blob_Text (Old_Id),
+                          New_Text    => Blob_Text (New_Id),
+                          Old_Present => Old_Id /= Zero,
+                          New_Present => New_Id /= Zero,
+                          Old_Id      =>
+                            Version.Objects.To_Object_Id (Old_Id),
+                          New_Id      =>
+                            Version.Objects.To_Object_Id (New_Id),
+                          Old_Mode    => Old_Mode,
+                          New_Mode    => New_Mode,
+                          Context     => 3);
+
+                     --  git counts the payload lines of the patch it would
+                     --  have printed, so a rename with no edit counts zero
+                     --  and a mode change counts zero, as it should.
+                     procedure Count_Lines
+                       (Added, Deleted : out Natural)
+                     is
+                        First : Natural := Patch'First;
+                        In_Hunk : Boolean := False;
+                     begin
+                        Added := 0;
+                        Deleted := 0;
+                        while First <= Patch'Last loop
+                           declare
+                              Last : Natural := First;
+                           begin
+                              while Last <= Patch'Last
+                                and then Patch (Last) /= ASCII.LF
+                              loop
+                                 Last := Last + 1;
+                              end loop;
+
+                              declare
+                                 L : constant String :=
+                                   Patch (First .. Last - 1);
+                              begin
+                                 if L'Length >= 2
+                                   and then L (L'First .. L'First + 1) = "@@"
+                                 then
+                                    In_Hunk := True;
+                                 elsif In_Hunk and then L'Length > 0 then
+                                    if L (L'First) = '+' then
+                                       Added := Added + 1;
+                                    elsif L (L'First) = '-' then
+                                       Deleted := Deleted + 1;
+                                    end if;
+                                 end if;
+                              end;
+
+                              First := Last + 1;
+                           end;
+                        end loop;
+                     end Count_Lines;
+
+                     NUL : constant String := "" & ASCII.NUL;
                   begin
-                     Version.Console.Put
-                       (Version.Diff.Unified_Blob_Diff
-                          (Path        => (if Path2 = "" then Path else Path2),
-                           Old_Text    => Blob_Text (Old_Id),
-                           New_Text    => Blob_Text (New_Id),
-                           Old_Present => Old_Id /= Zero,
-                           New_Present => New_Id /= Zero,
-                           Old_Id      =>
-                             Version.Objects.To_Object_Id (Old_Id),
-                           New_Id      =>
-                             Version.Objects.To_Object_Id (New_Id),
-                           Old_Mode    => Old_Mode,
-                           New_Mode    => New_Mode,
-                           Context     => 3));
+                     Files_Changed := Files_Changed + 1;
+
+                     case Format is
+                        when Format_Patch =>
+                           --  A pair whose content did not change still has
+                           --  something to say when the file moved or its
+                           --  mode changed. Unified_Blob_Diff has no text to
+                           --  show for those, so the header is built here --
+                           --  without it they vanished from the patch.
+                           if Patch'Length = 0 then
+                              if Status'Length > 0
+                                and then Status (Status'First) in 'R' | 'C'
+                                and then Path2 /= ""
+                              then
+                                 declare
+                                    Pct : constant String :=
+                                      (if Status'Length > 1
+                                       then Status (Status'First + 1
+                                                    .. Status'Last)
+                                       else "100");
+                                    Verb : constant String :=
+                                      (if Status (Status'First) = 'R'
+                                       then "rename" else "copy");
+                                 begin
+                                    Version.Console.Put
+                                      ("diff --git a/" & Path & " b/" & Path2
+                                       & ASCII.LF
+                                       & "similarity index "
+                                       & Natural_Image (Natural'Value (Pct))
+                                       & "%" & ASCII.LF
+                                       & Verb & " from " & Path & ASCII.LF
+                                       & Verb & " to " & Path2 & ASCII.LF);
+                                 end;
+                              elsif Old_Mode /= New_Mode then
+                                 Version.Console.Put
+                                   ("diff --git a/" & Shown & " b/" & Shown
+                                    & ASCII.LF
+                                    & "old mode " & Old_Mode & ASCII.LF
+                                    & "new mode " & New_Mode & ASCII.LF);
+                              end if;
+                           else
+                              Version.Console.Put (Patch);
+                           end if;
+
+                        when Format_Raw =>
+                           Version.Console.Put
+                             (":" & Old_Mode & " " & New_Mode & " "
+                              & Old_Id & " " & New_Id & " " & Status
+                              & NUL & Path & NUL);
+
+                        when Format_Name_Only =>
+                           Version.Console.Put (Shown & NUL);
+
+                        when Format_Name_Status =>
+                           Version.Console.Put (Status & NUL & Path & NUL);
+
+                        when Format_Numstat =>
+                           declare
+                              A, D : Natural;
+                           begin
+                              Count_Lines (A, D);
+                              Total_Added := Total_Added + A;
+                              Total_Deleted := Total_Deleted + D;
+                              Version.Console.Put
+                                (Natural_Image (A) & ASCII.HT
+                                 & Natural_Image (D) & ASCII.HT
+                                 & Shown & NUL);
+                           end;
+
+                        when Format_Shortstat =>
+                           declare
+                              A, D : Natural;
+                           begin
+                              Count_Lines (A, D);
+                              Total_Added := Total_Added + A;
+                              Total_Deleted := Total_Deleted + D;
+                           end;
+
+                        when Format_Summary =>
+                           --  git reports only what changed structurally:
+                           --  a file appearing, disappearing, or changing
+                           --  mode. An ordinary edit says nothing here.
+                           if Old_Id = Zero then
+                              Append
+                                (Summary_Text,
+                                 " create mode " & New_Mode & " " & Shown
+                                 & ASCII.LF);
+                           elsif New_Id = Zero then
+                              Append
+                                (Summary_Text,
+                                 " delete mode " & Old_Mode & " " & Shown
+                                 & ASCII.LF);
+                           elsif Old_Mode /= New_Mode then
+                              Append
+                                (Summary_Text,
+                                 " mode change " & Old_Mode & " => "
+                                 & New_Mode & " " & Shown & ASCII.LF);
+                           end if;
+
+                        when Format_Silent =>
+                           null;
+                     end case;
                   end;
                end if;
             end;
          end loop;
+
+         --  The formats that describe the input as a whole rather than each
+         --  pair, printed once the last record has been read.
+         case Format is
+            when Format_Shortstat =>
+               if Files_Changed > 0 then
+                  Version.Console.Put
+                    (" " & Natural_Image (Files_Changed) & " file"
+                     & (if Files_Changed = 1 then "" else "s") & " changed"
+                     & (if Total_Added > 0
+                        then ", " & Natural_Image (Total_Added)
+                             & " insertion" & (if Total_Added = 1 then ""
+                                               else "s") & "(+)"
+                        else "")
+                     & (if Total_Deleted > 0
+                        then ", " & Natural_Image (Total_Deleted)
+                             & " deletion" & (if Total_Deleted = 1 then ""
+                                              else "s") & "(-)"
+                        else "")
+                     & ASCII.LF);
+               end if;
+
+            when Format_Summary =>
+               Version.Console.Put (To_String (Summary_Text));
+
+            when others =>
+               null;
+         end case;
       end;
    exception
       when E : Ada.IO_Exceptions.Data_Error | Ada.IO_Exceptions.Name_Error =>
