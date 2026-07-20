@@ -70,6 +70,7 @@ with Version.Move;
 with Version.Clean;
 with Version.Bundle;
 with Version.Hooks;
+with Version.Tree_Cache;
 with Version.Trailers;
 with Version.Stripspace;
 with Version.Ref_Names;
@@ -7339,6 +7340,107 @@ package body Version.CLI is
             Success_Line ("Trying simple merge.");
          end if;
 
+         --  An octopus takes the remotes one at a time and refuses to leave a
+         --  conflict behind: git will not hand back a half-merged octopus,
+         --  because there is no sensible thing for the user to resolve. This
+         --  merged only the first remote and reported success, so a
+         --  conflicting octopus looked like it had worked.
+         if Backend = Backend_Octopus then
+            declare
+               Acc      : Version.Objects.Tree_Entry_Vectors.Vector :=
+                 Ours_Items;
+               Acc_Head : Version.Objects.Hex_Object_Id := Head_Id;
+               Failed   : Boolean := False;
+            begin
+               for R of Remotes loop
+                  declare
+                     RR_Id : constant Version.Objects.Hex_Object_Id :=
+                       Version.Revisions.Resolve_Commit (Repo, R);
+                  begin
+                     --  A side that already contains everything merged so far
+                     --  is not merged but moved to, and git says so.
+                     if Version.History.Is_Ancestor (Repo, Acc_Head, RR_Id)
+                     then
+                        Success_Line ("Fast-forwarding to: " & R);
+                        Acc_Head := RR_Id;
+                        Acc := Tree_Of (RR_Id);
+                        goto Next_Remote;
+                     end if;
+                  end;
+
+                  Success_Line ("Trying simple merge with " & R);
+
+                  declare
+                     R_Id : constant Version.Objects.Hex_Object_Id :=
+                       Version.Revisions.Resolve_Commit (Repo, R);
+                     R_Items : constant
+                       Version.Objects.Tree_Entry_Vectors.Vector :=
+                         Tree_Of (R_Id);
+                     R_Base : constant Version.Objects.Hex_Object_Id :=
+                       Version.History.Merge_Base (Repo, Head_Id, R_Id);
+                     Merged : Version.Staging.Index_Entry_Vectors.Vector;
+                     Conf   : Version.Merge.Conflict_Vectors.Vector;
+                     Bhv    : Version.Merge.Merge_Behavior;
+                  begin
+                     Bhv.Update_Worktree := True;
+                     Bhv.Base_Label :=
+                       To_Unbounded_String
+                         (Version.Merge.Base_Label_For (Repo, R_Base));
+
+                     Version.Merge.Merge_Trees
+                       (Repo          => Repo,
+                        Current_Name  => To_String (Head),
+                        Target_Name   => R,
+                        Base_Items    => Tree_Of (R_Base),
+                        Current_Items => Acc,
+                        Target_Items  => R_Items,
+                        Merged_Index  => Merged,
+                        Conflicts     => Conf,
+                        Behavior      => Bhv);
+
+                     if not Conf.Is_Empty then
+                        Success_Line
+                          ("Simple merge did not work, trying automatic"
+                           & " merge.");
+                        for C of Conf loop
+                           Success_Line
+                             ("Auto-merging " & To_String (C.Path));
+                        end loop;
+                        for C of Conf loop
+                           Success_Line
+                             ("ERROR: content conflict in "
+                              & To_String (C.Path));
+                        end loop;
+                        Stderr_Line ("fatal: merge program failed");
+                        --  git's closing verdict: an octopus that conflicts
+                        --  is not a merge the user should be attempting.
+                        Success_Line ("Automated merge did not work.");
+                        Success_Line ("Should not be doing an octopus.");
+                        Failed := True;
+                        exit;
+                     end if;
+
+                     Version.Staging.Write (Repo, Merged);
+                     declare
+                        Cache : Version.Tree_Cache.Tree_Cache;
+                        T : constant Version.Objects.Hex_Object_Id :=
+                          Version.Write.Write_Tree_From_Index (Repo, Merged);
+                     begin
+                        Acc := Version.Tree_Cache.Flatten_Tree (Repo, Cache, T);
+                     end;
+                  end;
+
+                  <<Next_Remote>>
+               end loop;
+
+               if Failed then
+                  Ada.Command_Line.Set_Exit_Status
+                    (Ada.Command_Line.Exit_Status (2));
+               end if;
+               return;
+            end;
+         end if;
+
          declare
             Merged    : Version.Staging.Index_Entry_Vectors.Vector;
             Conflicts : Version.Merge.Conflict_Vectors.Vector;
@@ -7465,10 +7567,19 @@ package body Version.CLI is
                      when others =>
                         if In_Ours and then In_Theirs and then not In_Base
                         then
-                           --  Both sides created the path independently;
-                           --  git calls that add/add, not a content clash.
-                           Success_Line
-                             ("CONFLICT (add/add): Merge conflict in " & Path);
+                           --  Both sides created the path independently.
+                           --  git's resolve backend is merge-one-file, which
+                           --  words this its own way and never auto-merges
+                           --  the two; recursive calls it an add/add clash.
+                           if Backend = Backend_Resolve then
+                              Success_Line
+                                ("Added " & Path
+                                 & " in both, but differently.");
+                           else
+                              Success_Line
+                                ("CONFLICT (add/add): Merge conflict in "
+                                 & Path);
+                           end if;
                         elsif In_Ours and then not In_Theirs then
                            Success_Line
                              ("CONFLICT (modify/delete): " & Path
