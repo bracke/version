@@ -41,35 +41,35 @@ output.fixture          output.cases          sub
 
 merge.fixture           merge.cases           -     0
 mergeconflict.fixture   mergeconflict.cases   -     0
-refs.fixture            refs.cases            -   191
+refs.fixture            refs.cases            -   187
 refs2.fixture           refs2.cases           -     5
-plumbing.fixture        plumbing.cases        -    70
-histinspect.fixture     histinspect.cases     -    77
-histinspect2.fixture    histinspect2.cases    -    46
-configtext.fixture      configtext.cases      -    51
+plumbing.fixture        plumbing.cases        -    58
+histinspect.fixture     histinspect.cases     -    73
+histinspect2.fixture    histinspect2.cases    -    42
+configtext.fixture      configtext.cases      -    47
 configtext.fixture      configtext2.cases     -    38
-diffplumb.fixture       diffplumb.cases       -   123
+diffplumb.fixture       diffplumb.cases       -   121
 diffplumb2.fixture      diffplumb2.cases      -    40
-wtmutate.fixture        wtmutate.cases        -    31
-wtmutate2.fixture       wtmutate2.cases       -    20
-wtmutate3.fixture       wtmutate3.cases       -    15
+wtmutate.fixture        wtmutate.cases        -    23
+wtmutate2.fixture       wtmutate2.cases       -    14
+wtmutate3.fixture       wtmutate3.cases       -    13
 
 # --- Second coverage round: multi-repo structure, history tools, repository
 # --- maintenance and local-path transport.
 
-multirepo.fixture       multirepo.cases       -    36
-multirepo2.fixture      multirepo2.cases      -    54
+multirepo.fixture       multirepo.cases       -    26
+multirepo2.fixture      multirepo2.cases      -    37
 multirepo3.fixture      multirepo3.cases      -    25
-histtools.fixture       histtools.cases       -    39
+histtools.fixture       histtools.cases       -    38
 histtools2.fixture      histtools2.cases      -    12
 histtools3.fixture      histtools3.cases      -     4
 maint.fixture           maint.cases           -    58
 maint2.fixture          maint2.cases          -    12
-transport.fixture       transport.cases       -    80
-auxcmd.fixture          auxcmd.cases          -    13
+transport.fixture       transport.cases       -    79
+auxcmd.fixture          auxcmd.cases          -    12
 mergeback.fixture       mergeback.cases       -    11
 mergeback2.fixture      mergeback2.cases      -     1
-impexp.fixture          impexp.cases          -    70
-impexp2.fixture         impexp2.cases         -    11
-rebase.fixture          rebase.cases          -    16
-sparsebr.fixture        sparsebr.cases        -    10
+impexp.fixture          impexp.cases          -    63
+impexp2.fixture         impexp2.cases         -    10
+rebase.fixture          rebase.cases          -    15
+sparsebr.fixture        sparsebr.cases        -     8

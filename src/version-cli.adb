@@ -8328,8 +8328,30 @@ package body Version.CLI is
       end if;
    end Run_Bisect_Command;
 
+   --  Which command is running, for the handler below: whether a failure is
+   --  git's die() (128) or an ordinary negative result (1) is a property of
+   --  the command, not of the exception that carried it out.
+   Current_Command : Unbounded_String;
+
+   --  git exits 1, not 128, when these fail: the failure IS the answer --
+   --  the patch does not apply, the merge conflicts, the checkout would
+   --  overwrite local changes, the note is absent, the bisect is unresolved,
+   --  the path is ignored. Every other command's failure is a die(), which
+   --  git reports as 128.
+   --
+   --  Names here are canonical (Canonical_Command), so `add` appears as
+   --  `stage`. `stash` is in the list for a different reason: its corrupt
+   --  reflog diagnostics are this tool's own -- git ignores such a reflog and
+   --  exits 0 -- so there is no git status to match, and the established
+   --  contract is kept.
+   function Failure_Is_Ordinary (Command : String) return Boolean is
+     (Command in "apply" | "checkout" | "restore" | "switch" | "notes"
+                 | "bisect" | "merge" | "cherry-pick" | "revert"
+                 | "stage" | "stash");
+
    procedure Run is
    begin
+      Current_Command := Null_Unbounded_String;
       Quiet_Mode := False;
       Command_Offset := 0;
 
@@ -8349,6 +8371,8 @@ package body Version.CLI is
       declare
          Command : constant String := Canonical_Command (Arg (1));
       begin
+         Current_Command := To_Unbounded_String (Command);
+
          if Is_Help_Option (Command) then
             if Count /= 1 then
                Expected ("version --help");
@@ -24820,7 +24844,11 @@ package body Version.CLI is
           | Program_Error
       =>
          Error_Line (User_Error_Text (E));
-         Set_Command_Failure;
+         if Failure_Is_Ordinary (To_String (Current_Command)) then
+            Set_Command_Failure;
+         else
+            Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+         end if;
    end Run;
 
 end Version.CLI;
