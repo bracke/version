@@ -24261,10 +24261,11 @@ package body Version.CLI is
          elsif Command = "fmt-merge-msg" then
             declare
                Usage : constant String :=
-                 "version fmt-merge-msg [-F <file>]"
+                 "version fmt-merge-msg [--log[=<n>]] [-F <file>]"
                  & "  (reads FETCH_HEAD on stdin by default)";
                File_Idx : Natural := 0;
                Bad      : Boolean := False;
+               Log_Entries : Integer := 0;
 
                function Read_Stdin return String is
                   Buffer : aliased String (1 .. 65536);
@@ -24321,6 +24322,24 @@ package body Version.CLI is
                      Bad := True;
                   elsif I = File_Idx then
                      null;  --  consumed as the -F argument
+                  elsif Arg (I) = "--log" then
+                     Log_Entries := -1;
+                  elsif Arg (I) = "--no-log" then
+                     Log_Entries := 0;
+                  elsif Has_Prefix (Arg (I), "--log=") then
+                     begin
+                        Log_Entries :=
+                          Integer'Value (Arg (I) (Arg (I)'First + 6
+                                                  .. Arg (I)'Last));
+                     exception
+                        when others =>
+                           Usage_Error
+                             ("fmt-merge-msg --log needs a count", Usage);
+                           Bad := True;
+                           exit;
+                     end;
+                  elsif Arg (I) = "-m" or else Arg (I) = "--message" then
+                     null;   --  accepted; the subject is derived either way
                   else
                      Usage_Error
                        ("unknown fmt-merge-msg option: " & Arg (I), Usage);
@@ -24339,7 +24358,8 @@ package body Version.CLI is
                   begin
                      Version.Console.Put
                        (Version.Fmt_Merge_Msg.Format
-                          (Repo, Input, Version.Branch.Current_Branch_Name));
+                          (Repo, Input, Version.Branch.Current_Branch_Name,
+                           Log_Entries));
                   end;
                end if;
             end;
