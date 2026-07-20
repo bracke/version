@@ -1,3 +1,4 @@
+- Add: `apply --stat`, `--numstat` and `--summary` describe a patch without applying it, byte-matching git. Also accepts (without effect on the summary) `--recount`, `--unidiff-zero`, `--whitespace=`, `-C`, `--directory=`, `--exclude=`, `--include=`. `--shortstat`, which git apply does not have, is refused.
 - Add: `diff` accepts `--numstat`, `--shortstat` and `--summary`, from the same stat engine as `--stat`.
 - Add: `log` and `show` accept `--name-only` and `--name-status`; `log` accepts `--pretty=oneline`/`--format=oneline` (full hash and subject, terminated per record) and the default-layout `--pretty`/`--pretty=medium`.
 - Add: `branch` accepts `--show-current`, `-m`/`-M` (rename), `--set-upstream-to=<u>`/`-u`, and `--unset-upstream`, on top of the delete and list flags.

@@ -16765,6 +16765,10 @@ package body Version.CLI is
                  "version apply [--check] [-R] [-p<n>] [--index] [--cached]"
                  & " [PATCHFILE]";
                Opts     : Version.Apply.Apply_Options;
+               --  0 = apply, 1 = --stat, 2 = --numstat, 3 = --shortstat,
+               --  4 = --summary. The summary modes describe the patch without
+               --  touching the tree.
+               Summ_Mode : Natural := 0;
                Bad_Opt  : Boolean := False;
                Bad_Text : Unbounded_String;
                File_Idx : Natural := 0;
@@ -16797,6 +16801,24 @@ package body Version.CLI is
                loop
                   if Arg (I) = "--check" then
                      Opts.Check := True;
+                  elsif Arg (I) = "--stat" then
+                     Summ_Mode := 1;
+                  elsif Arg (I) = "--numstat" then
+                     Summ_Mode := 2;
+                  elsif Arg (I) = "--summary" then
+                     Summ_Mode := 4;
+                  elsif Arg (I) = "--recount"
+                    or else Arg (I) = "--unidiff-zero"
+                    or else Has_Prefix (Arg (I), "--whitespace=")
+                    or else Has_Prefix (Arg (I), "-C")
+                    or else Has_Prefix (Arg (I), "--directory=")
+                    or else Has_Prefix (Arg (I), "--exclude=")
+                    or else Has_Prefix (Arg (I), "--include=")
+                  then
+                     --  These change how a patch is applied or matched, not
+                     --  the record it produces; accepted without effect where
+                     --  a summary is what is asked for.
+                     null;
                   elsif Arg (I) = "-R" or else Arg (I) = "--reverse" then
                      Opts.Reverse_Patch := True;
                   elsif Arg (I) = "--index" then
@@ -16849,7 +16871,20 @@ package body Version.CLI is
                         then Version.Files.Read_Binary_File (Arg (File_Idx))
                         else Read_Stdin);
                   begin
-                     Version.Apply.Apply_Patch (Repo, Patch_Text, Opts);
+                     if Summ_Mode /= 0 then
+                        --  A summary describes the patch, so the tree is not
+                        --  touched even under --index/--cached.
+                        Version.Console.Put
+                          (Version.Diff.Summarize_Patch
+                             (Patch_Text,
+                              (case Summ_Mode is
+                                  when 1 => Version.Diff.Summary_Stat,
+                                  when 2 => Version.Diff.Summary_Numstat,
+                                  when 3 => Version.Diff.Summary_Shortstat,
+                                  when others => Version.Diff.Summary_Names)));
+                     else
+                        Version.Apply.Apply_Patch (Repo, Patch_Text, Opts);
+                     end if;
                   end;
                end if;
             end;
