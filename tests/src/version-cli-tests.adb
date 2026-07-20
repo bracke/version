@@ -2027,9 +2027,10 @@ package body Version.CLI.Tests is
          Log_Usage,
          "log oneline unknown option");
 
+      --  --name-only is now implemented; a genuinely unknown option stands in.
       Check_Usage_Failure
-        ("show --name-only",
-         "unknown show option: --name-only",
+        ("show --nonsense-flag",
+         "unknown show option: --nonsense-flag",
          Show_Usage,
          "show unknown option");
       Check_Usage_Failure

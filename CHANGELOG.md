@@ -1,3 +1,4 @@
+- Add: `log` and `show` accept `--name-only` and `--name-status`; `log` accepts `--pretty=oneline`/`--format=oneline` (full hash and subject, terminated per record) and the default-layout `--pretty`/`--pretty=medium`.
 - Add: `branch` accepts `--show-current`, `-m`/`-M` (rename), `--set-upstream-to=<u>`/`-u`, and `--unset-upstream`, on top of the delete and list flags.
 - Add: bare `remote` lists the remote names and `remote -v`/`--verbose` follows each with its URL and fetch/push side, as git does; neither was a usage error before this.
 - Add: `for-each-ref` accepts `--points-at[=<obj>]`, `--merged[=<c>]`, `--contains[=<c>]` and `--ignore-case`, matching an annotated tag by the commit it peels to. `--shell`/`--perl`/`--python`/`--tcl` quote for a host language and are refused rather than emitted raw.

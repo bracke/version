@@ -10225,6 +10225,8 @@ package body Version.CLI is
                Terminator : Boolean := True;
                Stat       : Boolean := False;
                Patch      : Boolean := False;
+               Name_Only  : Boolean := False;
+               Name_Status : Boolean := False;
                Context    : Natural := 3;
                Walk       : Version.History.Rev_List_Options;
                Operands   : Version.Rev_Args.String_Vectors.Vector;
@@ -10293,6 +10295,23 @@ package body Version.CLI is
                      Oneline := True;
                   elsif Arg (I) = "--stat" then
                      Stat := True;
+                  elsif Arg (I) = "--name-only" then
+                     Name_Only := True;
+                  elsif Arg (I) = "--name-status" then
+                     Name_Status := True;
+                  elsif Arg (I) = "--pretty=oneline"
+                    or else Arg (I) = "--format=oneline"
+                  then
+                     --  The one builtin format that is not the default
+                     --  layout: full hash, a space, the subject.
+                     Format := To_Unbounded_String ("%H %s");
+                     Has_Format := True;
+                     Terminator := True;
+                  elsif Arg (I) = "--pretty" or else Arg (I) = "--pretty=medium"
+                    or else Arg (I) = "--format=medium"
+                  then
+                     null;   --  the default layout
+
                   elsif Arg (I) = "--show-signature" then
                      Show_Sig := True;
                   elsif Starts (Arg (I), "--format=") then
@@ -10486,6 +10505,8 @@ package body Version.CLI is
                               Show_Signature => Show_Sig,
                               Stat           => Stat,
                               Patch          => Patch,
+                              Name_Only      => Name_Only,
+                              Name_Status    => Name_Status,
                               Context        => Context));
                      end if;
                   end;
@@ -10508,6 +10529,8 @@ package body Version.CLI is
                Stat     : Boolean := False;
                No_Patch : Boolean := False;
                Oneline  : Boolean := False;
+               Name_Only : Boolean := False;
+               Name_Status : Boolean := False;
                Fmt      : Unbounded_String;
                Rev      : Unbounded_String := To_Unbounded_String ("HEAD");
                Have_Rev : Boolean := False;
@@ -10516,6 +10539,10 @@ package body Version.CLI is
                for I in 2 .. Count loop
                   if Arg (I) = "--stat" then
                      Stat := True;
+                  elsif Arg (I) = "--name-only" then
+                     Name_Only := True;
+                  elsif Arg (I) = "--name-status" then
+                     Name_Status := True;
                   elsif Arg (I) = "-s" or else Arg (I) = "--no-patch" then
                      No_Patch := True;
                   elsif Arg (I) = "--oneline" then
@@ -10547,7 +10574,10 @@ package body Version.CLI is
                      Repo : constant Version.Repository.Repository_Handle :=
                        Version.Repository.Open;
                      Opts : constant Version.Diff.Diff_Options :=
-                       (Stat => Stat, others => <>);
+                       (Stat        => Stat,
+                        Name_Only   => Name_Only,
+                        Name_Status => Name_Status,
+                        others      => <>);
                      Spec  : constant String := To_String (Rev);
                      Colon : constant Natural :=
                        Ada.Strings.Fixed.Index (Spec, ":");
