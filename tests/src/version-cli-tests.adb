@@ -4966,7 +4966,8 @@ package body Version.CLI.Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Usage : constant String :=
         "version rebase TARGET | version rebase -i UPSTREAM"
-        & " | version rebase --continue | version rebase --abort";
+        & " | version rebase --continue | version rebase --skip"
+        & " | version rebase --quit | version rebase --abort";
 
       procedure Check_Usage_Failure
         (Command : String; Detail : String; Context : String)

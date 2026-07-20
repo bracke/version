@@ -12863,7 +12863,8 @@ package body Version.CLI is
             declare
                Usage : constant String :=
                  "version rebase TARGET | version rebase -i UPSTREAM"
-                 & " | version rebase --continue | version rebase --abort";
+                 & " | version rebase --continue | version rebase --skip"
+                 & " | version rebase --quit | version rebase --abort";
             begin
                if Count < 2 then
                   Usage_Error ("missing rebase target or action", Usage);
@@ -12892,6 +12893,26 @@ package body Version.CLI is
                elsif Arg (2) = "--preserve-merges" then
                   raise Ada.IO_Exceptions.Data_Error with
                     Version.Rebase.Merge_Preserving_Rebase_Not_Supported;
+               elsif Arg (2) = "--skip" then
+                  if Count > 2 then
+                     Usage_Error ("too many rebase --skip arguments", Usage);
+                     return;
+                  end if;
+                  Version.Rebase.Skip_Rebase;
+                  if Version.Rebase.In_Progress then
+                     Success_Line
+                       ("stopped for edit; amend as needed, then run "
+                        & "version rebase --continue");
+                  else
+                     Success_Line ("skipped commit; rebase complete");
+                  end if;
+               elsif Arg (2) = "--quit" then
+                  if Count > 2 then
+                     Usage_Error ("too many rebase --quit arguments", Usage);
+                     return;
+                  end if;
+                  Version.Rebase.Quit_Rebase;
+                  Success_Line ("rebase state cleared; HEAD left as it is");
                elsif Arg (2) = "--continue" then
                   if Count > 2 then
                      Usage_Error ("too many rebase --continue arguments", Usage);
