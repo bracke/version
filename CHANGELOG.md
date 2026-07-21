@@ -1,3 +1,4 @@
+- Git parity: `diff-tree --stat`/`-p` no longer detect renames (git needs `-M`); fixes a dropped file and mis-ordering in the stat/patch output.
 - Add: `for-each-ref` `%(align)`/`%(if)` block formatting.
 - Add: `for-each-ref --ignore-case` now actually folds case in pattern matching (it was accepted and ignored), and the `%(*objectname)`/`%(*objecttype)`/`%(contents)`/`%(body)`/`%(creator)`/`%(creatordate)` atoms resolve.
 - Fix: `cat-file <type> <object>` peels toward the requested type as git does -- a tag to its commit, a commit to its tree -- rather than checking the type strictly; a peel that cannot reach the type (a blob from a commit) dies with git's message and exit 128 instead of exit 1.

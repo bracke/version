@@ -26284,10 +26284,15 @@ package body Version.CLI is
                           Version.Revisions.Resolve_Tree (Repo, Arg (A2));
                      begin
                         if Want_Patch or else Want_Stat then
+                           --  diff-tree does not detect renames without -M,
+                           --  so keep the stat/patch path in step with the
+                           --  raw records (which never do): renames off.
                            Version.Console.Put
                              (Version.Diff.Diff_Trees
                                 (Repo, T1, T2,
-                                 (Stat => Want_Stat, others => <>)));
+                                 (Stat => Want_Stat,
+                                  Detect_Renames => Version.Diff.Renames_Off,
+                                  others => <>)));
                         else
                            Put_Raw_As
                              (Repo,
@@ -26328,7 +26333,10 @@ package body Version.CLI is
                                    (Version.Diff.Diff_Commits
                                       (Repo, Parents.First_Element, C,
                                        Version.Diff.Diff_Options'(
-                                         Stat => Want_Stat, others => <>)));
+                                         Stat => Want_Stat,
+                                         Detect_Renames =>
+                                           Version.Diff.Renames_Off,
+                                         others => <>)));
                               else
                                  Put_Raw_As
                                    (Repo,
