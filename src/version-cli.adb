@@ -10239,6 +10239,9 @@ package body Version.CLI is
                Patch      : Boolean := False;
                Name_Only  : Boolean := False;
                Name_Status : Boolean := False;
+               Numstat    : Boolean := False;
+               Shortstat  : Boolean := False;
+               Raw        : Boolean := False;
                Context    : Natural := 3;
                Walk       : Version.History.Rev_List_Options;
                Operands   : Version.Rev_Args.String_Vectors.Vector;
@@ -10311,6 +10314,12 @@ package body Version.CLI is
                      Name_Only := True;
                   elsif Arg (I) = "--name-status" then
                      Name_Status := True;
+                  elsif Arg (I) = "--numstat" then
+                     Numstat := True;
+                  elsif Arg (I) = "--shortstat" then
+                     Shortstat := True;
+                  elsif Arg (I) = "--raw" then
+                     Raw := True;
                   elsif Arg (I) = "--pretty=oneline"
                     or else Arg (I) = "--format=oneline"
                   then
@@ -10519,6 +10528,9 @@ package body Version.CLI is
                               Patch          => Patch,
                               Name_Only      => Name_Only,
                               Name_Status    => Name_Status,
+                              Numstat        => Numstat,
+                              Shortstat      => Shortstat,
+                              Raw            => Raw,
                               Context        => Context));
                      end if;
                   end;
