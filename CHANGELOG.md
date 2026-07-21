@@ -1,3 +1,4 @@
+- Git parity: `for-each-ref --no-merged`/`--no-contains` filter refs (the negations of --merged/--contains); `update-ref` accepts an all-zero OLDVALUE as the "must not exist" precondition instead of trying to resolve it as an object.
 - Git parity: `symbolic-ref` reads/sets/deletes any ref (not just HEAD) — `--short`, a non-symbolic ref dies (exit 128) or is a silent exit 1 under `-q`; `show-ref --verify -q` on a missing ref is a silent exit 1.
 - Git parity: `branch -av`/`-avv`/`-rv` share one name-column across local and remote refs (symref shown as `-> target`), honour `--abbrev=`/`--no-abbrev`; `branch [-a|-r] --points-at <object>` lists the branches at that object (no argument peeling, matching git).
 - Git parity: `branch -r`/`-a` show a remote symref as `origin/HEAD -> origin/main` (was the bare name).

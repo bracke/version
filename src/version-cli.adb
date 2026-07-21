@@ -20484,23 +20484,30 @@ package body Version.CLI is
                Repo : constant Version.Repository.Repository_Handle :=
                  Version.Repository.Open;
                Tx : Version.Ref_Transaction.Transaction;
+
+               --  git's OLDVALUE precondition: an all-zero value means "the ref
+               --  must not exist" and is passed through as the zero id, not
+               --  resolved as an object (which would fail).
+               function Old_Value (A : String) return String is
+               begin
+                  if A'Length > 0 and then (for all C of A => C = '0') then
+                     return A;
+                  end if;
+                  return To_String (Version.Revisions.Resolve (Repo, A));
+               end Old_Value;
             begin
                if Count >= 3 and then Arg (2) = "-d" then
                   Version.Ref_Transaction.Start (Tx, Repo);
                   Version.Ref_Transaction.Add_Delete
                     (Tx, Arg (3),
-                     (if Count >= 4
-                      then To_String (Version.Revisions.Resolve (Repo, Arg (4)))
-                      else ""));
+                     (if Count >= 4 then Old_Value (Arg (4)) else ""));
                   Version.Ref_Transaction.Commit (Tx);
                elsif Count = 3 or else Count = 4 then
                   Version.Ref_Transaction.Start (Tx, Repo);
                   Version.Ref_Transaction.Add_Update
                     (Tx, Arg (2),
                      Version.Revisions.Resolve (Repo, Arg (3)),
-                     (if Count = 4
-                      then To_String (Version.Revisions.Resolve (Repo, Arg (4)))
-                      else ""));
+                     (if Count = 4 then Old_Value (Arg (4)) else ""));
                   Version.Ref_Transaction.Commit (Tx);
                else
                   Usage_Error ("update-ref requires a ref and a value", Usage);
@@ -21285,6 +21292,8 @@ package body Version.CLI is
                Points_At : Unbounded_String;
                Merged_At : Unbounded_String;
                Contains  : Unbounded_String;
+               No_Merged : Unbounded_String;
+               No_Contains : Unbounded_String;
                Filtering : Boolean := False;
                Bad_FER   : Boolean := False;
                Skip_Next : Boolean := False;
@@ -21344,6 +21353,38 @@ package body Version.CLI is
                             (if I < Count and then Arg (I + 1) (Arg (I + 1)'First) /= '-'
                              then Arg (I + 1) else "HEAD");
                         Filtering := True;
+                     elsif Has_Prefix (A, "--no-merged=") then
+                        No_Merged :=
+                          To_Unbounded_String (Option_Value (A, "--no-merged="));
+                        Filtering := True;
+                     elsif A = "--no-merged" then
+                        if I < Count
+                          and then Arg (I + 1) (Arg (I + 1)'First) /= '-'
+                        then
+                           Skip_Next := True;
+                        end if;
+                        No_Merged :=
+                          To_Unbounded_String
+                            (if I < Count
+                               and then Arg (I + 1) (Arg (I + 1)'First) /= '-'
+                             then Arg (I + 1) else "HEAD");
+                        Filtering := True;
+                     elsif Has_Prefix (A, "--no-contains=") then
+                        No_Contains := To_Unbounded_String
+                          (Option_Value (A, "--no-contains="));
+                        Filtering := True;
+                     elsif A = "--no-contains" then
+                        if I < Count
+                          and then Arg (I + 1) (Arg (I + 1)'First) /= '-'
+                        then
+                           Skip_Next := True;
+                        end if;
+                        No_Contains :=
+                          To_Unbounded_String
+                            (if I < Count
+                               and then Arg (I + 1) (Arg (I + 1)'First) /= '-'
+                             then Arg (I + 1) else "HEAD");
+                        Filtering := True;
                      elsif A = "--ignore-case" or else A = "-i" then
                         Ignore_Case := True;
                      elsif A = "--shell" or else A = "--perl"
@@ -21355,11 +21396,8 @@ package body Version.CLI is
                           ("for-each-ref " & A & " is not supported");
                         Bad_FER := True;
                         exit;
-                     elsif A = "--points-at" or else A = "--no-merged"
-                       or else A = "--no-contains"
-                     then
-                        --  A bare --points-at with no value, or the negated
-                        --  forms this does not implement.
+                     elsif A = "--points-at" then
+                        --  A bare --points-at with no value.
                         Error_Line ("for-each-ref " & A & " is not supported");
                         Bad_FER := True;
                         exit;
@@ -21421,6 +21459,22 @@ package body Version.CLI is
                                    Version.Revisions.Resolve_Commit (Repo, Ref),
                                  Derived_Id => Version.Revisions.Resolve_Commit
                                                  (Repo, To_String (Merged_At)));
+                           elsif Length (No_Merged) > 0 then
+                              --  --no-merged: the negation of --merged.
+                              return not Version.History.Is_Ancestor
+                                (Repo,
+                                 Base_Id    =>
+                                   Version.Revisions.Resolve_Commit (Repo, Ref),
+                                 Derived_Id => Version.Revisions.Resolve_Commit
+                                                 (Repo, To_String (No_Merged)));
+                           elsif Length (No_Contains) > 0 then
+                              --  --no-contains: the negation of --contains.
+                              return not Version.History.Is_Ancestor
+                                (Repo,
+                                 Base_Id    => Version.Revisions.Resolve_Commit
+                                                 (Repo, To_String (No_Contains)),
+                                 Derived_Id =>
+                                   Version.Revisions.Resolve_Commit (Repo, Ref));
                            else
                               --  contains: the commit is an ancestor of the ref.
                               return Version.History.Is_Ancestor
