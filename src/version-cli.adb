@@ -2534,19 +2534,28 @@ package body Version.CLI is
         Version.Repository.Open;
       Pats : Version.Ref_Format.String_Vectors.Vector;
    begin
-      --  For_Each_Ref matches a refname prefix, not a glob.
+      --  For_Each_Ref matches a refname prefix, not a glob. A remote symref
+      --  (origin/HEAD) is shown as "name -> target", as git's branch -r does.
       Pats.Append ("refs/remotes");
       declare
          Lines : constant Version.Ref_Format.String_Vectors.Vector :=
            Version.Ref_Format.For_Each_Ref
-             (Repo, Pats, Format => "%(refname:lstrip=2)");
+             (Repo, Pats,
+              Format => "%(refname:lstrip=2)|%(symref:short)");
       begin
          for I in Lines.First_Index .. Lines.Last_Index loop
             declare
-               Name : constant String := Lines.Element (I);
+               Line : constant String := Lines.Element (I);
+               Bar  : constant Natural :=
+                 Ada.Strings.Fixed.Index (Line, "|");
+               Name : constant String :=
+                 (if Bar = 0 then Line else Line (Line'First .. Bar - 1));
+               Tgt  : constant String :=
+                 (if Bar = 0 then "" else Line (Bar + 1 .. Line'Last));
             begin
                Ada.Text_IO.Put_Line
-                 ("  " & (if With_Prefix then "remotes/" else "") & Name);
+                 ("  " & (if With_Prefix then "remotes/" else "") & Name
+                  & (if Tgt = "" then "" else " -> " & Tgt));
             end;
          end loop;
       end;

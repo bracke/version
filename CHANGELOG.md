@@ -1,3 +1,4 @@
+- Git parity: `branch -r`/`-a` show a remote symref as `origin/HEAD -> origin/main` (was the bare name).
 - Git parity: `apply` gains `--directory=`, `--include=`/`--exclude=` (fnmatch path filters), `--3way`; catches the malformed-patch die (exit 128); and reports a missing patch file as `can't open patch '<f>': No such file or directory` (exit 128).
 - Git parity: `diff` gains `--exit-code`/`--quiet`, range operands (`A..B`, `A...B`), two-revision diffs restricted by `-- <pathspec>`, `-s`/`--no-patch`, `--binary`, and `--no-color`/`--color=never|auto`.
 - Git parity: `patch-id` matches git for binary files (hashes the two blob ids from the `index` line, skips the literal payload) and implements `--verbatim` (whitespace kept, trailing newline included); text/rename patches already matched.
