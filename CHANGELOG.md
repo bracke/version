@@ -1,3 +1,4 @@
+- Git parity: `patch-id` matches git for binary files (hashes the two blob ids from the `index` line, skips the literal payload) and implements `--verbatim` (whitespace kept, trailing newline included); text/rename patches already matched.
 - Git parity: `apply --stat --summary` renders both the diffstat and the summary in git's order (was one or the other).
 - Git parity: `diff-tree`/`diff-index` gain pathspecs, `--diff-filter`, `--abbrev`, `--full-index`, `--stat`; `--numstat`/`--shortstat` mark binary files as `-` and read working-tree content; and `-M` collapses renames in `--name-status`/`--summary`.
 - Git parity: `diff-tree --stat`/`-p` no longer detect renames (git needs `-M`); fixes a dropped file and mis-ordering in the stat/patch output.

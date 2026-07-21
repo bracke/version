@@ -19536,6 +19536,13 @@ package body Version.CLI is
                  To_Unbounded_String ([1 .. 40 => '0']);
                Next_Oid   : Unbounded_String;
                Before, After : Integer := -1;
+               --  A binary file contributes the two blob ids from its "index"
+               --  line -- not the marker text or the literal payload -- so the
+               --  ids are held until the "GIT binary patch"/"Binary files"
+               --  marker, and the payload is then skipped to the next "diff ".
+               In_Binary : Boolean := False;
+               Pre_Oid   : Unbounded_String;
+               Post_Oid  : Unbounded_String;
                Start : Natural := Text'First;
 
                function Strip_Space (L : String) return String is
@@ -19576,19 +19583,25 @@ package body Version.CLI is
                --  carry) into a running accumulator, so reordering the files
                --  in the patch leaves the id unchanged.  --unstable (the
                --  default) hashes the whole patch as one stream (Buf below).
-               function Want_Stable return Boolean is
-                  S : Boolean := False;
+               --  --verbatim keeps whitespace and implies --stable; the three
+               --  are a command mode where the last one given wins.
+               function Mode return Natural is
+                  M : Natural := 1;   --  1 unstable, 2 stable, 3 verbatim
                begin
                   for J in 2 .. Count loop
-                     if Arg (J) = "--stable" then
-                        S := True;
-                     elsif Arg (J) = "--unstable" then
-                        S := False;
+                     if Arg (J) = "--unstable" then
+                        M := 1;
+                     elsif Arg (J) = "--stable" then
+                        M := 2;
+                     elsif Arg (J) = "--verbatim" then
+                        M := 3;
                      end if;
                   end loop;
-                  return S;
-               end Want_Stable;
-               Stable : constant Boolean := Want_Stable;
+                  return M;
+               end Mode;
+               Patch_Mode : constant Natural := Mode;
+               Stable   : constant Boolean := Patch_Mode > 1;
+               Verbatim : constant Boolean := Patch_Mode = 3;
 
                Result : String (1 .. 20) := [others => Character'Val (0)];
 
@@ -19647,11 +19660,23 @@ package body Version.CLI is
                end Flush;
 
                procedure Add (L : String) is
-                  Stripped : constant String := Strip_Space (L);
+                  --  --verbatim hashes the whole line, trailing newline and
+                  --  all (git reads with strbuf_getwholeline and hashes
+                  --  strlen); otherwise every space and tab is removed first,
+                  --  so whitespace-only edits do not change the id.
+                  Hashed : constant String :=
+                    (if Verbatim then L & ASCII.LF else Strip_Space (L));
                begin
-                  Append (Buf, Stripped);
-                  Len := Len + Stripped'Length;
+                  Append (Buf, Hashed);
+                  Len := Len + Hashed'Length;
                end Add;
+
+               --  git hashes the two blob ids of a binary file directly (no
+               --  whitespace processing), without counting them in patchlen.
+               procedure Hash_Raw (S : String) is
+               begin
+                  Append (Buf, S);
+               end Hash_Raw;
             begin
                while Start <= Text'Last loop
                   declare
@@ -19670,7 +19695,16 @@ package body Version.CLI is
                            elsif Starts (Line, "From ") then Line (Line'First + 5 .. Line'Last)
                            else Line);
                      begin
-                        if Starts (Line, "\ ") then
+                        if In_Binary then
+                           --  git skips the literal payload and, at the next
+                           --  file's "diff ", drops that header line too before
+                           --  resuming (before resets to -1, no extra flush).
+                           if Starts (Line, "diff ") then
+                              In_Binary := False;
+                              Before := -1;
+                              After := -1;
+                           end if;
+                        elsif Starts (Line, "\ ") then
                            null;   --  "\ No newline at end of file"
                         elsif Is_Hex_Oid (P) then
                            --  The next patch starts here.
@@ -19682,7 +19716,39 @@ package body Version.CLI is
                            null;   --  commit message and other preamble
                         elsif Before = -1 then
                            if Starts (Line, "index ") then
-                              null;
+                              --  Pull the two blob ids out of "index a..b M";
+                              --  they are hashed only if the file is binary.
+                              declare
+                                 Rest : constant String :=
+                                   Line (Line'First + 6 .. Line'Last);
+                                 Dots : constant Natural :=
+                                   Ada.Strings.Fixed.Index (Rest, "..");
+                                 Sp   : Natural;
+                              begin
+                                 if Dots /= 0 then
+                                    Pre_Oid := To_Unbounded_String
+                                      (Rest (Rest'First .. Dots - 1));
+                                    Sp := Ada.Strings.Fixed.Index
+                                      (Rest (Dots + 2 .. Rest'Last), " ");
+                                    Post_Oid := To_Unbounded_String
+                                      (Rest (Dots + 2 ..
+                                        (if Sp = 0 then Rest'Last
+                                         else Sp - 1)));
+                                 end if;
+                              end;
+                           elsif Starts (Line, "GIT binary patch")
+                             or else Starts (Line, "Binary files")
+                           then
+                              --  Hash the two blob ids, not the marker; then
+                              --  skip the literal blocks to the next "diff ".
+                              Hash_Raw (To_String (Pre_Oid));
+                              Hash_Raw (To_String (Post_Oid));
+                              if Stable then
+                                 Sub_Flush;
+                              end if;
+                              In_Binary := True;
+                              Before := 0;
+                              After := 0;
                            elsif Starts (Line, "--- ") then
                               Before := 1;
                               After := 1;
