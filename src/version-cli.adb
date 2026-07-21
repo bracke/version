@@ -17028,6 +17028,10 @@ package body Version.CLI is
                --  4 = --summary. The summary modes describe the patch without
                --  touching the tree.
                Summ_Mode : Natural := 0;
+               --  --stat and --summary combine (stat block, then summary),
+               --  unlike the single-value Summ_Mode; git renders both in order.
+               Want_Stat_S    : Boolean := False;
+               Want_Summary_S : Boolean := False;
                Bad_Opt  : Boolean := False;
                Bad_Text : Unbounded_String;
                File_Idx : Natural := 0;
@@ -17062,10 +17066,12 @@ package body Version.CLI is
                      Opts.Check := True;
                   elsif Arg (I) = "--stat" then
                      Summ_Mode := 1;
+                     Want_Stat_S := True;
                   elsif Arg (I) = "--numstat" then
                      Summ_Mode := 2;
                   elsif Arg (I) = "--summary" then
                      Summ_Mode := 4;
+                     Want_Summary_S := True;
                   elsif Arg (I) = "--recount"
                     or else Arg (I) = "--unidiff-zero"
                     or else Has_Prefix (Arg (I), "--whitespace=")
@@ -17130,7 +17136,15 @@ package body Version.CLI is
                         then Version.Files.Read_Binary_File (Arg (File_Idx))
                         else Read_Stdin);
                   begin
-                     if Summ_Mode /= 0 then
+                     if Want_Stat_S and then Want_Summary_S then
+                        --  git renders the diffstat, then the summary lines.
+                        Version.Console.Put
+                          (Version.Diff.Summarize_Patch
+                             (Patch_Text, Version.Diff.Summary_Stat));
+                        Version.Console.Put
+                          (Version.Diff.Summarize_Patch
+                             (Patch_Text, Version.Diff.Summary_Names));
+                     elsif Summ_Mode /= 0 then
                         --  A summary describes the patch, so the tree is not
                         --  touched even under --index/--cached.
                         Version.Console.Put

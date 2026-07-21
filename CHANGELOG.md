@@ -1,3 +1,4 @@
+- Git parity: `apply --stat --summary` renders both the diffstat and the summary in git's order (was one or the other).
 - Git parity: `diff-tree`/`diff-index` gain pathspecs, `--diff-filter`, `--abbrev`, `--full-index`, `--stat`; `--numstat`/`--shortstat` mark binary files as `-` and read working-tree content; and `-M` collapses renames in `--name-status`/`--summary`.
 - Git parity: `diff-tree --stat`/`-p` no longer detect renames (git needs `-M`); fixes a dropped file and mis-ordering in the stat/patch output.
 - Add: `for-each-ref` `%(align)`/`%(if)` block formatting.
