@@ -1,3 +1,4 @@
+- Git parity: `symbolic-ref` reads/sets/deletes any ref (not just HEAD) — `--short`, a non-symbolic ref dies (exit 128) or is a silent exit 1 under `-q`; `show-ref --verify -q` on a missing ref is a silent exit 1.
 - Git parity: `branch -av`/`-avv`/`-rv` share one name-column across local and remote refs (symref shown as `-> target`), honour `--abbrev=`/`--no-abbrev`; `branch [-a|-r] --points-at <object>` lists the branches at that object (no argument peeling, matching git).
 - Git parity: `branch -r`/`-a` show a remote symref as `origin/HEAD -> origin/main` (was the bare name).
 - Git parity: `apply` gains `--directory=`, `--include=`/`--exclude=` (fnmatch path filters), `--3way`; catches the malformed-patch die (exit 128); and reports a missing patch file as `can't open patch '<f>': No such file or directory` (exit 128).

@@ -20555,41 +20555,105 @@ package body Version.CLI is
                if not Bad then
                   if Operands.Is_Empty then
                      Usage_Error ("symbolic-ref needs a ref name", Usage);
-                  elsif Operands.First_Element /= "HEAD" then
-                     Usage_Error
-                       ("symbolic-ref supports only HEAD (read or set)",
-                        Usage);
-                  elsif Delete then
-                     Version.Files.Delete_File_If_Exists
-                       (Version.Files.Join
-                          (Version.Repository.Git_Dir (Repo), "HEAD"));
-                  elsif Natural (Operands.Length) = 1 then
+                  else
                      declare
-                        H : constant Version.Refs.Head_Info :=
-                          Version.Refs.Read_Head (Repo);
-                     begin
-                        if Version.Refs.Is_Attached (H) then
+                        Ref  : constant String := Operands.First_Element;
+                        Path : constant String :=
+                          Version.Files.Join
+                            (Version.Repository.Git_Dir (Repo), Ref);
+
+                        --  A symbolic ref file holds "ref: <target>"; return
+                        --  the target, or "" when it is a regular/absent ref.
+                        function Symref_Target return String is
+                        begin
+                           if not Ada.Directories.Exists (Path) then
+                              return "";
+                           end if;
                            declare
-                              Name : constant String :=
-                                Version.Refs.Branch_Name (H);
+                              Body_Text : constant String :=
+                                Version.Files.Read_Binary_File (Path);
+                              Last : Natural := Body_Text'Last;
                            begin
-                              Success_Line
-                                (if Short then Name
-                                 else "refs/heads/" & Name);
+                              --  Strip the trailing newline/whitespace that the
+                              --  ref file ends with (Fixed.Trim drops only
+                              --  spaces, not the LF).
+                              while Last >= Body_Text'First
+                                and then Body_Text (Last) in
+                                  ' ' | ASCII.HT | ASCII.LF | ASCII.CR
+                              loop
+                                 Last := Last - 1;
+                              end loop;
+                              declare
+                                 Trimmed : constant String :=
+                                   Body_Text (Body_Text'First .. Last);
+                              begin
+                                 if Has_Prefix (Trimmed, "ref: ") then
+                                    return Trimmed (Trimmed'First + 5
+                                                    .. Trimmed'Last);
+                                 end if;
+                                 return "";
+                              end;
                            end;
-                        elsif Quiet_Ref then
-                           --  Detached: the status is the whole answer.
-                           Set_Command_Failure;
+                        end Symref_Target;
+
+                        --  git's short form: drop the longest known namespace.
+                        function Short_Ref (R : String) return String is
+                        begin
+                           if Has_Prefix (R, "refs/heads/") then
+                              return R (R'First + 11 .. R'Last);
+                           elsif Has_Prefix (R, "refs/remotes/") then
+                              return R (R'First + 13 .. R'Last);
+                           elsif Has_Prefix (R, "refs/tags/") then
+                              return R (R'First + 10 .. R'Last);
+                           elsif Has_Prefix (R, "refs/") then
+                              return R (R'First + 5 .. R'Last);
+                           else
+                              return R;
+                           end if;
+                        end Short_Ref;
+                     begin
+                        if Delete then
+                           if Symref_Target = "" then
+                              --  git dies rather than deleting a regular ref.
+                              Stderr_Line
+                                ("fatal: Cannot delete " & Ref
+                                 & ", not a symbolic ref");
+                              Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                           else
+                              Version.Files.Delete_File_If_Exists (Path);
+                           end if;
+                        elsif Natural (Operands.Length) = 1 then
+                           declare
+                              Tgt : constant String := Symref_Target;
+                           begin
+                              if Tgt /= "" then
+                                 Success_Line
+                                   (if Short then Short_Ref (Tgt) else Tgt);
+                              elsif Quiet_Ref then
+                                 --  Not a symref: the status is the answer.
+                                 Set_Command_Failure;
+                              else
+                                 Stderr_Line
+                                   ("fatal: ref " & Ref
+                                    & " is not a symbolic ref");
+                                 Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                              end if;
+                           end;
+                        elsif Natural (Operands.Length) = 2 then
+                           if Ref = "HEAD" then
+                              Version.Refs.Write_Symbolic_HEAD
+                                (Repo, Operands.Last_Element);
+                           else
+                              Version.Files.Write_Binary_File
+                                (Path,
+                                 "ref: " & Operands.Last_Element
+                                 & Character'Val (10));
+                           end if;
                         else
-                           raise Ada.IO_Exceptions.Data_Error with
-                             "ref HEAD is not a symbolic ref";
+                           Usage_Error
+                             ("too many symbolic-ref arguments", Usage);
                         end if;
                      end;
-                  elsif Natural (Operands.Length) = 2 then
-                     Version.Refs.Write_Symbolic_HEAD
-                       (Repo, Operands.Last_Element);
-                  else
-                     Usage_Error ("too many symbolic-ref arguments", Usage);
                   end if;
                end if;
             end;
@@ -20709,6 +20773,10 @@ package body Version.CLI is
                                 (Version.Objects.To_String
                                    (Version.Refs.Resolve_Ref (Repo, N)),
                                  N);
+                           elsif Quiet_Ref then
+                              --  -q: a miss is a silent exit 1, not a die.
+                              Set_Command_Failure;
+                              return;
                            else
                               Stderr_Line
                                 ("fatal: '" & N & "' - not a valid ref");
