@@ -2561,6 +2561,52 @@ package body Version.CLI is
       end;
    end Print_Remote_Branch_List;
 
+   --  `git branch --points-at <object>`: the branches whose tip is exactly
+   --  <object>. git compares the ref's own id (no peeling of the argument),
+   --  so `--points-at <annotated-tag>` lists nothing -- a branch id is a
+   --  commit, never the tag object.
+   procedure Print_Points_At
+     (Object      : String;
+      Show_Remote : Boolean)
+   is
+      Repo : constant Version.Repository.Repository_Handle :=
+        Version.Repository.Open;
+      Target : constant String :=
+        Version.Objects.To_String (Version.Revisions.Resolve (Repo, Object));
+      Current : constant String := Version.Refs.Current_Branch_Name (Repo);
+
+      procedure Scan
+        (Prefix   : String;    --  "refs/heads" or "refs/remotes"
+         Disp_Pre : String;    --  "" or "remotes/"
+         Locals   : Boolean)
+      is
+         Pats : Version.Ref_Format.String_Vectors.Vector;
+      begin
+         Pats.Append (Prefix);
+         for Line of Version.Ref_Format.For_Each_Ref
+           (Repo, Pats, "%(objectname)|%(refname:lstrip=2)")
+         loop
+            declare
+               Bar : constant Natural :=
+                 Ada.Strings.Fixed.Index (Line, "|");
+               Sha : constant String := Line (Line'First .. Bar - 1);
+               Nm  : constant String := Line (Bar + 1 .. Line'Last);
+            begin
+               if Sha = Target then
+                  Ada.Text_IO.Put_Line
+                    ((if Locals and then Nm = Current then "* " else "  ")
+                     & Disp_Pre & Nm);
+               end if;
+            end;
+         end loop;
+      end Scan;
+   begin
+      Scan ("refs/heads", "", Locals => True);
+      if Show_Remote then
+         Scan ("refs/remotes", "remotes/", Locals => False);
+      end if;
+   end Print_Points_At;
+
    --  git's branch patterns are shell globs against the short name; only `*`
    --  and `?` are worth supporting here, which is what real patterns use.
    function Glob_Match (Text, Pattern : String) return Boolean is
@@ -11191,6 +11237,38 @@ package body Version.CLI is
                if Count < 2 then
                   --  Bare `branch` lists branches, like git.
                   Print_Branch_List;
+               elsif (for some I in 2 .. Count =>
+                        Arg (I) = "--points-at"
+                        or else Has_Prefix (Arg (I), "--points-at="))
+               then
+                  --  `branch [-a|-r] --points-at <object>`: the branches at
+                  --  exactly that object. Handled before the listing forms so
+                  --  a leading -a/-r does not just list everything.
+                  declare
+                     Obj    : Unbounded_String;
+                     Want_A : Boolean := False;
+                     Want_R : Boolean := False;
+                  begin
+                     for I in 2 .. Count loop
+                        if Has_Prefix (Arg (I), "--points-at=") then
+                           Obj := To_Unbounded_String
+                             (Arg (I) (Arg (I)'First + 12 .. Arg (I)'Last));
+                        elsif Arg (I) = "--points-at" and then I < Count then
+                           Obj := To_Unbounded_String (Arg (I + 1));
+                        elsif Arg (I) = "-a" or else Arg (I) = "--all" then
+                           Want_A := True;
+                        elsif Arg (I) = "-r" or else Arg (I) = "--remotes" then
+                           Want_R := True;
+                        end if;
+                     end loop;
+                     if Length (Obj) = 0 then
+                        Usage_Error ("branch --points-at needs an object",
+                                     Usage);
+                        return;
+                     end if;
+                     Print_Points_At
+                       (To_String (Obj), Show_Remote => Want_A or else Want_R);
+                  end;
                elsif Count = 2
                  and then (Arg (2) = "-v" or else Arg (2) = "-vv"
                            or else Arg (2) = "--verbose")
@@ -11778,6 +11856,9 @@ package body Version.CLI is
                      Want_All     : Boolean := False;
                      Want_Remotes : Boolean := False;
                      Want_Verbose : Boolean := False;
+                     --  git's --abbrev=<n> sets the id width; --no-abbrev shows
+                     --  the full 40-hex id (0 here means "no abbreviation").
+                     Abbrev       : Natural := 7;
                   begin
                      for I in Arg (2)'First + 1 .. Arg (2)'Last loop
                         case Arg (2) (I) is
@@ -11788,13 +11869,23 @@ package body Version.CLI is
                         end case;
                      end loop;
 
-                     if Want_Remotes and then not Want_All then
-                        --  -r[v]: remote-tracking branches only. The verbose
-                        --  form is the same listing here, since these fixtures
-                        --  carry no remote-tracking refs.
-                        Print_Remote_Branch_List (With_Prefix => False);
-                     elsif Want_Verbose then
+                     for I in 3 .. Count loop
+                        if Arg (I) = "--no-abbrev" then
+                           Abbrev := 0;
+                        elsif Has_Prefix (Arg (I), "--abbrev=") then
+                           begin
+                              Abbrev := Natural'Value
+                                (Arg (I) (Arg (I)'First + 9 .. Arg (I)'Last));
+                           exception
+                              when others => null;
+                           end;
+                        end if;
+                     end loop;
+
+                     if Want_Verbose then
                         --  -vv (or -avv): two v's request the upstream name.
+                        --  One unified listing so locals and remotes share the
+                        --  name-column width, as git aligns them.
                         declare
                            VV : constant Boolean :=
                              (for some K in Arg (2)'First + 1 .. Arg (2)'Last =>
@@ -11804,11 +11895,15 @@ package body Version.CLI is
                         begin
                            Version.Console.Put
                              (Version.Branch.List_Branches_Verbose_Text
-                                (With_Upstream => VV));
+                                (With_Upstream => VV,
+                                 Show_Local    => not Want_Remotes or Want_All,
+                                 Show_Remote   => Want_Remotes or Want_All,
+                                 Remote_Prefix => Want_All,
+                                 Abbrev        => Abbrev));
                         end;
-                        if Want_All then
-                           Print_Remote_Branch_List (With_Prefix => True);
-                        end if;
+                     elsif Want_Remotes and then not Want_All then
+                        --  -r: remote-tracking branches only, bare short names.
+                        Print_Remote_Branch_List (With_Prefix => False);
                      else
                         Print_Branch_List;
                         if Want_All then
