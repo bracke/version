@@ -20699,6 +20699,7 @@ package body Version.CLI is
                Filtering : Boolean := False;
                Bad_FER   : Boolean := False;
                Skip_Next : Boolean := False;
+               Ignore_Case : Boolean := False;
 
                function Option_Value
                  (A : String; Name : String) return String is
@@ -20755,7 +20756,7 @@ package body Version.CLI is
                              then Arg (I + 1) else "HEAD");
                         Filtering := True;
                      elsif A = "--ignore-case" or else A = "-i" then
-                        null;   --  sort/match case folding; refs here are ASCII
+                        Ignore_Case := True;
                      elsif A = "--shell" or else A = "--perl"
                        or else A = "--python" or else A = "--tcl"
                      then
@@ -20865,11 +20866,12 @@ package body Version.CLI is
                      end;
                   else
                      for Line of Version.Ref_Format.For_Each_Ref
-                       (Repo     => Repo,
-                        Patterns => Patterns,
-                        Format   => To_String (Format),
-                        Sort_Key => To_String (Sort_Key),
-                        Count    => Ref_Cnt)
+                       (Repo        => Repo,
+                        Patterns    => Patterns,
+                        Format      => To_String (Format),
+                        Sort_Key    => To_String (Sort_Key),
+                        Count       => Ref_Cnt,
+                        Ignore_Case => Ignore_Case)
                      loop
                         Success_Line (Line);
                      end loop;
