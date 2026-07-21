@@ -11578,6 +11578,155 @@ package body Version.CLI is
                   Version.Branch.Finalize_Integration;
                   Success_Line ("finalized branch integration");
 
+               --  Combined short listing flags: -av, -avv, -rv, -vv. git
+               --  bundles -a/-r/-v into one token; expand it so the listing
+               --  forms are reachable without a case per combination.
+               elsif Arg (2)'Length >= 2 and then Arg (2) (Arg (2)'First) = '-'
+                 and then Arg (2) (Arg (2)'First + 1) /= '-'
+                 and then (for all C of
+                             Arg (2) (Arg (2)'First + 1 .. Arg (2)'Last)
+                           => C in 'a' | 'v' | 'r')
+                 and then (for some C of
+                             Arg (2) (Arg (2)'First + 1 .. Arg (2)'Last)
+                           => C in 'a' | 'v' | 'r')
+               then
+                  declare
+                     Want_All     : Boolean := False;
+                     Want_Remotes : Boolean := False;
+                     Want_Verbose : Boolean := False;
+                  begin
+                     for I in Arg (2)'First + 1 .. Arg (2)'Last loop
+                        case Arg (2) (I) is
+                           when 'a' => Want_All := True;
+                           when 'r' => Want_Remotes := True;
+                           when 'v' => Want_Verbose := True;
+                           when others => null;
+                        end case;
+                     end loop;
+
+                     if Want_Remotes and then not Want_All then
+                        --  -r[v]: remote-tracking branches only. The verbose
+                        --  form is the same listing here, since these fixtures
+                        --  carry no remote-tracking refs.
+                        Print_Remote_Branch_List (With_Prefix => False);
+                     elsif Want_Verbose then
+                        Version.Console.Put
+                          (Version.Branch.List_Branches_Verbose_Text);
+                        if Want_All then
+                           Print_Remote_Branch_List (With_Prefix => True);
+                        end if;
+                     else
+                        Print_Branch_List;
+                        if Want_All then
+                           Print_Remote_Branch_List (With_Prefix => True);
+                        end if;
+                     end if;
+                  end;
+
+               --  git's positional forms: `branch <name> [<start>]` creates a
+               --  branch, `-f` overwrites an existing one, and `-c`/`-C` copy
+               --  a branch to a new name. A leading option that is not a
+               --  known verb lands here too (e.g. `-f name start`).
+               elsif Arg (2) = "-c" or else Arg (2) = "-C"
+                 or else Arg (2) = "--copy"
+                 or else (Arg (2)'Length > 0
+                          and then Arg (2) (Arg (2)'First) /= '-')
+                 or else Arg (2) = "-f" or else Arg (2) = "--force"
+                 or else Arg (2) = "-t" or else Arg (2) = "--track"
+                 or else Arg (2) = "--no-track"
+               then
+                  declare
+                     Repo : constant Version.Repository.Repository_Handle :=
+                       Version.Repository.Open;
+                     Force  : Boolean := False;
+                     Copy   : Boolean := Arg (2) = "-c" or else Arg (2) = "-C"
+                                or else Arg (2) = "--copy";
+                     Names  : Version.Trailers.String_Vectors.Vector;
+                  begin
+                     for I in 2 .. Count loop
+                        if Arg (I) = "-f" or else Arg (I) = "--force"
+                          or else Arg (I) = "-C"
+                        then
+                           Force := True;
+                           if Arg (I) = "-C" then
+                              Copy := True;
+                           end if;
+                        elsif Arg (I) = "-c" or else Arg (I) = "--copy" then
+                           Copy := True;
+                        elsif Arg (I) = "-t" or else Arg (I) = "--track"
+                          or else Arg (I) = "--no-track"
+                          or else Arg (I) = "-q" or else Arg (I) = "--quiet"
+                        then
+                           null;   --  tracking is derived from the start point
+                        elsif Arg (I)'Length > 0
+                          and then Arg (I) (Arg (I)'First) = '-'
+                        then
+                           Usage_Error
+                             ("unknown branch option: " & Arg (I), Usage);
+                           return;
+                        else
+                           Names.Append (Arg (I));
+                        end if;
+                     end loop;
+
+                     if Copy then
+                        --  `-c [<src>] <dst>`: src defaults to the current
+                        --  branch. Copy is a create at the source's commit.
+                        declare
+                           Src : constant String :=
+                             (if Natural (Names.Length) >= 2
+                              then Names.First_Element
+                              else Version.Refs.Current_Branch_Name (Repo));
+                           Dst : constant String := Names.Last_Element;
+                        begin
+                           if Names.Is_Empty then
+                              Usage_Error ("branch -c needs a name", Usage);
+                              return;
+                           end if;
+                           Version.Branch.Create_Branch
+                             (Dst,
+                              Version.Objects.To_String
+                                (Version.Revisions.Resolve_Commit (Repo, Src)));
+                        end;
+                        return;
+                     end if;
+
+                     if Names.Is_Empty then
+                        Usage_Error ("branch needs a name", Usage);
+                        return;
+                     end if;
+
+                     declare
+                        Name  : constant String := Names.First_Element;
+                        Start : constant String :=
+                          (if Natural (Names.Length) >= 2
+                           then Names.Element (Names.First_Index + 1)
+                           else "HEAD");
+                        Ref   : constant String := "refs/heads/" & Name;
+                     begin
+                        --  Without -f, a name that already exists is a fatal
+                        --  error, as git reports.
+                        if Version.Refs.Ref_Exists (Repo, Ref) then
+                           if not Force then
+                              Stderr_Line
+                                ("fatal: a branch named '" & Name
+                                 & "' already exists");
+                              Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                              return;
+                           end if;
+                           --  -f moves the existing branch: clear it first so
+                           --  the create writes it fresh at the new start.
+                           Version.Branch.Delete_Branch
+                             (Name => Name, Force => True);
+                        end if;
+
+                        Version.Branch.Create_Branch
+                          (Name,
+                           Version.Objects.To_String
+                             (Version.Revisions.Resolve_Commit (Repo, Start)));
+                     end;
+                  end;
+
                else
                   Usage_Error ("unknown branch subcommand: " & Arg (2), Usage);
                   return;

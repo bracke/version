@@ -1787,9 +1787,11 @@ package body Version.CLI.Tests is
    begin
       --  Bare `branch` now lists branches (like git) rather than being a parse
       --  error; that behaviour is byte-oracled in Plumbing_Matches_Git.
+      --  `branch frobnicate` now creates a branch (git's positional syntax);
+      --  an unknown option is what still fails.
       Check_Usage_Failure
-        ("branch frobnicate",
-         "unknown branch subcommand: frobnicate",
+        ("branch --frobnicate",
+         "unknown branch subcommand: --frobnicate",
          "branch unknown subcommand");
       Check_Usage_Failure
         ("branch list --contains",
