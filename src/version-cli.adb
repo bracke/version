@@ -11013,7 +11013,8 @@ package body Version.CLI is
                            or else Arg (2) = "--verbose")
                then
                   Version.Console.Put
-                    (Version.Branch.List_Branches_Verbose_Text);
+                    (Version.Branch.List_Branches_Verbose_Text
+                       (With_Upstream => Arg (2) = "-vv"));
                elsif Count = 2
                  and then (Arg (2) = "-r" or else Arg (2) = "--remotes")
                then
@@ -11610,8 +11611,18 @@ package body Version.CLI is
                         --  carry no remote-tracking refs.
                         Print_Remote_Branch_List (With_Prefix => False);
                      elsif Want_Verbose then
-                        Version.Console.Put
-                          (Version.Branch.List_Branches_Verbose_Text);
+                        --  -vv (or -avv): two v's request the upstream name.
+                        declare
+                           VV : constant Boolean :=
+                             (for some K in Arg (2)'First + 1 .. Arg (2)'Last =>
+                                (Arg (2) (K) = 'v'
+                                 and then K < Arg (2)'Last
+                                 and then Arg (2) (K + 1) = 'v'));
+                        begin
+                           Version.Console.Put
+                             (Version.Branch.List_Branches_Verbose_Text
+                                (With_Upstream => VV));
+                        end;
                         if Want_All then
                            Print_Remote_Branch_List (With_Prefix => True);
                         end if;
