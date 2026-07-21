@@ -17124,6 +17124,13 @@ package body Version.CLI is
                File_Idx : Natural := 0;
                I        : Positive := 2;
 
+               --  --directory prepends a path to every file; --include and
+               --  --exclude narrow which files the summary reports (git tests
+               --  each path with fnmatch, in the order the options were given).
+               Directory : Unbounded_String;
+               Includes  : Version.Trailers.String_Vectors.Vector;
+               Excludes  : Version.Trailers.String_Vectors.Vector;
+
                function Read_Stdin return String is
                   Buffer : aliased String (1 .. 65536);
                   Acc    : Unbounded_String;
@@ -17145,6 +17152,141 @@ package body Version.CLI is
                   end loop;
                   return To_String (Acc);
                end Read_Stdin;
+
+               --  git's fnmatch(pattern, name, 0): `*` spans '/', `?` is any
+               --  one character. Enough for --include/--exclude path globs.
+               function Fnmatch (Pat, Name : String) return Boolean is
+                  function M (P, N : Natural) return Boolean is
+                  begin
+                     if P > Pat'Last then
+                        return N > Name'Last;
+                     elsif Pat (P) = '*' then
+                        return M (P + 1, N)
+                          or else (N <= Name'Last and then M (P, N + 1));
+                     elsif N > Name'Last then
+                        return False;
+                     elsif Pat (P) = '?' or else Pat (P) = Name (N) then
+                        return M (P + 1, N + 1);
+                     else
+                        return False;
+                     end if;
+                  end M;
+               begin
+                  return M (Pat'First, Name'First);
+               end Fnmatch;
+
+               --  Apply git's --directory (prepend a path to every file) and
+               --  --include/--exclude (drop non-matching file blocks) to the
+               --  patch text before it is summarised. A path is kept when it
+               --  matches some --include (or none were given) and no --exclude.
+               function Filtered_Patch
+                 (Patch    : String;
+                  Dir      : String;
+                  Inc, Exc : Version.Trailers.String_Vectors.Vector)
+                  return String
+               is
+                  NL : constant Character := ASCII.LF;
+
+                  function Keep (Path : String) return Boolean is
+                     In_Ok : Boolean := Inc.Is_Empty;
+                  begin
+                     for P of Inc loop
+                        if Fnmatch (P, Path) then
+                           In_Ok := True;
+                        end if;
+                     end loop;
+                     if not In_Ok then
+                        return False;
+                     end if;
+                     for P of Exc loop
+                        if Fnmatch (P, Path) then
+                           return False;
+                        end if;
+                     end loop;
+                     return True;
+                  end Keep;
+
+                  --  Prepend Dir to a path in a header line that carries a
+                  --  prefixed name (a/…, b/…) or a bare rename/copy name.
+                  function Reprefix (Line : String) return String is
+                     function After (Marker : String) return String is
+                       (Line (Line'First .. Line'First + Marker'Length - 1)
+                        & Dir & "/"
+                        & Line (Line'First + Marker'Length .. Line'Last));
+                  begin
+                     if Dir = "" then
+                        return Line;
+                     elsif Has_Prefix (Line, "diff --git a/") then
+                        --  "diff --git a/X b/Y": prefix both sides.
+                        declare
+                           B : constant Natural :=
+                             Ada.Strings.Fixed.Index (Line, " b/");
+                        begin
+                           if B = 0 then
+                              return Line;
+                           end if;
+                           return Line (Line'First .. Line'First + 11)
+                             & Dir & "/"
+                             & Line (Line'First + 12 .. B)
+                             & "b/" & Dir & "/"
+                             & Line (B + 3 .. Line'Last);
+                        end;
+                     elsif Has_Prefix (Line, "--- a/") then
+                        return After ("--- a/");
+                     elsif Has_Prefix (Line, "+++ b/") then
+                        return After ("+++ b/");
+                     elsif Has_Prefix (Line, "rename from ") then
+                        return After ("rename from ");
+                     elsif Has_Prefix (Line, "rename to ") then
+                        return After ("rename to ");
+                     elsif Has_Prefix (Line, "copy from ") then
+                        return After ("copy from ");
+                     elsif Has_Prefix (Line, "copy to ") then
+                        return After ("copy to ");
+                     else
+                        return Line;
+                     end if;
+                  end Reprefix;
+
+                  function Dest_Of (Header : String) return String is
+                     B : constant Natural :=
+                       Ada.Strings.Fixed.Index (Header, " b/");
+                  begin
+                     return (if B = 0 then "" else Header (B + 3 .. Header'Last));
+                  end Dest_Of;
+
+                  Result   : Unbounded_String;
+                  Keep_Blk : Boolean := True;
+                  First    : Natural := Patch'First;
+               begin
+                  if Dir = "" and then Inc.Is_Empty and then Exc.Is_Empty then
+                     return Patch;
+                  end if;
+                  while First <= Patch'Last loop
+                     declare
+                        Last : Natural := First;
+                     begin
+                        while Last <= Patch'Last and then Patch (Last) /= NL loop
+                           Last := Last + 1;
+                        end loop;
+                        declare
+                           Line : constant String := Patch (First .. Last - 1);
+                        begin
+                           if Has_Prefix (Line, "diff --git ") then
+                              Keep_Blk := Keep (Dest_Of (Line));
+                           end if;
+                           if Keep_Blk then
+                              Append (Result, Reprefix (Line));
+                              if Last <= Patch'Last then
+                                 Append (Result, NL);
+                              end if;
+                           end if;
+                        end;
+                        First := Last + 1;
+                     end;
+                  end loop;
+                  return To_String (Result);
+               end Filtered_Patch;
             begin
                while I <= Count and then Arg (I)'Length > 0
                  and then Arg (I) (Arg (I)'First) = '-'
@@ -17159,17 +17301,26 @@ package body Version.CLI is
                   elsif Arg (I) = "--summary" then
                      Summ_Mode := 4;
                      Want_Summary_S := True;
+                  elsif Has_Prefix (Arg (I), "--directory=") then
+                     Directory := To_Unbounded_String
+                       (Arg (I) (Arg (I)'First + 12 .. Arg (I)'Last));
+                  elsif Has_Prefix (Arg (I), "--include=") then
+                     Includes.Append
+                       (Arg (I) (Arg (I)'First + 10 .. Arg (I)'Last));
+                  elsif Has_Prefix (Arg (I), "--exclude=") then
+                     Excludes.Append
+                       (Arg (I) (Arg (I)'First + 10 .. Arg (I)'Last));
                   elsif Arg (I) = "--recount"
                     or else Arg (I) = "--unidiff-zero"
                     or else Has_Prefix (Arg (I), "--whitespace=")
                     or else Has_Prefix (Arg (I), "-C")
-                    or else Has_Prefix (Arg (I), "--directory=")
-                    or else Has_Prefix (Arg (I), "--exclude=")
-                    or else Has_Prefix (Arg (I), "--include=")
+                    or else Arg (I) = "--3way" or else Arg (I) = "-3"
+                    or else Arg (I) = "--no-3way"
                   then
-                     --  These change how a patch is applied or matched, not
-                     --  the record it produces; accepted without effect where
-                     --  a summary is what is asked for.
+                     --  These change how a patch is applied, not the record it
+                     --  produces; accepted without effect for a summary. A
+                     --  --3way fallback we do not do simply applies directly,
+                     --  which still fails (exit 1) where git's 3-way would.
                      null;
                   elsif Arg (I) = "-R" or else Arg (I) = "--reverse" then
                      Opts.Reverse_Patch := True;
@@ -17214,14 +17365,26 @@ package body Version.CLI is
                                Usage);
                elsif I <= Count then
                   Usage_Error ("apply accepts at most one patch file", Usage);
+               elsif File_Idx /= 0
+                 and then not Ada.Directories.Exists (Arg (File_Idx))
+               then
+                  --  git dies (exit 128) with this exact wording when the
+                  --  patch file is not there.
+                  Stderr_Line
+                    ("error: can't open patch '" & Arg (File_Idx)
+                     & "': No such file or directory");
+                  Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
                else
                   declare
                      Repo : constant Version.Repository.Repository_Handle :=
                        Version.Repository.Open;
-                     Patch_Text : constant String :=
+                     Raw_Patch : constant String :=
                        (if File_Idx /= 0
                         then Version.Files.Read_Binary_File (Arg (File_Idx))
                         else Read_Stdin);
+                     Patch_Text : constant String :=
+                       Filtered_Patch
+                         (Raw_Patch, To_String (Directory), Includes, Excludes);
                   begin
                      if Want_Stat_S and then Want_Summary_S then
                         --  git renders the diffstat, then the summary lines.
@@ -17243,7 +17406,7 @@ package body Version.CLI is
                                   when 3 => Version.Diff.Summary_Shortstat,
                                   when others => Version.Diff.Summary_Names)));
                      else
-                        Version.Apply.Apply_Patch (Repo, Patch_Text, Opts);
+                        Version.Apply.Apply_Patch (Repo, Raw_Patch, Opts);
                      end if;
                   end;
                end if;
@@ -28058,6 +28221,12 @@ package body Version.CLI is
          --  not the ordinary failure status.
          Ada.Text_IO.Put_Line
            (Ada.Text_IO.Standard_Error, "fatal: " & User_Error_Text (E));
+         Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+
+      when E : Version.Apply.Malformed_Patch =>
+         --  An unparsable/corrupt patch is git's die() (exit 128), unlike a
+         --  well-formed patch that does not apply (the ordinary exit 1).
+         Error_Line (User_Error_Text (E));
          Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
 
       when
