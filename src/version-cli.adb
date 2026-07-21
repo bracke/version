@@ -3785,9 +3785,13 @@ package body Version.CLI is
       Render_Numstat, Render_Shortstat, Render_Summary, Render_Silent);
 
    procedure Put_Raw_As
-     (Repo   : Version.Repository.Repository_Handle;
-      Raw    : String;
-      Format : Diff_Render)
+     (Repo        : Version.Repository.Repository_Handle;
+      Raw         : String;
+      Format      : Diff_Render;
+      Pathspecs   : Version.Pathspec.Pathspec_Vectors.Vector :=
+        Version.Pathspec.Pathspec_Vectors.Empty_Vector;
+      Diff_Filter : String := "";
+      Abbrev      : Natural := 0)
    is
       Files_Changed : Natural := 0;
       Total_Added   : Natural := 0;
@@ -3801,6 +3805,21 @@ package body Version.CLI is
          else Version.Objects.Content
                 (Version.Objects.Read_Object
                    (Repo, Version.Objects.To_Object_Id (Id))));
+
+      --  git's buffer_is_binary heuristic: a NUL byte within the first 8000
+      --  bytes marks the blob binary. Binary files render as "-<TAB>-" in
+      --  --numstat and contribute no insertions/deletions to --shortstat.
+      function Has_Nul (Text : String) return Boolean is
+         Stop : constant Natural :=
+           Natural'Min (Text'Last, Text'First + 7999);
+      begin
+         for K in Text'First .. Stop loop
+            if Text (K) = ASCII.NUL then
+               return True;
+            end if;
+         end loop;
+         return False;
+      end Has_Nul;
    begin
       while First <= Raw'Last loop
          declare
@@ -3893,63 +3912,131 @@ package body Version.CLI is
                            end;
                         end loop;
                      end Count;
-                  begin
-                     Files_Changed := Files_Changed + 1;
 
-                     case Format is
-                        when Render_Raw | Render_Patch =>
-                           Version.Console.Put (Line & ASCII.LF);
-
-                        when Render_Name_Only =>
-                           Version.Console.Put (Path & ASCII.LF);
-
-                        when Render_Name_Status =>
-                           Version.Console.Put
-                             (Status & ASCII.HT & Path & ASCII.LF);
-
-                        when Render_Numstat =>
-                           declare
-                              A, D : Natural;
-                           begin
-                              Count (A, D);
-                              Total_Added := Total_Added + A;
-                              Total_Deleted := Total_Deleted + D;
-                              Version.Console.Put
-                                (Natural_Image (A) & ASCII.HT
-                                 & Natural_Image (D) & ASCII.HT
-                                 & Path & ASCII.LF);
-                           end;
-
-                        when Render_Shortstat =>
-                           declare
-                              A, D : Natural;
-                           begin
-                              Count (A, D);
-                              Total_Added := Total_Added + A;
-                              Total_Deleted := Total_Deleted + D;
-                           end;
-
-                        when Render_Summary =>
-                           if Old_Id = Zero then
-                              Append
-                                (Summary_Text,
-                                 " create mode " & New_Mode & " " & Path
-                                 & ASCII.LF);
-                           elsif New_Id = Zero then
-                              Append
-                                (Summary_Text,
-                                 " delete mode " & Old_Mode & " " & Path
-                                 & ASCII.LF);
-                           elsif Old_Mode /= New_Mode then
-                              Append
-                                (Summary_Text,
-                                 " mode change " & Old_Mode & " => "
-                                 & New_Mode & " " & Path & ASCII.LF);
+                     --  --diff-filter selects records by status letter: an
+                     --  uppercase letter includes that status, a lowercase one
+                     --  excludes it. With only excludes given, everything else
+                     --  passes; with any include, only the listed statuses do.
+                     function Filter_Passes return Boolean is
+                        S : constant Character :=
+                          (if Status'Length > 0
+                           then Ada.Characters.Handling.To_Upper
+                                  (Status (Status'First))
+                           else ' ');
+                        Has_Include : Boolean := False;
+                        Included    : Boolean := False;
+                     begin
+                        if Diff_Filter = "" then
+                           return True;
+                        end if;
+                        for C of Diff_Filter loop
+                           if C in 'A' .. 'Z' then
+                              Has_Include := True;
+                              if C = S then
+                                 Included := True;
+                              end if;
+                           elsif C in 'a' .. 'z' then
+                              if Ada.Characters.Handling.To_Upper (C) = S then
+                                 return False;   --  explicit exclude
+                              end if;
                            end if;
+                        end loop;
+                        return (not Has_Include) or else Included;
+                     end Filter_Passes;
 
-                        when Render_Silent =>
-                           null;
-                     end case;
+                     --  --abbrev shortens the two object ids in the raw record;
+                     --  the modes, status and path are untouched. Without it the
+                     --  raw format carries the full 40-hex ids.
+                     function Raw_Line return String is
+                        function Ab (Id : String) return String is
+                          (if Abbrev > 0 and then Id'Length >= Abbrev
+                           then Id (Id'First .. Id'First + Abbrev - 1)
+                           else Id);
+                     begin
+                        if Abbrev = 0 then
+                           return Line;
+                        end if;
+                        return ":" & Old_Mode & " " & New_Mode & " "
+                          & Ab (Old_Id) & " " & Ab (New_Id) & " "
+                          & Status & ASCII.HT & Path;
+                     end Raw_Line;
+
+                     Keep : constant Boolean :=
+                       Filter_Passes
+                       and then (Pathspecs.Is_Empty
+                                 or else Version.Pathspec.Matches_Any
+                                           (Pathspecs, Path));
+                  begin
+                     if Keep then
+                        Files_Changed := Files_Changed + 1;
+
+                        case Format is
+                           when Render_Raw | Render_Patch =>
+                              Version.Console.Put (Raw_Line & ASCII.LF);
+
+                           when Render_Name_Only =>
+                              Version.Console.Put (Path & ASCII.LF);
+
+                           when Render_Name_Status =>
+                              Version.Console.Put
+                                (Status & ASCII.HT & Path & ASCII.LF);
+
+                           when Render_Numstat =>
+                              if Has_Nul (Blob_Text (Old_Id))
+                                or else Has_Nul (Blob_Text (New_Id))
+                              then
+                                 Version.Console.Put
+                                   ("-" & ASCII.HT & "-" & ASCII.HT
+                                    & Path & ASCII.LF);
+                              else
+                                 declare
+                                    A, D : Natural;
+                                 begin
+                                    Count (A, D);
+                                    Total_Added := Total_Added + A;
+                                    Total_Deleted := Total_Deleted + D;
+                                    Version.Console.Put
+                                      (Natural_Image (A) & ASCII.HT
+                                       & Natural_Image (D) & ASCII.HT
+                                       & Path & ASCII.LF);
+                                 end;
+                              end if;
+
+                           when Render_Shortstat =>
+                              if not (Has_Nul (Blob_Text (Old_Id))
+                                      or else Has_Nul (Blob_Text (New_Id)))
+                              then
+                                 declare
+                                    A, D : Natural;
+                                 begin
+                                    Count (A, D);
+                                    Total_Added := Total_Added + A;
+                                    Total_Deleted := Total_Deleted + D;
+                                 end;
+                              end if;
+
+                           when Render_Summary =>
+                              if Old_Id = Zero then
+                                 Append
+                                   (Summary_Text,
+                                    " create mode " & New_Mode & " " & Path
+                                    & ASCII.LF);
+                              elsif New_Id = Zero then
+                                 Append
+                                   (Summary_Text,
+                                    " delete mode " & Old_Mode & " " & Path
+                                    & ASCII.LF);
+                              elsif Old_Mode /= New_Mode then
+                                 Append
+                                   (Summary_Text,
+                                    " mode change " & Old_Mode & " => "
+                                    & New_Mode & " " & Path & ASCII.LF);
+                              end if;
+
+                           when Render_Silent =>
+                              null;
+                        end case;
+                     end if;
                   end;
                end if;
             end;
@@ -11068,49 +11155,49 @@ package body Version.CLI is
                      --  other failures, which are die()s at 128. The status
                      --  belongs to the operation, not to the command.
                      begin
-                     for N of Names loop
-                        declare
-                           Ref : constant String :=
-                             (if Remote then "refs/remotes/" & N
-                              else "refs/heads/" & N);
+                        for N of Names loop
+                           declare
+                              Ref : constant String :=
+                                (if Remote then "refs/remotes/" & N
+                                 else "refs/heads/" & N);
 
-                           --  git reports where the branch stood, so the user
-                           --  can put it back; it is read before the delete.
-                           function Was return String is
-                              Id : constant Version.Objects.Hex_Object_Id :=
-                                Version.Refs.Resolve_Ref (Repo, Ref);
-                           begin
-                              return Version.Objects.To_String (Id)
-                                (1 .. Version.Revisions.Unique_Abbrev_Length
-                                        (Repo, Id, 7));
-                           exception
-                              when others =>
-                                 return "";
-                           end Was;
-
-                           Short : constant String := Was;
-                        begin
-                           if Remote then
-                              declare
-                                 Tx : Version.Ref_Transaction.Transaction;
+                              --  git reports where the branch stood, so the user
+                              --  can put it back; it is read before the delete.
+                              function Was return String is
+                                 Id : constant Version.Objects.Hex_Object_Id :=
+                                   Version.Refs.Resolve_Ref (Repo, Ref);
                               begin
-                                 Version.Ref_Transaction.Start (Tx, Repo);
-                                 Version.Ref_Transaction.Add_Delete
-                                   (Tx, Ref, "");
-                                 Version.Ref_Transaction.Commit (Tx);
-                              end;
-                              Success_Line
-                                ("Deleted remote-tracking branch " & N
-                                 & " (was " & Short & ").");
-                           else
-                              Version.Branch.Delete_Branch
-                                (Name => N, Force => Force);
-                              Success_Line
-                                ("Deleted branch " & N
-                                 & " (was " & Short & ").");
-                           end if;
-                        end;
-                     end loop;
+                                 return Version.Objects.To_String (Id)
+                                   (1 .. Version.Revisions.Unique_Abbrev_Length
+                                           (Repo, Id, 7));
+                              exception
+                                 when others =>
+                                    return "";
+                              end Was;
+
+                              Short : constant String := Was;
+                           begin
+                              if Remote then
+                                 declare
+                                    Tx : Version.Ref_Transaction.Transaction;
+                                 begin
+                                    Version.Ref_Transaction.Start (Tx, Repo);
+                                    Version.Ref_Transaction.Add_Delete
+                                      (Tx, Ref, "");
+                                    Version.Ref_Transaction.Commit (Tx);
+                                 end;
+                                 Success_Line
+                                   ("Deleted remote-tracking branch " & N
+                                    & " (was " & Short & ").");
+                              else
+                                 Version.Branch.Delete_Branch
+                                   (Name => N, Force => Force);
+                                 Success_Line
+                                   ("Deleted branch " & N
+                                    & " (was " & Short & ").");
+                              end if;
+                           end;
+                        end loop;
                      exception
                         when E : Ada.IO_Exceptions.Data_Error
                            | Ada.IO_Exceptions.Name_Error
@@ -26216,9 +26303,35 @@ package body Version.CLI is
                --  raw renderer does not; they take a separate path.
                Want_Patch : Boolean := False;
                Want_Stat  : Boolean := False;
+
+               --  Everything after `--` is a pathspec; before it, a bare
+               --  operand is a tree/commit. --diff-filter and --abbrev tune
+               --  which records show and how their ids are rendered.
+               Seen_Sep      : Boolean := False;
+               Want_Renames  : Boolean := False;
+               Pathspec_Args : Version.Trailers.String_Vectors.Vector;
+               Diff_Filter   : Unbounded_String;
+               Abbrev        : Natural := 0;
+
+               function Specs
+                 (Repo : Version.Repository.Repository_Handle)
+                  return Version.Pathspec.Pathspec_Vectors.Vector
+               is
+                  Result : Version.Pathspec.Pathspec_Vectors.Vector;
+               begin
+                  for P of Pathspec_Args loop
+                     Version.Pathspec.Append_Parse
+                       (Result, P, Version.Repository.Prefix (Repo));
+                  end loop;
+                  return Result;
+               end Specs;
             begin
                for I in 2 .. Count loop
-                  if Arg (I) = "-r" then
+                  if Seen_Sep then
+                     Pathspec_Args.Append (Arg (I));
+                  elsif Arg (I) = "--" then
+                     Seen_Sep := True;
+                  elsif Arg (I) = "-r" then
                      Recursive := True;
                   elsif Arg (I) = "--root" then
                      Root_Diff := True;
@@ -26242,17 +26355,26 @@ package body Version.CLI is
                      Want_Patch := True;
                   elsif Arg (I) = "--stat" then
                      Want_Stat := True;
-                  elsif Arg (I) = "-t" or else Arg (I) = "--no-commit-id"
-                    or else Arg (I) = "-M" or else Arg (I) = "--find-renames"
+                  elsif Has_Prefix (Arg (I), "--diff-filter=") then
+                     Diff_Filter := To_Unbounded_String
+                       (Arg (I) (Arg (I)'First + 14 .. Arg (I)'Last));
+                  elsif Arg (I) = "--abbrev" then
+                     Abbrev := 7;
+                  elsif Has_Prefix (Arg (I), "--abbrev=") then
+                     Abbrev := Natural'Value
+                       (Arg (I) (Arg (I)'First + 9 .. Arg (I)'Last));
+                  elsif Arg (I) = "-M" or else Arg (I) = "--find-renames"
                     or else Has_Prefix (Arg (I), "-M")
                     or else Has_Prefix (Arg (I), "--find-renames=")
-                    or else Has_Prefix (Arg (I), "--abbrev")
+                  then
+                     Want_Renames := True;
+                  elsif Arg (I) = "-t" or else Arg (I) = "--no-commit-id"
+                    or else Arg (I) = "--full-index"
                     or else Arg (I) = "--no-renames"
                   then
-                     --  -t (show tree entries), -M (rename detection) and
-                     --  --abbrev change the raw record's ids or add tree
-                     --  lines; accepted where they do not change what these
-                     --  render, refused nowhere silently.
+                     --  -t (show tree entries) and --full-index leave the raw
+                     --  record's full ids and status as this renders them;
+                     --  accepted, never refused silently.
                      null;
                   elsif Arg (I)'Length > 0 and then Arg (I) (Arg (I)'First) = '-'
                   then
@@ -26282,23 +26404,37 @@ package body Version.CLI is
                           Version.Revisions.Resolve_Tree (Repo, Arg (A1));
                         T2 : constant Version.Objects.Hex_Object_Id :=
                           Version.Revisions.Resolve_Tree (Repo, Arg (A2));
+                        --  The engine drives -p/--stat and, with -M, the
+                        --  rename-collapsed name/summary output; without -M it
+                        --  stays renames-off to match the raw records, which
+                        --  never detect renames.
+                        Use_Engine : constant Boolean :=
+                          Want_Patch or else Want_Stat
+                          or else (Want_Renames
+                                   and then Format in Render_Name_Only
+                                                    | Render_Name_Status
+                                                    | Render_Summary);
                      begin
-                        if Want_Patch or else Want_Stat then
-                           --  diff-tree does not detect renames without -M,
-                           --  so keep the stat/patch path in step with the
-                           --  raw records (which never do): renames off.
+                        if Use_Engine then
                            Version.Console.Put
                              (Version.Diff.Diff_Trees
                                 (Repo, T1, T2,
-                                 (Stat => Want_Stat,
-                                  Detect_Renames => Version.Diff.Renames_Off,
+                                 (Stat        => Want_Stat,
+                                  Name_Only   => Format = Render_Name_Only,
+                                  Name_Status => Format = Render_Name_Status,
+                                  Summary     => Format = Render_Summary,
+                                  Detect_Renames =>
+                                    (if Want_Renames
+                                     then Version.Diff.Renames_On
+                                     else Version.Diff.Renames_Off),
                                   others => <>)));
                         else
                            Put_Raw_As
                              (Repo,
                               Version.Diff.Raw_Diff_Trees
                                 (Repo, T1, True, T2, Recursive),
-                              Format);
+                              Format, Specs (Repo),
+                              To_String (Diff_Filter), Abbrev);
                         end if;
                      end;
                   else
@@ -26328,21 +26464,34 @@ package body Version.CLI is
                                 Version.Objects.Commit_Tree_Id (P_Obj);
                            begin
                               Success_Line (To_String (C));
-                              if Want_Patch or else Want_Stat then
+                              if Want_Patch or else Want_Stat
+                                or else (Want_Renames
+                                         and then Format in Render_Name_Only
+                                                          | Render_Name_Status
+                                                          | Render_Summary)
+                              then
                                  Version.Console.Put
                                    (Version.Diff.Diff_Commits
                                       (Repo, Parents.First_Element, C,
                                        Version.Diff.Diff_Options'(
-                                         Stat => Want_Stat,
+                                         Stat        => Want_Stat,
+                                         Name_Only   =>
+                                           Format = Render_Name_Only,
+                                         Name_Status =>
+                                           Format = Render_Name_Status,
+                                         Summary     => Format = Render_Summary,
                                          Detect_Renames =>
-                                           Version.Diff.Renames_Off,
+                                           (if Want_Renames
+                                            then Version.Diff.Renames_On
+                                            else Version.Diff.Renames_Off),
                                          others => <>)));
                               else
                                  Put_Raw_As
                                    (Repo,
                                     Version.Diff.Raw_Diff_Trees
                                       (Repo, P_Tree, True, Tree, Recursive),
-                                    Format);
+                                    Format, Specs (Repo),
+                                    To_String (Diff_Filter), Abbrev);
                               end if;
                            end;
                         elsif Root_Diff then
@@ -26351,7 +26500,8 @@ package body Version.CLI is
                              (Repo,
                               Version.Diff.Raw_Diff_Trees
                                 (Repo, Tree, False, Tree, Recursive),
-                              Format);
+                              Format, Specs (Repo),
+                              To_String (Diff_Filter), Abbrev);
                         end if;
                      end;
                   end if;
@@ -26364,19 +26514,45 @@ package body Version.CLI is
                  "version diff-index [--cached] [-p] <tree-ish>";
                Cached : Boolean := False;
                Patch  : Boolean := False;
+               Want_Stat : Boolean := False;
+               Want_Renames : Boolean := False;
                Tree_Idx : Natural := 0;
                Bad : Boolean := False;
                Format : Diff_Render := Render_Raw;
                Exit_Code : Boolean := False;
                Quiet_Diff : Boolean := False;
+
+               Seen_Sep      : Boolean := False;
+               Pathspec_Args : Version.Trailers.String_Vectors.Vector;
+               Diff_Filter   : Unbounded_String;
+               Abbrev        : Natural := 0;
+
+               function Specs
+                 (Repo : Version.Repository.Repository_Handle)
+                  return Version.Pathspec.Pathspec_Vectors.Vector
+               is
+                  Result : Version.Pathspec.Pathspec_Vectors.Vector;
+               begin
+                  for P of Pathspec_Args loop
+                     Version.Pathspec.Append_Parse
+                       (Result, P, Version.Repository.Prefix (Repo));
+                  end loop;
+                  return Result;
+               end Specs;
             begin
                for I in 2 .. Count loop
-                  if Arg (I) = "--cached" or else Arg (I) = "--staged" then
+                  if Seen_Sep then
+                     Pathspec_Args.Append (Arg (I));
+                  elsif Arg (I) = "--" then
+                     Seen_Sep := True;
+                  elsif Arg (I) = "--cached" or else Arg (I) = "--staged" then
                      Cached := True;
                   elsif Arg (I) = "-p" or else Arg (I) = "--patch"
                     or else Arg (I) = "-u"
                   then
                      Patch := True;
+                  elsif Arg (I) = "--stat" then
+                     Want_Stat := True;
                   elsif Arg (I) = "--raw" then
                      Format := Render_Raw;
                   elsif Arg (I) = "--name-only" then
@@ -26391,6 +26567,14 @@ package body Version.CLI is
                      Format := Render_Summary;
                   elsif Arg (I) = "-s" or else Arg (I) = "--no-patch" then
                      Format := Render_Silent;
+                  elsif Has_Prefix (Arg (I), "--diff-filter=") then
+                     Diff_Filter := To_Unbounded_String
+                       (Arg (I) (Arg (I)'First + 14 .. Arg (I)'Last));
+                  elsif Arg (I) = "--abbrev" then
+                     Abbrev := 7;
+                  elsif Has_Prefix (Arg (I), "--abbrev=") then
+                     Abbrev := Natural'Value
+                       (Arg (I) (Arg (I)'First + 9 .. Arg (I)'Last));
                   elsif Arg (I) = "--exit-code" then
                      --  git reports "there was a difference" as exit 1, which
                      --  is the whole point of the flag.
@@ -26402,9 +26586,7 @@ package body Version.CLI is
                     or else Has_Prefix (Arg (I), "-M")
                     or else Has_Prefix (Arg (I), "-C")
                   then
-                     null;   --  rename detection changes no raw record here
-                  elsif Arg (I) = "--" then
-                     null;
+                     Want_Renames := True;
                   elsif Arg (I)'Length > 0 and then Arg (I) (Arg (I)'First) = '-'
                   then
                      Usage_Error ("unknown diff-index option: " & Arg (I),
@@ -26429,19 +26611,83 @@ package body Version.CLI is
                           Version.Repository.Open;
                         Tree : constant Version.Objects.Hex_Object_Id :=
                           Version.Revisions.Resolve_Tree (Repo, Arg (Tree_Idx));
+
+                        --  Whether any raw record survives the pathspec and
+                        --  --diff-filter, for --exit-code: git's exit reflects
+                        --  the shown diff, not the whole tree's.
+                        function Any_Shown (Raw : String) return Boolean is
+                           Specs_V : constant
+                             Version.Pathspec.Pathspec_Vectors.Vector :=
+                               Specs (Repo);
+                           First : Natural := Raw'First;
+                        begin
+                           while First <= Raw'Last loop
+                              declare
+                                 Last : Natural := First;
+                              begin
+                                 while Last <= Raw'Last
+                                   and then Raw (Last) /= ASCII.LF
+                                 loop
+                                    Last := Last + 1;
+                                 end loop;
+                                 declare
+                                    L : constant String := Raw (First .. Last - 1);
+                                    Tab : constant Natural :=
+                                      Ada.Strings.Fixed.Index
+                                        (L, "" & ASCII.HT);
+                                 begin
+                                    if L'Length > 0 and then L (L'First) = ':'
+                                      and then Tab /= 0
+                                      and then (Specs_V.Is_Empty
+                                                or else Version.Pathspec.Matches_Any
+                                                          (Specs_V,
+                                                           L (Tab + 1 .. L'Last)))
+                                    then
+                                       return True;
+                                    end if;
+                                 end;
+                                 First := Last + 1;
+                              end;
+                           end loop;
+                           return False;
+                        end Any_Shown;
+                        --  The engine reads working-tree and index content, so
+                        --  it -- not the raw record, whose "new" id is all-zero
+                        --  against the working tree -- drives the patch, the
+                        --  diffstat, numstat/shortstat (which need line counts)
+                        --  and any -M rename-collapsed name output.
+                        Use_Engine : constant Boolean :=
+                          Patch or else Want_Stat
+                          or else Format in Render_Numstat | Render_Shortstat
+                          or else (Want_Renames
+                                   and then Format in Render_Name_Only
+                                                    | Render_Name_Status
+                                                    | Render_Summary);
                      begin
-                        if Patch then
-                           --  -p prints the unified diff of the tree against
-                           --  the index (--cached) or the working tree, like
-                           --  git; without it the raw record is shown.
-                           if Cached then
-                              Version.Console.Put
-                                (Version.Diff.Diff_Tree_Vs_Index (Repo, Tree));
-                           else
-                              Version.Console.Put
-                                (Version.Diff.Diff_Tree_Vs_Working
-                                   (Repo, Tree));
-                           end if;
+                        if Use_Engine then
+                           declare
+                              Opts : constant Version.Diff.Diff_Options :=
+                                (Stat        => Want_Stat,
+                                 Numstat     => Format = Render_Numstat,
+                                 Shortstat   => Format = Render_Shortstat,
+                                 Name_Only   => Format = Render_Name_Only,
+                                 Name_Status => Format = Render_Name_Status,
+                                 Summary     => Format = Render_Summary,
+                                 Detect_Renames =>
+                                   (if Want_Renames then Version.Diff.Renames_On
+                                    else Version.Diff.Renames_Off),
+                                 others         => <>);
+                           begin
+                              if Cached then
+                                 Version.Console.Put
+                                   (Version.Diff.Diff_Tree_Vs_Index
+                                      (Repo, Tree, Opts));
+                              else
+                                 Version.Console.Put
+                                   (Version.Diff.Diff_Tree_Vs_Working
+                                      (Repo, Tree, Opts));
+                              end if;
+                           end;
                         else
                            declare
                               Raw : constant String :=
@@ -26449,10 +26695,12 @@ package body Version.CLI is
                                   (Repo, Tree, Cached);
                            begin
                               if not Quiet_Diff then
-                                 Put_Raw_As (Repo, Raw, Format);
+                                 Put_Raw_As
+                                   (Repo, Raw, Format, Specs (Repo),
+                                    To_String (Diff_Filter), Abbrev);
                               end if;
 
-                              if Exit_Code and then Raw'Length > 0 then
+                              if Exit_Code and then Any_Shown (Raw) then
                                  Set_Command_Failure;
                               end if;
                            end;
