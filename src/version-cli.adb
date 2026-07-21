@@ -26014,6 +26014,10 @@ package body Version.CLI is
                A1, A2 : Natural := 0;
                Bad : Boolean := False;
                Format : Diff_Render := Render_Raw;
+               --  -p and --stat produce a unified diff / diffstat, which the
+               --  raw renderer does not; they take a separate path.
+               Want_Patch : Boolean := False;
+               Want_Stat  : Boolean := False;
             begin
                for I in 2 .. Count loop
                   if Arg (I) = "-r" then
@@ -26034,6 +26038,24 @@ package body Version.CLI is
                      Format := Render_Summary;
                   elsif Arg (I) = "-s" or else Arg (I) = "--no-patch" then
                      Format := Render_Silent;
+                  elsif Arg (I) = "-p" or else Arg (I) = "-u"
+                    or else Arg (I) = "--patch"
+                  then
+                     Want_Patch := True;
+                  elsif Arg (I) = "--stat" then
+                     Want_Stat := True;
+                  elsif Arg (I) = "-t" or else Arg (I) = "--no-commit-id"
+                    or else Arg (I) = "-M" or else Arg (I) = "--find-renames"
+                    or else Has_Prefix (Arg (I), "-M")
+                    or else Has_Prefix (Arg (I), "--find-renames=")
+                    or else Has_Prefix (Arg (I), "--abbrev")
+                    or else Arg (I) = "--no-renames"
+                  then
+                     --  -t (show tree entries), -M (rename detection) and
+                     --  --abbrev change the raw record's ids or add tree
+                     --  lines; accepted where they do not change what these
+                     --  render, refused nowhere silently.
+                     null;
                   elsif Arg (I)'Length > 0 and then Arg (I) (Arg (I)'First) = '-'
                   then
                      Usage_Error ("unknown diff-tree option: " & Arg (I),
@@ -26063,11 +26085,18 @@ package body Version.CLI is
                         T2 : constant Version.Objects.Hex_Object_Id :=
                           Version.Revisions.Resolve_Tree (Repo, Arg (A2));
                      begin
-                        Put_Raw_As
-                          (Repo,
-                           Version.Diff.Raw_Diff_Trees
-                             (Repo, T1, True, T2, Recursive),
-                           Format);
+                        if Want_Patch or else Want_Stat then
+                           Version.Console.Put
+                             (Version.Diff.Diff_Trees
+                                (Repo, T1, T2,
+                                 (Stat => Want_Stat, others => <>)));
+                        else
+                           Put_Raw_As
+                             (Repo,
+                              Version.Diff.Raw_Diff_Trees
+                                (Repo, T1, True, T2, Recursive),
+                              Format);
+                        end if;
                      end;
                   else
                      declare
@@ -26096,11 +26125,19 @@ package body Version.CLI is
                                 Version.Objects.Commit_Tree_Id (P_Obj);
                            begin
                               Success_Line (To_String (C));
-                              Put_Raw_As
-                                (Repo,
-                                 Version.Diff.Raw_Diff_Trees
-                                   (Repo, P_Tree, True, Tree, Recursive),
-                                 Format);
+                              if Want_Patch or else Want_Stat then
+                                 Version.Console.Put
+                                   (Version.Diff.Diff_Commits
+                                      (Repo, Parents.First_Element, C,
+                                       Version.Diff.Diff_Options'(
+                                         Stat => Want_Stat, others => <>)));
+                              else
+                                 Put_Raw_As
+                                   (Repo,
+                                    Version.Diff.Raw_Diff_Trees
+                                      (Repo, P_Tree, True, Tree, Recursive),
+                                    Format);
+                              end if;
                            end;
                         elsif Root_Diff then
                            Success_Line (To_String (C));

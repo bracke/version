@@ -1,3 +1,4 @@
+- Add: `diff-tree` accepts `-p`/`-u` (unified patch) and `--stat`, in both the two-tree and single-commit forms; `-t`, `-M`, `--abbrev` and `--no-renames` are accepted without changing what the selectors render.
 - Add: `log` accepts `--numstat`, `--shortstat` and `--raw` (the last with git's 7-hex id abbreviation).
 - Add: `apply --stat`, `--numstat` and `--summary` describe a patch without applying it, byte-matching git. Also accepts (without effect on the summary) `--recount`, `--unidiff-zero`, `--whitespace=`, `-C`, `--directory=`, `--exclude=`, `--include=`. `--shortstat`, which git apply does not have, is refused.
 - Add: `diff` accepts `--numstat`, `--shortstat` and `--summary`, from the same stat engine as `--stat`.
