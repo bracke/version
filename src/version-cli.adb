@@ -18723,16 +18723,52 @@ package body Version.CLI is
                      elsif Arg (2) = "blob" or else Arg (2) = "tree"
                        or else Arg (2) = "commit" or else Arg (2) = "tag"
                      then
-                        --  git's `cat-file <type> <object>` form: print the
-                        --  contents, but only if the object really is that
-                        --  type.
-                        if Arg (2) /= Kind_Name then
-                           Error_Line
-                             ("fatal: git cat-file " & Arg (2) & ": bad file");
-                           Set_Command_Failure;
-                        else
-                           Version.Console.Put (Version.Objects.Content (Obj));
-                        end if;
+                        --  git's `cat-file <type> <object>` PEELS toward the
+                        --  requested type rather than checking it strictly: a
+                        --  tag is dereferenced to its commit, a commit to its
+                        --  tree, and so on. A peel that cannot reach the type
+                        --  (e.g. blob from a commit) dies with 128.
+                        declare
+                           Target : Version.Objects.Hex_Object_Id := Id;
+                           Reached : Boolean := False;
+                        begin
+                           if Arg (2) = Kind_Name then
+                              Target := Id;
+                              Reached := True;
+                           elsif Arg (2) = "commit" then
+                              begin
+                                 Target :=
+                                   Version.Revisions.Resolve_Commit
+                                     (Repo, Version.Objects.To_String (Id));
+                                 Reached := True;
+                              exception
+                                 when others => Reached := False;
+                              end;
+                           elsif Arg (2) = "tree" then
+                              begin
+                                 Target :=
+                                   Version.Revisions.Resolve_Tree
+                                     (Repo, Version.Objects.To_String (Id));
+                                 Reached := True;
+                              exception
+                                 when others => Reached := False;
+                              end;
+                           end if;
+
+                           if Reached then
+                              Version.Console.Put
+                                (Version.Objects.Content
+                                   (Version.Objects.Read_Object
+                                      (Repo, Target)));
+                           else
+                              --  git names the resolved object id, not the
+                              --  requested type, and dies with 128.
+                              Stderr_Line
+                                ("fatal: git cat-file "
+                                 & Version.Objects.To_String (Id) & ": bad file");
+                              Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                           end if;
+                        end;
                      else
                         Usage_Error ("unknown cat-file option: " & Arg (2),
                                      Usage);
