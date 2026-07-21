@@ -10032,9 +10032,28 @@ package body Version.CLI is
                Rename_Score : Natural := 0;
                Opts   : Version.Diff.Diff_Options;
                Context : Natural := 3;
+               --  --exit-code makes a non-empty diff exit 1; --quiet is that
+               --  plus suppressed output (git's --quiet implies --exit-code).
+               Exit_Code : Boolean := False;
+               Quiet     : Boolean := False;
+               Silent    : Boolean := False;   --  -s / --no-patch
+               Binary_Patch : Boolean := False;
 
                function LArg (Index : Positive) return String is
                  (To_String (LArgs (Index)));
+
+               --  Print the diff unless suppressed, and flag a non-empty
+               --  result for --exit-code -- git reports "there were
+               --  differences" as exit status 1.
+               procedure Emit (S : String) is
+               begin
+                  if not Quiet and then not Silent then
+                     Version.Console.Put (S);
+                  end if;
+                  if Exit_Code and then S'Length > 0 then
+                     Set_Command_Failure;
+                  end if;
+               end Emit;
 
                function LHas_Path (First : Positive) return Boolean is
                begin
@@ -10129,6 +10148,19 @@ package body Version.CLI is
                      Name_Only := True;
                   elsif Arg (I) = "--name-status" then
                      Name_Status := True;
+                  elsif Arg (I) = "--exit-code" then
+                     Exit_Code := True;
+                  elsif Arg (I) = "--quiet" then
+                     Exit_Code := True;
+                     Quiet := True;
+                  elsif Arg (I) = "-s" or else Arg (I) = "--no-patch" then
+                     Silent := True;
+                  elsif Arg (I) = "--binary" then
+                     Binary_Patch := True;
+                  elsif Arg (I) = "--no-color" or else Arg (I) = "--color=never"
+                    or else Arg (I) = "--color=auto"
+                  then
+                     null;   --  output is never colored when piped, as here
                   elsif Arg (I)'Length > 2
                     and then Arg (I) (Arg (I)'First .. Arg (I)'First + 1) = "-U"
                   then
@@ -10168,10 +10200,56 @@ package body Version.CLI is
                         Context_Lines => Context,
                         Detect_Renames => Rename_Mode,
                         Rename_Score => Rename_Score,
+                        Binary_Patch => Binary_Patch,
                         others => <>);
 
+               --  Range notation as a single operand: `A..B` diffs A against
+               --  B, `A...B` diffs their merge base against B. An empty side
+               --  is HEAD. If the operand does not resolve as a range it falls
+               --  through to the ordinary rev/pathspec handling below.
+               if LCount = 2
+                 and then Ada.Strings.Fixed.Index (LArg (2), "..") /= 0
+               then
+                  declare
+                     Op  : constant String := LArg (2);
+                     T3  : constant Natural :=
+                       Ada.Strings.Fixed.Index (Op, "...");
+                     Sym : constant Boolean := T3 /= 0;
+                     Cut : constant Natural :=
+                       (if Sym then T3 else Ada.Strings.Fixed.Index (Op, ".."));
+                     Wid : constant Natural := (if Sym then 3 else 2);
+                     A_Txt : constant String :=
+                       (if Cut = Op'First then "HEAD"
+                        else Op (Op'First .. Cut - 1));
+                     B_Txt : constant String :=
+                       (if Cut + Wid > Op'Last then "HEAD"
+                        else Op (Cut + Wid .. Op'Last));
+                     Repo : constant Version.Repository.Repository_Handle :=
+                       Version.Repository.Open;
+                  begin
+                     declare
+                        New_Id : constant Version.Objects.Hex_Object_Id :=
+                          Version.Revisions.Resolve_Commit (Repo, B_Txt);
+                        A_Id   : constant Version.Objects.Hex_Object_Id :=
+                          Version.Revisions.Resolve_Commit (Repo, A_Txt);
+                        Old_Id : constant Version.Objects.Hex_Object_Id :=
+                          (if Sym
+                           then Version.History.Merge_Base (Repo, A_Id, New_Id)
+                           else A_Id);
+                     begin
+                        Emit
+                          (Version.Diff.Diff_Commits
+                             (Repo, Old_Id, New_Id, Opts));
+                        return;
+                     end;
+                  exception
+                     when Ada.IO_Exceptions.Data_Error | Constraint_Error =>
+                        null;   --  not a range; fall through
+                  end;
+               end if;
+
                if LCount = 1 then
-                  Version.Console.Put
+                  Emit
                     (Version.Diff.Diff_Working_Tree
                        (Version.Repository.Open, Opts));
                elsif LArg (2) = "--staged" or else LArg (2) = "--cached" then
@@ -10200,11 +10278,11 @@ package body Version.CLI is
                      return;
                   elsif LCount < Path_First or else not LHas_Path (Path_First)
                   then
-                     Version.Console.Put
+                     Emit
                        (Version.Diff.Diff_Staged
                           (Version.Repository.Open, Opts));
                   else
-                     Version.Console.Put
+                     Emit
                        (Version.Diff.Diff_Staged
                           (Version.Repository.Open,
                            LPathspecs (Path_First), Opts));
@@ -10216,7 +10294,7 @@ package body Version.CLI is
                      Usage_Error ("missing diff pathspec", Usage);
                      return;
                   end if;
-                  Version.Console.Put
+                  Emit
                     (Version.Diff.Diff_Working_Tree
                        (Version.Repository.Open,
                         LPathspecs (Path_First), Opts));
@@ -10244,7 +10322,7 @@ package body Version.CLI is
                            Is_Rev := False;
                      end;
                      if Is_Rev then
-                        Version.Console.Put
+                        Emit
                           (Version.Diff.Diff_Tree_Vs_Working
                              (Repo, Tree, Opts));
                      elsif LArg (2)'Length > 0
@@ -10265,12 +10343,16 @@ package body Version.CLI is
                         Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
                         return;
                      else
-                        Version.Console.Put
+                        Emit
                           (Version.Diff.Diff_Working_Tree
                              (Repo, LPathspecs (2), Opts));
                      end if;
                   end;
-               elsif LCount = 3 then
+               elsif LCount = 3
+                 or else (LCount >= 4 and then LArg (4) = "--")
+               then
+                  --  Two revisions, optionally followed by `-- <pathspec>...`;
+                  --  git restricts the diff to the given paths.
                   declare
                      Repo               :
                        constant Version.Repository.Repository_Handle :=
@@ -10280,6 +10362,7 @@ package body Version.CLI is
                      New_Id             : Version.Objects.Hex_Object_Id :=
                        Version.Objects.Zero_Object_Id;
                      Revisions_Resolved : Boolean := False;
+                     Has_Paths : constant Boolean := LCount >= 5;
                   begin
                      begin
                         Old_Id :=
@@ -10292,12 +10375,16 @@ package body Version.CLI is
                            Revisions_Resolved := False;
                      end;
 
-                     if Revisions_Resolved then
-                        Version.Console.Put
+                     if Revisions_Resolved and then Has_Paths then
+                        Emit
+                          (Version.Diff.Diff_Commits
+                             (Repo, Old_Id, New_Id, LPathspecs (5), Opts));
+                     elsif Revisions_Resolved then
+                        Emit
                           (Version.Diff.Diff_Commits
                              (Repo, Old_Id, New_Id, Opts));
                      else
-                        Version.Console.Put
+                        Emit
                           (Version.Diff.Diff_Working_Tree
                              (Repo, LPathspecs (2), Opts));
                      end if;
