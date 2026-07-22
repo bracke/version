@@ -10704,6 +10704,8 @@ package body Version.CLI is
                Ignore_Case : Boolean := False;
                Invert_Grep : Boolean := False;
                All_Match   : Boolean := False;
+               --  --not flips following revisions into exclusions (^rev).
+               Negate      : Boolean := False;
                --  --since/--after and --until/--before bound the committer
                --  date (git's raw-unix form is what the fixtures use).
                Since_Set  : Boolean := False;
@@ -10746,6 +10748,13 @@ package body Version.CLI is
                   elsif Arg (I) = "--" then
                      Operands.Append (Arg (I));
                      Only_Paths := True;
+                  elsif Arg (I) = "--abbrev-commit"
+                    or else Arg (I) = "--no-abbrev-commit"
+                    or else Arg (I) = "--no-decorate"
+                  then
+                     null;   --  the default layout already
+                  elsif Arg (I) = "--not" then
+                     Negate := True;
                   elsif Arg (I) = "--no-merges" then
                      Walk.No_Merges := True;
                   elsif Arg (I) = "--merges" then
@@ -10917,8 +10926,16 @@ package body Version.CLI is
                      exit;
                   else
                      --  A revision, a range, a ^exclusion or a path: the
-                     --  shared parser decides which.
-                     Operands.Append (Arg (I));
+                     --  shared parser decides which. After --not, a positive
+                     --  revision becomes an exclusion.
+                     if Negate and then Arg (I)'Length > 0
+                       and then Arg (I) (Arg (I)'First) /= '^'
+                       and then not Only_Paths
+                     then
+                        Operands.Append ("^" & Arg (I));
+                     else
+                        Operands.Append (Arg (I));
+                     end if;
                   end if;
                end loop;
 

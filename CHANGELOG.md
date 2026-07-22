@@ -1,3 +1,4 @@
+- Git parity: `log` accepts `--abbrev-commit`/`--no-abbrev-commit`/`--no-decorate` (the default layout) and `--not` (turns following revisions into exclusions).
 - Git parity: `reflog show <ref>` expands a short ref to its full name (a ref with no reflog prints nothing), and `reflog -n <count>`/`--max-count=` caps the entries.
 - Git parity: `log` gains `--since`/`--after`/`--until`/`--before` (committer-date bounds), `--committer=`, `-i` (case-insensitive author/grep), `--invert-grep`, `--all-match`, and multiple `--grep` (OR, or AND with `--all-match`).
 - Git parity: `gc`/`prune`/`repack`/`fsck` match git — silent on success (repack reports "Nothing new to pack." unless `-a`/`-A`/`-q`), accept git's flags (rejecting the ones git rejects), and `fsck` reports dangling/`--unreachable`/`--root`/`--tags` objects while the tool's own `verify` keeps its summary line.
