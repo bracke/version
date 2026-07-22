@@ -1,3 +1,4 @@
+- Git parity: `log --oneline` combined with `--name-only`/`--name-status`/`--numstat`/`--shortstat`/`--raw`/`--stat` now prints the file changes after each oneline header (previously the format flag was dropped).
 - Git parity: `show` gains `--numstat`/`--shortstat`/`--summary` and `--pretty=oneline`/`--format=oneline` (full-hash header, no blank before the diff).
 - Git parity: `log --decorate[=short|full]`/`--no-decorate` now decorate the oneline listing with ref names.
 - Git parity: `log` accepts `--abbrev-commit`/`--no-abbrev-commit`/`--no-decorate` (the default layout) and `--not` (turns following revisions into exclusions).

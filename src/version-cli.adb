@@ -11080,6 +11080,23 @@ package body Version.CLI is
                           (Version.Log.Log_Formatted_List_Text
                              (Repo, Commits, To_String (Format),
                               Terminate_Records => Terminator));
+                     elsif Oneline
+                       and then (Name_Only or else Name_Status or else Numstat
+                                 or else Shortstat or else Raw or else Stat)
+                     then
+                        --  git renders the file changes after each oneline
+                        --  header.
+                        Version.Console.Put
+                          (Version.Log.Log_List_Text
+                             (Repo, Commits,
+                              Stat        => Stat,
+                              Name_Only   => Name_Only,
+                              Name_Status => Name_Status,
+                              Numstat     => Numstat,
+                              Shortstat   => Shortstat,
+                              Raw         => Raw,
+                              Context     => Context,
+                              Oneline     => True));
                      elsif Oneline then
                         Version.Console.Put
                           (Version.Log.Log_Oneline_List_Text
