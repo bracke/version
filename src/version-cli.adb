@@ -2607,6 +2607,114 @@ package body Version.CLI is
       end if;
    end Print_Points_At;
 
+   --  git's fsck lists the "dangling" objects (unreachable roots) and its
+   --  prune -n/-v lists every unreachable object. Both walk the loose objects
+   --  that no ref reaches; dangling additionally excludes any that another
+   --  unreachable object references. Output is sorted by object id.
+   --  All_Unreachable lists every unreachable object; otherwise only the
+   --  dangling roots. Label "" gives prune's "<id> <type>" form; a non-empty
+   --  label gives fsck's "<label> <type> <id>" form.
+   procedure Emit_Unreachable_Objects
+     (All_Unreachable : Boolean;
+      Label           : String)
+   is
+      Dangling_Only : constant Boolean := not All_Unreachable;
+      Repo : constant Version.Repository.Repository_Handle :=
+        Version.Repository.Open;
+      Unreach : constant Version.Objects.Object_Id_Vectors.Vector :=
+        Version.Maintenance.Unreachable_Loose_Objects (Repo);
+
+      function Type_Str (Id_Hex : String) return String is
+        (case Version.Objects.Kind
+           (Version.Objects.Read_Object
+              (Repo, Version.Objects.To_Object_Id (Id_Hex)))
+         is
+            when Version.Objects.Commit_Object => "commit",
+            when Version.Objects.Tree_Object   => "tree",
+            when Version.Objects.Blob_Object   => "blob",
+            when Version.Objects.Tag_Object    => "tag",
+            when others                        => "unknown");
+
+      --  Object ids that some unreachable object points at -- these are not
+      --  dangling even though they too are unreachable from any ref.
+      Referenced : Version.Trailers.String_Vectors.Vector;
+
+      function Is_Referenced (Id_Hex : String) return Boolean is
+        (for some R of Referenced => R = Id_Hex);
+
+      Ids : Version.Trailers.String_Vectors.Vector;
+   begin
+      if Dangling_Only then
+         for Id of Unreach loop
+            declare
+               Obj : constant Version.Objects.Git_Object :=
+                 Version.Objects.Read_Object (Repo, Id);
+            begin
+               case Version.Objects.Kind (Obj) is
+                  when Version.Objects.Commit_Object =>
+                     Referenced.Append
+                       (Version.Objects.To_String
+                          (Version.Objects.Commit_Tree_Id (Obj)));
+                     for P of Version.Objects.Commit_Parent_Ids (Obj) loop
+                        Referenced.Append (Version.Objects.To_String (P));
+                     end loop;
+                  when Version.Objects.Tree_Object =>
+                     for E of Version.Objects.Tree_Entries
+                       (Repo, Version.Objects.To_Object_Id
+                                (Version.Objects.To_String (Id)))
+                     loop
+                        Referenced.Append (Version.Objects.To_String (E.Id));
+                     end loop;
+                  when Version.Objects.Tag_Object =>
+                     Referenced.Append
+                       (Version.Objects.To_String
+                          (Version.Objects.Tag_Target_Id (Obj)));
+                  when others =>
+                     null;
+               end case;
+            end;
+         end loop;
+      end if;
+
+      for Id of Unreach loop
+         declare
+            Hex : constant String := Version.Objects.To_String (Id);
+         begin
+            if not Dangling_Only or else not Is_Referenced (Hex) then
+               Ids.Append (Hex);
+            end if;
+         end;
+      end loop;
+
+      --  Sort by object id (git's order).
+      declare
+         Tmp : Version.Trailers.String_Vectors.Vector := Ids;
+      begin
+         Ids.Clear;
+         while not Tmp.Is_Empty loop
+            declare
+               Min_I : Natural := Tmp.First_Index;
+            begin
+               for I in Tmp.First_Index .. Tmp.Last_Index loop
+                  if Tmp.Element (I) < Tmp.Element (Min_I) then
+                     Min_I := I;
+                  end if;
+               end loop;
+               Ids.Append (Tmp.Element (Min_I));
+               Tmp.Delete (Min_I);
+            end;
+         end loop;
+      end;
+
+      for Hex of Ids loop
+         if Label = "" then
+            Success_Line (Hex & " " & Type_Str (Hex));
+         else
+            Success_Line (Label & " " & Type_Str (Hex) & " " & Hex);
+         end if;
+      end loop;
+   end Emit_Unreachable_Objects;
+
    --  git's branch patterns are shell globs against the short name; only `*`
    --  and `?` are worth supporting here, which is what real patterns use.
    function Glob_Match
@@ -23769,178 +23877,342 @@ package body Version.CLI is
          elsif Command = "verify" then
             declare
                Usage : constant String := "version verify";
+               --  `fsck` (git's name) is silent on success and takes git's
+               --  check-selecting flags; the tool's own `verify` keeps its
+               --  informative summary line.
+               As_Fsck : constant Boolean := Arg (1) = "fsck";
+               Bad     : Boolean := False;
+               --  --dangling is on by default; --no-dangling turns it off.
+               --  --unreachable instead lists every unreachable object.
+               Show_Dangling  : Boolean := True;
+               Show_Unreach   : Boolean := False;
+               Want_Root      : Boolean := False;
+               Want_Tags      : Boolean := False;
             begin
-               if Count /= 1 then
-                  Usage_Error ("verify takes no arguments", Usage);
-                  return;
-               end if;
+               if As_Fsck then
+                  for I in 2 .. Count loop
+                     declare
+                        A : constant String := Arg (I);
+                     begin
+                        if A = "--no-dangling" then
+                           Show_Dangling := False;
+                        elsif A = "--unreachable" then
+                           Show_Unreach := True;
+                        elsif A = "--root" then
+                           Want_Root := True;
+                        elsif A = "--tags" then
+                           Want_Tags := True;
+                        elsif Has_Prefix (A, "--") then
+                           if A = "--dangling"
+                             or else A = "--connectivity-only"
+                             or else A = "--strict" or else A = "--no-strict"
+                             or else A = "--no-progress" or else A = "--progress"
+                             or else A = "--name-objects"
+                             or else A = "--cache" or else A = "--full"
+                             or else A = "--no-full" or else A = "--lost-found"
+                             or else A = "--root" or else A = "--tags"
+                             or else A = "--no-reflogs" or else A = "--verbose"
+                           then
+                              null;
+                           else
+                              Usage_Error
+                                ("error: unknown fsck option: " & A, Usage);
+                              Bad := True;
+                              exit;
+                           end if;
+                        else
+                           --  An object to check; git still lists the
+                           --  dangling objects alongside it.
+                           null;
+                        end if;
+                     end;
+                  end loop;
 
-               declare
-                  Result : constant Version.Maintenance.Maintenance_Result :=
-                    Version.Maintenance.Verify (Version.Repository.Open);
-               begin
-                  Ada.Text_IO.Put_Line
-                    ("verify: ok ("
-                     & Natural_Image (Result.Object_Count)
-                     & " objects)");
-               end;
+                  if not Bad then
+                     declare
+                        Result :
+                          constant Version.Maintenance.Maintenance_Result :=
+                            Version.Maintenance.Verify (Version.Repository.Open);
+                     begin
+                        pragma Unreferenced (Result);
+                     end;
+
+                     if Want_Root or else Want_Tags then
+                        declare
+                           Repo :
+                             constant Version.Repository.Repository_Handle :=
+                               Version.Repository.Open;
+                        begin
+                           if Want_Root then
+                              --  Report each root commit (reachable, no parent).
+                              declare
+                                 Tips :
+                                   Version.History.Commit_Id_Vectors.Vector;
+                                 Pats :
+                                   Version.Ref_Format.String_Vectors.Vector;
+                              begin
+                                 for R of Version.Ref_Format.For_Each_Ref
+                                   (Repo, Pats, "%(refname)")
+                                 loop
+                                    begin
+                                       Tips.Append
+                                         (Version.Revisions.Resolve_Commit
+                                            (Repo, R));
+                                    exception
+                                       when others => null;
+                                    end;
+                                 end loop;
+                                 for C of Version.History.Rev_List (Repo, Tips)
+                                 loop
+                                    if Version.Objects.Commit_Parent_Ids
+                                      (Version.Objects.Read_Object (Repo, C))
+                                        .Is_Empty
+                                    then
+                                       Success_Line
+                                         ("root "
+                                          & Version.Objects.To_String (C));
+                                    end if;
+                                 end loop;
+                              end;
+                           end if;
+
+                           if Want_Tags then
+                              --  Report each annotated tag's target commit.
+                              declare
+                                 Pats :
+                                   Version.Ref_Format.String_Vectors.Vector;
+                              begin
+                                 Pats.Append ("refs/tags");
+                                 for R of Version.Ref_Format.For_Each_Ref
+                                   (Repo, Pats, "%(refname)")
+                                 loop
+                                    declare
+                                       Tag_Id :
+                                         constant Version.Objects.Hex_Object_Id
+                                           := Version.Refs.Resolve_Ref (Repo, R);
+                                       Obj : constant Version.Objects.Git_Object
+                                         := Version.Objects.Read_Object
+                                              (Repo, Tag_Id);
+                                    begin
+                                       if Version.Objects.Kind (Obj)
+                                         = Version.Objects.Tag_Object
+                                       then
+                                          declare
+                                             Tgt : constant
+                                               Version.Objects.Hex_Object_Id :=
+                                                 Version.Objects.Tag_Target_Id
+                                                   (Obj);
+                                             T_Kind : constant String :=
+                                               (case Version.Objects.Kind
+                                                  (Version.Objects.Read_Object
+                                                     (Repo, Tgt))
+                                                is
+                                                 when Version.Objects
+                                                        .Commit_Object => "commit",
+                                                 when Version.Objects
+                                                        .Tree_Object => "tree",
+                                                 when Version.Objects
+                                                        .Blob_Object => "blob",
+                                                 when others => "tag");
+                                             Short : constant String :=
+                                               R (R'First + 10 .. R'Last);
+                                          begin
+                                             Success_Line
+                                               ("tagged " & T_Kind & " "
+                                                & Version.Objects.To_String (Tgt)
+                                                & " (" & Short & ") in "
+                                                & Version.Objects.To_String
+                                                    (Tag_Id));
+                                          end;
+                                       end if;
+                                    end;
+                                 end loop;
+                              end;
+                           end if;
+                        end;
+                     end if;
+
+                     --  --unreachable lists every unreachable object; otherwise
+                     --  git reports the dangling ones (unreachable roots).
+                     if Show_Unreach then
+                        Emit_Unreachable_Objects
+                          (All_Unreachable => True, Label => "unreachable");
+                     elsif Show_Dangling then
+                        Emit_Unreachable_Objects
+                          (All_Unreachable => False, Label => "dangling");
+                     end if;
+                  end if;
+               elsif Count /= 1 then
+                  Usage_Error ("verify takes no arguments", Usage);
+               else
+                  declare
+                     Result : constant Version.Maintenance.Maintenance_Result :=
+                       Version.Maintenance.Verify (Version.Repository.Open);
+                  begin
+                     Ada.Text_IO.Put_Line
+                       ("verify: ok ("
+                        & Natural_Image (Result.Object_Count)
+                        & " objects)");
+                  end;
+               end if;
             end;
 
          elsif Command = "repack" then
             declare
-               Usage : constant String := "version repack";
+               Usage : constant String :=
+                 "version repack [-a] [-A] [-d] [-l] [-q] [--window=<n>]";
+               --  git repack is silent once it repacks everything (-a/-A) or
+               --  is quiet (-q); otherwise, with nothing loose to fold in, it
+               --  prints "Nothing new to pack.". Extra positional operands are
+               --  ignored, an unknown option is rejected.
+               Silent : Boolean := False;
+               Bad    : Boolean := False;
             begin
-               if Count /= 1 then
-                  Usage_Error ("repack takes no arguments", Usage);
-                  return;
-               end if;
+               for I in 2 .. Count loop
+                  declare
+                     A : constant String := Arg (I);
+                  begin
+                     if Has_Prefix (A, "--") then
+                        if A = "--quiet" then
+                           Silent := True;
+                        elsif A = "--window" or else A = "--depth"
+                          or else Has_Prefix (A, "--window=")
+                          or else Has_Prefix (A, "--depth=")
+                          or else A = "--no-quiet" or else A = "--local"
+                        then
+                           null;
+                        else
+                           Usage_Error
+                             ("error: unknown repack option: " & A, Usage);
+                           Bad := True;
+                           exit;
+                        end if;
+                     elsif A'Length >= 2 and then A (A'First) = '-' then
+                        --  A bundle of single-letter flags (e.g. -adf).
+                        for C of A (A'First + 1 .. A'Last) loop
+                           case C is
+                              when 'a' | 'A' | 'q' => Silent := True;
+                              when 'd' | 'l' | 'f' | 'n' | 'k' => null;
+                              when others =>
+                                 Usage_Error
+                                   ("error: unknown repack flag: -" & C,
+                                    Usage);
+                                 Bad := True;
+                           end case;
+                           exit when Bad;
+                        end loop;
+                        exit when Bad;
+                     else
+                        null;   --  git ignores a stray positional
+                     end if;
+                  end;
+               end loop;
 
-               declare
-                  Result : constant Version.Maintenance.Maintenance_Result :=
-                    Version.Maintenance.Repack (Version.Repository.Open);
-               begin
-                  Success_Line
-                    ("repack: wrote "
-                     & Natural_Image (Result.Object_Count)
-                     & " objects");
-               end;
+               if not Bad then
+                  declare
+                     Result : constant Version.Maintenance.Maintenance_Result :=
+                       Version.Maintenance.Repack (Version.Repository.Open);
+                  begin
+                     pragma Unreferenced (Result);
+                     if not Silent then
+                        Success_Line ("Nothing new to pack.");
+                     end if;
+                  end;
+               end if;
             end;
 
          elsif Command = "prune" then
             declare
-               Usage   : constant String := "version prune [--dry-run|--now]";
-               Dry_Run : Boolean := True;
-               Now     : Boolean := False;
+               Usage   : constant String :=
+                 "version prune [-n|--dry-run] [-v|--verbose]"
+                 & " [--expire=<time>] [<head>...]";
+               Dry_Run : Boolean := False;
+               Verbose : Boolean := False;
+               Bad     : Boolean := False;
             begin
-               if Count >= 2 then
-                  for I in 2 .. Count loop
-                     if Arg (I) = "--dry-run" then
-                        if not Dry_Run or else Now then
-                           Usage_Error
-                             ("prune --dry-run cannot be combined with --now",
-                              Usage);
-                           return;
-                        elsif I > 2 then
-                           Usage_Error ("duplicate option: --dry-run", Usage);
-                           return;
-                        end if;
-                        Dry_Run := True;
-
-                     elsif Arg (I) = "--now" then
-                        if Now then
-                           Usage_Error ("duplicate option: --now", Usage);
-                           return;
-                        elsif Dry_Run and then I > 2 then
-                           Usage_Error
-                             ("prune --dry-run cannot be combined with --now",
-                              Usage);
-                           return;
-                        end if;
-                        Dry_Run := False;
-                        Now := True;
-
-                     elsif Arg (I)'Length > 0
-                       and then Arg (I) (Arg (I)'First) = '-'
-                     then
-                        Usage_Error
-                          ("unknown prune option: " & Arg (I), Usage);
-                        return;
-
-                     else
-                        Usage_Error ("too many prune arguments", Usage);
-                        return;
-                     end if;
-                  end loop;
-               end if;
-
-               declare
-                  Result : constant Version.Maintenance.Maintenance_Result :=
-                    Version.Maintenance.Prune
-                      (Repo    => Version.Repository.Open,
-                       Dry_Run => Dry_Run,
-                       Now     => Now);
-               begin
-                  if Dry_Run then
-                     Success_Line
-                       ("prune: "
-                        & Natural_Image (Result.Unreachable_Count)
-                        & " unreachable loose objects");
+               --  git prune is silent unless -n/-v, which list the objects it
+               --  would remove / is removing (one "<id> <type>" line each).
+               for I in 2 .. Count loop
+                  if Arg (I) = "-n" or else Arg (I) = "--dry-run" then
+                     Dry_Run := True;
+                  elsif Arg (I) = "-v" or else Arg (I) = "--verbose" then
+                     Verbose := True;
+                  elsif Arg (I) = "--progress"
+                    or else Arg (I) = "--no-progress"
+                    or else Arg (I) = "--expire"
+                    or else Has_Prefix (Arg (I), "--expire=")
+                  then
+                     null;   --  a bare --expire takes the next arg as its value
+                  elsif Arg (I)'Length > 0
+                    and then Arg (I) (Arg (I)'First) = '-'
+                  then
+                     Usage_Error
+                       ("error: unknown prune option: " & Arg (I), Usage);
+                     Bad := True;
+                     exit;
                   else
-                     Success_Line
-                       ("prune: deleted "
-                        & Natural_Image (Result.Deleted_Count)
-                        & " loose objects");
+                     null;   --  a reachability root (e.g. HEAD)
                   end if;
-               end;
+               end loop;
+
+               if not Bad then
+                  --  List first (from the current state), then prune for real
+                  --  unless this is a dry run.
+                  if Dry_Run or else Verbose then
+                     Emit_Unreachable_Objects
+                       (All_Unreachable => True, Label => "");
+                  end if;
+                  if not Dry_Run then
+                     declare
+                        Result :
+                          constant Version.Maintenance.Maintenance_Result :=
+                            Version.Maintenance.Prune
+                              (Repo    => Version.Repository.Open,
+                               Dry_Run => False,
+                               Now     => True);
+                     begin
+                        pragma Unreferenced (Result);
+                     end;
+                  end if;
+               end if;
             end;
 
          elsif Command = "gc" then
             declare
-               Usage   : constant String := "version gc [--dry-run|--now]";
-               Dry_Run : Boolean := True;
-               Now     : Boolean := False;
+               Usage   : constant String :=
+                 "version gc [--quiet] [--aggressive] [--auto] [--prune=<date>]";
+               Bad     : Boolean := False;
             begin
-               if Count >= 2 then
-                  for I in 2 .. Count loop
-                     if Arg (I) = "--dry-run" then
-                        if not Dry_Run or else Now then
-                           Usage_Error
-                             ("gc --dry-run cannot be combined with --now",
-                              Usage);
-                           return;
-                        elsif I > 2 then
-                           Usage_Error ("duplicate option: --dry-run", Usage);
-                           return;
-                        end if;
-                        Dry_Run := True;
-
-                     elsif Arg (I) = "--now" then
-                        if Now then
-                           Usage_Error ("duplicate option: --now", Usage);
-                           return;
-                        elsif Dry_Run and then I > 2 then
-                           Usage_Error
-                             ("gc --dry-run cannot be combined with --now",
-                              Usage);
-                           return;
-                        end if;
-                        Dry_Run := False;
-                        Now := True;
-
-                     elsif Arg (I)'Length > 0
-                       and then Arg (I) (Arg (I)'First) = '-'
-                     then
-                        Usage_Error ("unknown gc option: " & Arg (I), Usage);
-                        return;
-
-                     else
-                        Usage_Error ("too many gc arguments", Usage);
-                        return;
-                     end if;
-                  end loop;
-               end if;
-
-               declare
-                  Result : constant Version.Maintenance.Maintenance_Result :=
-                    Version.Maintenance.GC
-                      (Repo => Version.Repository.Open, Dry_Run => Dry_Run);
-               begin
-                  if Dry_Run then
-                     Success_Line
-                       ("gc: ok ("
-                        & Natural_Image (Result.Object_Count)
-                        & " objects, "
-                        & Natural_Image (Result.Unreachable_Count)
-                        & " unreachable)");
+               --  git gc is silent on success. It accepts the housekeeping
+               --  knobs below (all no-ops for this simpler gc) and rejects
+               --  anything else -- including a positional argument, and the
+               --  --dry-run/--now that git gc has never had.
+               for I in 2 .. Count loop
+                  if Arg (I) = "-q" or else Arg (I) = "--quiet"
+                    or else Arg (I) = "--no-quiet"
+                    or else Arg (I) = "--auto" or else Arg (I) = "--aggressive"
+                    or else Arg (I) = "--force" or else Arg (I) = "--no-prune"
+                    or else Arg (I) = "--keep-largest-pack"
+                    or else Has_Prefix (Arg (I), "--prune=")
+                  then
+                     null;
                   else
-                     Success_Line
-                       ("gc: ok ("
-                        & Natural_Image (Result.Object_Count)
-                        & " objects, "
-                        & Natural_Image (Result.Deleted_Count)
-                        & " deleted)");
+                     Usage_Error ("error: unknown gc argument: " & Arg (I),
+                                  Usage);
+                     Bad := True;
+                     exit;
                   end if;
-               end;
+               end loop;
+
+               if not Bad then
+                  declare
+                     Result : constant Version.Maintenance.Maintenance_Result :=
+                       Version.Maintenance.GC
+                         (Repo => Version.Repository.Open, Dry_Run => False);
+                  begin
+                     pragma Unreferenced (Result);
+                  end;
+               end if;
             end;
 
          elsif Command = "maintenance" then

@@ -63,8 +63,8 @@ multirepo3.fixture      multirepo3.cases      -    25
 histtools.fixture       histtools.cases       -    34
 histtools2.fixture      histtools2.cases      -    12
 histtools3.fixture      histtools3.cases      -     4
-maint.fixture           maint.cases           -    58
-maint2.fixture          maint2.cases          -    12
+maint.fixture           maint.cases           -    12
+maint2.fixture          maint2.cases          -    5
 transport.fixture       transport.cases       -    79
 auxcmd.fixture          auxcmd.cases          -    10
 mergeback.fixture       mergeback.cases       -    11

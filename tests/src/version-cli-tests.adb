@@ -2983,10 +2983,14 @@ package body Version.CLI.Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Pack_Refs_Usage : constant String :=
         "version pack-refs [--all] [--prune]";
-      Prune_Usage     : constant String := "version prune [--dry-run|--now]";
-      GC_Usage        : constant String := "version gc [--dry-run|--now]";
+      Prune_Usage     : constant String :=
+        "version prune [-n|--dry-run] [-v|--verbose]"
+        & " [--expire=<time>] [<head>...]";
+      GC_Usage        : constant String :=
+        "version gc [--quiet] [--aggressive] [--auto] [--prune=<date>]";
       Verify_Usage    : constant String := "version verify";
-      Repack_Usage    : constant String := "version repack";
+      Repack_Usage    : constant String :=
+        "version repack [-a] [-A] [-d] [-l] [-q] [--window=<n>]";
 
       procedure Check_Usage_Failure
         (Command : String; Detail : String; Usage : String; Context : String)
@@ -3051,45 +3055,31 @@ package body Version.CLI.Tests is
          Pack_Refs_Usage,
          "pack-refs extra operand");
 
-      Check_Usage_Failure
-        ("prune --dry-run --dry-run",
-         "duplicate option: --dry-run",
-         Prune_Usage,
-         "prune duplicate dry-run");
+      --  git prune/gc reject --now and unknown flags with a usage status;
+      --  the accepted flags are exercised (in a repo) further below.
       Check_Usage_Failure
         ("prune --dry-run --now",
-         "prune --dry-run cannot be combined with --now",
+         "unknown prune option: --now",
          Prune_Usage,
-         "prune conflicting options");
-      Check_Usage_Failure
-        ("prune --expire now",
-         "unknown prune option: --expire",
-         Prune_Usage,
-         "prune unknown option");
-      Check_Usage_Failure
-        ("prune loose-object",
-         "too many prune arguments",
-         Prune_Usage,
-         "prune extra operand");
-
+         "prune unknown --now");
       Check_Usage_Failure
         ("gc --now --now",
-         "duplicate option: --now",
+         "unknown gc argument: --now",
          GC_Usage,
-         "gc duplicate now");
+         "gc unknown --now");
       Check_Usage_Failure
         ("gc --now --dry-run",
-         "gc --dry-run cannot be combined with --now",
+         "unknown gc argument: --now",
          GC_Usage,
-         "gc conflicting options");
+         "gc unknown --dry-run/--now");
       Check_Usage_Failure
-        ("gc --aggressive",
-         "unknown gc option: --aggressive",
+        ("gc --bogus-flag",
+         "unknown gc argument: --bogus-flag",
          GC_Usage,
          "gc unknown option");
       Check_Usage_Failure
         ("gc objects",
-         "too many gc arguments",
+         "unknown gc argument: objects",
          GC_Usage,
          "gc extra operand");
 
@@ -3098,11 +3088,14 @@ package body Version.CLI.Tests is
          "verify takes no arguments",
          Verify_Usage,
          "verify extra argument");
+      --  An unknown repack option is a usage error (parsed before any repo
+      --  access); a stray operand is instead ignored, exercised in a repo
+      --  further below.
       Check_Usage_Failure
-        ("repack extra",
-         "repack takes no arguments",
+        ("repack --bogus-option",
+         "unknown repack option: --bogus-option",
          Repack_Usage,
-         "repack extra argument");
+         "repack unknown option");
 
       Version.Init.Init (Root);
       Configure_User (Root);
@@ -3111,14 +3104,16 @@ package body Version.CLI.Tests is
 
       Check_Silent ("pack-refs", "pack-refs default");
       Check_Silent ("pack-refs --prune", "pack-refs prune");
-      Check_Success
-        ("prune", "unreachable loose objects", "prune default");
-      Check_Success
-        ("prune --dry-run", "unreachable loose objects", "prune dry-run");
-      Check_Success ("gc", "gc: ok (", "gc default");
-      Check_Success ("gc --dry-run", "gc: ok (", "gc dry-run");
+      --  git's prune/gc/fsck are silent on success; the tool matches them.
+      Check_Silent ("prune", "prune default");
+      Check_Silent ("prune --dry-run", "prune dry-run");
+      Check_Silent ("gc", "gc default");
+      Check_Silent ("gc --aggressive", "gc with flag");
+      Check_Silent ("fsck --strict", "fsck silent");
+      --  The tool's own `verify` keeps its informative summary line.
       Check_Success ("verify", "verify: ok (", "verify default");
-      Check_Success ("repack", "repack: wrote ", "repack default");
+      --  git repack reports "Nothing new to pack." when nothing is loose.
+      Check_Success ("repack", "Nothing new to pack.", "repack default");
 
       Ada.Directories.Set_Directory (Old_Dir);
    exception
