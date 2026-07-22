@@ -11269,6 +11269,42 @@ package body Version.CLI is
                      Print_Points_At
                        (To_String (Obj), Show_Remote => Want_A or else Want_R);
                   end;
+               elsif (for some I in 2 .. Count =>
+                        Has_Prefix (Arg (I), "--format=")
+                        or else Has_Prefix (Arg (I), "--sort="))
+                 and then (for all I in 2 .. Count =>
+                             Arg (I) /= "-a" and then Arg (I) /= "--all"
+                             and then Arg (I) /= "-r"
+                             and then Arg (I) /= "--remotes")
+               then
+                  --  `branch --format=<fmt>` / `--sort=<key>` on the local
+                  --  branches, driven by the ref-format engine. (`-a`/`-r`
+                  --  with the default refname sort go through the listing
+                  --  handler below.)
+                  declare
+                     Repo : constant Version.Repository.Repository_Handle :=
+                       Version.Repository.Open;
+                     Fmt  : Unbounded_String :=
+                       To_Unbounded_String ("%(HEAD) %(refname:lstrip=2)");
+                     Sort : Unbounded_String;
+                     Pats : Version.Ref_Format.String_Vectors.Vector;
+                  begin
+                     for I in 2 .. Count loop
+                        if Has_Prefix (Arg (I), "--format=") then
+                           Fmt := To_Unbounded_String
+                             (Arg (I) (Arg (I)'First + 9 .. Arg (I)'Last));
+                        elsif Has_Prefix (Arg (I), "--sort=") then
+                           Sort := To_Unbounded_String
+                             (Arg (I) (Arg (I)'First + 7 .. Arg (I)'Last));
+                        end if;
+                     end loop;
+                     Pats.Append ("refs/heads");
+                     for Line of Version.Ref_Format.For_Each_Ref
+                       (Repo, Pats, To_String (Fmt), To_String (Sort))
+                     loop
+                        Success_Line (Line);
+                     end loop;
+                  end;
                elsif Count = 2
                  and then (Arg (2) = "-v" or else Arg (2) = "-vv"
                            or else Arg (2) = "--verbose")
