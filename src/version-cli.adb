@@ -10707,6 +10707,8 @@ package body Version.CLI is
                --  --not flips following revisions into exclusions (^rev).
                Negate      : Boolean := False;
                Want_Parents : Boolean := False;   --  --parents
+               Decorate    : Version.Log.Decorate_Mode :=
+                 Version.Log.No_Decorate;
                --  --since/--after and --until/--before bound the committer
                --  date (git's raw-unix form is what the fixtures use).
                Since_Set  : Boolean := False;
@@ -10751,9 +10753,16 @@ package body Version.CLI is
                      Only_Paths := True;
                   elsif Arg (I) = "--abbrev-commit"
                     or else Arg (I) = "--no-abbrev-commit"
-                    or else Arg (I) = "--no-decorate"
                   then
                      null;   --  the default layout already
+                  elsif Arg (I) = "--no-decorate" then
+                     Decorate := Version.Log.No_Decorate;
+                  elsif Arg (I) = "--decorate"
+                    or else Arg (I) = "--decorate=short"
+                  then
+                     Decorate := Version.Log.Short_Decorate;
+                  elsif Arg (I) = "--decorate=full" then
+                     Decorate := Version.Log.Full_Decorate;
                   elsif Arg (I) = "--parents" then
                      Want_Parents := True;
                   elsif Arg (I) = "--not" then
@@ -11074,7 +11083,8 @@ package body Version.CLI is
                      elsif Oneline then
                         Version.Console.Put
                           (Version.Log.Log_Oneline_List_Text
-                             (Repo, Commits, With_Parents => Want_Parents));
+                             (Repo, Commits, With_Parents => Want_Parents,
+                              Decorate => Decorate));
                      else
                         Version.Console.Put
                           (Version.Log.Log_List_Text

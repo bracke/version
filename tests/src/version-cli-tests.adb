@@ -2000,8 +2000,8 @@ package body Version.CLI.Tests is
          "check-ignore duplicate quiet");
 
       Check_Usage_Failure
-        ("log --decorate",
-         "unknown log option: --decorate",
+        ("log --no-such-option",
+         "unknown log option: --no-such-option",
          Log_Usage,
          "log unknown option");
       --  git accepts several revisions (`log main side` lists the union), so
