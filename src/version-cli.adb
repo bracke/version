@@ -11121,7 +11121,11 @@ package body Version.CLI is
                Oneline  : Boolean := False;
                Name_Only : Boolean := False;
                Name_Status : Boolean := False;
+               Numstat  : Boolean := False;
+               Shortstat : Boolean := False;
+               Summary  : Boolean := False;
                Fmt      : Unbounded_String;
+               Fmt_Oneline : Boolean := False;
                Rev      : Unbounded_String := To_Unbounded_String ("HEAD");
                Have_Rev : Boolean := False;
                Bad      : Boolean := False;
@@ -11133,10 +11137,21 @@ package body Version.CLI is
                      Name_Only := True;
                   elsif Arg (I) = "--name-status" then
                      Name_Status := True;
+                  elsif Arg (I) = "--numstat" then
+                     Numstat := True;
+                  elsif Arg (I) = "--shortstat" then
+                     Shortstat := True;
+                  elsif Arg (I) = "--summary" then
+                     Summary := True;
                   elsif Arg (I) = "-s" or else Arg (I) = "--no-patch" then
                      No_Patch := True;
                   elsif Arg (I) = "--oneline" then
                      Oneline := True;
+                  elsif Arg (I) = "--pretty=oneline"
+                    or else Arg (I) = "--format=oneline"
+                  then
+                     Fmt := To_Unbounded_String ("%H %s");
+                     Fmt_Oneline := True;
                   elsif Arg (I)'Length > 9
                     and then Arg (I) (Arg (I)'First .. Arg (I)'First + 8)
                              = "--format="
@@ -11167,6 +11182,9 @@ package body Version.CLI is
                        (Stat        => Stat,
                         Name_Only   => Name_Only,
                         Name_Status => Name_Status,
+                        Numstat     => Numstat,
+                        Shortstat   => Shortstat,
+                        Summary     => Summary,
                         others      => <>);
                      Spec  : constant String := To_String (Rev);
                      Colon : constant Natural :=
@@ -11266,7 +11284,8 @@ package body Version.CLI is
                               Opts,
                               No_Patch => No_Patch,
                               Oneline  => Oneline,
-                              Format   => To_String (Fmt)));
+                              Format   => To_String (Fmt),
+                              Format_Oneline => Fmt_Oneline));
                      end if;
                   end;
                end if;

@@ -1,3 +1,4 @@
+- Git parity: `show` gains `--numstat`/`--shortstat`/`--summary` and `--pretty=oneline`/`--format=oneline` (full-hash header, no blank before the diff).
 - Git parity: `log --decorate[=short|full]`/`--no-decorate` now decorate the oneline listing with ref names.
 - Git parity: `log` accepts `--abbrev-commit`/`--no-abbrev-commit`/`--no-decorate` (the default layout) and `--not` (turns following revisions into exclusions).
 - Git parity: `reflog show <ref>` expands a short ref to its full name (a ref with no reflog prints nothing), and `reflog -n <count>`/`--max-count=` caps the entries.
