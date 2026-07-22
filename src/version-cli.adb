@@ -17233,31 +17233,89 @@ package body Version.CLI is
 
          elsif Command = "reflog" then
             declare
-               Usage   : constant String := "version reflog [show] [REV]";
+               Usage   : constant String :=
+                 "version reflog [show] [-n <count>] [REV]";
                Ref_Arg : Unbounded_String := To_Unbounded_String ("HEAD");
+               Max_N   : Natural := 0;   --  0 = unlimited
+               Bad     : Boolean := False;
                I       : Positive := 2;
+               Repo    : constant Version.Repository.Repository_Handle :=
+                 Version.Repository.Open;
+
+               --  A reflog is keyed by a full ref name; expand a short one so
+               --  `reflog show main` finds refs/heads/main's log.
+               function Full_Ref (Name : String) return String is
+               begin
+                  if Name = "HEAD" or else Has_Prefix (Name, "refs/") then
+                     return Name;
+                  elsif Version.Refs.Ref_Exists
+                          (Repo, "refs/heads/" & Name)
+                  then
+                     return "refs/heads/" & Name;
+                  elsif Version.Refs.Ref_Exists
+                          (Repo, "refs/remotes/" & Name)
+                  then
+                     return "refs/remotes/" & Name;
+                  elsif Version.Refs.Ref_Exists
+                          (Repo, "refs/tags/" & Name)
+                  then
+                     return "refs/tags/" & Name;
+                  else
+                     return Name;
+                  end if;
+               end Full_Ref;
             begin
                if I <= Count and then Arg (I) = "show" then
                   I := I + 1;
                end if;
-               if I <= Count then
-                  Ref_Arg := To_Unbounded_String (Arg (I));
+               while I <= Count loop
+                  if Arg (I) = "-n" and then I < Count then
+                     I := I + 1;
+                     begin
+                        Max_N := Natural'Value (Arg (I));
+                     exception
+                        when others =>
+                           Usage_Error ("reflog -n needs a count", Usage);
+                           Bad := True;
+                     end;
+                  elsif Has_Prefix (Arg (I), "--max-count=") then
+                     begin
+                        Max_N := Natural'Value
+                          (Arg (I) (Arg (I)'First + 12 .. Arg (I)'Last));
+                     exception
+                        when others =>
+                           Usage_Error ("reflog -n needs a count", Usage);
+                           Bad := True;
+                     end;
+                  elsif Arg (I)'Length > 0 and then Arg (I) (Arg (I)'First) = '-'
+                  then
+                     Usage_Error ("unknown reflog option: " & Arg (I), Usage);
+                     Bad := True;
+                  else
+                     Ref_Arg := To_Unbounded_String (Arg (I));
+                  end if;
+                  exit when Bad;
                   I := I + 1;
-               end if;
+               end loop;
 
-               if I <= Count then
-                  Usage_Error ("too many reflog arguments", Usage);
-               else
+               if not Bad then
                   declare
-                     Repo    : constant Version.Repository.Repository_Handle :=
-                       Version.Repository.Open;
-                     Entries :
-                       constant Version.Reflog.Log_Entry_Vectors.Vector :=
-                         Version.Reflog.Read_Entries (Repo, To_String (Ref_Arg));
+                     Entries : Version.Reflog.Log_Entry_Vectors.Vector;
+                     Shown   : Natural := 0;
                   begin
+                     begin
+                        Entries := Version.Reflog.Read_Entries
+                          (Repo, Full_Ref (To_String (Ref_Arg)));
+                     exception
+                        when others =>
+                           --  A ref with no reflog (e.g. a tag) prints nothing.
+                           Entries := Version.Reflog.Log_Entry_Vectors
+                                        .Empty_Vector;
+                     end;
                      for J in reverse
                        Entries.First_Index .. Entries.Last_Index
                      loop
+                        exit when Max_N /= 0 and then Shown >= Max_N;
                         declare
                            E     : constant Version.Reflog.Log_Entry :=
                              Entries.Element (J);
@@ -17270,6 +17328,7 @@ package body Version.CLI is
                               & " " & To_String (Ref_Arg)
                               & "@{" & Idx (Idx'First + 1 .. Idx'Last) & "}: "
                               & To_String (E.Message));
+                           Shown := Shown + 1;
                         end;
                      end loop;
                   end;
