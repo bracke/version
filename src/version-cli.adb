@@ -21601,6 +21601,7 @@ package body Version.CLI is
                Bad_FER   : Boolean := False;
                Skip_Next : Boolean := False;
                Ignore_Case : Boolean := False;
+               Quote_Mode  : Unbounded_String;   --  shell/perl/python/tcl
 
                function Option_Value
                  (A : String; Name : String) return String is
@@ -21693,12 +21694,9 @@ package body Version.CLI is
                      elsif A = "--shell" or else A = "--perl"
                        or else A = "--python" or else A = "--tcl"
                      then
-                        --  These quote each field for a host language; not
-                        --  implemented, and refused rather than emitted raw.
-                        Error_Line
-                          ("for-each-ref " & A & " is not supported");
-                        Bad_FER := True;
-                        exit;
+                        --  Quote each atom's value for a host language.
+                        Quote_Mode := To_Unbounded_String
+                          (A (A'First + 2 .. A'Last));
                      elsif A = "--points-at" then
                         --  A bare --points-at with no value.
                         Error_Line ("for-each-ref " & A & " is not supported");
@@ -21828,7 +21826,8 @@ package body Version.CLI is
                         else
                            for Line of Version.Ref_Format.For_Each_Ref
                              (Repo, Kept, To_String (Format),
-                              To_String (Sort_Key), Ref_Cnt)
+                              To_String (Sort_Key), Ref_Cnt,
+                              Quote => To_String (Quote_Mode))
                            loop
                               Success_Line (Line);
                            end loop;
@@ -21841,7 +21840,8 @@ package body Version.CLI is
                         Format      => To_String (Format),
                         Sort_Key    => To_String (Sort_Key),
                         Count       => Ref_Cnt,
-                        Ignore_Case => Ignore_Case)
+                        Ignore_Case => Ignore_Case,
+                        Quote       => To_String (Quote_Mode))
                      loop
                         Success_Line (Line);
                      end loop;

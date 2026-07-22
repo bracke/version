@@ -1,3 +1,4 @@
+- Git parity: `for-each-ref --shell`/`--perl`/`--python`/`--tcl` are now supported (host-language quoting) instead of refused.
 - Git parity: `branch -M <old> <new>` overwrites an existing destination; `branch -q -d`/`-q -D` deletes quietly (no message); `for-each-ref` rejects a format whose `%(` atom is never closed (exit 129); `show-ref --exclude-existing` reads refnames on stdin and echoes those with no matching ref.
 - Git parity: `branch [-a|-r] --list <glob>` filters the listing by a shell glob on the short branch name (remote refs matched by their short name, shown with the `remotes/` prefix); `branch --ignore-case` folds case; `branch --no-contains <rev>` lists the branches that do not contain the revision.
 - Git parity: `name-rev` reports `<id> undefined` for a non-commit object (tree/blob) and warns `Could not get sha1 for <x>. Skipping.` (exit 0) for an operand it cannot resolve, instead of erroring out.
