@@ -11509,19 +11509,49 @@ package body Version.CLI is
                         elsif not Has_Prefix (Arg (2), "--set-upstream-to=")
                           and then Count >= 4 then Arg (4)
                         else Version.Refs.Current_Branch_Name (Repo));
+                     --  git refuses to track a ref that does not resolve.
+                     Upstream_Ok : Boolean := True;
                   begin
-                     if Slash = 0 then
-                        Usage_Error
-                          ("branch --set-upstream-to needs <remote>/<branch>",
-                           Usage);
+                     begin
+                        declare
+                           Ignored : constant Version.Objects.Hex_Object_Id :=
+                             Version.Revisions.Resolve (Repo, Value);
+                        begin
+                           pragma Unreferenced (Ignored);
+                        end;
+                     exception
+                        when others =>
+                           Upstream_Ok := False;
+                     end;
+
+                     if not Upstream_Ok then
+                        Stderr_Line
+                          ("fatal: the requested upstream branch '" & Value
+                           & "' does not exist");
+                        Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
                         return;
                      end if;
-                     Version.Tracking.Set_Upstream
-                       (Repo        => Repo,
-                        Branch_Name => Branch_Name,
-                        Remote_Name => Value (Value'First .. Slash - 1),
-                        Merge_Ref   =>
-                          "refs/heads/" & Value (Slash + 1 .. Value'Last));
+
+                     --  A "<remote>/<branch>" value names a remote-tracking
+                     --  ref; a bare name that still resolved is a local branch,
+                     --  which git records with the "." remote.
+                     if Slash = 0 then
+                        Version.Tracking.Set_Upstream
+                          (Repo        => Repo,
+                           Branch_Name => Branch_Name,
+                           Remote_Name => ".",
+                           Merge_Ref   => "refs/heads/" & Value);
+                     else
+                        Version.Tracking.Set_Upstream
+                          (Repo        => Repo,
+                           Branch_Name => Branch_Name,
+                           Remote_Name => Value (Value'First .. Slash - 1),
+                           Merge_Ref   =>
+                             "refs/heads/" & Value (Slash + 1 .. Value'Last));
+                     end if;
+                     Success_Line
+                       ("branch '" & Branch_Name & "' set up to track '"
+                        & Value & "'.");
                   end;
 
                elsif Arg (2) = "--unset-upstream" then
@@ -11930,6 +11960,8 @@ package body Version.CLI is
                      Force  : Boolean := False;
                      Copy   : Boolean := Arg (2) = "-c" or else Arg (2) = "-C"
                                 or else Arg (2) = "--copy";
+                     Want_Track : Boolean := False;   --  explicit -t/--track
+                     No_Track   : Boolean := False;   --  --no-track
                      Names  : Version.Trailers.String_Vectors.Vector;
                   begin
                      for I in 2 .. Count loop
@@ -11942,11 +11974,12 @@ package body Version.CLI is
                            end if;
                         elsif Arg (I) = "-c" or else Arg (I) = "--copy" then
                            Copy := True;
-                        elsif Arg (I) = "-t" or else Arg (I) = "--track"
-                          or else Arg (I) = "--no-track"
-                          or else Arg (I) = "-q" or else Arg (I) = "--quiet"
-                        then
-                           null;   --  tracking is derived from the start point
+                        elsif Arg (I) = "-t" or else Arg (I) = "--track" then
+                           Want_Track := True;
+                        elsif Arg (I) = "--no-track" then
+                           No_Track := True;
+                        elsif Arg (I) = "-q" or else Arg (I) = "--quiet" then
+                           null;
                         elsif Arg (I)'Length > 0
                           and then Arg (I) (Arg (I)'First) = '-'
                         then
@@ -12013,6 +12046,37 @@ package body Version.CLI is
                           (Name,
                            Version.Objects.To_String
                              (Version.Revisions.Resolve_Commit (Repo, Start)));
+
+                        --  git sets up tracking when the start point is a
+                        --  remote-tracking ref (its autoSetupMerge default) or
+                        --  when -t is given, unless --no-track. It then prints
+                        --  "branch '<name>' set up to track '<upstream>'.".
+                        declare
+                           Rt_Ref : constant String :=
+                             "refs/remotes/" & Start;
+                           From_Remote : constant Boolean :=
+                             Version.Refs.Ref_Exists (Repo, Rt_Ref);
+                           Slash : constant Natural :=
+                             Ada.Strings.Fixed.Index
+                               (Start, "/", Ada.Strings.Backward);
+                        begin
+                           if not No_Track
+                             and then (Want_Track or else From_Remote)
+                             and then From_Remote and then Slash /= 0
+                           then
+                              Version.Tracking.Set_Upstream
+                                (Repo        => Repo,
+                                 Branch_Name => Name,
+                                 Remote_Name =>
+                                   Start (Start'First .. Slash - 1),
+                                 Merge_Ref   =>
+                                   "refs/heads/"
+                                   & Start (Slash + 1 .. Start'Last));
+                              Success_Line
+                                ("branch '" & Name & "' set up to track '"
+                                 & Start & "'.");
+                           end if;
+                        end;
                      end;
                   end;
 
