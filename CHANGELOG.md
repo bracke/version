@@ -1,3 +1,4 @@
+- Git parity: `branch [-a|-r] --list <glob>` filters the listing by a shell glob on the short branch name (remote refs matched by their short name, shown with the `remotes/` prefix); `branch --ignore-case` folds case; `branch --no-contains <rev>` lists the branches that do not contain the revision.
 - Git parity: `name-rev` reports `<id> undefined` for a non-commit object (tree/blob) and warns `Could not get sha1 for <x>. Skipping.` (exit 0) for an operand it cannot resolve, instead of erroring out.
 - Git parity: `branch --format=<fmt>` and `branch --sort=<key>` list the local branches through the ref-format engine (any atom, forward/reverse and objectname sort).
 - Git parity: `branch --set-upstream-to=`/`-u` print `branch 'X' set up to track 'Y'.` and reject a non-existent upstream (exit 128); `branch -t <name> <remote-branch>` (and creating from a remote-tracking start) sets up tracking and prints the same line.

@@ -2609,7 +2609,16 @@ package body Version.CLI is
 
    --  git's branch patterns are shell globs against the short name; only `*`
    --  and `?` are worth supporting here, which is what real patterns use.
-   function Glob_Match (Text, Pattern : String) return Boolean is
+   function Glob_Match
+     (Text, Pattern : String;
+      Ignore_Case   : Boolean := False) return Boolean
+   is
+      function Eq (A, B : Character) return Boolean is
+        (if Ignore_Case
+         then Ada.Characters.Handling.To_Lower (A)
+              = Ada.Characters.Handling.To_Lower (B)
+         else A = B);
+
       function Match (T, P : Natural) return Boolean is
       begin
          if P > Pattern'Last then
@@ -2629,7 +2638,7 @@ package body Version.CLI is
                return T <= Text'Last and then Match (T + 1, P + 1);
             when others =>
                return T <= Text'Last
-                 and then Text (T) = Pattern (P)
+                 and then Eq (Text (T), Pattern (P))
                  and then Match (T + 1, P + 1);
          end case;
       end Match;
@@ -2676,7 +2685,13 @@ package body Version.CLI is
       end loop;
    end Print_Marked_Branches;
 
-   procedure Print_Branch_List (Pattern : String := "") is
+   procedure Print_Branch_List
+     (Pattern       : String := "";
+      Show_Local    : Boolean := True;
+      Show_Remote   : Boolean := False;
+      Remote_Prefix : Boolean := True;
+      Ignore_Case   : Boolean := False)
+   is
       Repo : constant Version.Repository.Repository_Handle :=
         Version.Repository.Open;
 
@@ -2687,25 +2702,59 @@ package body Version.CLI is
          then Version.Refs.Branch_Name (Head)
          else "");
 
-      Branches : Version.Refs.Branch_Name_Vectors.Vector :=
-        Version.Refs.List_Branches (Repo);
+      function Selected (Name : String) return Boolean is
+        (Pattern'Length = 0
+         or else Glob_Match (Name, Pattern, Ignore_Case));
    begin
-      Sort_Branches (Branches);
-
-      --  git prints nothing when there are no branches (e.g. an unborn repo).
-      for I in Branches.First_Index .. Branches.Last_Index loop
+      if Show_Local then
          declare
-            Name : constant String := To_String (Branches.Element (I));
+            Branches : Version.Refs.Branch_Name_Vectors.Vector :=
+              Version.Refs.List_Branches (Repo);
          begin
-            if Pattern'Length = 0 or else Glob_Match (Name, Pattern) then
-               if Name = Current then
-                  Ada.Text_IO.Put_Line ("* " & Name);
-               else
-                  Ada.Text_IO.Put_Line ("  " & Name);
-               end if;
-            end if;
+            Sort_Branches (Branches);
+            --  git prints nothing when there are no branches.
+            for I in Branches.First_Index .. Branches.Last_Index loop
+               declare
+                  Name : constant String := To_String (Branches.Element (I));
+               begin
+                  if Selected (Name) then
+                     Ada.Text_IO.Put_Line
+                       ((if Name = Current then "* " else "  ") & Name);
+                  end if;
+               end;
+            end loop;
          end;
-      end loop;
+      end if;
+
+      if Show_Remote then
+         --  git globs a remote branch by its short name (origin/main), even
+         --  when it lists it under the "remotes/" prefix, and shows a symref
+         --  as "name -> target".
+         declare
+            Pats : Version.Ref_Format.String_Vectors.Vector;
+         begin
+            Pats.Append ("refs/remotes");
+            for Line of Version.Ref_Format.For_Each_Ref
+              (Repo, Pats, "%(refname:lstrip=2)|%(symref:short)")
+            loop
+               declare
+                  Bar : constant Natural :=
+                    Ada.Strings.Fixed.Index (Line, "|");
+                  Name : constant String :=
+                    (if Bar = 0 then Line else Line (Line'First .. Bar - 1));
+                  Tgt  : constant String :=
+                    (if Bar = 0 then "" else Line (Bar + 1 .. Line'Last));
+               begin
+                  if Selected (Name) then
+                     Ada.Text_IO.Put_Line
+                       ("  " & (if Remote_Prefix then "remotes/" else "")
+                        & Name
+                        & (if Tgt = "" then "" else " -> " & Tgt));
+                  end if;
+               end;
+            end loop;
+         end;
+      end if;
    end Print_Branch_List;
 
    --  `subtree merge`/`pull` is `merge --no-ff -Xsubtree=<prefix>`, and prints
@@ -11305,6 +11354,47 @@ package body Version.CLI is
                         Success_Line (Line);
                      end loop;
                   end;
+               elsif (for some I in 2 .. Count =>
+                        Arg (I) = "--list" or else Arg (I) = "--ignore-case"
+                        or else Arg (I) = "-i")
+                 and then (for all I in 2 .. Count =>
+                             Arg (I) /= "--merged"
+                             and then Arg (I) /= "--no-merged"
+                             and then Arg (I) /= "--contains"
+                             and then Arg (I) /= "--no-contains")
+               then
+                  --  `branch [-a|-r] [--ignore-case] [--list] [<glob>]`: the
+                  --  plain listing, optionally scoped to remotes/all and
+                  --  narrowed by a shell glob on the short branch name.
+                  declare
+                     Want_A : Boolean := False;
+                     Want_R : Boolean := False;
+                     Icase  : Boolean := False;
+                     Pat    : Unbounded_String;
+                  begin
+                     for I in 2 .. Count loop
+                        if Arg (I) = "-a" or else Arg (I) = "--all" then
+                           Want_A := True;
+                        elsif Arg (I) = "-r" or else Arg (I) = "--remotes" then
+                           Want_R := True;
+                        elsif Arg (I) = "--ignore-case" or else Arg (I) = "-i"
+                        then
+                           Icase := True;
+                        elsif Arg (I) = "--list" then
+                           null;
+                        elsif Arg (I)'Length > 0
+                          and then Arg (I) (Arg (I)'First) /= '-'
+                        then
+                           Pat := To_Unbounded_String (Arg (I));
+                        end if;
+                     end loop;
+                     Print_Branch_List
+                       (Pattern       => To_String (Pat),
+                        Show_Local    => not Want_R or else Want_A,
+                        Show_Remote   => Want_R or else Want_A,
+                        Remote_Prefix => Want_A,
+                        Ignore_Case   => Icase);
+                  end;
                elsif Count = 2
                  and then (Arg (2) = "-v" or else Arg (2) = "-vv"
                            or else Arg (2) = "--verbose")
@@ -11421,9 +11511,11 @@ package body Version.CLI is
                --  itself, over the same listings the long subcommands print.
                elsif Arg (2) = "--merged" or else Arg (2) = "--no-merged"
                  or else Arg (2) = "--contains" or else Arg (2) = "--list"
+                 or else Arg (2) = "--no-contains"
                  or else Has_Prefix (Arg (2), "--merged=")
                  or else Has_Prefix (Arg (2), "--no-merged=")
                  or else Has_Prefix (Arg (2), "--contains=")
+                 or else Has_Prefix (Arg (2), "--no-contains=")
                then
                   declare
                      function Value_Of return String is
@@ -11460,6 +11552,33 @@ package body Version.CLI is
                            Print_Marked_Branches
                              (Version.Branch.Unmerged_Branches_Text (Rev));
                         end if;
+                     elsif Has_Prefix (Arg (2), "--no-contains") then
+                        --  The branches that do NOT contain the revision.
+                        declare
+                           Repo :
+                             constant Version.Repository.Repository_Handle :=
+                               Version.Repository.Open;
+                           Target : constant Version.Objects.Hex_Object_Id :=
+                             Version.Revisions.Resolve_Commit (Repo, Rev);
+                           Branches :
+                             Version.Refs.Branch_Name_Vectors.Vector :=
+                               Version.Refs.List_Branches (Repo);
+                           Names : Unbounded_String;
+                        begin
+                           Sort_Branches (Branches);
+                           for B of Branches loop
+                              if not Version.History.Is_Ancestor
+                                (Repo,
+                                 Base_Id    => Target,
+                                 Derived_Id =>
+                                   Version.Revisions.Resolve_Commit
+                                     (Repo, To_String (B)))
+                              then
+                                 Append (Names, To_String (B) & ASCII.LF);
+                              end if;
+                           end loop;
+                           Print_Marked_Branches (To_String (Names));
+                        end;
                      elsif Has_Prefix (Arg (2), "--contains") then
                         if Rev'Length = 0 then
                            Usage_Error
