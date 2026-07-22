@@ -11420,21 +11420,32 @@ package body Version.CLI is
                --  deletion to remote-tracking refs.
                elsif Arg (2) = "-d" or else Arg (2) = "-D"
                  or else Arg (2) = "--delete"
+                 or else ((Arg (2) = "-q" or else Arg (2) = "--quiet")
+                          and then Count >= 3
+                          and then (Arg (3) = "-d" or else Arg (3) = "-D"
+                                    or else Arg (3) = "--delete"))
                then
                   declare
                      Force  : Boolean := Arg (2) = "-D";
                      Remote : Boolean := False;
+                     --  -q suppresses git's "Deleted branch ..." line.
+                     Quiet  : Boolean :=
+                       Arg (2) = "-q" or else Arg (2) = "--quiet";
                      Names  : Version.Trailers.String_Vectors.Vector;
                      Repo   : constant Version.Repository.Repository_Handle :=
                        Version.Repository.Open;
                   begin
                      for I in 3 .. Count loop
-                        if Arg (I) = "-f" or else Arg (I) = "--force" then
+                        if Arg (I) = "-f" or else Arg (I) = "--force"
+                          or else Arg (I) = "-D"
+                        then
                            Force := True;
+                        elsif Arg (I) = "-d" or else Arg (I) = "--delete" then
+                           null;   --  the delete flag itself
                         elsif Arg (I) = "-r" or else Arg (I) = "--remotes" then
                            Remote := True;
                         elsif Arg (I) = "-q" or else Arg (I) = "--quiet" then
-                           null;
+                           Quiet := True;
                         elsif Arg (I)'Length > 0
                           and then Arg (I) (Arg (I)'First) = '-'
                         then
@@ -11486,15 +11497,19 @@ package body Version.CLI is
                                       (Tx, Ref, "");
                                     Version.Ref_Transaction.Commit (Tx);
                                  end;
-                                 Success_Line
-                                   ("Deleted remote-tracking branch " & N
-                                    & " (was " & Short & ").");
+                                 if not Quiet then
+                                    Success_Line
+                                      ("Deleted remote-tracking branch " & N
+                                       & " (was " & Short & ").");
+                                 end if;
                               else
                                  Version.Branch.Delete_Branch
                                    (Name => N, Force => Force);
-                                 Success_Line
-                                   ("Deleted branch " & N
-                                    & " (was " & Short & ").");
+                                 if not Quiet then
+                                    Success_Line
+                                      ("Deleted branch " & N
+                                       & " (was " & Short & ").");
+                                 end if;
                               end if;
                            end;
                         end loop;
@@ -11613,12 +11628,20 @@ package body Version.CLI is
                  or else Arg (2) = "--move"
                then
                   --  `-m <new>` renames the current branch; `-m <old> <new>`
-                  --  renames a named one.
+                  --  renames a named one. -M (or -f) overwrites an existing
+                  --  destination, which a plain -m refuses.
                   declare
+                     Repo : constant Version.Repository.Repository_Handle :=
+                       Version.Repository.Open;
+                     Force : Boolean := Arg (2) = "-M";
                      Names : Version.Trailers.String_Vectors.Vector;
                   begin
                      for I in 3 .. Count loop
-                        if Arg (I) = "-f" or else Arg (I) = "--force" then
+                        if Arg (I) = "-f" or else Arg (I) = "--force"
+                          or else Arg (I) = "-M"
+                        then
+                           Force := True;
+                        elsif Arg (I) = "-m" or else Arg (I) = "--move" then
                            null;
                         elsif Arg (I)'Length > 0
                           and then Arg (I) (Arg (I)'First) = '-'
@@ -11635,6 +11658,15 @@ package body Version.CLI is
                         Version.Branch.Rename_Current_Branch
                           (Names.First_Element);
                      elsif Natural (Names.Length) = 2 then
+                        if Force
+                          and then Names.First_Element /= Names.Last_Element
+                          and then Version.Refs.Ref_Exists
+                                     (Repo, "refs/heads/" & Names.Last_Element)
+                        then
+                           --  Clear the destination so the rename can take it.
+                           Version.Branch.Delete_Branch
+                             (Name => Names.Last_Element, Force => True);
+                        end if;
                         Version.Branch.Rename_Branch
                           (Names.First_Element, Names.Last_Element);
                      else
@@ -20906,8 +20938,27 @@ package body Version.CLI is
                Quiet_Ref  : Boolean := False;
                With_Head  : Boolean := False;
                Deref      : Boolean := False;
+               Exclude_Existing : Boolean := False;
                Abbrev     : Natural := 0;
                Names      : Version.Ref_Format.String_Vectors.Vector;
+
+               function Read_Stdin return String is
+                  Buffer : aliased String (1 .. 65536);
+                  Acc    : Unbounded_String;
+               begin
+                  loop
+                     declare
+                        N : constant Interfaces.C.long :=
+                          Read (0, Buffer (Buffer'First)'Address,
+                                Interfaces.C.size_t (Buffer'Length));
+                     begin
+                        exit when N <= 0;
+                        Append (Acc, Buffer (Buffer'First ..
+                                Buffer'First + Integer (N) - 1));
+                     end;
+                  end loop;
+                  return To_String (Acc);
+               end Read_Stdin;
             begin
                for I in 2 .. Count loop
                   if Arg (I) = "--heads" or else Arg (I) = "--tags" then
@@ -20950,14 +21001,12 @@ package body Version.CLI is
                      exception
                         when others => Abbrev := 7;
                      end;
-                  elsif Arg (I) = "--exclude-existing" then
-                     --  Reads refnames on stdin and prints the ones absent
-                     --  here; nothing this command already computes answers
-                     --  that, so refuse rather than pretend.
-                     Usage_Error
-                       ("show-ref --exclude-existing is not supported", Usage);
-                     Bad := True;
-                     exit;
+                  elsif Arg (I) = "--exclude-existing"
+                    or else Has_Prefix (Arg (I), "--exclude-existing=")
+                  then
+                     --  Reads refnames on stdin and prints those with no
+                     --  matching ref here.
+                     Exclude_Existing := True;
                   elsif Arg (I)'Length > 0 and then Arg (I) (Arg (I)'First) = '-'
                   then
                      Usage_Error
@@ -20968,7 +21017,42 @@ package body Version.CLI is
                      Names.Append (Arg (I));
                   end if;
                end loop;
-               if not Bad then
+
+               if not Bad and then Exclude_Existing then
+                  --  Read "<...> <refname>" lines from stdin and echo those
+                  --  whose refname names no existing ref.
+                  declare
+                     Text  : constant String := Read_Stdin;
+                     First : Natural := Text'First;
+                  begin
+                     while First <= Text'Last loop
+                        declare
+                           Last : Natural := First;
+                        begin
+                           while Last <= Text'Last
+                             and then Text (Last) /= ASCII.LF
+                           loop
+                              Last := Last + 1;
+                           end loop;
+                           declare
+                              Line : constant String := Text (First .. Last - 1);
+                              Sp   : constant Natural :=
+                                Ada.Strings.Fixed.Index
+                                  (Line, " ", Ada.Strings.Backward);
+                              Name : constant String :=
+                                (if Sp = 0 then Line else Line (Sp + 1 .. Line'Last));
+                           begin
+                              if Name'Length > 0
+                                and then not Version.Refs.Ref_Exists (Repo, Name)
+                              then
+                                 Success_Line (Line);
+                              end if;
+                           end;
+                           First := Last + 1;
+                        end;
+                     end loop;
+                  end;
+               elsif not Bad then
                   declare
                      Patterns : Version.Ref_Format.String_Vectors.Vector;
                      Shown    : Natural := 0;
@@ -21633,6 +21717,30 @@ package body Version.CLI is
                      end if;
                   end;
                end loop;
+
+               --  git rejects a format with an atom that is never closed.
+               if not Bad_FER then
+                  declare
+                     F : constant String := To_String (Format);
+                     K : Natural := F'First;
+                  begin
+                     while K < F'Last loop
+                        if F (K) = '%' and then F (K + 1) = '(' then
+                           if Ada.Strings.Fixed.Index
+                                (F (K + 2 .. F'Last), ")") = 0
+                           then
+                              Error_Line
+                                ("fatal: format: element '"
+                                 & F (K .. F'Last)
+                                 & "' does not end in ')'");
+                              Bad_FER := True;
+                              exit;
+                           end if;
+                        end if;
+                        K := K + 1;
+                     end loop;
+                  end;
+               end if;
 
                if Bad_FER then
                   Set_Usage_Failure;
