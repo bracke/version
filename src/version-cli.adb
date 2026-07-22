@@ -1407,9 +1407,17 @@ package body Version.CLI is
      (Repo           : Version.Repository.Repository_Handle;
       Commits        : Version.History.Commit_Id_Vectors.Vector;
       Author_Pattern : String;
-      Grep_Pattern   : String)
+      Grep_Pattern   : String;
+      Committer_Pattern : String := "";
+      Grep_Patterns  : Version.Trailers.String_Vectors.Vector :=
+        Version.Trailers.String_Vectors.Empty_Vector;
+      Ignore_Case    : Boolean := False;
+      Invert_Grep    : Boolean := False;
+      All_Match      : Boolean := False)
       return Version.History.Commit_Id_Vectors.Vector
    is
+      Grep_Opts : constant Version.Grep.Options :=
+        (Ignore_Case => Ignore_Case, others => <>);
       --  The value of a header line ("author X <y> 1 +0000"), or "".
       function Header (Text, Key : String) return String is
          Pos  : constant Natural := Ada.Strings.Fixed.Index (Text, Key);
@@ -1436,14 +1444,16 @@ package body Version.CLI is
          return (if Sep = 0 then "" else Text (Sep + 2 .. Text'Last));
       end Message;
 
+      type Field_Kind is (Author_Field, Committer_Field, Message_Field);
+
       function Filter_By
-        (Input     : Version.History.Commit_Id_Vectors.Vector;
-         Pattern   : String;
-         On_Author : Boolean)
+        (Input   : Version.History.Commit_Id_Vectors.Vector;
+         Pattern : String;
+         Kind    : Field_Kind)
          return Version.History.Commit_Id_Vectors.Vector
       is
          M    : constant Version.Grep.Line_Matcher :=
-           Version.Grep.Compile (Pattern);
+           Version.Grep.Compile (Pattern, Grep_Opts);
          Kept : Version.History.Commit_Id_Vectors.Vector;
       begin
          for C of Input loop
@@ -1452,8 +1462,10 @@ package body Version.CLI is
                  Version.Objects.Content
                    (Version.Objects.Read_Object (Repo, C));
                Field : constant String :=
-                 (if On_Author then Header (Text, "author ")
-                  else Message (Text));
+                 (case Kind is
+                     when Author_Field    => Header (Text, "author "),
+                     when Committer_Field => Header (Text, "committer "),
+                     when Message_Field   => Message (Text));
             begin
                if Version.Grep.Matches (M, Field) then
                   Kept.Append (C);
@@ -1464,14 +1476,62 @@ package body Version.CLI is
          return Kept;
       end Filter_By;
 
+      --  --grep with several patterns is an OR by default, an AND under
+      --  --all-match; --invert-grep keeps the commits that match none.
+      function Filter_Grep
+        (Input : Version.History.Commit_Id_Vectors.Vector)
+         return Version.History.Commit_Id_Vectors.Vector
+      is
+         Kept : Version.History.Commit_Id_Vectors.Vector;
+      begin
+         for C of Input loop
+            declare
+               Text : constant String :=
+                 Version.Objects.Content
+                   (Version.Objects.Read_Object (Repo, C));
+               Msg  : constant String := Message (Text);
+               Any  : Boolean := False;
+               All_P : Boolean := True;
+            begin
+               for P of Grep_Patterns loop
+                  declare
+                     Hit : constant Boolean :=
+                       Version.Grep.Matches
+                         (Version.Grep.Compile (P, Grep_Opts), Msg);
+                  begin
+                     Any := Any or else Hit;
+                     All_P := All_P and then Hit;
+                  end;
+               end loop;
+               declare
+                  Matched : constant Boolean :=
+                    (if All_Match then All_P else Any);
+               begin
+                  if Matched /= Invert_Grep then
+                     Kept.Append (C);
+                  end if;
+               end;
+            end;
+         end loop;
+         return Kept;
+      end Filter_Grep;
+
       Result : Version.History.Commit_Id_Vectors.Vector := Commits;
    begin
       if Author_Pattern'Length > 0 then
-         Result := Filter_By (Result, Author_Pattern, On_Author => True);
+         Result := Filter_By (Result, Author_Pattern, Author_Field);
+      end if;
+
+      if Committer_Pattern'Length > 0 then
+         Result := Filter_By (Result, Committer_Pattern, Committer_Field);
       end if;
 
       if Grep_Pattern'Length > 0 then
-         Result := Filter_By (Result, Grep_Pattern, On_Author => False);
+         Result := Filter_By (Result, Grep_Pattern, Message_Field);
+      end if;
+
+      if not Grep_Patterns.Is_Empty then
+         Result := Filter_Grep (Result);
       end if;
 
       return Result;
@@ -10638,8 +10698,18 @@ package body Version.CLI is
                Seed_Tags  : Boolean := False;
                Author_Pat : Unbounded_String;
                Has_Author : Boolean := False;
-               Grep_Pat   : Unbounded_String;
-               Has_Grep   : Boolean := False;
+               Committer_Pat : Unbounded_String;
+               Has_Committer : Boolean := False;
+               Grep_List  : Version.Trailers.String_Vectors.Vector;
+               Ignore_Case : Boolean := False;
+               Invert_Grep : Boolean := False;
+               All_Match   : Boolean := False;
+               --  --since/--after and --until/--before bound the committer
+               --  date (git's raw-unix form is what the fixtures use).
+               Since_Set  : Boolean := False;
+               Since_Time : Long_Long_Integer := 0;
+               Until_Set  : Boolean := False;
+               Until_Time : Long_Long_Integer := 0;
 
                function Starts (S, P : String) return Boolean is
                  (S'Length >= P'Length
@@ -10787,9 +10857,58 @@ package body Version.CLI is
                        To_Unbounded_String (After (Arg (I), "--author="));
                      Has_Author := True;
                   elsif Starts (Arg (I), "--grep=") then
-                     Grep_Pat :=
-                       To_Unbounded_String (After (Arg (I), "--grep="));
-                     Has_Grep := True;
+                     Grep_List.Append (After (Arg (I), "--grep="));
+                  elsif Starts (Arg (I), "--committer=") then
+                     Committer_Pat :=
+                       To_Unbounded_String (After (Arg (I), "--committer="));
+                     Has_Committer := True;
+                  elsif Arg (I) = "-i" or else Arg (I) = "--regexp-ignore-case"
+                  then
+                     Ignore_Case := True;
+                  elsif Arg (I) = "--invert-grep" then
+                     Invert_Grep := True;
+                  elsif Arg (I) = "--all-match" then
+                     All_Match := True;
+                  elsif Starts (Arg (I), "--since=")
+                    or else Starts (Arg (I), "--after=")
+                  then
+                     declare
+                        V : constant String :=
+                          After (Arg (I),
+                                 (if Starts (Arg (I), "--since=")
+                                  then "--since=" else "--after="));
+                     begin
+                        if All_Digits (V) then
+                           Since_Time := Long_Long_Integer'Value (V);
+                           Since_Set := True;
+                        else
+                           Usage_Error
+                             ("log date must be a unix time: " & Arg (I),
+                              Usage);
+                           Bad := True;
+                           exit;
+                        end if;
+                     end;
+                  elsif Starts (Arg (I), "--until=")
+                    or else Starts (Arg (I), "--before=")
+                  then
+                     declare
+                        V : constant String :=
+                          After (Arg (I),
+                                 (if Starts (Arg (I), "--until=")
+                                  then "--until=" else "--before="));
+                     begin
+                        if All_Digits (V) then
+                           Until_Time := Long_Long_Integer'Value (V);
+                           Until_Set := True;
+                        else
+                           Usage_Error
+                             ("log date must be a unix time: " & Arg (I),
+                              Usage);
+                           Bad := True;
+                           exit;
+                        end if;
+                     end;
                   elsif Arg (I)'Length > 0
                     and then Arg (I) (Arg (I)'First) = '-'
                   then
@@ -10872,16 +10991,46 @@ package body Version.CLI is
                      --  the author identity and the commit message; matching
                      --  by substring would agree until a pattern carried a
                      --  metacharacter, so they are compiled properly.
-                     if Has_Author or else Has_Grep then
+                     if Has_Author or else Has_Committer
+                       or else not Grep_List.Is_Empty
+                     then
                         Commits :=
                           Filter_Commits
                             (Repo, Commits,
                              Author_Pattern =>
                                (if Has_Author then To_String (Author_Pat)
                                 else ""),
-                             Grep_Pattern =>
-                               (if Has_Grep then To_String (Grep_Pat)
-                                else ""));
+                             Grep_Pattern => "",
+                             Committer_Pattern =>
+                               (if Has_Committer then To_String (Committer_Pat)
+                                else ""),
+                             Grep_Patterns => Grep_List,
+                             Ignore_Case   => Ignore_Case,
+                             Invert_Grep   => Invert_Grep,
+                             All_Match     => All_Match);
+                     end if;
+
+                     --  --since/--until bound the committer date.
+                     if Since_Set or else Until_Set then
+                        declare
+                           Kept : Version.History.Commit_Id_Vectors.Vector;
+                        begin
+                           for C of Commits loop
+                              declare
+                                 T : constant Long_Long_Integer :=
+                                   Version.Objects.Commit_Committer_Time
+                                     (Version.Objects.Read_Object (Repo, C));
+                              begin
+                                 if (not Since_Set or else T > Since_Time)
+                                   and then
+                                     (not Until_Set or else T <= Until_Time)
+                                 then
+                                    Kept.Append (C);
+                                 end if;
+                              end;
+                           end loop;
+                           Commits := Kept;
+                        end;
                      end if;
 
                      if Topo_Order then
