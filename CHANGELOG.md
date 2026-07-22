@@ -1,3 +1,4 @@
+- Git parity: `show` accepts multiple objects (`show A B`, blank-line separated) and shows annotated tags and trees (`show v2`, `show HEAD^{tree}`), not only commits.
 - Git parity: `shortlog` gains `-e` (email), ranges (`v1..HEAD`), pathspecs (`-- <path>`) and `--no-merges` — rev-selected through the shared Rev_Args parser like log.
 - Git parity: `log --oneline` combined with `--name-only`/`--name-status`/`--numstat`/`--shortstat`/`--raw`/`--stat` now prints the file changes after each oneline header (previously the format flag was dropped).
 - Git parity: `show` gains `--numstat`/`--shortstat`/`--summary` and `--pretty=oneline`/`--format=oneline` (full-hash header, no blank before the diff).

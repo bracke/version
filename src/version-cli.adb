@@ -11143,8 +11143,7 @@ package body Version.CLI is
                Summary  : Boolean := False;
                Fmt      : Unbounded_String;
                Fmt_Oneline : Boolean := False;
-               Rev      : Unbounded_String := To_Unbounded_String ("HEAD");
-               Have_Rev : Boolean := False;
+               Revs     : Version.Trailers.String_Vectors.Vector;
                Bad      : Boolean := False;
             begin
                for I in 2 .. Count loop
@@ -11181,15 +11180,14 @@ package body Version.CLI is
                      Usage_Error ("unknown show option: " & Arg (I), Usage);
                      Bad := True;
                      exit;
-                  elsif not Have_Rev then
-                     Rev := To_Unbounded_String (Arg (I));
-                     Have_Rev := True;
                   else
-                     Usage_Error ("too many show arguments", Usage);
-                     Bad := True;
-                     exit;
+                     Revs.Append (Arg (I));   --  git shows each in turn
                   end if;
                end loop;
+
+               if Revs.Is_Empty then
+                  Revs.Append ("HEAD");
+               end if;
 
                if not Bad then
                   declare
@@ -11203,107 +11201,115 @@ package body Version.CLI is
                         Shortstat   => Shortstat,
                         Summary     => Summary,
                         others      => <>);
-                     Spec  : constant String := To_String (Rev);
-                     Colon : constant Natural :=
-                       Ada.Strings.Fixed.Index (Spec, ":");
                   begin
-                     --  `show <rev>:<path>`: the object at that path, not the
-                     --  commit -- a blob's contents verbatim, or git's listing
-                     --  for a tree.
-                     if Colon > Spec'First then
+                     for R_Idx in Revs.First_Index .. Revs.Last_Index loop
                         declare
-                           Rev_Part  : constant String :=
-                             Spec (Spec'First .. Colon - 1);
-                           Path_Part : constant String :=
-                             Spec (Colon + 1 .. Spec'Last);
-                           Tree_Id : constant Version.Objects.Hex_Object_Id :=
-                             Version.Revisions.Resolve_Tree (Repo, Rev_Part);
-                           Items : constant
-                             Version.Objects.Tree_Entry_Vectors.Vector :=
-                               Version.Objects.Flatten_Tree (Repo, Tree_Id);
-                           Found : Boolean := False;
-                           Listing : Unbounded_String;
+                           Spec  : constant String := Revs.Element (R_Idx);
+                           Colon : constant Natural :=
+                             Ada.Strings.Fixed.Index (Spec, ":");
                         begin
-                           for E of Items loop
-                              if To_String (E.Path) = Path_Part then
-                                 Version.Console.Put
-                                   (Version.Objects.Content
-                                      (Version.Objects.Read_Object
-                                         (Repo, E.Id)));
-                                 Found := True;
-                                 exit;
-                              end if;
-                           end loop;
-
-                           if not Found then
-                              --  A directory: git prints `tree <spec>` then the
-                              --  entries directly under it.
+                           --  git separates consecutive objects with a blank line.
+                           if R_Idx > Revs.First_Index then
+                              Version.Console.Put ((1 => ASCII.LF));
+                           end if;
+                           --  `show <rev>:<path>`: the object at that path, not the
+                           --  commit -- a blob's contents verbatim, or git's listing
+                           --  for a tree.
+                           if Colon > Spec'First then
                               declare
-                                 Prefix : constant String := Path_Part & "/";
-                                 Seen   : Version.Trailers.String_Vectors.Vector;
+                                 Rev_Part  : constant String :=
+                                   Spec (Spec'First .. Colon - 1);
+                                 Path_Part : constant String :=
+                                   Spec (Colon + 1 .. Spec'Last);
+                                 Tree_Id : constant Version.Objects.Hex_Object_Id :=
+                                   Version.Revisions.Resolve_Tree (Repo, Rev_Part);
+                                 Items : constant
+                                   Version.Objects.Tree_Entry_Vectors.Vector :=
+                                     Version.Objects.Flatten_Tree (Repo, Tree_Id);
+                                 Found : Boolean := False;
+                                 Listing : Unbounded_String;
                               begin
                                  for E of Items loop
-                                    declare
-                                       P : constant String := To_String (E.Path);
-                                    begin
-                                       if P'Length > Prefix'Length
-                                         and then P (P'First .. P'First
-                                                     + Prefix'Length - 1)
-                                                  = Prefix
-                                       then
-                                          declare
-                                             Rest : constant String :=
-                                               P (P'First + Prefix'Length
-                                                  .. P'Last);
-                                             Slash : constant Natural :=
-                                               Ada.Strings.Fixed.Index
-                                                 (Rest, "/");
-                                             Name : constant String :=
-                                               (if Slash = 0 then Rest
-                                                else Rest (Rest'First
-                                                           .. Slash - 1) & "/");
-                                             Dup : Boolean := False;
-                                          begin
-                                             for X of Seen loop
-                                                if X = Name then
-                                                   Dup := True;
-                                                end if;
-                                             end loop;
-                                             if not Dup then
-                                                Seen.Append (Name);
-                                                Append (Listing,
-                                                        Name & ASCII.LF);
-                                             end if;
-                                             Found := True;
-                                          end;
-                                       end if;
-                                    end;
+                                    if To_String (E.Path) = Path_Part then
+                                       Version.Console.Put
+                                         (Version.Objects.Content
+                                            (Version.Objects.Read_Object
+                                               (Repo, E.Id)));
+                                       Found := True;
+                                       exit;
+                                    end if;
                                  end loop;
 
-                                 if Found then
-                                    Version.Console.Put
-                                      ("tree " & Spec & ASCII.LF & ASCII.LF
-                                       & To_String (Listing));
-                                 else
-                                    Error_Line
-                                      ("path does not exist in "
-                                       & Rev_Part & ": " & Path_Part);
-                                    Set_Command_Failure;
+                                 if not Found then
+                                    --  A directory: git prints `tree <spec>` then the
+                                    --  entries directly under it.
+                                    declare
+                                       Prefix : constant String := Path_Part & "/";
+                                       Seen   : Version.Trailers.String_Vectors.Vector;
+                                    begin
+                                       for E of Items loop
+                                          declare
+                                             P : constant String := To_String (E.Path);
+                                          begin
+                                             if P'Length > Prefix'Length
+                                               and then P (P'First .. P'First
+                                                           + Prefix'Length - 1)
+                                                        = Prefix
+                                             then
+                                                declare
+                                                   Rest : constant String :=
+                                                     P (P'First + Prefix'Length
+                                                        .. P'Last);
+                                                   Slash : constant Natural :=
+                                                     Ada.Strings.Fixed.Index
+                                                       (Rest, "/");
+                                                   Name : constant String :=
+                                                     (if Slash = 0 then Rest
+                                                      else Rest (Rest'First
+                                                                 .. Slash - 1) & "/");
+                                                   Dup : Boolean := False;
+                                                begin
+                                                   for X of Seen loop
+                                                      if X = Name then
+                                                         Dup := True;
+                                                      end if;
+                                                   end loop;
+                                                   if not Dup then
+                                                      Seen.Append (Name);
+                                                      Append (Listing,
+                                                              Name & ASCII.LF);
+                                                   end if;
+                                                   Found := True;
+                                                end;
+                                             end if;
+                                          end;
+                                       end loop;
+
+                                       if Found then
+                                          Version.Console.Put
+                                            ("tree " & Spec & ASCII.LF & ASCII.LF
+                                             & To_String (Listing));
+                                       else
+                                          Error_Line
+                                            ("path does not exist in "
+                                             & Rev_Part & ": " & Path_Part);
+                                          Set_Command_Failure;
+                                       end if;
+                                    end;
                                  end if;
                               end;
+                           else
+                              Version.Console.Put
+                                (Version.Show.Show_Object
+                                   (Repo, Spec,
+                                    Opts,
+                                    No_Patch => No_Patch,
+                                    Oneline  => Oneline,
+                                    Format   => To_String (Fmt),
+                                    Format_Oneline => Fmt_Oneline));
                            end if;
                         end;
-                     else
-                        Version.Console.Put
-                          (Version.Show.Show_Commit
-                             (Repo,
-                              Version.Show.Resolve_Revision (Repo, Spec),
-                              Opts,
-                              No_Patch => No_Patch,
-                              Oneline  => Oneline,
-                              Format   => To_String (Fmt),
-                              Format_Oneline => Fmt_Oneline));
-                     end if;
+                     end loop;
                   end;
                end if;
             end;

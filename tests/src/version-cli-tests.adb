@@ -2035,11 +2035,13 @@ package body Version.CLI.Tests is
          "unknown show option: --nonsense-flag",
          Show_Usage,
          "show unknown option");
+      --  git shows several objects in turn, so a second operand is not a
+      --  usage error; a genuinely unknown option still is.
       Check_Usage_Failure
-        ("show HEAD extra",
-         "too many show arguments",
+        ("show --no-such-option",
+         "unknown show option: --no-such-option",
          Show_Usage,
-         "show too many arguments");
+         "show unknown option 2");
 
       Check_Usage_Failure
         ("history extra",
