@@ -18632,12 +18632,17 @@ package body Version.CLI is
 
          elsif Command = "shortlog" then
             declare
-               Usage    : constant String := "version shortlog [-s] [-n] [REV]";
+               Usage    : constant String :=
+                 "version shortlog [-s] [-n] [-e] [--no-merges]"
+                 & " [REV|RANGE...] [-- PATH...]";
                Summary  : Boolean := False;
                By_Count : Boolean := False;
+               Email    : Boolean := False;
+               No_Merges : Boolean := False;
                Bad_Opt  : Boolean := False;
                Bad_Text : Unbounded_String;
-               Rev_Idx  : Natural := 0;
+               Operands : Version.Rev_Args.String_Vectors.Vector;
+               Seen_Sep : Boolean := False;
                I        : Positive := 2;
 
                function Img (N : Natural) return String is
@@ -18650,15 +18655,24 @@ package body Version.CLI is
                   declare
                      A : constant String := Arg (I);
                   begin
-                     if A'Length >= 2 and then A (A'First) = '-'
+                     if Seen_Sep then
+                        Operands.Append (A);
+                     elsif A = "--" then
+                        Seen_Sep := True;
+                        Operands.Append (A);
+                     elsif A = "--no-merges" then
+                        No_Merges := True;
+                     elsif A'Length >= 2 and then A (A'First) = '-'
                        and then A (A'First + 1) /= '-'
                      then
-                        --  Short flags, possibly bundled (git accepts -sn).
+                        --  Short flags, possibly bundled (git accepts -sne).
                         for K in A'First + 1 .. A'Last loop
                            if A (K) = 's' then
                               Summary := True;
                            elsif A (K) = 'n' then
                               By_Count := True;
+                           elsif A (K) = 'e' then
+                              Email := True;
                            else
                               Bad_Opt := True;
                               Bad_Text := To_Unbounded_String (A);
@@ -18669,12 +18683,8 @@ package body Version.CLI is
                         Bad_Opt := True;
                         Bad_Text := To_Unbounded_String (A);
                         exit;
-                     elsif Rev_Idx /= 0 then
-                        Bad_Opt := True;
-                        Bad_Text := To_Unbounded_String (A);
-                        exit;
                      else
-                        Rev_Idx := I;
+                        Operands.Append (A);   --  a rev, a range or ^exclusion
                      end if;
                   end;
                   I := I + 1;
@@ -18688,12 +18698,13 @@ package body Version.CLI is
                   declare
                      Repo : constant Version.Repository.Repository_Handle :=
                        Version.Repository.Open;
-                     Tip : constant Version.Objects.Hex_Object_Id :=
-                       (if Rev_Idx /= 0
-                        then Version.Revisions.Resolve_Commit (Repo, Arg (Rev_Idx))
-                        else Version.Objects.To_Object_Id (Version.Refs.Current_Commit_Id (Repo)));
-                     Groups : Version.Shortlog.Group_Vectors.Vector :=
-                       Version.Shortlog.Summarize (Repo, Tip);
+                     Parsed : constant Version.Rev_Args.Revision_Arguments :=
+                       Version.Rev_Args.Parse (Repo, Operands);
+                     Include : Version.History.Commit_Id_Vectors.Vector :=
+                       Parsed.Include;
+                     Selection : Version.History.Rev_List_Options :=
+                       (No_Merges => No_Merges, others => <>);
+                     Groups : Version.Shortlog.Group_Vectors.Vector;
 
                      --  git -n sorts by descending count, breaking ties by the
                      --  group's (alphabetical) name so the sort is stable.
@@ -18707,6 +18718,23 @@ package body Version.CLI is
                      package Sorter is new
                        Version.Shortlog.Group_Vectors.Generic_Sorting (Fewer);
                   begin
+                     --  Bare shortlog summarizes HEAD; a pathspec restricts the
+                     --  walk to commits that touch those paths.
+                     if Include.Is_Empty and then Parsed.Exclude.Is_Empty then
+                        Include.Append
+                          (Version.Objects.To_Object_Id
+                             (Version.Refs.Current_Commit_Id (Repo)));
+                     end if;
+                     for P of Parsed.Paths loop
+                        Selection.Paths.Append (New_Item => P);
+                     end loop;
+
+                     Groups := Version.Shortlog.Summarize
+                       (Repo,
+                        Version.History.Rev_List
+                          (Repo, Include, Parsed.Exclude, Selection),
+                        With_Email => Email);
+
                      if By_Count then
                         Sorter.Sort (Groups);
                      end if;
