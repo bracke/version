@@ -1,3 +1,4 @@
+- Git parity: `name-rev` reports `<id> undefined` for a non-commit object (tree/blob) and warns `Could not get sha1 for <x>. Skipping.` (exit 0) for an operand it cannot resolve, instead of erroring out.
 - Git parity: `branch --format=<fmt>` and `branch --sort=<key>` list the local branches through the ref-format engine (any atom, forward/reverse and objectname sort).
 - Git parity: `branch --set-upstream-to=`/`-u` print `branch 'X' set up to track 'Y'.` and reject a non-existent upstream (exit 128); `branch -t <name> <remote-branch>` (and creating from a remote-tracking start) sets up tracking and prints the same line.
 - Git parity: `for-each-ref --no-merged`/`--no-contains` filter refs (the negations of --merged/--contains); `update-ref` accepts an all-zero OLDVALUE as the "must not exist" precondition instead of trying to resolve it as an object.

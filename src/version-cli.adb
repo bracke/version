@@ -25655,11 +25655,13 @@ package body Version.CLI is
                               --  name-rev names the input OBJECT: a tag object
                               --  named by a tag ref is "tags/<name>" (no ^0);
                               --  a commit is named via Best_Name (with ^0 for an
-                              --  annotated tag at its tip).
-                              Raw : constant Version.Objects.Hex_Object_Id :=
-                                Version.Revisions.Resolve (Repo, Arg (I));
+                              --  annotated tag at its tip). Resolve runs in the
+                              --  body so an unresolvable operand is caught and
+                              --  skipped rather than aborting.
+                              Raw  : Version.Objects.Hex_Object_Id;
                               Name : Unbounded_String;
                            begin
+                              Raw := Version.Revisions.Resolve (Repo, Arg (I));
                               if Version.Objects.Kind
                                    (Version.Objects.Read_Object (Repo, Raw))
                                 = Version.Objects.Tag_Object
@@ -25685,11 +25687,17 @@ package body Version.CLI is
                                  end;
                               end if;
                               if Length (Name) = 0 then
-                                 Name := To_Unbounded_String
-                                   (Best_Name
-                                      (Repo,
-                                       Version.Revisions.Resolve_Commit
-                                         (Repo, Arg (I))));
+                                 if Version.Objects.Kind
+                                      (Version.Objects.Read_Object (Repo, Raw))
+                                   = Version.Objects.Commit_Object
+                                 then
+                                    Name := To_Unbounded_String
+                                      (Best_Name (Repo, Raw));
+                                 else
+                                    --  A tree or blob has no commit name; git
+                                    --  reports "undefined".
+                                    Name := To_Unbounded_String ("undefined");
+                                 end if;
                               end if;
                               if Name_Only then
                                  Success_Line (To_String (Name));
@@ -25697,6 +25705,14 @@ package body Version.CLI is
                                  Success_Line
                                    (Arg (I) & " " & To_String (Name));
                               end if;
+                           exception
+                              when Ada.IO_Exceptions.Data_Error
+                                 | Constraint_Error =>
+                                 --  git skips an operand it cannot resolve,
+                                 --  warning but still exiting 0.
+                                 Stderr_Line
+                                   ("Could not get sha1 for " & Arg (I)
+                                    & ". Skipping.");
                            end;
                         end if;
                      end loop;
