@@ -10706,6 +10706,7 @@ package body Version.CLI is
                All_Match   : Boolean := False;
                --  --not flips following revisions into exclusions (^rev).
                Negate      : Boolean := False;
+               Want_Parents : Boolean := False;   --  --parents
                --  --since/--after and --until/--before bound the committer
                --  date (git's raw-unix form is what the fixtures use).
                Since_Set  : Boolean := False;
@@ -10753,6 +10754,8 @@ package body Version.CLI is
                     or else Arg (I) = "--no-decorate"
                   then
                      null;   --  the default layout already
+                  elsif Arg (I) = "--parents" then
+                     Want_Parents := True;
                   elsif Arg (I) = "--not" then
                      Negate := True;
                   elsif Arg (I) = "--no-merges" then
@@ -11070,7 +11073,8 @@ package body Version.CLI is
                               Terminate_Records => Terminator));
                      elsif Oneline then
                         Version.Console.Put
-                          (Version.Log.Log_Oneline_List_Text (Repo, Commits));
+                          (Version.Log.Log_Oneline_List_Text
+                             (Repo, Commits, With_Parents => Want_Parents));
                      else
                         Version.Console.Put
                           (Version.Log.Log_List_Text
