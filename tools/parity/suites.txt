@@ -71,5 +71,5 @@ mergeback.fixture       mergeback.cases       -     8
 mergeback2.fixture      mergeback2.cases      -     1
 impexp.fixture          impexp.cases          -    8
 impexp2.fixture         impexp2.cases         -     0
-rebase.fixture          rebase.cases          -    11
+rebase.fixture          rebase.cases          -     8
 sparsebr.fixture        sparsebr.cases        -     4

@@ -15560,8 +15560,42 @@ package body Version.CLI is
                   Usage_Error ("too many rebase arguments", Usage);
                   return;
                else
-                  Version.Rebase.Start (Arg (2));
-                  Success_Line ("rebased onto " & Arg (2));
+                  declare
+                     Repo : constant Version.Repository.Repository_Handle :=
+                       Version.Repository.Open;
+                     Branch : constant String :=
+                       Version.Refs.Current_Branch_Name (Repo);
+                     Head : constant Version.Objects.Hex_Object_Id :=
+                       Version.Objects.To_Object_Id
+                         (Version.Refs.Current_Commit_Id (Repo));
+                     Onto : Version.Objects.Hex_Object_Id;
+                  begin
+                     begin
+                        Onto := Version.Revisions.Resolve_Commit
+                          (Repo, Arg (2));
+                     exception
+                        when others =>
+                           --  git die()s on an upstream it cannot resolve.
+                           Stderr_Line
+                             ("fatal: invalid upstream '" & Arg (2) & "'");
+                           Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                           return;
+                     end;
+
+                     --  When the target is already an ancestor of HEAD the
+                     --  branch is on top of it and the replay is a no-op; git
+                     --  says so on stdout and does nothing. Otherwise it
+                     --  rebases and reports success on stderr (stdout empty).
+                     if Version.History.Is_Ancestor (Repo, Onto, Head) then
+                        Success_Line
+                          ("Current branch " & Branch & " is up to date.");
+                     else
+                        Version.Rebase.Start (Arg (2));
+                        Stderr_Line
+                          ("Successfully rebased and updated refs/heads/"
+                           & Branch & ".");
+                     end if;
+                  end;
                end if;
             end;
 

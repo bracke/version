@@ -1,3 +1,4 @@
+- Git parity: plain `rebase <upstream>` reports success on stderr ("Successfully rebased and updated refs/heads/<branch>.", stdout empty), prints "Current branch <branch> is up to date." on stdout when the upstream is already an ancestor of HEAD, and die()s (exit 128) with "invalid upstream '<x>'" on an unresolvable upstream.
 - Git parity: `merge-file --object-id` reads the three operands as blob object ids (not paths); a path that cannot be opened exits 255; and a two-head merge backend (`merge-recursive`/`-resolve`) given zero or several other heads die()s with "not handling anything other than two heads merge." (exit 128, was 2).
 - Git parity: `stage`/`add` prints nothing on success, as git does (the per-path "add '...'"/"remove '...'" dry-run lines are unchanged); the "staged N paths" summary is gone.
 - Git parity: `show-branch --independent <refs>` prints the object ids of the given refs not reachable from any of the others, in the order named.
