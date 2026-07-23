@@ -16648,7 +16648,6 @@ package body Version.CLI is
                              Specs));
 
                   Removals : Version.Path_Safety.Path_Vector;
-                  Staged_N : Natural := 0;
 
                   function Is_Tracked (Path : String) return Boolean is
                     (Version.Staging.Find_Path
@@ -16705,7 +16704,6 @@ package body Version.CLI is
                      else
                         Stage_Path (Matches.Element (I));
                      end if;
-                     Staged_N := Staged_N + 1;
                   end loop;
 
                   for P of Removals loop
@@ -16723,18 +16721,10 @@ package body Version.CLI is
                            Version.Staging.Write (Repo, Entries);
                         end;
                      end if;
-                     Staged_N := Staged_N + 1;
                   end loop;
 
-                  if not Dry_Run then
-                     if Staged_N = 1 and then not Matches.Is_Empty then
-                        Success_Line
-                          ("staged " & Matches.Element (Matches.First_Index));
-                     else
-                        Success_Line
-                          ("staged " & Natural_Image (Staged_N) & " paths");
-                     end if;
-                  end if;
+                  --  git's `add`/`stage` prints nothing on success (only the
+                  --  dry-run's per-path "add '...'"/"remove '...'" lines).
                end;
             end;
 
@@ -29019,13 +29009,16 @@ package body Version.CLI is
 
          elsif Command = "show-branch" then
             declare
-               List_Only : Boolean := False;
-               Branches  : Version.Show_Branch.Name_Vectors.Vector;
-               Bad       : Boolean := False;
+               List_Only   : Boolean := False;
+               Independent : Boolean := False;
+               Branches    : Version.Show_Branch.Name_Vectors.Vector;
+               Bad         : Boolean := False;
             begin
                for I in 2 .. Count loop
                   if Arg (I) = "--list" or else Arg (I) = "-l" then
                      List_Only := True;
+                  elsif Arg (I) = "--independent" then
+                     Independent := True;
                   elsif Arg (I)'Length > 0 and then Arg (I) (Arg (I)'First) = '-'
                   then
                      Usage_Error
@@ -29043,6 +29036,42 @@ package body Version.CLI is
                      Repo : constant Version.Repository.Repository_Handle :=
                        Version.Repository.Open;
                   begin
+                     --  --independent lists the object ids of the given refs
+                     --  that are not reachable from any of the others, in the
+                     --  order they were named.
+                     if Independent then
+                        declare
+                           Ids : array (1 .. Natural (Branches.Length))
+                                   of Version.Objects.Hex_Object_Id;
+                        begin
+                           for K in Ids'Range loop
+                              Ids (K) := Version.Revisions.Resolve_Commit
+                                (Repo, Branches.Element (K));
+                           end loop;
+                           for K in Ids'Range loop
+                              declare
+                                 Reachable : Boolean := False;
+                              begin
+                                 for J in Ids'Range loop
+                                    if J /= K
+                                      and then not Version.Objects."="
+                                                     (Ids (J), Ids (K))
+                                      and then Version.History.Is_Ancestor
+                                                 (Repo, Ids (K), Ids (J))
+                                    then
+                                       Reachable := True;
+                                       exit;
+                                    end if;
+                                 end loop;
+                                 if not Reachable then
+                                    Success_Line
+                                      (Version.Objects.To_String (Ids (K)));
+                                 end if;
+                              end;
+                           end loop;
+                        end;
+                        return;
+                     end if;
                      --  No branch operands: every local branch, alphabetically.
                      if Branches.Is_Empty then
                         declare

@@ -1,3 +1,5 @@
+- Git parity: `stage`/`add` prints nothing on success, as git does (the per-path "add '...'"/"remove '...'" dry-run lines are unchanged); the "staged N paths" summary is gone.
+- Git parity: `show-branch --independent <refs>` prints the object ids of the given refs not reachable from any of the others, in the order named.
 - Git parity: `replace --graft <commit> [<parent>...]` writes a copy of the commit with its parent list replaced (none = a root), dropping any gpgsig header, and points refs/replace/<commit> at it.
 - Git parity: `notes` keys on the object a revision names directly (so `notes ... <annotated-tag>` acts on the tag object, not the commit it peels to); adds `get-ref`, `--ignore-missing` (report the absence but exit 0), `prune -n`/`-v`, and names the object in the `list` "no note found" error.
 - Git parity: `replace` exits 255 on error (already-exists, unresolvable operand, type mismatch, not-found), not 1/128.

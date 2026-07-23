@@ -2064,7 +2064,7 @@ package body Version.CLI.Tests is
          "--literal",
          "short status option-looking pathspec after separator");
 
-      Check_Success ("stage -- --literal", "staged --literal", "stage literal");
+      Check_Success ("stage -- --literal", "", "stage literal");
       Version.Write.Save ("literal file");
       Write_File (Root, "--literal", "changed" & Character'Val (10));
       Check_Success
@@ -3980,7 +3980,7 @@ package body Version.CLI.Tests is
       Write_File (Root, "--literal", "literal" & Character'Val (10));
       Check_Success
         ("stage -- --literal",
-         "staged --literal",
+         "",
          "stage option-looking pathspec after separator");
       Version.Write.Save ("literal file");
 
@@ -4006,7 +4006,7 @@ package body Version.CLI.Tests is
       end;
       Check_Success
         ("stage --force ignored.log",
-         "staged ignored.log",
+         "",
          "stage force includes ignored file");
 
       Ada.Directories.Set_Directory (Old_Dir);
@@ -4121,19 +4121,19 @@ package body Version.CLI.Tests is
          "restore source pathspec, attached spelling");
 
       Write_File (Root, "a.txt", "two" & Character'Val (10));
-      Check_Success ("stage a.txt", "staged a.txt", "stage for restore");
+      Check_Success ("stage a.txt", "", "stage for restore");
       Check_Silent
         ("restore --staged a.txt",
          "restore staged pathspec");
 
       Write_File (Root, "a.txt", "two" & Character'Val (10));
-      Check_Success ("stage a.txt", "staged a.txt", "stage for source staged");
+      Check_Success ("stage a.txt", "", "stage for source staged");
       Check_Silent
         ("restore --source HEAD --staged -- a.txt",
          "restore source staged pathspec");
 
       Write_File (Root, "a.txt", "two" & Character'Val (10));
-      Check_Success ("stage a.txt", "staged a.txt", "stage for staged source");
+      Check_Success ("stage a.txt", "", "stage for staged source");
       Check_Silent
         ("restore --staged --source HEAD -- a.txt",
          "restore staged source pathspec");
@@ -4234,7 +4234,7 @@ package body Version.CLI.Tests is
          "checkout pathspec");
 
       Write_File (Root, "--literal", "literal" & Character'Val (10));
-      Check_Success ("stage -- --literal", "staged --literal", "stage literal");
+      Check_Success ("stage -- --literal", "", "stage literal");
       Version.Write.Save ("literal file");
       Write_File (Root, "--literal", "changed" & Character'Val (10));
       Check_Silent
