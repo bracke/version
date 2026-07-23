@@ -27598,7 +27598,7 @@ package body Version.CLI is
                      Error_Line
                        ("invalid tag object: expected object/type/tag/tagger"
                         & " header lines");
-                     Set_Command_Failure;
+                     Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
                   elsif Fsck /= "" then
                      Error_Line ("tag input does not pass fsck: " & Fsck);
                      Stderr_Line
@@ -27628,7 +27628,7 @@ package body Version.CLI is
                            Error_Line
                              ("object " & Sha & " tagged as '" & Declared
                               & "' but is a '" & Actual & "'");
-                           Set_Command_Failure;
+                           Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
                         else
                            Success_Line
                              (To_String
