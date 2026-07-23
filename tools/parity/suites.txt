@@ -70,6 +70,6 @@ auxcmd.fixture          auxcmd.cases          -    10
 mergeback.fixture       mergeback.cases       -    11
 mergeback2.fixture      mergeback2.cases      -     1
 impexp.fixture          impexp.cases          -    8
-impexp2.fixture         impexp2.cases         -    10
+impexp2.fixture         impexp2.cases         -     0
 rebase.fixture          rebase.cases          -    11
 sparsebr.fixture        sparsebr.cases        -     8

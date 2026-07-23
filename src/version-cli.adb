@@ -18585,6 +18585,16 @@ package body Version.CLI is
                      Version.Am.Skip (Repo);
                   elsif Sub = "--abort" then
                      Version.Am.Abort_Am (Repo);
+                  elsif Sub = "--quit" then
+                     Version.Am.Quit (Repo);
+                  elsif Sub = "--show-current-patch"
+                    or else Sub = "--show-current-patch=raw"
+                    or else Sub = "--show-current-patch=diff"
+                  then
+                     Version.Console.Put
+                       (Version.Am.Current_Patch
+                          (Repo,
+                           Diff_Only => Sub = "--show-current-patch=diff"));
                   else
                      declare
                         Opts  : Version.Am.Am_Options;
