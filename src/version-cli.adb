@@ -11143,6 +11143,7 @@ package body Version.CLI is
                Summary  : Boolean := False;
                Fmt      : Unbounded_String;
                Fmt_Oneline : Boolean := False;
+               Date_Mode : Unbounded_String;
                Revs     : Version.Trailers.String_Vectors.Vector;
                Bad      : Boolean := False;
             begin
@@ -11174,6 +11175,9 @@ package body Version.CLI is
                   then
                      Fmt := To_Unbounded_String
                        (Arg (I) (Arg (I)'First + 9 .. Arg (I)'Last));
+                  elsif Has_Prefix (Arg (I), "--date=") then
+                     Date_Mode := To_Unbounded_String
+                       (Arg (I) (Arg (I)'First + 7 .. Arg (I)'Last));
                   elsif Arg (I)'Length > 0
                     and then Arg (I) (Arg (I)'First) = '-'
                   then
@@ -11306,7 +11310,8 @@ package body Version.CLI is
                                     No_Patch => No_Patch,
                                     Oneline  => Oneline,
                                     Format   => To_String (Fmt),
-                                    Format_Oneline => Fmt_Oneline));
+                                    Format_Oneline => Fmt_Oneline,
+                                    Date_Mode => To_String (Date_Mode)));
                            end if;
                         end;
                      end loop;
