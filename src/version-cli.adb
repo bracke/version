@@ -28633,6 +28633,7 @@ package body Version.CLI is
                Force   : Boolean := False;
                Delete  : Boolean := False;
                List    : Boolean := False;
+               Graft   : Boolean := False;
                Format  : Unbounded_String := To_Unbounded_String ("short");
                Fmt_Pre : constant String := "--format=";
                Ops     : Version.Trailers.String_Vectors.Vector;
@@ -28660,6 +28661,8 @@ package body Version.CLI is
                      Delete := True;
                   elsif Arg (I) = "-l" or else Arg (I) = "--list" then
                      List := True;
+                  elsif Arg (I) = "--graft" then
+                     Graft := True;
                   elsif Arg (I)'Length > Fmt_Pre'Length
                     and then Arg (I) (Arg (I)'First ..
                                         Arg (I)'First + Fmt_Pre'Length - 1)
@@ -28689,7 +28692,95 @@ package body Version.CLI is
                        return Version.Objects.Hex_Object_Id
                      is (Version.Revisions.Resolve (Repo, Rev));
                   begin
-                     if Delete then
+                     if Graft then
+                        --  `replace --graft <commit> [<parent>...]` writes a
+                        --  copy of <commit> whose parent list is replaced by
+                        --  the given parents (none = make it a root), and
+                        --  points refs/replace/<commit> at it. git drops any
+                        --  gpgsig header, since the rewritten commit no longer
+                        --  matches the signature.
+                        declare
+                           Orig : constant String := To_String (Full (Ops (1)));
+                           Content : constant String :=
+                             Version.Objects.Content
+                               (Version.Objects.Read_Object
+                                  (Repo, Version.Objects.To_Object_Id (Orig)));
+                           Ref : constant String := "refs/replace/" & Orig;
+                           New_C : Unbounded_String;
+                           Pos   : Natural := Content'First;
+                           In_Sig : Boolean := False;
+                           Emitted_Parents : Boolean := False;
+
+                           procedure Emit_New_Parents is
+                           begin
+                              for K in 2 .. Natural (Ops.Length) loop
+                                 New_C := New_C
+                                   & "parent "
+                                   & To_String (Full (Ops (K)))
+                                   & ASCII.LF;
+                              end loop;
+                              Emitted_Parents := True;
+                           end Emit_New_Parents;
+                        begin
+                           --  Rebuild the header: keep tree, substitute the
+                           --  parent lines, drop gpgsig, keep the rest.
+                           while Pos <= Content'Last loop
+                              declare
+                                 Stop : Natural := Pos;
+                              begin
+                                 while Stop <= Content'Last
+                                   and then Content (Stop) /= ASCII.LF
+                                 loop
+                                    Stop := Stop + 1;
+                                 end loop;
+                                 declare
+                                    L : constant String :=
+                                      Content (Pos .. Stop - 1);
+                                 begin
+                                    if L'Length = 0 then
+                                       --  End of headers: the rest is the
+                                       --  message, copied verbatim.
+                                       if not Emitted_Parents then
+                                          Emit_New_Parents;
+                                       end if;
+                                       New_C := New_C
+                                         & Content (Pos .. Content'Last);
+                                       exit;
+                                    elsif Has_Prefix (L, "tree ") then
+                                       New_C := New_C & L & ASCII.LF;
+                                       Emit_New_Parents;
+                                       In_Sig := False;
+                                    elsif Has_Prefix (L, "parent ") then
+                                       null;   --  replaced by the grafts
+                                    elsif Has_Prefix (L, "gpgsig ") then
+                                       In_Sig := True;   --  drop it
+                                    elsif In_Sig
+                                      and then L'Length > 0
+                                      and then L (L'First) = ' '
+                                    then
+                                       null;   --  a gpgsig continuation line
+                                    else
+                                       In_Sig := False;
+                                       New_C := New_C & L & ASCII.LF;
+                                    end if;
+                                 end;
+                                 Pos := Stop + 1;
+                              end;
+                           end loop;
+
+                           declare
+                              New_Id : constant Version.Objects.Hex_Object_Id :=
+                                Version.Write.Write_Object
+                                  (Repo, "commit", To_String (New_C));
+                              Tx : Version.Ref_Transaction.Transaction;
+                           begin
+                              Version.Ref_Transaction.Start (Tx, Repo);
+                              Version.Ref_Transaction.Add_Update
+                                (Tx, Ref, New_Id, "");
+                              Version.Ref_Transaction.Commit (Tx);
+                           end;
+                        end;
+                     elsif Delete then
                         for Op of Ops loop
                            declare
                               Oid : constant String := To_String (Full (Op));

@@ -1,3 +1,4 @@
+- Git parity: `replace --graft <commit> [<parent>...]` writes a copy of the commit with its parent list replaced (none = a root), dropping any gpgsig header, and points refs/replace/<commit> at it.
 - Git parity: `notes` keys on the object a revision names directly (so `notes ... <annotated-tag>` acts on the tag object, not the commit it peels to); adds `get-ref`, `--ignore-missing` (report the absence but exit 0), `prune -n`/`-v`, and names the object in the `list` "no note found" error.
 - Git parity: `replace` exits 255 on error (already-exists, unresolvable operand, type mismatch, not-found), not 1/128.
 - Git parity: `cherry` takes `--abbrev[=<n>]` and exits 129 (git's message) when no upstream is configured; `bisect start` accepts `--term-old=`/`--term-new=` (the `=<value>` form) and `bisect terms` errors (exit 1) when no bisect is in progress.
