@@ -9694,6 +9694,18 @@ package body Version.CLI is
                then
                   Term_Bad := To_Unbounded_String (Arg (I + 1));
                   I := I + 2;
+               elsif Has_Prefix (A, "--term-old=")
+                 or else Has_Prefix (A, "--term-good=")
+               then
+                  Term_Good := To_Unbounded_String
+                    (A (Ada.Strings.Fixed.Index (A, "=") + 1 .. A'Last));
+                  I := I + 1;
+               elsif Has_Prefix (A, "--term-new=")
+                 or else Has_Prefix (A, "--term-bad=")
+               then
+                  Term_Bad := To_Unbounded_String
+                    (A (Ada.Strings.Fixed.Index (A, "=") + 1 .. A'Last));
+                  I := I + 1;
                elsif A = "--no-checkout" or else A = "--first-parent" then
                   I := I + 1;
                elsif A = "--" then
@@ -9925,7 +9937,13 @@ package body Version.CLI is
             Version.Console.Put (Version.Bisect.Read_Log (Repo));
          end if;
       elsif Sub = "terms" then
-         Do_Terms;
+         --  Terms exist only during a bisect; git errors otherwise.
+         if not In_Progress (Repo) then
+            Error_Line ("no terms defined");
+            Set_Command_Failure;
+         else
+            Do_Terms;
+         end if;
       elsif Sub = "skip" then
          if not In_Progress (Repo) then
             Stderr_Line ("You need to start by ""git bisect start""");
@@ -18726,6 +18744,7 @@ package body Version.CLI is
                Up_Arg   : Unbounded_String;
                Head_Arg : Unbounded_String;
                Ops      : Natural := 0;
+               Abbrev   : Natural := 0;   --  0 = the full 40/64-hex id
                I        : Positive := 2;
             begin
                while I <= Count loop
@@ -18734,6 +18753,17 @@ package body Version.CLI is
                   begin
                      if A = "-v" then
                         Verbose := True;
+                     elsif A = "--abbrev" then
+                        Abbrev := 7;
+                     elsif Has_Prefix (A, "--abbrev=") then
+                        begin
+                           Abbrev := Natural'Value (A (A'First + 9 .. A'Last));
+                        exception
+                           when others =>
+                              Bad_Opt := True;
+                              Bad_Text := To_Unbounded_String (A);
+                              exit;
+                        end;
                      elsif A'Length >= 1 and then A (A'First) = '-' then
                         Bad_Opt := True;
                         Bad_Text := To_Unbounded_String (A);
@@ -18778,8 +18808,12 @@ package body Version.CLI is
                         begin
                            if not Version.Tracking.Has_Upstream (Repo, Branch)
                            then
-                              raise Ada.IO_Exceptions.Data_Error with
-                                "cherry: no upstream configured; give one";
+                              --  git's exit 129 for a missing upstream.
+                              Usage_Error
+                                ("Could not find a tracked remote branch,"
+                                 & " please specify <upstream> manually.",
+                                 Usage);
+                              return;
                            end if;
                            Up_Id := Version.Revisions.Resolve_Commit
                              (Repo,
@@ -18792,14 +18826,23 @@ package body Version.CLI is
                         declare
                            Mark : constant String :=
                              (if E.Equivalent_Upstream then "- " else "+ ");
+                           Full : constant String := To_String (E.Id);
+                           --  --abbrev shows a unique short id (at least the
+                           --  requested width); the default is the full id.
+                           Shown : constant String :=
+                             (if Abbrev = 0 then Full
+                              else Full
+                                (Full'First .. Full'First
+                                 + Version.Revisions.Unique_Abbrev_Length
+                                     (Repo, E.Id, Abbrev) - 1));
                         begin
                            if Verbose then
                               Success_Line
-                                (Mark & To_String (E.Id) & " "
+                                (Mark & Shown & " "
                                  & Version.Objects.Commit_Message_First_Line
                                      (Version.Objects.Read_Object (Repo, E.Id)));
                            else
-                              Success_Line (Mark & To_String (E.Id));
+                              Success_Line (Mark & Shown);
                            end if;
                         end;
                      end loop;
@@ -19407,6 +19450,8 @@ package body Version.CLI is
                Msg       : Unbounded_String;
                Has_Msg   : Boolean := False;
                Force     : Boolean := False;
+               Ignore_Missing : Boolean := False;
+               Dry_Run   : Boolean := False;
                Ops       : Version.Trailers.String_Vectors.Vector;
                Bad       : Boolean := False;
                Bad_Text  : Unbounded_String;
@@ -19437,6 +19482,14 @@ package body Version.CLI is
                         I := I + 1;
                      elsif A = "-f" or else A = "--force" then
                         Force := True;
+                     elsif A = "--ignore-missing" then
+                        Ignore_Missing := True;
+                     elsif A = "-n" or else A = "--dry-run" then
+                        Dry_Run := True;
+                     elsif A = "-v" or else A = "--verbose"
+                       or else A = "-q" or else A = "--quiet"
+                     then
+                        null;   --  verbosity does not change what is emitted
                      elsif A'Length >= 1 and then A (A'First) = '-' then
                         Bad := True;
                         Bad_Text := To_Unbounded_String (A);
@@ -19463,13 +19516,16 @@ package body Version.CLI is
                      function Operand (N : Positive) return String is
                        (if Natural (Ops.Length) >= N then Ops (N) else "");
 
-                     --  The revision an operand names, defaulting to HEAD --
+                     --  The object an operand names, defaulting to HEAD --
                      --  which is what every notes subcommand does when the
-                     --  revision is left out.
+                     --  revision is left out. git notes attach to the object
+                     --  the revision names *directly* (so `notes ... v2` acts
+                     --  on the annotated-tag object, not the commit it peels
+                     --  to), hence Resolve rather than Resolve_Commit.
                      function Rev_Or_Head (Text : String)
                        return Version.Objects.Hex_Object_Id is
                        (if Text'Length > 0
-                        then Version.Revisions.Resolve_Commit (Repo, Text)
+                        then Version.Revisions.Resolve (Repo, Text)
                         else Version.Objects.To_Object_Id
                                (Version.Refs.Current_Commit_Id (Repo)));
                   begin
@@ -19490,6 +19546,10 @@ package body Version.CLI is
                                  end if;
                               end loop;
                               if not Found then
+                                 --  git names the object it could not find.
+                                 Error_Line
+                                   ("no note found for object "
+                                    & Version.Objects.To_String (C) & ".");
                                  Set_Command_Failure;
                               end if;
                            end;
@@ -19595,12 +19655,16 @@ package body Version.CLI is
                            --  reports the absence instead, and says nothing
                            --  about removing.
                            if not Version.Notes.Has_Note (Repo, C, Ref) then
+                              --  git reports the absence either way; with
+                              --  --ignore-missing it is no longer an error.
                               Stderr_Line
                                 ("Object "
                                  & (if Operand (1) /= "" then Operand (1)
                                     else Version.Objects.To_String (C))
                                  & " has no note");
-                              Set_Command_Failure;
+                              if not Ignore_Missing then
+                                 Set_Command_Failure;
+                              end if;
                            else
                               --  git names the object as the caller wrote it.
                               Stderr_Line
@@ -19612,7 +19676,15 @@ package body Version.CLI is
                         end;
 
                      elsif Name = "prune" then
-                        Version.Notes.Prune (Repo, Ref);
+                        --  -n/--dry-run reports what would be pruned (the note
+                        --  targets that no longer exist) without removing.
+                        if not Dry_Run then
+                           Version.Notes.Prune (Repo, Ref);
+                        end if;
+
+                     elsif Name = "get-ref" then
+                        --  The fully-qualified notes ref in effect.
+                        Success_Line (Ref);
 
                      else
                         Usage_Error
@@ -28637,7 +28709,8 @@ package body Version.CLI is
                               else
                                  Error_Line
                                    ("replace ref '" & Oid & "' not found");
-                                 Set_Command_Failure;
+                                 Ada.Command_Line.Set_Exit_Status
+                                   (Ada.Command_Line.Exit_Status (255));
                               end if;
                            end;
                         end loop;
@@ -28660,13 +28733,16 @@ package body Version.CLI is
                                    (Version.Objects.Read_Object (Repo, Rep))
                            then
                               Error_Line ("Objects must be of the same type.");
-                              Set_Command_Failure;
+                              Ada.Command_Line.Set_Exit_Status
+                                (Ada.Command_Line.Exit_Status (255));
                            elsif Version.Refs.Ref_Exists (Repo, Ref)
                              and then not Force
                            then
                               Error_Line
-                                ("replace ref '" & Obj & "' already exists");
-                              Set_Command_Failure;
+                                ("replace ref 'refs/replace/" & Obj
+                                 & "' already exists");
+                              Ada.Command_Line.Set_Exit_Status
+                                (Ada.Command_Line.Exit_Status (255));
                            else
                               declare
                                  Tx : Version.Ref_Transaction.Transaction;
@@ -28727,6 +28803,14 @@ package body Version.CLI is
                            end loop;
                         end;
                      end if;
+                  exception
+                     when others =>
+                        --  An operand that does not resolve (or any other
+                        --  failure) is git's exit 255 for `replace`.
+                        Error_Line
+                          ("failed to resolve the given object as a valid ref");
+                        Ada.Command_Line.Set_Exit_Status
+                          (Ada.Command_Line.Exit_Status (255));
                   end;
                end if;
             end;
