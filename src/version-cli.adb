@@ -7347,10 +7347,7 @@ package body Version.CLI is
             return Item;
          end Next_Field;
 
-         Opts : Version.Diff.Diff_Options;
       begin
-         Opts.Context_Lines := Context;
-
          --  Each record is ":<m1> <m2> <s1> <s2> <status>" NUL "<path>" [NUL
          --  "<path2>" for a rename or copy].
          while Pos <= Text'Last loop
@@ -15553,6 +15550,47 @@ package body Version.CLI is
                        ("rebase --root requires --onto NEWBASE", Usage);
                      return;
                   end if;
+               elsif Arg (2) = "--stat" and then Count = 3 then
+                  --  git prints the diffstat of what the new base brings
+                  --  (diff --stat <merge-base>..<upstream>) before rebasing.
+                  declare
+                     Repo : constant Version.Repository.Repository_Handle :=
+                       Version.Repository.Open;
+                     Branch : constant String :=
+                       Version.Refs.Current_Branch_Name (Repo);
+                     Head : constant Version.Objects.Hex_Object_Id :=
+                       Version.Objects.To_Object_Id
+                         (Version.Refs.Current_Commit_Id (Repo));
+                     Onto : Version.Objects.Hex_Object_Id;
+                  begin
+                     begin
+                        Onto := Version.Revisions.Resolve_Commit
+                          (Repo, Arg (3));
+                     exception
+                        when others =>
+                           Stderr_Line
+                             ("fatal: invalid upstream '" & Arg (3) & "'");
+                           Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                           return;
+                     end;
+                     Version.Console.Put
+                       (Version.Diff.Diff_Commits
+                          (Repo    => Repo,
+                           Old_Id  =>
+                             Version.History.Merge_Base (Repo, Head, Onto),
+                           New_Id  => Onto,
+                           Options =>
+                             (Stat => True, Summary => True, others => <>)));
+                     if Version.History.Is_Ancestor (Repo, Onto, Head) then
+                        Success_Line
+                          ("Current branch " & Branch & " is up to date.");
+                     else
+                        Version.Rebase.Start (Arg (3));
+                        Stderr_Line
+                          ("Successfully rebased and updated refs/heads/"
+                           & Branch & ".");
+                     end if;
+                  end;
                elsif Arg (2)'Length > 0 and then Arg (2) (Arg (2)'First) = '-' then
                   Usage_Error ("unknown rebase option: " & Arg (2), Usage);
                   return;
