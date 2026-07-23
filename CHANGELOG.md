@@ -1,3 +1,4 @@
+- Git parity: `fast-export` with no revision selector prints its usage and exits 129 (was an empty exit-0 stream); an unresolvable ref is now die() exit 128 (was exit 1).
 - Git parity: `diff-pairs` accepts `--stat` and `-U<n>`/`--unified=<n>`, renders `--stat`/`--summary` through the shared summariser (renames show git's `{old => new}` brace form, the stat graph scales over the whole input), and rejects a non-record field (a `diff-tree --root` commit id, or junk) with "fatal: invalid raw diff input" (exit 128) instead of silently skipping it.
 - Git parity: `am --empty=stop|drop|keep` is parsed and forwarded (was silently ignored), selecting how a diff-less mail is handled.
 - Git parity: `am` routes its failure output to git's streams and exit codes -- "Patch failed at <N> <subject>" and "Patch is empty." to stdout, "Patch format detection failed." to stderr, all with exit 128.

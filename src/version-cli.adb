@@ -4361,6 +4361,10 @@ package body Version.CLI is
       Detect_Renames : Boolean := False;
       Bad_Option : Boolean := False;
 
+      --  git requires at least one revision selector; with none it prints its
+      --  usage and exits 129, rather than producing an empty stream.
+      Had_Selector : Boolean := False;
+
       --  Commits an `<a>..<b>` range excludes: everything reachable from a.
       Excluded : Version.Trailers.String_Vectors.Vector;
 
@@ -4497,6 +4501,7 @@ package body Version.CLI is
             A : constant String := Arg (I);
          begin
             if A = "--all" then
+               Had_Selector := True;
                for Name of Version.Refs.List_Branches (Repo) loop
                   Refs.Append ("refs/heads/" & To_String (Name));
                end loop;
@@ -4552,6 +4557,7 @@ package body Version.CLI is
                   Dots : constant Natural :=
                     Ada.Strings.Fixed.Index (A, "..");
                begin
+                  Had_Selector := True;
                   if Dots /= 0 then
                      Excluded.Append
                        (Version.Objects.To_String
@@ -4567,6 +4573,12 @@ package body Version.CLI is
       end loop;
 
       if Bad_Option then
+         Set_Usage_Failure;
+         return;
+      end if;
+
+      if not Had_Selector then
+         Error_Line ("usage: fast-export [<options>] [<ref>...]");
          Set_Usage_Failure;
          return;
       end if;
@@ -5118,8 +5130,10 @@ package body Version.CLI is
 
    exception
       when E : Ada.IO_Exceptions.Data_Error | Ada.IO_Exceptions.Name_Error =>
+         --  A ref that does not resolve is git's die() (exit 128), as for
+         --  every other command that cannot find its starting point.
          Error_Line (Ada.Exceptions.Exception_Message (E));
-         Set_Command_Failure;
+         Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
    end Run_Fast_Export_Command;
 
    --  Point a ref at an object, whatever it held before.
