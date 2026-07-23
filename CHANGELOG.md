@@ -1,3 +1,4 @@
+- Git parity: `merge-file --object-id` reads the three operands as blob object ids (not paths); a path that cannot be opened exits 255; and a two-head merge backend (`merge-recursive`/`-resolve`) given zero or several other heads die()s with "not handling anything other than two heads merge." (exit 128, was 2).
 - Git parity: `stage`/`add` prints nothing on success, as git does (the per-path "add '...'"/"remove '...'" dry-run lines are unchanged); the "staged N paths" summary is gone.
 - Git parity: `show-branch --independent <refs>` prints the object ids of the given refs not reachable from any of the others, in the order named.
 - Git parity: `replace --graft <commit> [<parent>...]` writes a copy of the commit with its parent list replaced (none = a root), dropping any gpgsig header, and points refs/replace/<commit> at it.

@@ -8185,7 +8185,7 @@ package body Version.CLI is
          return;
       end if;
 
-      if Head = "" or else Remotes.Is_Empty then
+      if Head = "" then
          Ada.Command_Line.Set_Exit_Status (Ada.Command_Line.Exit_Status (2));
          return;
       end if;
@@ -8197,8 +8197,12 @@ package body Version.CLI is
               (Ada.Command_Line.Exit_Status (2));
             return;
          end if;
-      elsif Natural (Remotes.Length) > 1 then
-         Ada.Command_Line.Set_Exit_Status (Ada.Command_Line.Exit_Status (2));
+      elsif Natural (Remotes.Length) /= 1 then
+         --  A two-head backend given zero or many other heads is git's die():
+         --  "not handling anything other than two heads merge." (exit 128).
+         Stderr_Line
+           ("fatal: not handling anything other than two heads merge.");
+         Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
          return;
       end if;
 
@@ -29108,11 +29112,13 @@ package body Version.CLI is
                MS_Pre    : constant String := "--marker-size=";
                DA_Pre    : constant String := "--diff-algorithm=";
                To_Stdout : Boolean := False;
+               Object_Id : Boolean := False;
                Opts      : Version.Merge.Merge_File_Options;
                Labels    : Version.Trailers.String_Vectors.Vector;
                Files     : Version.Trailers.String_Vectors.Vector;
                Bad       : Boolean := False;
                I         : Positive := 2;
+               Merge_File_Open_Error : exception;
             begin
                while I <= Count and then not Bad loop
                   declare
@@ -29120,6 +29126,9 @@ package body Version.CLI is
                   begin
                      if A = "-p" or else A = "--stdout" then
                         To_Stdout := True;
+                     elsif A = "--object-id" then
+                        --  The three operands are blob object ids, not paths.
+                        Object_Id := True;
                      elsif A = "-q" or else A = "--quiet" then
                         null;  --  suppress warnings (version emits none)
                      elsif A = "--diff3" then
@@ -29201,12 +29210,29 @@ package body Version.CLI is
                             else To_Unbounded_String (Default));
                         Merged    : Unbounded_String;
                         Conflicts : Natural;
-                        Ours_C    : constant String :=
-                          Version.Files.Read_Binary_File (Cur_P);
-                        Base_C    : constant String :=
-                          Version.Files.Read_Binary_File (Bas_P);
-                        Theirs_C  : constant String :=
-                          Version.Files.Read_Binary_File (Oth_P);
+
+                        --  --object-id reads each operand as a blob from the
+                        --  object store; otherwise it is a file path. A path
+                        --  that cannot be opened is git's exit 255.
+                        function Read_Content (Spec : String) return String is
+                        begin
+                           if Object_Id then
+                              return Version.Objects.Content
+                                (Version.Objects.Read_Object
+                                   (Version.Repository.Open,
+                                    Version.Revisions.Resolve
+                                      (Version.Repository.Open, Spec)));
+                           elsif not Version.Files.Is_Ordinary_File (Spec) then
+                              Error_Line
+                                ("could not open '" & Spec & "' for reading");
+                              raise Merge_File_Open_Error;
+                           end if;
+                           return Version.Files.Read_Binary_File (Spec);
+                        end Read_Content;
+
+                        Ours_C    : constant String := Read_Content (Cur_P);
+                        Base_C    : constant String := Read_Content (Bas_P);
+                        Theirs_C  : constant String := Read_Content (Oth_P);
 
                         --  git's buffer_is_binary: a NUL byte in the first
                         --  8000 bytes marks the content binary.
@@ -29262,6 +29288,11 @@ package body Version.CLI is
                      end;
                   end if;
                end if;
+            exception
+               when Merge_File_Open_Error =>
+                  --  A path that could not be opened: git's exit 255.
+                  Ada.Command_Line.Set_Exit_Status
+                    (Ada.Command_Line.Exit_Status (255));
             end;
 
          elsif Command = "difftool" or else Command = "mergetool" then
