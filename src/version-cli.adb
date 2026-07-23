@@ -7161,17 +7161,23 @@ package body Version.CLI is
       --  every one of them was silently ignored.
       type Output_Format is
         (Format_Patch, Format_Raw, Format_Name_Only, Format_Name_Status,
-         Format_Numstat, Format_Shortstat, Format_Summary, Format_Silent);
+         Format_Numstat, Format_Shortstat, Format_Summary, Format_Stat,
+         Format_Silent);
 
       Use_NUL : Boolean := False;
       Format  : Output_Format := Format_Patch;
       Bad_Opt : Boolean := False;
+      Context : Natural := 3;
+
+      --  Formats that describe the whole input are accumulated as one patch
+      --  and rendered by the shared summariser, so a rename shows git's
+      --  "{old => new}" brace form and the diffstat graph scales as git's.
+      Full_Patch : Unbounded_String;
 
       --  Running totals, for the formats that report over the whole input.
       Files_Changed : Natural := 0;
       Total_Added   : Natural := 0;
       Total_Deleted : Natural := 0;
-      Summary_Text  : Unbounded_String;
    begin
       for I in 2 .. Count loop
          declare
@@ -7191,10 +7197,24 @@ package body Version.CLI is
                Format := Format_Shortstat;
             elsif A = "--summary" then
                Format := Format_Summary;
+            elsif A = "--stat" then
+               Format := Format_Stat;
             elsif A = "-s" or else A = "--no-patch" then
                Format := Format_Silent;
             elsif A = "-p" or else A = "--patch" then
                Format := Format_Patch;
+            elsif Has_Prefix (A, "-U") or else Has_Prefix (A, "--unified=") then
+               declare
+                  N : constant String :=
+                    (if Has_Prefix (A, "-U") then A (A'First + 2 .. A'Last)
+                     else A (A'First + 10 .. A'Last));
+               begin
+                  Context := Natural'Value (N);
+               exception
+                  when Constraint_Error =>
+                     Error_Line ("unknown diff-pairs option: " & A);
+                     Bad_Opt := True;
+               end;
             elsif A'Length > 0 and then A (A'First) = '-' then
                Error_Line ("unknown diff-pairs option: " & A);
                Bad_Opt := True;
@@ -7230,7 +7250,7 @@ package body Version.CLI is
 
          Opts : Version.Diff.Diff_Options;
       begin
-         Opts.Context_Lines := 3;
+         Opts.Context_Lines := Context;
 
          --  Each record is ":<m1> <m2> <s1> <s2> <status>" NUL "<path>" [NUL
          --  "<path2>" for a rename or copy].
@@ -7239,6 +7259,15 @@ package body Version.CLI is
                Head : constant String := Next_Field;
             begin
                exit when Head'Length = 0;
+
+               --  git rejects anything that is not a raw record outright, so
+               --  a stray field (a leading commit id from `diff-tree --root`,
+               --  or junk) is fatal rather than silently skipped.
+               if Head (Head'First) /= ':' then
+                  Error_Line ("fatal: invalid raw diff input");
+                  Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                  return;
+               end if;
 
                if Head (Head'First) = ':' then
                   declare
@@ -7297,7 +7326,7 @@ package body Version.CLI is
                             Version.Objects.To_Object_Id (New_Id),
                           Old_Mode    => Old_Mode,
                           New_Mode    => New_Mode,
-                          Context     => 3);
+                          Context     => Context);
 
                      --  git counts the payload lines of the patch it would
                      --  have printed, so a rename with no edit counts zero
@@ -7343,8 +7372,75 @@ package body Version.CLI is
                      end Count_Lines;
 
                      NUL : constant String := "" & ASCII.NUL;
+
+                     Is_Move : constant Boolean :=
+                       Status'Length > 0
+                       and then Status (Status'First) in 'R' | 'C';
+
+                     --  The complete git patch for this pair, with the rename
+                     --  and mode headers a raw record implies, so the shared
+                     --  summariser sees what `git diff` would have written.
+                     function Pair_Patch return String is
+                        R : Unbounded_String;
+                     begin
+                        if Patch'Length > 0 and then not Is_Move then
+                           return Patch;
+                        end if;
+                        Append
+                          (R,
+                           "diff --git a/"
+                           & (if Is_Move then Path else Shown) & " b/"
+                           & (if Is_Move then Path2 else Shown) & ASCII.LF);
+                        if Old_Id = Zero then
+                           Append (R, "new file mode " & New_Mode & ASCII.LF);
+                        elsif New_Id = Zero then
+                           Append
+                             (R, "deleted file mode " & Old_Mode & ASCII.LF);
+                        elsif Old_Mode /= New_Mode then
+                           Append
+                             (R,
+                              "old mode " & Old_Mode & ASCII.LF
+                              & "new mode " & New_Mode & ASCII.LF);
+                        end if;
+                        if Is_Move then
+                           declare
+                              Pct : constant String :=
+                                (if Status'Length > 1
+                                 then Status (Status'First + 1 .. Status'Last)
+                                 else "100");
+                              Verb : constant String :=
+                                (if Status (Status'First) = 'R'
+                                 then "rename" else "copy");
+                           begin
+                              Append
+                                (R,
+                                 "similarity index "
+                                 & Natural_Image (Natural'Value (Pct)) & "%"
+                                 & ASCII.LF
+                                 & Verb & " from " & Path & ASCII.LF
+                                 & Verb & " to " & Path2 & ASCII.LF);
+                           end;
+                           --  A rename that also edited its content carries the
+                           --  hunks after the header; append them from the
+                           --  first "@@" so the +/- lines are counted once.
+                           if Patch'Length > 0 then
+                              declare
+                                 At_Sign : constant Natural :=
+                                   Ada.Strings.Fixed.Index (Patch, "@@");
+                              begin
+                                 if At_Sign > 0 then
+                                    Append (R, Patch (At_Sign .. Patch'Last));
+                                 end if;
+                              end;
+                           end if;
+                        end if;
+                        return To_String (R);
+                     end Pair_Patch;
                   begin
                      Files_Changed := Files_Changed + 1;
+                     if Format in Format_Stat | Format_Summary then
+                        Append (Full_Patch, Pair_Patch);
+                     end if;
 
                      case Format is
                         when Format_Patch =>
@@ -7422,26 +7518,11 @@ package body Version.CLI is
                               Total_Deleted := Total_Deleted + D;
                            end;
 
-                        when Format_Summary =>
-                           --  git reports only what changed structurally:
-                           --  a file appearing, disappearing, or changing
-                           --  mode. An ordinary edit says nothing here.
-                           if Old_Id = Zero then
-                              Append
-                                (Summary_Text,
-                                 " create mode " & New_Mode & " " & Shown
-                                 & ASCII.LF);
-                           elsif New_Id = Zero then
-                              Append
-                                (Summary_Text,
-                                 " delete mode " & Old_Mode & " " & Shown
-                                 & ASCII.LF);
-                           elsif Old_Mode /= New_Mode then
-                              Append
-                                (Summary_Text,
-                                 " mode change " & Old_Mode & " => "
-                                 & New_Mode & " " & Shown & ASCII.LF);
-                           end if;
+                        when Format_Summary | Format_Stat =>
+                           --  Accumulated into Full_Patch above and rendered
+                           --  once, so renames get git's "{old => new}" form
+                           --  and the stat graph scales over the whole input.
+                           null;
 
                         when Format_Silent =>
                            null;
@@ -7473,7 +7554,14 @@ package body Version.CLI is
                end if;
 
             when Format_Summary =>
-               Version.Console.Put (To_String (Summary_Text));
+               Version.Console.Put
+                 (Version.Diff.Summarize_Patch
+                    (To_String (Full_Patch), Version.Diff.Summary_Names));
+
+            when Format_Stat =>
+               Version.Console.Put
+                 (Version.Diff.Summarize_Patch
+                    (To_String (Full_Patch), Version.Diff.Summary_Diffstat));
 
             when others =>
                null;
