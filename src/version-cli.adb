@@ -5192,6 +5192,10 @@ package body Version.CLI is
       --  real import.
       Bad_Option : Boolean := False;
 
+      --  git's `--export-marks=<file>`: after the import, write every mark as
+      --  ":<n> <id>" so a later incremental import can resume from them.
+      Export_Marks : Unbounded_String;
+
       Text : constant String := Read_All_Stdin;
       Pos  : Natural := Text'First;
 
@@ -5256,6 +5260,24 @@ package body Version.CLI is
 
          return Token;
       end Resolve_Mark;
+
+      --  A `from`/`merge` operand: a mark, a raw object id, or -- as git's
+      --  fast-import also accepts -- a committish like a branch name or
+      --  `refs/heads/main^0`, which must be resolved through the revision
+      --  parser rather than treated as a literal id.
+      function Resolve_Committish (Token : String) return String is
+      begin
+         if Token'Length > 1 and then Token (Token'First) = ':' then
+            return Resolve_Mark (Token);
+         elsif Token'Length in 40 | 64
+           and then (for all C of Token => C in '0' .. '9' | 'a' .. 'f')
+         then
+            return Token;
+         else
+            return Version.Objects.To_String
+              (Version.Revisions.Resolve_Commit (Repo, Token));
+         end if;
+      end Resolve_Committish;
 
       function Starts_With (Line, Prefix : String) return Boolean is
         (Line'Length >= Prefix'Length
@@ -5342,7 +5364,10 @@ package body Version.CLI is
          begin
             --  The flags that change nothing this implementation does; every
             --  other one is refused rather than quietly dropped.
-            if A = "--quiet" or else A = "--stats" or else A = "--force"
+            if Starts_With (A, "--export-marks=") then
+               Export_Marks :=
+                 To_Unbounded_String (A (A'First + 15 .. A'Last));
+            elsif A = "--quiet" or else A = "--stats" or else A = "--force"
               or else A = "--done" or else A = "--allow-unsafe-features"
               or else Starts_With (A, "--date-format=")
               or else Starts_With (A, "--max-pack-size=")
@@ -5456,7 +5481,7 @@ package body Version.CLI is
 
                            declare
                               Id : constant String :=
-                                Resolve_Mark
+                                Resolve_Committish
                                   (Next (Next'First + 5 .. Next'Last));
                            begin
                               if Id /= "" then
@@ -5474,7 +5499,7 @@ package body Version.CLI is
 
                            declare
                               Id : constant String :=
-                                Resolve_Mark
+                                Resolve_Committish
                                   (Next (Next'First + 6 .. Next'Last));
                            begin
                               if Id /= "" then
@@ -5565,6 +5590,48 @@ package body Version.CLI is
                         then
                            Drop_File
                              (Change (Change'First + 2 .. Change'Last));
+
+                        elsif Change'Length > 2
+                          and then Change (Change'First) in 'C' | 'R'
+                          and then Change (Change'First + 1) = ' '
+                        then
+                           --  `C <src> <dst>` copies a path, `R <src> <dst>`
+                           --  renames it: both take the source's blob (and
+                           --  mode) to the destination, and R then drops the
+                           --  source. (Unquoted paths, as the M/D handlers
+                           --  above also assume.)
+                           declare
+                              Rest : constant String :=
+                                Change (Change'First + 2 .. Change'Last);
+                              Sp   : constant Natural :=
+                                Ada.Strings.Fixed.Index (Rest, " ");
+                              Src  : constant String :=
+                                Rest (Rest'First .. Sp - 1);
+                              Dst  : constant String :=
+                                Rest (Sp + 1 .. Rest'Last);
+                              Found : Boolean := False;
+                              Mode  : Unbounded_String;
+                              Id    : Unbounded_String;
+                           begin
+                              for E of Files loop
+                                 if To_String (E.Path) = Src then
+                                    Found := True;
+                                    Mode := E.Mode;
+                                    Id := To_Unbounded_String
+                                      (Version.Objects.To_String (E.Id));
+                                    exit;
+                                 end if;
+                              end loop;
+
+                              if Found then
+                                 Set_File
+                                   (Dst, To_String (Mode), To_String (Id));
+                              end if;
+
+                              if Change (Change'First) = 'R' then
+                                 Drop_File (Src);
+                              end if;
+                           end;
                         end if;
                      end;
                   end loop;
@@ -5718,6 +5785,22 @@ package body Version.CLI is
             end if;
          end;
       end loop;
+
+      if Export_Marks /= "" then
+         declare
+            Out_Text : Unbounded_String;
+         begin
+            for C in Marks.Iterate loop
+               Append
+                 (Out_Text,
+                  Mark_Id_Maps.Key (C) & " " & Mark_Id_Maps.Element (C)
+                  & ASCII.LF);
+            end loop;
+            Version.Files.Write_Binary_File_Atomic
+              (Path    => To_String (Export_Marks),
+               Content => To_String (Out_Text));
+         end;
+      end if;
    exception
       when E : Ada.IO_Exceptions.Data_Error | Ada.IO_Exceptions.Name_Error
          | Ada.IO_Exceptions.Use_Error | Constraint_Error =>
