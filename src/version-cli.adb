@@ -18420,10 +18420,15 @@ package body Version.CLI is
                                  Opts.Keep := True;
                               elsif A = "--committer-date-is-author-date" then
                                  Opts.Committer_Date_Is_Author_Date := True;
+                              elsif A = "--empty=stop" then
+                                 Opts.Empty := Version.Am.Stop;
+                              elsif A = "--empty=drop" then
+                                 Opts.Empty := Version.Am.Drop;
+                              elsif A = "--empty=keep" then
+                                 Opts.Empty := Version.Am.Keep_Empty;
                               elsif A = "-3" or else A = "--3way"
                                 or else A = "--no-3way"
                                 or else A = "--whitespace=fix"
-                                or else Has_Prefix (A, "--empty=")
                                 or else Has_Prefix (A, "--whitespace=")
                                 or else Has_Prefix (A, "-C")
                                 or else Has_Prefix (A, "-p")
