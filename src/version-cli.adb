@@ -21060,9 +21060,11 @@ package body Version.CLI is
          elsif Command = "commit-tree" then
             declare
                Usage : constant String :=
-                 "version commit-tree TREE [-p PARENT]... -m MESSAGE";
+                 "version commit-tree TREE [-p PARENT]... [-m MSG | -F FILE]";
                Tree_Idx : Natural := 0;
                Has_Msg  : Boolean := False;
+               Msg_File : Unbounded_String;
+               Has_File : Boolean := False;
                Bad_Opt  : Boolean := False;
                Bad_Text : Unbounded_String;
                Msg      : Unbounded_String;
@@ -21070,9 +21072,37 @@ package body Version.CLI is
                  Version.Repository.Open;
                Parents : Version.Objects.Object_Id_Vectors.Vector;
                I : Positive := 2;
+
+               --  With neither -m nor -F, git reads the message from stdin.
+               function Read_Stdin return String is
+                  Buffer : aliased String (1 .. 65536);
+                  Acc    : Unbounded_String;
+               begin
+                  loop
+                     declare
+                        N : constant Interfaces.C.long :=
+                          Read (0, Buffer (Buffer'First)'Address,
+                                Interfaces.C.size_t (Buffer'Length));
+                     begin
+                        exit when N <= 0;
+                        Append (Acc, Buffer (Buffer'First ..
+                                Buffer'First + Integer (N) - 1));
+                     end;
+                  end loop;
+                  return To_String (Acc);
+               end Read_Stdin;
             begin
                while I <= Count loop
-                  if Arg (I) = "-p" then
+                  if Arg (I) = "-F" then
+                     if I = Count then
+                        Bad_Opt := True;
+                        Bad_Text := To_Unbounded_String ("-F");
+                        exit;
+                     end if;
+                     Msg_File := To_Unbounded_String (Arg (I + 1));
+                     Has_File := True;
+                     I := I + 1;
+                  elsif Arg (I) = "-p" then
                      if I = Count then
                         Bad_Opt := True;
                         Bad_Text := To_Unbounded_String ("-p");
@@ -21087,13 +21117,14 @@ package body Version.CLI is
                         Bad_Text := To_Unbounded_String ("-m");
                         exit;
                      end if;
-                     --  Repeated -m are joined as separate paragraphs
-                     --  (blank line between), as git's commit-tree does,
-                     --  not overwritten.
-                     if Has_Msg then
-                        Append (Msg, ASCII.LF & ASCII.LF & Arg (I + 1));
-                     else
-                        Msg := To_Unbounded_String (Arg (I + 1));
+                     --  Repeated -m are separate paragraphs (blank line
+                     --  between); git skips an empty -m entirely.
+                     if Arg (I + 1)'Length > 0 then
+                        if Has_Msg then
+                           Append (Msg, ASCII.LF & ASCII.LF & Arg (I + 1));
+                        else
+                           Msg := To_Unbounded_String (Arg (I + 1));
+                        end if;
                         Has_Msg := True;
                      end if;
                      I := I + 1;
@@ -21115,9 +21146,10 @@ package body Version.CLI is
                if Bad_Opt then
                   Usage_Error ("unknown commit-tree argument: "
                                & To_String (Bad_Text), Usage);
-               elsif Tree_Idx = 0 or else not Has_Msg then
-                  Usage_Error ("commit-tree requires a tree and -m MESSAGE",
-                               Usage);
+               elsif Tree_Idx = 0 then
+                  --  git dies (exit 128) when no tree is named.
+                  Stderr_Line ("fatal: must give exactly one tree");
+                  Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
                else
                   declare
                      --  git wants a tree here, not merely something a tree
@@ -21129,21 +21161,42 @@ package body Version.CLI is
                      Tree_Id : constant Version.Objects.Hex_Object_Id :=
                        Version.Revisions.Resolve (Repo, Arg (Tree_Idx));
                      use type Version.Objects.Object_Kind;
+
+                     --  A file/stdin message keeps its interior but loses its
+                     --  trailing newlines; Commit_Content adds exactly one back
+                     --  (so an empty message stays empty, as git does).
+                     function Chomp (S : String) return String is
+                        Last : Natural := S'Last;
+                     begin
+                        while Last >= S'First
+                          and then (S (Last) = ASCII.LF or else S (Last) = ASCII.CR)
+                        loop
+                           Last := Last - 1;
+                        end loop;
+                        return S (S'First .. Last);
+                     end Chomp;
+
+                     --  Message: -m wins, then -F, then stdin (git's order).
+                     Message : constant String :=
+                       (if Has_Msg then To_String (Msg)
+                        elsif Has_File then
+                          Chomp (Version.Files.Read_Binary_File
+                                   (To_String (Msg_File)))
+                        else Chomp (Read_Stdin));
                   begin
                      if Version.Objects.Kind
                           (Version.Objects.Read_Object (Repo, Tree_Id))
                         /= Version.Objects.Tree_Object
                      then
-                        --  git names the object it resolved to, not the way
-                        --  the user spelled it.
-                        Error_Line
-                          (To_String (Tree_Id)
+                        --  git dies (exit 128) naming the resolved object.
+                        Stderr_Line
+                          ("fatal: " & To_String (Tree_Id)
                            & " is not a valid 'tree' object");
-                        Set_Command_Failure;
+                        Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
                      else
                         Success_Line
                           (To_String (Version.Write.Write_Commit_With_Parents
-                             (Repo, Tree_Id, Parents, To_String (Msg))));
+                             (Repo, Tree_Id, Parents, Message)));
                      end if;
                   end;
                end if;
