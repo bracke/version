@@ -1,3 +1,4 @@
+- Git parity: `am` routes its failure output to git's streams and exit codes -- "Patch failed at <N> <subject>" and "Patch is empty." to stdout, "Patch format detection failed." to stderr, all with exit 128.
 - Git parity: `mktag` dies (exit 128) when the input is not a valid tag object or the type does not match, instead of an ordinary failure.
 - Git parity: `commit-tree` reads the message from `-F <file>` or stdin when no `-m` is given, skips an empty `-m`, and dies (exit 128) on a missing or non-tree argument.
 - Git parity: `show --date=<mode> --format=%ad` renders the date in the requested mode.

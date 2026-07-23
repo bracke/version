@@ -18459,7 +18459,10 @@ package body Version.CLI is
                   end if;
                exception
                   when E : Version.Am.Am_Conflict =>
-                     Error_Line (Ada.Exceptions.Exception_Message (E));
+                     --  git prints "Patch failed at NNNN <subject>" to stdout,
+                     --  the resolution hints to stderr, and exits 128.
+                     Ada.Text_IO.Put_Line
+                       (Ada.Exceptions.Exception_Message (E));
                      Ada.Text_IO.Put_Line
                        (Ada.Text_IO.Standard_Error,
                         "When you have resolved this problem, run"
@@ -18472,7 +18475,32 @@ package body Version.CLI is
                        (Ada.Text_IO.Standard_Error,
                         "To restore the original branch and stop patching,"
                         & " run ""version am --abort"".");
-                     Set_Command_Failure;
+                     Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                  when E : Version.Am.Am_Empty =>
+                     --  "Patch is empty." to stdout, hints to stderr, exit 128.
+                     Ada.Text_IO.Put_Line
+                       (Ada.Exceptions.Exception_Message (E));
+                     Ada.Text_IO.Put_Line
+                       (Ada.Text_IO.Standard_Error,
+                        "When you have resolved this problem, run"
+                        & " ""version am --continue"".");
+                     Ada.Text_IO.Put_Line
+                       (Ada.Text_IO.Standard_Error,
+                        "If you prefer to skip this patch, run"
+                        & " ""version am --skip"" instead.");
+                     Ada.Text_IO.Put_Line
+                       (Ada.Text_IO.Standard_Error,
+                        "To record the empty patch as an empty commit,"
+                        & " run ""version am --allow-empty"".");
+                     Ada.Text_IO.Put_Line
+                       (Ada.Text_IO.Standard_Error,
+                        "To restore the original branch and stop patching,"
+                        & " run ""version am --abort"".");
+                     Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                  when E : Version.Am.Format_Detection_Failed =>
+                     --  Nothing recognisable to apply: stderr only, exit 128.
+                     Error_Line (Ada.Exceptions.Exception_Message (E));
+                     Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
                end;
             end;
 
