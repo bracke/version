@@ -6655,8 +6655,10 @@ package body Version.CLI is
                   Value : constant String := Value_Of (Key);
                begin
                   if Value = "" then
+                     --  git's `repo info` exits 255 for an unknown key.
                      Error_Line ("key '" & Key & "' not found");
-                     Set_Command_Failure;
+                     Ada.Command_Line.Set_Exit_Status
+                       (Ada.Command_Line.Exit_Status (255));
                      return;
                   end if;
 
@@ -9217,8 +9219,9 @@ package body Version.CLI is
       end loop;
 
       if Key = "" then
+         --  git die()s (128) for a missing --config, not a usage error.
          Error_Line ("missing --config=<config>");
-         Set_Usage_Failure;
+         Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
          return;
       end if;
 
@@ -9994,13 +9997,22 @@ package body Version.CLI is
                Print_Usage;
 
             elsif Count = 2 then
-               if Version.CLI.Help.Known_Command
+               if Arg (2)'Length > 0 and then Arg (2) (Arg (2)'First) = '-' then
+                  --  An unknown *option* is a usage error (129); only a bare
+                  --  command name goes to the man-page path below.
+                  Error_Line ("unknown help option: " & Arg (2));
+                  Set_Usage_Failure;
+                  return;
+               elsif Version.CLI.Help.Known_Command
                     (Canonical_Command (Arg (2)))
                then
                   Version.CLI.Help.Print_Command (Canonical_Command (Arg (2)));
                else
-                  Error_Line ("unknown command: " & Arg (2));
-                  Set_Usage_Failure;
+                  --  git resolves `help <cmd>` to a man page; an unknown one
+                  --  fails through man with "No manual entry ..." and exit 16.
+                  Error_Line ("No manual entry for git" & Arg (2));
+                  Ada.Command_Line.Set_Exit_Status
+                    (Ada.Command_Line.Exit_Status (16));
                   return;
                end if;
 
@@ -27876,6 +27888,7 @@ package body Version.CLI is
                File_Idx : Natural := 0;
                Bad      : Boolean := False;
                Log_Entries : Integer := 0;
+               Msg_Idx  : Natural := 0;   --  the argument index of -m's value
 
                function Read_Stdin return String is
                   Buffer : aliased String (1 .. 65536);
@@ -27930,8 +27943,15 @@ package body Version.CLI is
                   elsif Arg (I) = "-F" or else Arg (I) = "--file" then
                      Usage_Error ("-F requires a file", Usage);
                      Bad := True;
-                  elsif I = File_Idx then
-                     null;  --  consumed as the -F argument
+                  elsif I = File_Idx or else I = Msg_Idx then
+                     null;  --  consumed as the -F / -m argument
+                  elsif (Arg (I) = "-m" or else Arg (I) = "--message")
+                    and then I < Count
+                  then
+                     Msg_Idx := I + 1;
+                  elsif Arg (I) = "-m" or else Arg (I) = "--message" then
+                     Usage_Error ("-m requires a message", Usage);
+                     Bad := True;
                   elsif Arg (I) = "--log" then
                      Log_Entries := -1;
                   elsif Arg (I) = "--no-log" then
@@ -27948,8 +27968,6 @@ package body Version.CLI is
                            Bad := True;
                            exit;
                      end;
-                  elsif Arg (I) = "-m" or else Arg (I) = "--message" then
-                     null;   --  accepted; the subject is derived either way
                   else
                      Usage_Error
                        ("unknown fmt-merge-msg option: " & Arg (I), Usage);
@@ -27969,7 +27987,9 @@ package body Version.CLI is
                      Version.Console.Put
                        (Version.Fmt_Merge_Msg.Format
                           (Repo, Input, Version.Branch.Current_Branch_Name,
-                           Log_Entries));
+                           Log_Entries,
+                           Subject =>
+                             (if Msg_Idx /= 0 then Arg (Msg_Idx) else "")));
                   end;
                end if;
             end;
@@ -29061,6 +29081,10 @@ package body Version.CLI is
                Rev_A     : Unbounded_String;
                Rev_B     : Unbounded_String;
 
+               --  Paths after a "--" separator restrict the comparison.
+               Pathspecs : Version.Trailers.String_Vectors.Vector;
+               After_Sep : Boolean := False;
+
                function Has_Pfx (L, P : String) return Boolean is
                  (L'Length >= P'Length
                   and then L (L'First .. L'First + P'Length - 1) = P);
@@ -29106,11 +29130,20 @@ package body Version.CLI is
                  (if Version.Config.Has_Key (Repo, Key)
                   then Version.Config.Get_Value (Repo, Key) else "");
 
-               --  Write Content to a scratch file and return its path.
-               function Scratch (Name, Content : String) return String is
-                  Dir : constant String :=
+               --  Write Content to a scratch file and return its path. Subdir
+               --  keeps the two sides of a comparison in separate directories
+               --  so both can share the file's real basename (which the tool
+               --  sees via `basename "$1"`) without one clobbering the other.
+               function Scratch
+                 (Name, Content : String; Subdir : String := "")
+                  return String
+               is
+                  Base : constant String :=
                     Version.Files.Join
                       (Version.Repository.Git_Dir (Repo), "version-tool");
+                  Dir  : constant String :=
+                    (if Subdir = "" then Base
+                     else Version.Files.Join (Base, Subdir));
                   Full : constant String := Version.Files.Join (Dir, Name);
                begin
                   Version.Files.Create_Directory_If_Missing (Dir);
@@ -29162,7 +29195,11 @@ package body Version.CLI is
                end Invoke_Ext;
             begin
                for I in 2 .. Count loop
-                  if Has_Pfx (Arg (I), "--tool=") then
+                  if After_Sep then
+                     Pathspecs.Append (Arg (I));
+                  elsif Arg (I) = "--" then
+                     After_Sep := True;
+                  elsif Has_Pfx (Arg (I), "--tool=") then
                      Tool := To_Unbounded_String
                        (Drop_Pfx (Arg (I), "--tool="));
                   elsif Arg (I) = "-y" or else Arg (I) = "--no-prompt"
@@ -29239,9 +29276,12 @@ package body Version.CLI is
                                     else "difftool.") & T & ".cmd"));
                      begin
                         if Cmd'Length = 0 then
+                           --  git die()s (128) when the named tool has no
+                           --  configured command ("external diff died").
                            Error_Line
-                             ("no command configured for tool: " & T);
-                           Set_Command_Failure;
+                             ((if Is_Merge then "mergetool." else "difftool.")
+                              & T & ".cmd not set for tool '" & T & "'");
+                           Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
                         elsif Is_Merge then
                            --  One invocation per conflicted path; a tool that
                            --  exits 0 means "resolved", so stage the result.
@@ -29447,20 +29487,46 @@ package body Version.CLI is
                                                    Status : Integer;
                                                    pragma Unreferenced
                                                      (Status);
+
+                                                   --  A "-- <path>" list, when
+                                                   --  given, restricts which
+                                                   --  files the tool sees.
+                                                   function Wanted return Boolean
+                                                   is
+                                                   begin
+                                                      if Pathspecs.Is_Empty then
+                                                         return True;
+                                                      end if;
+                                                      for S of Pathspecs loop
+                                                         if S = P
+                                                           or else
+                                                             (P'Length > S'Length
+                                                              and then P
+                                                                (P'First .. P'First
+                                                                 + S'Length)
+                                                                = S & "/")
+                                                         then
+                                                            return True;
+                                                         end if;
+                                                      end loop;
+                                                      return False;
+                                                   end Wanted;
                                                 begin
-                                                   Status :=
-                                                     Invoke_Ext
-                                                       (Cmd,
-                                                        (if Old_T'Length = 0
-                                                         then "/dev/null"
-                                                         else Scratch
-                                                                (Base_Name (P),
-                                                                 Old_T)),
-                                                        (if New_T'Length = 0
-                                                         then "/dev/null"
-                                                         else Scratch
-                                                                (Base_Name (P),
-                                                                 New_T)));
+                                                   if Wanted then
+                                                      Status :=
+                                                        Invoke_Ext
+                                                          (Cmd,
+                                                           (if Old_T'Length = 0
+                                                            then "/dev/null"
+                                                            else Scratch
+                                                              (Base_Name (P),
+                                                               Old_T, "left")),
+                                                           (if New_T'Length = 0
+                                                            then "/dev/null"
+                                                            else Scratch
+                                                              (Base_Name (P),
+                                                               New_T, "right")));
+                                                   end if;
                                                 end;
                                              end if;
                                           end;
