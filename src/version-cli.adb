@@ -10941,6 +10941,7 @@ package body Version.CLI is
                Want_Count : Boolean := False;
                Format     : Unbounded_String;
                Has_Format : Boolean := False;
+               Date_Mode  : Unbounded_String;   --  --date=<mode>
                Terminator : Boolean := True;
                Stat       : Boolean := False;
                Patch      : Boolean := False;
@@ -11077,6 +11078,9 @@ package body Version.CLI is
                      Format := To_Unbounded_String (After (Arg (I), "--format="));
                      Has_Format := True;
                      Terminator := True;
+                  elsif Starts (Arg (I), "--date=") then
+                     Date_Mode :=
+                       To_Unbounded_String (After (Arg (I), "--date="));
                   elsif Starts (Arg (I), "--pretty=tformat:") then
                      Format :=
                        To_Unbounded_String (After (Arg (I), "--pretty=tformat:"));
@@ -11340,7 +11344,8 @@ package body Version.CLI is
                         Version.Console.Put
                           (Version.Log.Log_Formatted_List_Text
                              (Repo, Commits, To_String (Format),
-                              Terminate_Records => Terminator));
+                              Terminate_Records => Terminator,
+                              Date_Mode => To_String (Date_Mode)));
                      elsif Oneline
                        and then (Name_Only or else Name_Status or else Numstat
                                  or else Shortstat or else Raw or else Stat)
@@ -11375,7 +11380,8 @@ package body Version.CLI is
                               Numstat        => Numstat,
                               Shortstat      => Shortstat,
                               Raw            => Raw,
-                              Context        => Context));
+                              Context        => Context,
+                              Date_Mode      => To_String (Date_Mode)));
                      end if;
                   end;
                end if;
