@@ -22485,6 +22485,8 @@ package body Version.CLI is
                Skip_WT      : Boolean := False;
                Clear_Skip_WT : Boolean := False;
                End_Opts     : Boolean := False;
+               Use_Stdin    : Boolean := False;
+               Index_Info   : Boolean := False;
                I            : Positive := 2;
 
                function Is_Tracked (Path : String) return Boolean is
@@ -22607,6 +22609,10 @@ package body Version.CLI is
                         --  file; nothing here consults it, so recording it
                         --  would claim an effect it does not have.
                         null;
+                     elsif not End_Opts and then A = "--stdin" then
+                        Use_Stdin := True;
+                     elsif not End_Opts and then A = "--index-info" then
+                        Index_Info := True;
                      elsif not End_Opts and then A = "--skip-worktree" then
                         Skip_WT := True;
                      elsif not End_Opts and then A = "--no-skip-worktree" then
@@ -22636,9 +22642,21 @@ package body Version.CLI is
                               C2 : constant Natural :=
                                 Ada.Strings.Fixed.Index
                                   (Spec (C1 + 1 .. Spec'Last), ",");
+                              Mode : constant String :=
+                                Spec (Spec'First .. C1 - 1);
                            begin
+                              --  git rejects a mode it does not recognise with
+                              --  its usage exit (129), before touching the index.
+                              if Mode not in "100644" | "100755" | "120000"
+                                            | "160000" | "040000" | "40000"
+                              then
+                                 Usage_Error
+                                   ("git update-index: --cacheinfo cannot add "
+                                    & Spec (C2 + 1 .. Spec'Last), Usage);
+                                 return;
+                              end if;
                               Insert_Cacheinfo
-                                (Spec (Spec'First .. C1 - 1),
+                                (Mode,
                                  Spec (C1 + 1 .. C2 - 1),
                                  Spec (C2 + 1 .. Spec'Last));
                            end;
@@ -22663,6 +22681,58 @@ package body Version.CLI is
                   end;
                   I := I + 1;
                end loop;
+
+               --  --stdin adds a path per line; --index-info adds a
+               --  "<mode> <sha> [<stage>]TAB<path>" record per line.
+               --  --index-info creates entries implicitly (no --add needed).
+               if Index_Info then
+                  Add_Mode := True;
+               end if;
+               if Use_Stdin or else Index_Info then
+                  declare
+                     Text  : constant String := Read_All_Stdin;
+                     Start : Natural := Text'First;
+                     procedure Do_Line (Line : String) is
+                        Tab : constant Natural :=
+                          Ada.Strings.Fixed.Index (Line, "" & ASCII.HT);
+                     begin
+                        if Line'Length = 0 then
+                           return;
+                        elsif not Index_Info then
+                           Process_Path (Line);
+                        elsif Tab /= 0 then
+                           declare
+                              Left : constant String :=
+                                Line (Line'First .. Tab - 1);
+                              Path : constant String :=
+                                Line (Tab + 1 .. Line'Last);
+                              S1 : constant Natural :=
+                                Ada.Strings.Fixed.Index (Left, " ");
+                              S2 : constant Natural :=
+                                (if S1 = 0 then 0
+                                 else Ada.Strings.Fixed.Index
+                                        (Left (S1 + 1 .. Left'Last), " "));
+                           begin
+                              Insert_Cacheinfo
+                                (Left (Left'First .. S1 - 1),
+                                 Left (S1 + 1 ..
+                                       (if S2 = 0 then Left'Last else S2 - 1)),
+                                 Path);
+                           end;
+                        end if;
+                     end Do_Line;
+                  begin
+                     for K in Text'Range loop
+                        if Text (K) = ASCII.LF then
+                           Do_Line (Text (Start .. K - 1));
+                           Start := K + 1;
+                        end if;
+                     end loop;
+                     if Start <= Text'Last then
+                        Do_Line (Text (Start .. Text'Last));
+                     end if;
+                  end;
+               end if;
             end;
 
          elsif Command = "for-each-ref" then
