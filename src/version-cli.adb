@@ -10661,22 +10661,36 @@ package body Version.CLI is
                      Summary := True;
                   elsif Arg (I) = "--no-renames" then
                      Rename_Mode := Version.Diff.Renames_Off;
-                  elsif Arg (I) = "-M" or else Arg (I) = "--find-renames" then
+                  elsif Arg (I) = "-M" or else Arg (I) = "--find-renames"
+                    or else Arg (I) = "-B" or else Arg (I) = "--break-rewrites"
+                    or else Arg (I) = "-C" or else Arg (I) = "--find-copies"
+                    or else Arg (I) = "--find-copies-harder"
+                  then
+                     --  git detects renames (and, for -C, copies) with the
+                     --  default score; -B splits rewrites but still reports
+                     --  renames the same way for name-status output.
                      Rename_Mode := Version.Diff.Renames_On;
-                  elsif (Arg (I)'Length > 2
-                         and then Arg (I) (Arg (I)'First .. Arg (I)'First + 1)
-                                  = "-M")
-                    or else (Arg (I)'Length > 16
-                             and then Arg (I) (Arg (I)'First
-                                               .. Arg (I)'First + 15)
-                                      = "--find-renames=")
+                  elsif Has_Prefix (Arg (I), "-M")
+                    or else Has_Prefix (Arg (I), "--find-renames=")
+                    or else Has_Prefix (Arg (I), "-C")
+                    or else Has_Prefix (Arg (I), "--find-copies=")
+                    or else Has_Prefix (Arg (I), "-B")
+                    or else Has_Prefix (Arg (I), "--break-rewrites=")
                   then
                      Rename_Mode := Version.Diff.Renames_On;
-                     Rename_Score :=
-                       Parse_Rename_Score
-                         (if Arg (I) (Arg (I)'First + 1) = 'M'
-                          then Arg (I) (Arg (I)'First + 2 .. Arg (I)'Last)
-                          else Arg (I) (Arg (I)'First + 15 .. Arg (I)'Last));
+                     declare
+                        A   : constant String := Arg (I);
+                        Eq  : constant Natural :=
+                          Ada.Strings.Fixed.Index (A, "=");
+                        --  The score follows "=" (long form) or the two-letter
+                        --  option (e.g. "-M50"); the rest is parsed as a
+                        --  percentage/fraction by Parse_Rename_Score.
+                        Val : constant String :=
+                          (if Eq /= 0 then A (Eq + 1 .. A'Last)
+                           else A (A'First + 2 .. A'Last));
+                     begin
+                        Rename_Score := Parse_Rename_Score (Val);
+                     end;
                   elsif Arg (I) = "--name-only" then
                      Name_Only := True;
                   elsif Arg (I) = "--name-status" then

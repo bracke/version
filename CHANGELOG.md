@@ -1,3 +1,4 @@
+- Git parity: `diff` accepts `-B`/`--break-rewrites`, `-C`/`--find-copies`/`--find-copies-harder` and the `=<n>` score forms (turning on rename/copy detection); the `--find-renames=<n>` parse was off by one and never matched.
 - Git parity: `cat-file -e` exits 1 (silently) for a well-formed but absent object id, and die()s 128 ("Not a valid object name") only for a name that does not resolve, rather than 128 for both.
 - Git parity: `read-tree --empty` clears the index, and `read-tree` with no arguments clears it with git's deprecation warning (exit 0) instead of a usage error.
 - Git parity: `update-index` takes `--stdin` (a path per line) and `--index-info` (a `<mode> <sha> [<stage>]TAB<path>` record per line, adding implicitly); `--cacheinfo` with an unrecognised mode is a usage error (exit 129), not a die.
