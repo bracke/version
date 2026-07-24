@@ -10561,6 +10561,7 @@ package body Version.CLI is
                Raw_Flag : Boolean := False;
                Patch_With_Raw : Boolean := False;
                Compact_Flag : Boolean := False;
+               Stat_Width_V : Natural := 0;
                Name_Only   : Boolean := False;
                Name_Status : Boolean := False;
                Rename_Mode  : Version.Diff.Rename_Detection :=
@@ -10657,6 +10658,24 @@ package body Version.CLI is
                for I in 2 .. Count loop
                   if Arg (I) = "--stat" then
                      Stat := True;
+                  elsif Has_Prefix (Arg (I), "--stat=") then
+                     --  --stat=<width>[,<name-width>[,<count>]]: the leading
+                     --  number fixes the total line width.
+                     Stat := True;
+                     declare
+                        V : constant String :=
+                          Arg (I) (Arg (I)'First + 7 .. Arg (I)'Last);
+                        Comma : constant Natural :=
+                          Ada.Strings.Fixed.Index (V, ",");
+                     begin
+                        Stat_Width_V := Natural'Value
+                          (if Comma = 0 then V else V (V'First .. Comma - 1));
+                     exception
+                        when others =>
+                           Usage_Error ("invalid --stat width: " & Arg (I),
+                                        Usage);
+                           return;
+                     end;
                   elsif Arg (I) = "--compact-summary" then
                      --  A diffstat with the name column annotated.
                      Stat := True;
@@ -10768,6 +10787,7 @@ package body Version.CLI is
                         Summary => Summary,
                         Raw => Raw_Flag,
                         Compact_Summary => Compact_Flag,
+                        Stat_Width => Stat_Width_V,
                         Name_Only => Name_Only,
                         Name_Status => Name_Status,
                         Context_Lines => Context,

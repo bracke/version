@@ -1,3 +1,4 @@
+- Git parity: `diff --stat=<width>[,<name-width>[,<count>]]` sets the diffstat line width (leading number).
 - Git parity: `diff-tree --compact-summary` prints the annotated diffstat (renames stay off unless -M, as plumbing).
 - Git parity: `diff --compact-summary` prints the annotated diffstat.
 - Git parity: `diff --patch-with-raw` prints the raw diff records, a blank line, then the ordinary patch.
