@@ -28836,6 +28836,7 @@ package body Version.CLI is
                --  raw renderer does not; they take a separate path.
                Want_Patch : Boolean := False;
                Want_Stat  : Boolean := False;
+               Want_Compact : Boolean := False;
 
                --  Everything after `--` is a pathspec; before it, a bare
                --  operand is a tree/commit. --diff-filter and --abbrev tune
@@ -28888,6 +28889,11 @@ package body Version.CLI is
                      Want_Patch := True;
                   elsif Arg (I) = "--stat" then
                      Want_Stat := True;
+                  elsif Arg (I) = "--compact-summary" then
+                     --  diff-tree is plumbing: renames stay off unless -M is
+                     --  also given, unlike the diff porcelain.
+                     Want_Stat := True;
+                     Want_Compact := True;
                   elsif Has_Prefix (Arg (I), "--diff-filter=") then
                      Diff_Filter := To_Unbounded_String
                        (Arg (I) (Arg (I)'First + 14 .. Arg (I)'Last));
@@ -28953,6 +28959,7 @@ package body Version.CLI is
                              (Version.Diff.Diff_Trees
                                 (Repo, T1, T2,
                                  (Stat        => Want_Stat,
+                                  Compact_Summary => Want_Compact,
                                   Name_Only   => Format = Render_Name_Only,
                                   Name_Status => Format = Render_Name_Status,
                                   Summary     => Format = Render_Summary,
@@ -29008,6 +29015,7 @@ package body Version.CLI is
                                       (Repo, Parents.First_Element, C,
                                        Version.Diff.Diff_Options'(
                                          Stat        => Want_Stat,
+                                         Compact_Summary => Want_Compact,
                                          Name_Only   =>
                                            Format = Render_Name_Only,
                                          Name_Status =>

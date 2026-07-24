@@ -1,3 +1,4 @@
+- Git parity: `diff-tree --compact-summary` prints the annotated diffstat (renames stay off unless -M, as plumbing).
 - Git parity: `diff --compact-summary` prints the annotated diffstat.
 - Git parity: `diff --patch-with-raw` prints the raw diff records, a blank line, then the ordinary patch.
 - Git parity: `diff --raw` prints the raw diff records (abbreviated ids, rename-aware by default like git's porcelain, off under `--no-renames`).
