@@ -26792,6 +26792,9 @@ package body Version.CLI is
                All_Files : Boolean := False;
                Force     : Boolean := False;
                Quiet     : Boolean := False;
+               No_Create : Boolean := False;
+               Use_Stdin : Boolean := False;
+               Zero_Term : Boolean := False;
                Prefix    : Unbounded_String;
                Sep       : Boolean := False;
                Bad       : Boolean := False;
@@ -26809,6 +26812,11 @@ package body Version.CLI is
                      else Version.Files.Join (Root, Path));
                begin
                   if E.Stage /= 0 then
+                     return;
+                  end if;
+                  --  -n/--no-create refreshes existing files only; it never
+                  --  writes one that is not already there.
+                  if No_Create and then not Ada.Directories.Exists (Dest) then
                      return;
                   end if;
                   if not Force and then Ada.Directories.Exists (Dest) then
@@ -26853,6 +26861,14 @@ package body Version.CLI is
                                           or else Arg (I) = "--quiet")
                   then
                      Quiet := True;
+                  elsif not Sep and then (Arg (I) = "-n"
+                                          or else Arg (I) = "--no-create")
+                  then
+                     No_Create := True;
+                  elsif not Sep and then Arg (I) = "--stdin" then
+                     Use_Stdin := True;
+                  elsif not Sep and then Arg (I) = "-z" then
+                     Zero_Term := True;
                   elsif not Sep and then Has_Pfx (Arg (I), "--prefix=") then
                      Prefix := To_Unbounded_String
                        (Arg (I) (Arg (I)'First + 9 .. Arg (I)'Last));
@@ -26868,6 +26884,29 @@ package body Version.CLI is
                      Wanted.Append (Arg (I));
                   end if;
                end loop;
+
+               --  --stdin adds a path list read from standard input, one per
+               --  line (or NUL-separated under -z).
+               if not Bad and then Use_Stdin then
+                  declare
+                     Text  : constant String := Read_All_Stdin;
+                     Term  : constant Character :=
+                       (if Zero_Term then ASCII.NUL else ASCII.LF);
+                     Start : Natural := Text'First;
+                  begin
+                     for K in Text'Range loop
+                        if Text (K) = Term then
+                           if K > Start then
+                              Wanted.Append (Text (Start .. K - 1));
+                           end if;
+                           Start := K + 1;
+                        end if;
+                     end loop;
+                     if Start <= Text'Last then
+                        Wanted.Append (Text (Start .. Text'Last));
+                     end if;
+                  end;
+               end if;
 
                if not Bad then
                   if All_Files then
