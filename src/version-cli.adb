@@ -20366,6 +20366,45 @@ package body Version.CLI is
                         end;
                      end if;
                   end;
+               elsif Count = 3 and then Arg (2) = "-e" then
+                  --  `-e` is an existence test. A name that does not resolve
+                  --  to any object is git's die() (128, "Not a valid object
+                  --  name"); a well-formed id that is simply absent is exit 1.
+                  declare
+                     Repo : constant Version.Repository.Repository_Handle :=
+                       Version.Repository.Open;
+                     Id   : Version.Objects.Hex_Object_Id;
+                     Is_Hex : constant Boolean :=
+                       Arg (3)'Length in 40 | 64
+                       and then (for all C of Arg (3) =>
+                                   C in '0' .. '9' | 'a' .. 'f' | 'A' .. 'F');
+                  begin
+                     --  A full object id is well-formed even when absent (git
+                     --  exits 1); only a NAME that fails to resolve dies 128.
+                     if Is_Hex then
+                        Id := Version.Objects.To_Object_Id (Arg (3));
+                     else
+                        begin
+                           Id := Version.Revisions.Resolve (Repo, Arg (3));
+                        exception
+                           when others =>
+                              Stderr_Line
+                                ("fatal: Not a valid object name " & Arg (3));
+                              Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                              return;
+                        end;
+                     end if;
+                     declare
+                        Obj : constant Version.Objects.Git_Object :=
+                          Version.Objects.Read_Object (Repo, Id);
+                        pragma Unreferenced (Obj);
+                     begin
+                        null;   --  present: exit 0
+                     end;
+                  exception
+                     when others =>
+                        Set_Command_Failure;   --  absent id: exit 1
+                  end;
                elsif Count /= 3 then
                   Usage_Error ("cat-file requires an option and an object",
                                Usage);
