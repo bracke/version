@@ -21432,9 +21432,13 @@ package body Version.CLI is
          elsif Command = "hash-object" then
             declare
                Usage : constant String :=
-                 "version hash-object [-w] [--stdin] [FILE]";
+                 "version hash-object [-t <type>] [-w] [--stdin"
+                 & "|--stdin-paths] [--literally] [FILE...]";
                Write_It : Boolean := False;
                Stdin    : Boolean := False;
+               Stdin_Paths : Boolean := False;
+               Literally : Boolean := False;
+               Obj_Type : Unbounded_String := To_Unbounded_String ("blob");
                Bad_Opt  : Boolean := False;
                Bad_Text : Unbounded_String;
                File_Idx : Natural := 0;
@@ -21465,29 +21469,24 @@ package body Version.CLI is
                      Write_It := True;
                   elsif Arg (I) = "--stdin" then
                      Stdin := True;
+                  elsif Arg (I) = "--stdin-paths" then
+                     Stdin_Paths := True;
                   elsif Arg (I) = "-t" then
-                     --  Only blob is meaningful for a file this hashes; any
-                     --  other type would need an object of that shape.
                      if I = Count then
                         Bad_Opt := True;
                         Bad_Text := To_Unbounded_String (Arg (I));
                         exit;
                      end if;
                      I := I + 1;
-                     if Arg (I) /= "blob" then
-                        Bad_Opt := True;
-                        Bad_Text :=
-                          To_Unbounded_String ("-t " & Arg (I));
-                        exit;
-                     end if;
+                     Obj_Type := To_Unbounded_String (Arg (I));
+                  elsif Arg (I) = "--literally" then
+                     Literally := True;
                   elsif Arg (I) = "--no-filters"
-                    or else Arg (I) = "--literally"
                     or else Has_Prefix (Arg (I), "--path=")
                   then
                      --  --path names the file the content would be filtered
-                     --  as, and --no-filters/--literally switch filtering and
-                     --  object-format checks off. Nothing here filters or
-                     --  rejects, so all three describe what already happens.
+                     --  as, and --no-filters switches filtering off. Nothing
+                     --  here filters, so both describe what already happens.
                      null;
                   else
                      Bad_Opt := True;
@@ -21496,43 +21495,97 @@ package body Version.CLI is
                   end if;
                   I := I + 1;
                end loop;
-               if not Bad_Opt and then not Stdin and then I <= Count then
+               if not Bad_Opt and then not Stdin and then not Stdin_Paths
+                 and then I <= Count
+               then
                   File_Idx := I;
                end if;
 
                if Bad_Opt then
                   Usage_Error ("unknown hash-object option: "
                                & To_String (Bad_Text), Usage);
-               elsif not Stdin and then File_Idx = 0 then
-                  Usage_Error ("hash-object requires --stdin or a file", Usage);
                else
                   declare
                      Repo : constant Version.Repository.Repository_Handle :=
                        Version.Repository.Open;
+                     T    : constant String := To_String (Obj_Type);
+                     Failed : Boolean := False;
+
+                     --  git validates the object unless --literally: an
+                     --  unknown type, or a commit/tag whose bytes are not a
+                     --  well-formed header, is refused with exit 128.
+                     function Malformed (Content : String) return Boolean is
+                     begin
+                        if Literally then
+                           return False;
+                        end if;
+                        if T not in "blob" | "tree" | "commit" | "tag" then
+                           Stderr_Line ("fatal: invalid object type """
+                                        & T & """");
+                           return True;
+                        end if;
+                        if (T = "commit"
+                            and then not Has_Prefix (Content, "tree "))
+                          or else (T = "tag"
+                                   and then not Has_Prefix (Content, "object "))
+                        then
+                           Stderr_Line
+                             ("fatal: refusing to create malformed object");
+                           return True;
+                        end if;
+                        return False;
+                     end Malformed;
 
                      procedure Emit (Content : String) is
                      begin
+                        if Malformed (Content) then
+                           Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                           Failed := True;
+                           return;
+                        end if;
                         if Write_It then
                            Success_Line
                              (To_String
-                                (Version.Write.Write_Blob (Repo, Content)));
+                                (Version.Write.Write_Object
+                                   (Repo, T, Content)));
                         else
                            Success_Line
                              (Version.Objects.To_String
                                 (Version.Objects.Compute_Object_Id
                                    (Version.Repository.Algorithm (Repo),
-                                    "blob", Content)));
+                                    T, Content)));
                         end if;
                      end Emit;
                   begin
                      if Stdin then
                         Emit (Read_Stdin);
-                     else
+                     elsif Stdin_Paths then
+                        --  A file path per line on stdin; hash each.
+                        declare
+                           Text  : constant String := Read_Stdin;
+                           Start : Natural := Text'First;
+                        begin
+                           for K in Text'Range loop
+                              if Text (K) = ASCII.LF then
+                                 if K > Start then
+                                    Emit (Version.Files.Read_Binary_File
+                                            (Text (Start .. K - 1)));
+                                 end if;
+                                 Start := K + 1;
+                                 exit when Failed;
+                              end if;
+                           end loop;
+                           if not Failed and then Start <= Text'Last then
+                              Emit (Version.Files.Read_Binary_File
+                                      (Text (Start .. Text'Last)));
+                           end if;
+                        end;
+                     elsif File_Idx /= 0 then
                         --  git hashes every file operand in order, one id per
-                        --  line, and dies (exit 128) at the first file it
-                        --  cannot open for reading, without processing the
-                        --  rest.  We only handled Arg (File_Idx) before.
+                        --  line, and dies (exit 128) at the first it cannot
+                        --  open, without processing the rest.
                         for J in File_Idx .. Count loop
+                           exit when Failed;
                            if not Version.Files.Is_Ordinary_File (Arg (J)) then
                               Ada.Text_IO.Put_Line
                                 (Ada.Text_IO.Standard_Error,
@@ -21545,6 +21598,8 @@ package body Version.CLI is
                            end if;
                         end loop;
                      end if;
+                     --  With no --stdin/--stdin-paths and no file operand git
+                     --  simply hashes nothing and exits 0.
                   end;
                end if;
             end;
