@@ -19142,11 +19142,11 @@ package body Version.CLI is
                      for P of Pairs loop
                         declare
                            Old_H : constant String :=
-                             (if P.Old_Pos = 0 then "--------"
+                             (if P.Old_Pos = 0 then "-------"
                               else To_String (P.Old_Id)
                                      (1 .. 1 + 6));
                            New_H : constant String :=
-                             (if P.New_Pos = 0 then "--------"
+                             (if P.New_Pos = 0 then "-------"
                               else To_String (P.New_Id)
                                      (1 .. 1 + 6));
                            Op : constant String :=
@@ -19156,9 +19156,11 @@ package body Version.CLI is
                                  when Version.Range_Diff.Removed   => "<",
                                  when Version.Range_Diff.Added     => ">");
                         begin
+                           --  git separates the number and the abbrev by a
+                           --  colon and two spaces on each side.
                            Success_Line
-                             (Pos_Img (P.Old_Pos) & ": " & Old_H & " " & Op & " "
-                              & Pos_Img (P.New_Pos) & ": " & New_H & " "
+                             (Pos_Img (P.Old_Pos) & ":  " & Old_H & " " & Op
+                              & " " & Pos_Img (P.New_Pos) & ":  " & New_H & " "
                               & To_String (P.Subject));
                         end;
                      end loop;
