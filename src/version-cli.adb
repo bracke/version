@@ -18308,6 +18308,10 @@ package body Version.CLI is
                Includes  : Version.Trailers.String_Vectors.Vector;
                Excludes  : Version.Trailers.String_Vectors.Vector;
 
+               --  git's --whitespace=<action>: "" = the default (nowarn here),
+               --  "warn"/"fix" report and apply, "error" refuses (exit 128).
+               Ws_Action : Unbounded_String;
+
                function Read_Stdin return String is
                   Buffer : aliased String (1 .. 65536);
                   Acc    : Unbounded_String;
@@ -18487,9 +18491,11 @@ package body Version.CLI is
                   elsif Has_Prefix (Arg (I), "--exclude=") then
                      Excludes.Append
                        (Arg (I) (Arg (I)'First + 10 .. Arg (I)'Last));
+                  elsif Has_Prefix (Arg (I), "--whitespace=") then
+                     Ws_Action := To_Unbounded_String
+                       (Arg (I) (Arg (I)'First + 13 .. Arg (I)'Last));
                   elsif Arg (I) = "--recount"
                     or else Arg (I) = "--unidiff-zero"
-                    or else Has_Prefix (Arg (I), "--whitespace=")
                     or else Has_Prefix (Arg (I), "-C")
                     or else Arg (I) = "--3way" or else Arg (I) = "-3"
                     or else Arg (I) = "--no-3way"
@@ -18583,7 +18589,109 @@ package body Version.CLI is
                                   when 3 => Version.Diff.Summary_Shortstat,
                                   when others => Version.Diff.Summary_Names)));
                      else
-                        Version.Apply.Apply_Patch (Repo, Raw_Patch, Opts);
+                        --  git's --whitespace check: every added line is
+                        --  scanned for whitespace errors (trailing blanks,
+                        --  space-before-tab). "warn"/"fix" report and apply
+                        --  (fix strips the offending whitespace first);
+                        --  "error" reports and refuses (exit 128).
+                        declare
+                           Ws   : constant String := To_String (Ws_Action);
+                           Name : constant String :=
+                             (if File_Idx /= 0 then Arg (File_Idx)
+                              else "<stdin>");
+                           Errors : Natural := 0;
+                           Fixed  : Unbounded_String;
+                           P      : Natural := Raw_Patch'First;
+                           Lineno : Natural := 0;
+
+                           function Bad_Tail (S : String) return Boolean is
+                             (S'Length > 0
+                              and then S (S'Last) in ' ' | ASCII.HT);
+
+                           function Stripped (S : String) return String is
+                              L : Integer := S'Last;
+                           begin
+                              while L >= S'First
+                                and then S (L) in ' ' | ASCII.HT
+                              loop
+                                 L := L - 1;
+                              end loop;
+                              return S (S'First .. L);
+                           end Stripped;
+                        begin
+                           if Ws /= "" and then Ws /= "nowarn" then
+                              while P <= Raw_Patch'Last loop
+                                 declare
+                                    Stop : Natural := P;
+                                 begin
+                                    while Stop <= Raw_Patch'Last
+                                      and then Raw_Patch (Stop) /= ASCII.LF
+                                    loop
+                                       Stop := Stop + 1;
+                                    end loop;
+                                    Lineno := Lineno + 1;
+                                    declare
+                                       Line : constant String :=
+                                         Raw_Patch (P .. Stop - 1);
+                                       Is_Add : constant Boolean :=
+                                         Line'Length >= 1
+                                         and then Line (Line'First) = '+'
+                                         and then not
+                                           (Line'Length >= 3
+                                            and then Line (Line'First ..
+                                                           Line'First + 2)
+                                                     = "+++");
+                                       Content : constant String :=
+                                         (if Is_Add
+                                          then Line (Line'First + 1 .. Line'Last)
+                                          else "");
+                                    begin
+                                       if Is_Add and then Bad_Tail (Content) then
+                                          Errors := Errors + 1;
+                                          Stderr_Line
+                                            (Name & ":" & Natural_Image (Lineno)
+                                             & ": trailing whitespace.");
+                                          Stderr_Line (Content);
+                                          Append
+                                            (Fixed,
+                                             "+" & Stripped (Content) & ASCII.LF);
+                                       else
+                                          Append (Fixed, Line & ASCII.LF);
+                                       end if;
+                                    end;
+                                    P := Stop + 1;
+                                 end;
+                              end loop;
+
+                              if Errors > 0 then
+                                 declare
+                                    Tail : constant String :=
+                                      (if Errors = 1 then " line adds"
+                                       else " lines add")
+                                      & " whitespace errors.";
+                                 begin
+                                    if Ws = "error" or else Ws = "error-all" then
+                                       Stderr_Line
+                                         ("error: " & Natural_Image (Errors)
+                                          & Tail);
+                                       Ada.Command_Line.Set_Exit_Status
+                                         (Fatal_Exit);
+                                       return;
+                                    else
+                                       Stderr_Line
+                                         ("warning: " & Natural_Image (Errors)
+                                          & Tail);
+                                    end if;
+                                 end;
+                              end if;
+                           end if;
+
+                           Version.Apply.Apply_Patch
+                             (Repo,
+                              (if Ws = "fix" and then Errors > 0
+                               then To_String (Fixed) else Raw_Patch),
+                              Opts);
+                        end;
                      end if;
                   end;
                end if;

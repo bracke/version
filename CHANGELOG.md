@@ -1,3 +1,4 @@
+- Git parity: `apply --whitespace=warn|fix|error` scans each added line for trailing whitespace, reporting `<patch>:<n>: trailing whitespace.` and a summary; warn/fix apply (fix strips the whitespace first) and exit 0, while error refuses and die()s 128 (also under --check).
 - Git parity: `diff` accepts `-B`/`--break-rewrites`, `-C`/`--find-copies`/`--find-copies-harder` and the `=<n>` score forms (turning on rename/copy detection); the `--find-renames=<n>` parse was off by one and never matched.
 - Git parity: `cat-file -e` exits 1 (silently) for a well-formed but absent object id, and die()s 128 ("Not a valid object name") only for a name that does not resolve, rather than 128 for both.
 - Git parity: `read-tree --empty` clears the index, and `read-tree` with no arguments clears it with git's deprecation warning (exit 0) instead of a usage error.
