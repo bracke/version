@@ -15759,9 +15759,22 @@ package body Version.CLI is
                               if Commits.Is_Empty then
                                  First_Revision := To_Unbounded_String (Arg (I));
                               end if;
-                              Commits.Append
-                                (Version.Revisions.Resolve_Commit
-                                   (Repo => Repo, Text => Arg (I)));
+                              --  A revision that does not resolve is git's
+                              --  die() (128), distinct from a conflict (1).
+                              declare
+                                 Cid : Version.Objects.Hex_Object_Id;
+                              begin
+                                 Cid := Version.Revisions.Resolve_Commit
+                                   (Repo => Repo, Text => Arg (I));
+                                 Commits.Append (Cid);
+                              exception
+                                 when others =>
+                                    Stderr_Line
+                                      ("fatal: bad revision '" & Arg (I) & "'");
+                                    Ada.Command_Line.Set_Exit_Status
+                                      (Fatal_Exit);
+                                    return;
+                              end;
                               I := I + 1;
                            end if;
                         end loop;
@@ -15854,9 +15867,22 @@ package body Version.CLI is
                               if Commits.Is_Empty then
                                  First_Revision := To_Unbounded_String (Arg (I));
                               end if;
-                              Commits.Append
-                                (Version.Revisions.Resolve_Commit
-                                   (Repo => Repo, Text => Arg (I)));
+                              --  A revision that does not resolve is git's
+                              --  die() (128), distinct from a conflict (1).
+                              declare
+                                 Cid : Version.Objects.Hex_Object_Id;
+                              begin
+                                 Cid := Version.Revisions.Resolve_Commit
+                                   (Repo => Repo, Text => Arg (I));
+                                 Commits.Append (Cid);
+                              exception
+                                 when others =>
+                                    Stderr_Line
+                                      ("fatal: bad revision '" & Arg (I) & "'");
+                                    Ada.Command_Line.Set_Exit_Status
+                                      (Fatal_Exit);
+                                    return;
+                              end;
                               I := I + 1;
                            end if;
                         end loop;
@@ -17547,6 +17573,59 @@ package body Version.CLI is
                  & " | version reset [REV] -- PATHSPEC...";
                DD : Natural := 0;
                use type Version.Reset.Reset_Mode;
+
+               --  A mixed reset (the default, and the path form) leaves the
+               --  new index against a working tree that may still differ; git
+               --  reports those paths as "Unstaged changes after reset:"
+               --  followed by one "<status>\t<path>" line each (diff-files).
+               procedure Print_Unstaged_After_Reset
+                 (Repo : Version.Repository.Repository_Handle)
+               is
+                  Raw : constant String := Version.Diff.Raw_Diff_Files (Repo);
+                  Pos : Natural := Raw'First;
+                  Header_Done : Boolean := False;
+               begin
+                  while Pos <= Raw'Last loop
+                     declare
+                        Stop : Natural := Pos;
+                     begin
+                        while Stop <= Raw'Last
+                          and then Raw (Stop) /= ASCII.LF
+                        loop
+                           Stop := Stop + 1;
+                        end loop;
+                        declare
+                           Line : constant String := Raw (Pos .. Stop - 1);
+                           Tab  : constant Natural :=
+                             Ada.Strings.Fixed.Index
+                               (Line, "" & ASCII.HT);
+                        begin
+                           if Tab /= 0 then
+                              declare
+                                 Field : constant String :=
+                                   Line (Line'First .. Tab - 1);
+                                 Path  : constant String :=
+                                   Line (Tab + 1 .. Line'Last);
+                                 Sp    : constant Natural :=
+                                   Ada.Strings.Fixed.Index
+                                     (Field, " ", Ada.Strings.Backward);
+                                 Status : constant String :=
+                                   (if Sp = 0 then Field
+                                    else Field (Sp + 1 .. Field'Last));
+                              begin
+                                 if not Header_Done then
+                                    Success_Line
+                                      ("Unstaged changes after reset:");
+                                    Header_Done := True;
+                                 end if;
+                                 Success_Line (Status & ASCII.HT & Path);
+                              end;
+                           end if;
+                        end;
+                        Pos := Stop + 1;
+                     end;
+                  end loop;
+               end Print_Unstaged_After_Reset;
             begin
                for I in 2 .. Count loop
                   if Arg (I) = "--" then
@@ -17573,6 +17652,7 @@ package body Version.CLI is
                            Paths.Append (To_Unbounded_String (Arg (I)));
                         end loop;
                         Version.Reset.Reset_Paths (Repo, Target, Paths);
+                        Print_Unstaged_After_Reset (Repo);
                      end;
                   end if;
                else
@@ -17612,7 +17692,9 @@ package body Version.CLI is
                         begin
                            Version.Reset.Reset_To_Commit (Repo, Mode, Target);
 
-                           if Mode = Version.Reset.Hard then
+                           if Mode = Version.Reset.Mixed then
+                              Print_Unstaged_After_Reset (Repo);
+                           elsif Mode = Version.Reset.Hard then
                               declare
                                  New_Id : constant String :=
                                    Version.Refs.Current_Commit_Id (Repo);
