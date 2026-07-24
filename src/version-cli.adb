@@ -22286,6 +22286,7 @@ package body Version.CLI is
                --  there). -u additionally updates the working tree.
                Reset_It  : Boolean := False;
                Update_WT : Boolean := False;
+               Empty_Idx : Boolean := False;
                Prefix    : Unbounded_String;
                Trees     : Version.Trailers.String_Vectors.Vector;
                Bad       : Boolean := False;
@@ -22306,8 +22307,10 @@ package body Version.CLI is
                      Prefix :=
                        To_Unbounded_String
                          (Arg (I) (Arg (I)'First + 9 .. Arg (I)'Last));
+                  elsif Arg (I) = "--empty" then
+                     Empty_Idx := True;
                   elsif Arg (I) = "-v" or else Arg (I) = "--quiet"
-                    or else Arg (I) = "--empty" or else Arg (I) = "--trivial"
+                    or else Arg (I) = "--trivial"
                     or else Arg (I) = "--aggressive"
                   then
                      null;
@@ -22323,8 +22326,22 @@ package body Version.CLI is
                end loop;
 
                if not Bad then
-                  if Trees.Is_Empty then
-                     Usage_Error ("read-tree requires a tree-ish", Usage);
+                  if Empty_Idx or else Trees.Is_Empty then
+                     --  Clear the index. git emptying with no arguments is
+                     --  deprecated, so it warns; --empty is the blessed form.
+                     declare
+                        Repo : constant Version.Repository.Repository_Handle :=
+                          Version.Repository.Open;
+                     begin
+                        if Trees.Is_Empty and then not Empty_Idx then
+                           Stderr_Line
+                             ("warning: read-tree: emptying the index with no"
+                              & " arguments is deprecated; use --empty");
+                        end if;
+                        Version.Staging.Write
+                          (Repo,
+                           Version.Staging.Index_Entry_Vectors.Empty_Vector);
+                     end;
                   elsif Natural (Trees.Length) > 1 then
                      --  Two or three trees is the merge form, which this does
                      --  not do; saying so beats reading only the first.

@@ -1,3 +1,4 @@
+- Git parity: `read-tree --empty` clears the index, and `read-tree` with no arguments clears it with git's deprecation warning (exit 0) instead of a usage error.
 - Git parity: `update-index` takes `--stdin` (a path per line) and `--index-info` (a `<mode> <sha> [<stage>]TAB<path>` record per line, adding implicitly); `--cacheinfo` with an unrecognised mode is a usage error (exit 129), not a die.
 - Git parity: `checkout-index` takes `-n`/`--no-create` (refresh existing files only), `--stdin` (a path list on stdin) and `-z` (NUL-separated), composing with `--prefix=`.
 - Git parity: `hash-object` handles `-t <type>` (blob/tree/commit/tag), `--stdin-paths` (one path per line) and `--literally`; without `--literally` an unknown type or a malformed commit/tag die()s 128, and no operand at all is a silent exit 0.
