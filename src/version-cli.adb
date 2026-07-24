@@ -10558,10 +10558,12 @@ package body Version.CLI is
                Numstat : Boolean := False;
                Shortstat : Boolean := False;
                Summary : Boolean := False;
+               Raw_Flag : Boolean := False;
                Name_Only   : Boolean := False;
                Name_Status : Boolean := False;
                Rename_Mode  : Version.Diff.Rename_Detection :=
                  Version.Diff.Renames_Default;
+               use type Version.Diff.Rename_Detection;
                Rename_Score : Natural := 0;
                Opts   : Version.Diff.Diff_Options;
                Context : Natural := 3;
@@ -10653,6 +10655,13 @@ package body Version.CLI is
                for I in 2 .. Count loop
                   if Arg (I) = "--stat" then
                      Stat := True;
+                  elsif Arg (I) = "--raw" then
+                     Raw_Flag := True;
+                     --  git's porcelain detects renames by default, so `--raw`
+                     --  reports "R<score>" unless --no-renames is also given.
+                     if Rename_Mode = Version.Diff.Renames_Default then
+                        Rename_Mode := Version.Diff.Renames_On;
+                     end if;
                   elsif Arg (I) = "--numstat" then
                      Numstat := True;
                   elsif Arg (I) = "--shortstat" then
@@ -10742,6 +10751,7 @@ package body Version.CLI is
                         Numstat => Numstat,
                         Shortstat => Shortstat,
                         Summary => Summary,
+                        Raw => Raw_Flag,
                         Name_Only => Name_Only,
                         Name_Status => Name_Status,
                         Context_Lines => Context,
