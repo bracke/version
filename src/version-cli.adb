@@ -10560,6 +10560,7 @@ package body Version.CLI is
                Summary : Boolean := False;
                Raw_Flag : Boolean := False;
                Patch_With_Raw : Boolean := False;
+               Compact_Flag : Boolean := False;
                Name_Only   : Boolean := False;
                Name_Status : Boolean := False;
                Rename_Mode  : Version.Diff.Rename_Detection :=
@@ -10656,6 +10657,13 @@ package body Version.CLI is
                for I in 2 .. Count loop
                   if Arg (I) = "--stat" then
                      Stat := True;
+                  elsif Arg (I) = "--compact-summary" then
+                     --  A diffstat with the name column annotated.
+                     Stat := True;
+                     Compact_Flag := True;
+                     if Rename_Mode = Version.Diff.Renames_Default then
+                        Rename_Mode := Version.Diff.Renames_On;
+                     end if;
                   elsif Arg (I) = "--raw" then
                      Raw_Flag := True;
                      --  git's porcelain detects renames by default, so `--raw`
@@ -10759,6 +10767,7 @@ package body Version.CLI is
                         Shortstat => Shortstat,
                         Summary => Summary,
                         Raw => Raw_Flag,
+                        Compact_Summary => Compact_Flag,
                         Name_Only => Name_Only,
                         Name_Status => Name_Status,
                         Context_Lines => Context,
