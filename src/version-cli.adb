@@ -18587,6 +18587,14 @@ package body Version.CLI is
                Limit    : Natural := 0;   --  -<n>: last n commits
                I        : Positive := 2;
 
+               Prefix    : Unbounded_String := To_Unbounded_String ("PATCH");
+               Numbering : Version.Format_Patch.Numbering_Mode :=
+                 Version.Format_Patch.Auto;
+               Reroll    : Natural := 0;
+               Emit_Sig  : Boolean := True;
+               Sig       : Unbounded_String := To_Unbounded_String ("2.54.0");
+               Start_No  : Positive := 1;
+
                function All_Digits (S : String) return Boolean is
                  (S'Length > 0
                   and then (for all C of S => C in '0' .. '9'));
@@ -18645,6 +18653,32 @@ package body Version.CLI is
                            exit;
                         end if;
                         Out_Dir := To_Unbounded_String (Arg (I + 1));
+                        I := I + 1;
+                     elsif A = "-n" or else A = "--numbered" then
+                        Numbering := Version.Format_Patch.On;
+                     elsif A = "-N" or else A = "--no-numbered" then
+                        Numbering := Version.Format_Patch.Off;
+                     elsif A = "--rfc" then
+                        Prefix := To_Unbounded_String ("RFC PATCH");
+                     elsif Has_Prefix (A, "--subject-prefix=") then
+                        Prefix := To_Unbounded_String
+                          (A (A'First + 17 .. A'Last));
+                     elsif A = "--numbered-files" then
+                        null;   --  affects on-disk names only; a no-op here
+                     elsif A = "--no-signature" then
+                        Emit_Sig := False;
+                     elsif Has_Prefix (A, "--signature=") then
+                        Sig := To_Unbounded_String (A (A'First + 12 .. A'Last));
+                     elsif Has_Prefix (A, "--reroll-count=") then
+                        Reroll := Natural'Value (A (A'First + 15 .. A'Last));
+                     elsif Has_Prefix (A, "-v")
+                       and then All_Digits (A (A'First + 2 .. A'Last))
+                     then
+                        Reroll := Natural'Value (A (A'First + 2 .. A'Last));
+                     elsif Has_Prefix (A, "--start-number=") then
+                        Start_No := Positive'Value (A (A'First + 15 .. A'Last));
+                     elsif A = "--start-number" and then I < Count then
+                        Start_No := Positive'Value (Arg (I + 1));
                         I := I + 1;
                      elsif A'Length >= 2 and then A (A'First) = '-'
                        and then All_Digits (A (A'First + 1 .. A'Last))
@@ -18735,8 +18769,17 @@ package body Version.CLI is
                               declare
                                  Patch : constant String :=
                                    Version.Format_Patch.Patch_For_Commit
-                                     (Repo, C, N,
-                                      (if Total = 0 then 1 else Total));
+                                     (Repo, C, Start_No + N - 1,
+                                      --  With --start-number K the counter runs
+                                      --  K..K+Total-1, so the denominator git
+                                      --  prints is K+Total-1, not Total.
+                                      (if Total = 0 then 1
+                                       else Start_No + Total - 1),
+                                      Prefix    => To_String (Prefix),
+                                      Numbering => Numbering,
+                                      Reroll    => Reroll,
+                                      Emit_Signature => Emit_Sig,
+                                      Signature => To_String (Sig));
                               begin
                                  if Stdout then
                                     --  Byte-exact: Ada.Text_IO.Put would leave the

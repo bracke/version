@@ -1,3 +1,4 @@
+- Git parity: `format-patch` accepts `-n`/`--numbered`, `-N`/`--no-numbered`, `--start-number`, `--subject-prefix=`, `--rfc`, `-v<N>`/`--reroll-count=`, `--no-signature`/`--signature=` and `--numbered-files` (was exit 129); the `n/m` counter and `[PATCH v<N> …]` prefix follow git, and `--start-number K` runs the counter K..K+total-1.
 - Git parity: `log --date=<mode>` drives the default "Date:" header (iso/iso-strict/short/raw/unix) and the `%ad`/`%cd` format atoms; Format_Git_Date gained the mode variants (iso-strict uses `Z` for UTC) and Log_List_Text a Date_Mode parameter.
 - Git parity: a mixed `reset` (the default and the pathspec form) prints "Unstaged changes after reset:" followed by a `<status>\t<path>` line for each path whose working tree still differs from the new index (diff-files), as git does.
 - Git parity: `cherry-pick`/`revert` die() (exit 128) on a revision that does not resolve ("bad revision '<x>'"), distinct from a conflict's exit 1.
