@@ -27163,7 +27163,7 @@ package body Version.CLI is
                  "version merge-base [--all|--is-ancestor] COMMIT COMMIT";
                All_Bases   : Boolean := False;
                Is_Ancestor : Boolean := False;
-               A_Idx, B_Idx : Natural := 0;
+               Ops : Version.Trailers.String_Vectors.Vector;
                Bad : Boolean := False;
             begin
                for I in 2 .. Count loop
@@ -27177,54 +27177,87 @@ package body Version.CLI is
                        ("unknown merge-base option: " & Arg (I), Usage);
                      Bad := True;
                      exit;
-                  elsif A_Idx = 0 then
-                     A_Idx := I;
-                  elsif B_Idx = 0 then
-                     B_Idx := I;
                   else
-                     Usage_Error ("too many merge-base arguments", Usage);
-                     Bad := True;
-                     exit;
+                     Ops.Append (Arg (I));
                   end if;
                end loop;
 
                if not Bad then
-                  if A_Idx = 0 or else B_Idx = 0 then
+                  if Natural (Ops.Length) < 2 then
                      Usage_Error ("merge-base requires two commits", Usage);
+                  elsif Is_Ancestor and then Natural (Ops.Length) /= 2 then
+                     Usage_Error
+                       ("--is-ancestor takes exactly two commits", Usage);
                   else
                      declare
                         Repo : constant Version.Repository.Repository_Handle :=
                           Version.Repository.Open;
-                        A : constant Version.Objects.Hex_Object_Id :=
-                          Version.Revisions.Resolve_Commit (Repo, Arg (A_Idx));
-                        B : constant Version.Objects.Hex_Object_Id :=
-                          Version.Revisions.Resolve_Commit (Repo, Arg (B_Idx));
+                        --  Resolve every operand first: a revision that does
+                        --  not exist is git's die() (128), separate from the
+                        --  "no common ancestor" result (exit 1) below.
+                        Ids : Version.History.Commit_Id_Vectors.Vector;
                      begin
-                        if Is_Ancestor then
-                           --  Exit 0 if A is an ancestor of B, else 1.
-                           if not Version.History.Is_Ancestor
-                                    (Repo, Base_Id => A, Derived_Id => B)
-                           then
-                              Set_Command_Failure;
-                           end if;
-                        elsif All_Bases then
-                           for Base of Version.History.Merge_Bases (Repo, A, B)
-                           loop
-                              Success_Line (To_String (Base));
-                           end loop;
-                        else
-                           declare
-                              Base : constant Version.Objects.Hex_Object_Id :=
-                                Version.History.Merge_Base (Repo, A, B);
-                           begin
-                              if To_String (Base)'Length > 0 then
-                                 Success_Line (To_String (Base));
-                              else
-                                 --  No common ancestor: git exits 1, no output.
+                        for Op of Ops loop
+                           Ids.Append
+                             (Version.Revisions.Resolve_Commit (Repo, Op));
+                        end loop;
+
+                        declare
+                           --  Merge_Base raises Data_Error when the histories
+                           --  are disjoint; git prints nothing and exits 1.
+                           No_Base : Boolean := False;
+                        begin
+                           if Is_Ancestor then
+                              if not Version.History.Is_Ancestor
+                                       (Repo,
+                                        Base_Id    => Ids (Ids.First_Index),
+                                        Derived_Id => Ids (Ids.First_Index + 1))
+                              then
                                  Set_Command_Failure;
                               end if;
-                           end;
-                        end if;
+                           elsif All_Bases then
+                              declare
+                                 Bases : constant
+                                   Version.History.Commit_Id_Vectors.Vector :=
+                                     Version.History.Merge_Bases
+                                       (Repo, Ids (Ids.First_Index),
+                                        Ids (Ids.First_Index + 1));
+                              begin
+                                 if Bases.Is_Empty then
+                                    Set_Command_Failure;
+                                 else
+                                    for Base of Bases loop
+                                       Success_Line (To_String (Base));
+                                    end loop;
+                                 end if;
+                              end;
+                           else
+                              --  More than two commits reduce to one best
+                              --  common ancestor, folded pairwise.
+                              declare
+                                 Acc : Version.Objects.Hex_Object_Id :=
+                                   Ids (Ids.First_Index);
+                              begin
+                                 for K in Ids.First_Index + 1 .. Ids.Last_Index
+                                 loop
+                                    Acc := Version.History.Merge_Base
+                                      (Repo, Acc, Ids (K));
+                                    if Version.Objects.Id_Length (Acc) = 0 then
+                                       No_Base := True;
+                                       exit;
+                                    end if;
+                                 end loop;
+                                 if No_Base then
+                                    Set_Command_Failure;
+                                 else
+                                    Success_Line (To_String (Acc));
+                                 end if;
+                              end;
+                           end if;
+                        exception
+                           when Ada.IO_Exceptions.Data_Error =>
+                              Set_Command_Failure;   --  no common ancestor
+                        end;
                      end;
                   end if;
                end if;
