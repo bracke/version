@@ -10562,6 +10562,11 @@ package body Version.CLI is
                Patch_With_Raw : Boolean := False;
                Compact_Flag : Boolean := False;
                Stat_Width_V : Natural := 0;
+               Dirstat_On   : Boolean := False;
+               Dirstat_File : Boolean := False;
+               Dirstat_Line : Boolean := False;
+               Dirstat_Cum  : Boolean := False;
+               Dirstat_Perm : Natural := 30;   --  git default 3%
                Name_Only   : Boolean := False;
                Name_Status : Boolean := False;
                Rename_Mode  : Version.Diff.Rename_Detection :=
@@ -10682,6 +10687,82 @@ package body Version.CLI is
                      Compact_Flag := True;
                      if Rename_Mode = Version.Diff.Renames_Default then
                         Rename_Mode := Version.Diff.Renames_On;
+                     end if;
+                  elsif Arg (I) = "--dirstat"
+                    or else Has_Prefix (Arg (I), "--dirstat=")
+                    or else Arg (I) = "--cumulative"
+                  then
+                     --  --dirstat[=<param,...>]: mode words (changes/lines/
+                     --  files), "cumulative", and a bare number (the cut-off
+                     --  percentage; git stores it as permille). --cumulative is
+                     --  shorthand for --dirstat=cumulative.
+                     Dirstat_On := True;
+                     if Rename_Mode = Version.Diff.Renames_Default then
+                        Rename_Mode := Version.Diff.Renames_On;
+                     end if;
+                     if Arg (I) = "--cumulative" then
+                        Dirstat_Cum := True;
+                     end if;
+                     if Has_Prefix (Arg (I), "--dirstat=") then
+                        declare
+                           V : constant String :=
+                             Arg (I) (Arg (I)'First + 10 .. Arg (I)'Last);
+                           First : Natural := V'First;
+                        begin
+                           for K in V'First .. V'Last + 1 loop
+                              if K > V'Last or else V (K) = ',' then
+                                 declare
+                                    P : constant String := V (First .. K - 1);
+                                 begin
+                                    if P = "changes" then
+                                       Dirstat_File := False;
+                                       Dirstat_Line := False;
+                                    elsif P = "lines" then
+                                       Dirstat_Line := True;
+                                       Dirstat_File := False;
+                                    elsif P = "files" then
+                                       Dirstat_File := True;
+                                       Dirstat_Line := False;
+                                    elsif P = "cumulative" then
+                                       Dirstat_Cum := True;
+                                    elsif P = "noncumulative" then
+                                       Dirstat_Cum := False;
+                                    elsif P'Length > 0 then
+                                       --  A percentage, possibly with one
+                                       --  decimal (git: permille = round*10).
+                                       declare
+                                          Dot : constant Natural :=
+                                            Ada.Strings.Fixed.Index (P, ".");
+                                          Whole : constant String :=
+                                            (if Dot = 0 then P
+                                             else P (P'First .. Dot - 1));
+                                          Frac : constant Character :=
+                                            (if Dot = 0
+                                                or else Dot = P'Last
+                                             then '0' else P (Dot + 1));
+                                       begin
+                                          Dirstat_Perm :=
+                                            Natural'Value (Whole) * 10
+                                            + (Character'Pos (Frac)
+                                               - Character'Pos ('0'));
+                                       exception
+                                          when others =>
+                                             --  git die()s (128) on an
+                                             --  unknown --dirstat parameter.
+                                             Ada.Text_IO.Put_Line
+                                               (Ada.Text_IO.Standard_Error,
+                                                "fatal: Unknown --dirstat "
+                                                & "parameter '" & P & "'");
+                                             Ada.Command_Line.Set_Exit_Status
+                                               (Fatal_Exit);
+                                             return;
+                                       end;
+                                    end if;
+                                 end;
+                                 First := K + 1;
+                              end if;
+                           end loop;
+                        end;
                      end if;
                   elsif Arg (I) = "--raw" then
                      Raw_Flag := True;
@@ -10830,6 +10911,21 @@ package body Version.CLI is
                            then Version.History.Merge_Base (Repo, A_Id, New_Id)
                            else A_Id);
                      begin
+                        if Dirstat_On then
+                           Emit
+                             (Version.Diff.Dir_Stat
+                                (Repo,
+                                 Version.Objects.Commit_Tree_Id
+                                   (Version.Objects.Read_Object (Repo, Old_Id)),
+                                 True,
+                                 Version.Objects.Commit_Tree_Id
+                                   (Version.Objects.Read_Object (Repo, New_Id)),
+                                 By_File    => Dirstat_File,
+                                 By_Line    => Dirstat_Line,
+                                 Permille   => Dirstat_Perm,
+                                 Cumulative => Dirstat_Cum));
+                           return;
+                        end if;
                         Emit
                           ((if Patch_With_Raw then
                               Version.Diff.Diff_Commits
@@ -10976,7 +11072,20 @@ package body Version.CLI is
                            Revisions_Resolved := False;
                      end;
 
-                     if Revisions_Resolved and then Has_Paths then
+                     if Revisions_Resolved and then Dirstat_On then
+                        Emit
+                          (Version.Diff.Dir_Stat
+                             (Repo,
+                              Version.Objects.Commit_Tree_Id
+                                (Version.Objects.Read_Object (Repo, Old_Id)),
+                              True,
+                              Version.Objects.Commit_Tree_Id
+                                (Version.Objects.Read_Object (Repo, New_Id)),
+                              By_File    => Dirstat_File,
+                              By_Line    => Dirstat_Line,
+                              Permille   => Dirstat_Perm,
+                              Cumulative => Dirstat_Cum));
+                     elsif Revisions_Resolved and then Has_Paths then
                         Emit
                           (Version.Diff.Diff_Commits
                              (Repo, Old_Id, New_Id, LPathspecs (5), Opts));

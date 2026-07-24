@@ -223,6 +223,13 @@ diff --stat=40 base tip
 diff --shortstat base tip
 diff --numstat base tip
 diff --dirstat base tip
+diff --dirstat=0 base tip
+diff --dirstat=lines base tip
+diff --dirstat=lines,0 base tip
+diff --dirstat=files base tip
+diff --dirstat=files,0 base tip
+diff --dirstat=cumulative,0 base tip
+diff --dirstat base..tip
 diff --summary base tip
 diff --compact-summary base tip
 diff --patch-with-stat base tip

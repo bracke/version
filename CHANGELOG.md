@@ -1,3 +1,4 @@
+- Git parity: `diff --dirstat[=<param,...>]` (and `--cumulative`) reports per-directory change share, a faithful port of git's show_dirstat/gather_dirstat with the changes/lines/files modes, cut-off percentage, cumulative rollup, and rename detection.
 - Git parity: `diff --stat=<width>[,<name-width>[,<count>]]` sets the diffstat line width (leading number).
 - Git parity: `diff-tree --compact-summary` prints the annotated diffstat (renames stay off unless -M, as plumbing).
 - Git parity: `diff --compact-summary` prints the annotated diffstat.
