@@ -10559,6 +10559,7 @@ package body Version.CLI is
                Shortstat : Boolean := False;
                Summary : Boolean := False;
                Raw_Flag : Boolean := False;
+               Patch_With_Raw : Boolean := False;
                Name_Only   : Boolean := False;
                Name_Status : Boolean := False;
                Rename_Mode  : Version.Diff.Rename_Detection :=
@@ -10659,6 +10660,12 @@ package body Version.CLI is
                      Raw_Flag := True;
                      --  git's porcelain detects renames by default, so `--raw`
                      --  reports "R<score>" unless --no-renames is also given.
+                     if Rename_Mode = Version.Diff.Renames_Default then
+                        Rename_Mode := Version.Diff.Renames_On;
+                     end if;
+                  elsif Arg (I) = "--patch-with-raw" then
+                     --  The raw records, then the ordinary patch.
+                     Patch_With_Raw := True;
                      if Rename_Mode = Version.Diff.Renames_Default then
                         Rename_Mode := Version.Diff.Renames_On;
                      end if;
@@ -10795,8 +10802,16 @@ package body Version.CLI is
                            else A_Id);
                      begin
                         Emit
-                          (Version.Diff.Diff_Commits
-                             (Repo, Old_Id, New_Id, Opts));
+                          ((if Patch_With_Raw then
+                              Version.Diff.Diff_Commits
+                                (Repo, Old_Id, New_Id,
+                                 (Opts with delta Raw => True))
+                              & ASCII.LF
+                              & Version.Diff.Diff_Commits
+                                  (Repo, Old_Id, New_Id, Opts)
+                            else
+                              Version.Diff.Diff_Commits
+                                (Repo, Old_Id, New_Id, Opts)));
                         return;
                      end;
                   exception
@@ -10938,8 +10953,16 @@ package body Version.CLI is
                              (Repo, Old_Id, New_Id, LPathspecs (5), Opts));
                      elsif Revisions_Resolved then
                         Emit
-                          (Version.Diff.Diff_Commits
-                             (Repo, Old_Id, New_Id, Opts));
+                          ((if Patch_With_Raw then
+                              Version.Diff.Diff_Commits
+                                (Repo, Old_Id, New_Id,
+                                 (Opts with delta Raw => True))
+                              & ASCII.LF
+                              & Version.Diff.Diff_Commits
+                                  (Repo, Old_Id, New_Id, Opts)
+                            else
+                              Version.Diff.Diff_Commits
+                                (Repo, Old_Id, New_Id, Opts)));
                      else
                         Emit
                           (Version.Diff.Diff_Working_Tree
