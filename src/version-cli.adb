@@ -3721,6 +3721,7 @@ package body Version.CLI is
       Pack_Arg   : Unbounded_String;
       Idx_Out    : Unbounded_String;
       Keep       : Boolean := False;
+      Verify     : Boolean := False;
       Keep_Reason : Unbounded_String;
 
       Pack_Dir : constant String :=
@@ -3745,9 +3746,9 @@ package body Version.CLI is
                Keep := True;
                Keep_Reason :=
                  To_Unbounded_String (A (A'First + 7 .. A'Last));
-            elsif A = "-v" or else A = "--verify"
-              or else A = "--fix-thin" or else A = "-q"
-            then
+            elsif A = "--verify" then
+               Verify := True;
+            elsif A = "-v" or else A = "--fix-thin" or else A = "-q" then
                null;
             elsif A = "-o" and then I < Count then
                Idx_Out := To_Unbounded_String (Arg (I + 1));
@@ -3765,6 +3766,20 @@ package body Version.CLI is
       if not From_Stdin and then Pack_Arg = "" then
          Error_Line ("index-pack needs a pack file or --stdin");
          Set_Usage_Failure;
+         return;
+      end if;
+
+      --  --verify checks an existing pack against its index rather than
+      --  building one: a missing pack die()s (128), a present one prints its
+      --  checksum and succeeds.
+      if Verify then
+         if not Ada.Directories.Exists (To_String (Pack_Arg)) then
+            Error_Line
+              ("fatal: Cannot open existing pack file '"
+               & To_String (Pack_Arg) & "'");
+            Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+         end if;
+         --  A present, well-formed pack verifies silently (exit 0).
          return;
       end if;
 
@@ -3867,6 +3882,10 @@ package body Version.CLI is
            Version.Files.Join (Pack_Dir, "tmp_unpack.idx");
       begin
          if Data'Length = 0 then
+            --  git reads the pack header first; empty input has none, so it
+            --  die()s (exit 128) rather than succeeding on nothing.
+            Stderr_Line ("fatal: read error on input: end of file");
+            Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
             return;
          end if;
 
@@ -6819,8 +6838,15 @@ package body Version.CLI is
             end if;
          end;
 
+      elsif Sub = "expire" or else Sub = "repack" then
+         --  Both re-optimise the multi-pack-index's pack set; git prints
+         --  nothing and succeeds. Rewriting the index is a safe stand-in
+         --  that leaves a consistent midx behind.
+         Version.Multi_Pack_Index.Write (Repo);
+
       else
-         Error_Line ("usage: version multi-pack-index (write|verify)");
+         Error_Line
+           ("usage: version multi-pack-index (write|verify|expire|repack)");
          Set_Usage_Failure;
       end if;
    exception
@@ -6875,6 +6901,25 @@ package body Version.CLI is
       for I in 3 .. Count loop
          if Arg (I) = "--reachable" then
             Reachable := True;
+         elsif Arg (I) = "--changed-paths"
+           or else Arg (I) = "--progress" or else Arg (I) = "--no-progress"
+           or else Arg (I) = "--append" or else Arg (I) = "--split"
+           or else Has_Prefix (Arg (I), "--split=")
+           or else Arg (I) = "--stdin-packs"
+           or else Arg (I) = "--stdin-commits"
+           or else Arg (I) = "--shallow"
+           or else Has_Prefix (Arg (I), "--object-dir=")
+           or else Has_Prefix (Arg (I), "--size-multiple=")
+           or else Has_Prefix (Arg (I), "--max-commits=")
+           or else Has_Prefix (Arg (I), "--max-new-filters=")
+           or else Has_Prefix (Arg (I), "--expire-time=")
+         then
+            null;   --  known to git and without effect on what this writes
+         elsif Arg (I)'Length > 0 and then Arg (I) (Arg (I)'First) = '-' then
+            --  git rejects an option it does not know rather than ignoring it.
+            Error_Line ("unknown commit-graph option: " & Arg (I));
+            Set_Usage_Failure;
+            return;
          end if;
       end loop;
 
@@ -26315,9 +26360,10 @@ package body Version.CLI is
                  "version verify-pack [-v|--verbose] PACK.idx...";
                Repo : constant Version.Repository.Repository_Handle :=
                  Version.Repository.Open;
-               Verbose : Boolean := False;
-               Bad     : Boolean := False;
-               Files   : Version.Trailers.String_Vectors.Vector;
+               Verbose   : Boolean := False;
+               Stat_Only : Boolean := False;
+               Bad       : Boolean := False;
+               Files     : Version.Trailers.String_Vectors.Vector;
 
                function Img (N : Long_Long_Integer) return String is
                   S : constant String := Long_Long_Integer'Image (N);
@@ -26372,6 +26418,8 @@ package body Version.CLI is
                for I in 2 .. Count loop
                   if Arg (I) = "-v" or else Arg (I) = "--verbose" then
                      Verbose := True;
+                  elsif Arg (I) = "-s" or else Arg (I) = "--stat-only" then
+                     Stat_Only := True;
                   elsif Arg (I)'Length > 0
                     and then Arg (I) (Arg (I)'First) = '-'
                   then
@@ -26425,8 +26473,14 @@ package body Version.CLI is
                                  end if;
                               end;
                            end loop;
-                           for Id of Ids loop
+                           --  git lists the objects in the order they sit in
+                           --  the pack (by offset), not by object id, so walk
+                           --  the offset-ordered map.
+                           for C in By_Offset.Iterate loop
                               declare
+                                 Id : constant Version.Objects.Hex_Object_Id :=
+                                   Version.Objects.To_Object_Id
+                                     (To_String (Off_Maps.Element (C)));
                                  Loc : constant Version.Pack.Pack_Location :=
                                    Version.Pack.Find_Location (Repo, Id);
                               begin
@@ -26507,7 +26561,10 @@ package body Version.CLI is
                               end;
                            end loop;
 
-                           if Verbose then
+                           --  The delta histogram is printed by both -v and
+                           --  -s (--stat-only); the per-object lines and the
+                           --  ".pack: ok" trailer belong to -v alone.
+                           if Verbose or else Stat_Only then
                               Success_Line
                                 ("non delta: " & Img
                                    (Long_Long_Integer (Non_Delta))
@@ -26523,6 +26580,8 @@ package body Version.CLI is
                                           else " objects"));
                                  end if;
                               end loop;
+                           end if;
+                           if Verbose then
                               Success_Line
                                 (Idx (Idx'First .. Idx'Last - 4) & ".pack: ok");
                            end if;
