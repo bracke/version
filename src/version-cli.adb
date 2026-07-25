@@ -18745,6 +18745,27 @@ package body Version.CLI is
 
                if DD /= 0 then
                   --  Path form: reset [REV] -- PATHSPEC...
+                  --  A mode flag cannot be combined with paths (git dies 128).
+                  declare
+                     Mode_Flag : Unbounded_String;
+                  begin
+                     for I in 2 .. DD - 1 loop
+                        if Arg (I) = "--soft" or else Arg (I) = "--hard"
+                          or else Arg (I) = "--mixed"
+                          or else Arg (I) = "--keep" or else Arg (I) = "--merge"
+                        then
+                           Mode_Flag := To_Unbounded_String
+                             (Arg (I) (Arg (I)'First + 2 .. Arg (I)'Last));
+                        end if;
+                     end loop;
+                     if Mode_Flag /= Null_Unbounded_String then
+                        Stderr_Line
+                          ("fatal: Cannot do " & To_String (Mode_Flag)
+                           & " reset with paths.");
+                        Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                        return;
+                     end if;
+                  end;
                   if DD > 3 then
                      Usage_Error ("too many revisions before --", Usage);
                   elsif DD = Count then
@@ -18765,43 +18786,66 @@ package body Version.CLI is
                      end;
                   end if;
                else
-                  --  Commit/mode form: reset [--soft|--mixed|--hard] [REV]
+                  --  Commit/mode form:
+                  --    reset [--soft|--mixed|--hard] [-q] [REV]
+                  --  git accepts several mode flags (the last wins) and -q.
                   declare
                      Mode       : Version.Reset.Reset_Mode := Version.Reset.Mixed;
+                     Quiet      : Boolean := False;
                      Bad_Option : Boolean := False;
-                     Rev_Index  : Positive := 2;
+                     Bad_Text   : Unbounded_String;
+                     N_Revs     : Natural := 0;
+                     Rev        : Unbounded_String :=
+                       To_Unbounded_String ("HEAD");
+                     I          : Positive := 2;
                   begin
-                     if Count >= 2
-                       and then Arg (2)'Length >= 1
-                       and then Arg (2) (Arg (2)'First) = '-'
-                     then
-                        if Arg (2) = "--soft" then
+                     while I <= Count and then Arg (I)'Length >= 1
+                       and then Arg (I) (Arg (I)'First) = '-'
+                     loop
+                        if Arg (I) = "--soft" then
                            Mode := Version.Reset.Soft;
-                        elsif Arg (2) = "--mixed" then
+                        elsif Arg (I) = "--mixed" then
                            Mode := Version.Reset.Mixed;
-                        elsif Arg (2) = "--hard" then
+                        elsif Arg (I) = "--hard" then
                            Mode := Version.Reset.Hard;
+                        elsif Arg (I) = "-q" or else Arg (I) = "--quiet" then
+                           Quiet := True;
                         else
                            Bad_Option := True;
+                           Bad_Text := To_Unbounded_String (Arg (I));
+                           exit;
                         end if;
-                        Rev_Index := 3;
-                     end if;
+                        I := I + 1;
+                     end loop;
+
+                     while I <= Count loop
+                        N_Revs := N_Revs + 1;
+                        if N_Revs = 1 then
+                           Rev := To_Unbounded_String (Arg (I));
+                        end if;
+                        I := I + 1;
+                     end loop;
 
                      if Bad_Option then
-                        Usage_Error ("unknown reset option: " & Arg (2), Usage);
-                     elsif Rev_Index < Count then
-                        Usage_Error ("too many reset arguments", Usage);
+                        Usage_Error
+                          ("unknown reset option: " & To_String (Bad_Text),
+                           Usage);
+                     elsif N_Revs > 1 then
+                        --  git dies (128) rather than reporting a usage error.
+                        Stderr_Line
+                          ("fatal: ambiguous argument: too many revisions");
+                        Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
                      else
                         declare
-                           Repo   : constant Version.Repository.Repository_Handle :=
-                             Version.Repository.Open;
-                           Target : constant String :=
-                             (if Rev_Index <= Count then Arg (Rev_Index)
-                              else "HEAD");
+                           Repo   : constant Version.Repository.Repository_Handle
+                             := Version.Repository.Open;
+                           Target : constant String := To_String (Rev);
                         begin
                            Version.Reset.Reset_To_Commit (Repo, Mode, Target);
 
-                           if Mode = Version.Reset.Mixed then
+                           if Quiet then
+                              null;   --  -q suppresses the report
+                           elsif Mode = Version.Reset.Mixed then
                               Print_Unstaged_After_Reset (Repo);
                            elsif Mode = Version.Reset.Hard then
                               declare
