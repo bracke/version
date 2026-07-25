@@ -1,3 +1,4 @@
+- Git parity: `var GIT_DEFAULT_BRANCH` reports `init.defaultBranch` (default `master`); `check-mailmap` treats a bracket-less argument as the email and dies (128) with no contacts; `mailsplit` rejects a detached `-o` and refuses to create a missing output directory, as git does.
 - Git parity: `interpret-trailers --if-exists <action>` (add/addIfDifferent/replace/doNothing) and `--if-missing <action>` (add/doNothing) control how a `--trailer` is applied when its token is or isn't already present.
 - Git parity: `check-attr -z` (NUL-separated output) and `--cached`.
 - Git parity: classic `config` gains `--type=int`/`--type=bool-or-int` unit parsing, `--type=bool` that dies on a non-boolean value, `--rename-section`, `--name-only --get-regexp`, multivar-overwrite/unset refusal (exit 5), and `--global`/`--system`/`--file <missing>` reads that miss (get) or die (list) instead of reading the local config.

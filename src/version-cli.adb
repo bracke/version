@@ -8474,6 +8474,12 @@ package body Version.CLI is
          begin
             if A'Length > 2 and then A (A'First .. A'First + 1) = "-o" then
                Out_Dir := To_Unbounded_String (A (A'First + 2 .. A'Last));
+            elsif A = "-o" then
+               --  git's mailsplit only accepts the attached form (-o<dir>);
+               --  a detached "-o dir" is an unknown option, and it dies.
+               Error_Line ("fatal: unknown option: -o");
+               Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+               return;
             elsif A = "--keep-cr" then
                Keep_CR := True;
             elsif A = "-b" then
@@ -8504,7 +8510,13 @@ package body Version.CLI is
          end;
       end loop;
 
-      Version.Files.Create_Directory_If_Missing (To_String (Out_Dir));
+      --  git refuses to create the output directory; a missing one is fatal.
+      if not Ada.Directories.Exists (To_String (Out_Dir)) then
+         Error_Line
+           ("fatal: cannot open directory " & To_String (Out_Dir));
+         Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+         return;
+      end if;
 
       declare
          --  Write one message, numbered from 1 across every input.
@@ -9795,17 +9807,22 @@ package body Version.CLI is
             LT : constant Natural := Ada.Strings.Fixed.Index (Contact, "<");
             GT : constant Natural := Ada.Strings.Fixed.Index (Contact, ">");
          begin
-            if LT = 0 or else GT < LT then
+            if LT /= 0 and then GT < LT then
                Error_Line ("unable to parse contact: " & Contact);
                Set_Command_Failure;
                return;
             end if;
 
             declare
+               --  With no "<...>", git takes the whole argument as the email.
                Name  : constant String :=
-                 Ada.Strings.Fixed.Trim
-                   (Contact (Contact'First .. LT - 1), Ada.Strings.Both);
-               Email : constant String := Contact (LT + 1 .. GT - 1);
+                 (if LT = 0 then ""
+                  else Ada.Strings.Fixed.Trim
+                         (Contact (Contact'First .. LT - 1), Ada.Strings.Both));
+               Email : constant String :=
+                 (if LT = 0 then Ada.Strings.Fixed.Trim (Contact,
+                                                         Ada.Strings.Both)
+                  else Contact (LT + 1 .. GT - 1));
                Out_Name, Out_Email : Unbounded_String;
             begin
                Version.Mailmap.Apply (Map, Name, Email, Out_Name, Out_Email);
@@ -9819,8 +9836,9 @@ package body Version.CLI is
       end loop;
 
       if not Any then
+         --  git dies (128), not a usage error.
          Error_Line ("no contacts specified");
-         Set_Usage_Failure;
+         Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
       end if;
    end Run_Check_Mailmap_Command;
 
@@ -27655,6 +27673,13 @@ package body Version.CLI is
                           (if Ada.Environment_Variables.Exists ("EDITOR")
                            then Ada.Environment_Variables.Value ("EDITOR")
                            else "vi");
+                     elsif Name = "GIT_DEFAULT_BRANCH" then
+                        --  init.defaultBranch, or git's built-in "master".
+                        Success_Line
+                          (if Version.Config.Has_Key (Repo, "init.defaultBranch")
+                           then Version.Config.Get_Value
+                                  (Repo, "init.defaultBranch")
+                           else "master");
                      else
                         Error_Line ("error: unknown variable '" & Name & "'");
                         Set_Usage_Failure;
