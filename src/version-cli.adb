@@ -1982,7 +1982,9 @@ package body Version.CLI is
         Version.Trailers.String_Vectors.Empty_Vector;
       Ignore_Case    : Boolean := False;
       Invert_Grep    : Boolean := False;
-      All_Match      : Boolean := False)
+      All_Match      : Boolean := False;
+      Pickaxe_S      : String := "";
+      Pickaxe_G      : String := "")
       return Version.History.Commit_Id_Vectors.Vector
    is
       Grep_Opts : constant Version.Grep.Options :=
@@ -2085,10 +2087,118 @@ package body Version.CLI is
          return Kept;
       end Filter_Grep;
 
+      --  git's pickaxe: -S keeps commits that CHANGE the number of times a
+      --  string occurs (equivalently, its count in added lines differs from
+      --  its count in removed lines, since context lines cancel out); -G keeps
+      --  commits whose diff has an added or removed line matching a regex.
+      function Filter_Pickaxe
+        (Input    : Version.History.Commit_Id_Vectors.Vector;
+         Pattern  : String;
+         Is_Regex : Boolean)
+         return Version.History.Commit_Id_Vectors.Vector
+      is
+         LF   : constant Character := Character'Val (10);
+         --  A valid dummy when not in regex mode (Compile rejects "").
+         RM   : constant Version.Grep.Line_Matcher :=
+           Version.Grep.Compile
+             ((if Is_Regex then Pattern else "x"), Grep_Opts);
+         Kept : Version.History.Commit_Id_Vectors.Vector;
+
+         function Occurrences (Text, Sub : String) return Natural is
+            N : Natural := 0;
+            I : Natural := Text'First;
+         begin
+            if Sub'Length = 0 then
+               return 0;
+            end if;
+            while I + Sub'Length - 1 <= Text'Last loop
+               if Text (I .. I + Sub'Length - 1) = Sub then
+                  N := N + 1;
+                  I := I + Sub'Length;
+               else
+                  I := I + 1;
+               end if;
+            end loop;
+            return N;
+         end Occurrences;
+      begin
+         for C of Input loop
+            declare
+               Obj    : constant Version.Objects.Git_Object :=
+                 Version.Objects.Read_Object (Repo, C);
+               Parent : constant String :=
+                 Version.Objects.Commit_Parent_Id (Obj);
+               --  git does not run the pickaxe over a merge's combined diff by
+               --  default, so a merge never matches.
+               Is_Merge : constant Boolean :=
+                 Natural (Version.Objects.Commit_Parent_Ids (Obj).Length) > 1;
+               Patch  : constant String :=
+                 (if Is_Merge then ""
+                  elsif Parent = ""
+                  then Version.Diff.Diff_Root_Commit (Repo, C)
+                  else Version.Diff.Diff_Commits
+                         (Repo, Version.Objects.To_Object_Id (Parent), C));
+               Added, Removed : Natural := 0;
+               Matched : Boolean := False;
+               Line_Start : Natural := Patch'First;
+
+               procedure Scan (L : String) is
+               begin
+                  if Has_Prefix (L, "+++ ") or else Has_Prefix (L, "--- ")
+                    or else L'Length = 0
+                  then
+                     return;   --  file headers, not body
+                  elsif L (L'First) = '+' then
+                     if Is_Regex then
+                        Matched := Matched
+                          or else Version.Grep.Matches
+                                    (RM, L (L'First + 1 .. L'Last));
+                     else
+                        Added := Added
+                          + Occurrences (L (L'First + 1 .. L'Last), Pattern);
+                     end if;
+                  elsif L (L'First) = '-' then
+                     if Is_Regex then
+                        Matched := Matched
+                          or else Version.Grep.Matches
+                                    (RM, L (L'First + 1 .. L'Last));
+                     else
+                        Removed := Removed
+                          + Occurrences (L (L'First + 1 .. L'Last), Pattern);
+                     end if;
+                  end if;
+               end Scan;
+            begin
+               for K in Patch'Range loop
+                  if Patch (K) = LF then
+                     Scan (Patch (Line_Start .. K - 1));
+                     Line_Start := K + 1;
+                  end if;
+               end loop;
+               if Line_Start <= Patch'Last then
+                  Scan (Patch (Line_Start .. Patch'Last));
+               end if;
+
+               if (if Is_Regex then Matched else Added /= Removed) then
+                  Kept.Append (C);
+               end if;
+            end;
+         end loop;
+         return Kept;
+      end Filter_Pickaxe;
+
       Result : Version.History.Commit_Id_Vectors.Vector := Commits;
    begin
       if Author_Pattern'Length > 0 then
          Result := Filter_By (Result, Author_Pattern, Author_Field);
+      end if;
+
+      if Pickaxe_S'Length > 0 then
+         Result := Filter_Pickaxe (Result, Pickaxe_S, Is_Regex => False);
+      end if;
+
+      if Pickaxe_G'Length > 0 then
+         Result := Filter_Pickaxe (Result, Pickaxe_G, Is_Regex => True);
       end if;
 
       if Committer_Pattern'Length > 0 then
@@ -11838,6 +11948,10 @@ package body Version.CLI is
                Max_Count  : Natural := 0;
                Max_Prefix : constant String := "--max-count=";
                Want_Count : Boolean := False;
+               Want_S     : Boolean := False;   --  -S awaiting its value
+               Want_G     : Boolean := False;   --  -G awaiting its value
+               No_Walk    : Boolean := False;   --  --no-walk
+               No_Walk_Unsorted : Boolean := False;
                Format     : Unbounded_String;
                Has_Format : Boolean := False;
                Date_Mode  : Unbounded_String;   --  --date=<mode>
@@ -11865,6 +11979,9 @@ package body Version.CLI is
                Ignore_Case : Boolean := False;
                Invert_Grep : Boolean := False;
                All_Match   : Boolean := False;
+               Pickaxe_S   : Unbounded_String;   --  -S<string>
+               Pickaxe_G   : Unbounded_String;   --  -G<regex>
+               Has_Pickaxe : Boolean := False;
                --  --not flips following revisions into exclusions (^rev).
                Negate      : Boolean := False;
                Want_Parents : Boolean := False;   --  --parents
@@ -11907,6 +12024,14 @@ package body Version.CLI is
                         Bad := True;
                         exit;
                      end if;
+                  elsif Want_S then
+                     Pickaxe_S := To_Unbounded_String (Arg (I));
+                     Has_Pickaxe := True;
+                     Want_S := False;
+                  elsif Want_G then
+                     Pickaxe_G := To_Unbounded_String (Arg (I));
+                     Has_Pickaxe := True;
+                     Want_G := False;
                   elsif Only_Paths then
                      Operands.Append (Arg (I));
                   elsif Arg (I) = "--" then
@@ -12043,6 +12168,27 @@ package body Version.CLI is
                      Has_Author := True;
                   elsif Starts (Arg (I), "--grep=") then
                      Grep_List.Append (After (Arg (I), "--grep="));
+                  elsif Arg (I) = "-S" then
+                     Want_S := True;   --  value is the next argument
+                  elsif Arg (I) = "-G" then
+                     Want_G := True;
+                  elsif Arg (I) = "--no-walk"
+                    or else Arg (I) = "--no-walk=sorted"
+                  then
+                     No_Walk := True;
+                  elsif Arg (I) = "--no-walk=unsorted" then
+                     No_Walk := True;
+                     No_Walk_Unsorted := True;
+                  elsif Arg (I) = "--do-walk" then
+                     No_Walk := False;
+                  elsif Starts (Arg (I), "-S") then
+                     Pickaxe_S := To_Unbounded_String
+                       (Arg (I) (Arg (I)'First + 2 .. Arg (I)'Last));
+                     Has_Pickaxe := True;
+                  elsif Starts (Arg (I), "-G") then
+                     Pickaxe_G := To_Unbounded_String
+                       (Arg (I) (Arg (I)'First + 2 .. Arg (I)'Last));
+                     Has_Pickaxe := True;
                   elsif Starts (Arg (I), "--committer=") then
                      Committer_Pat :=
                        To_Unbounded_String (After (Arg (I), "--committer="));
@@ -12176,9 +12322,43 @@ package body Version.CLI is
                         Selection.Oldest_First := False;
                      end if;
 
-                     Commits :=
-                       Version.History.Rev_List
-                         (Repo, Include, Parsed.Exclude, Selection);
+                     if No_Walk then
+                        --  Show just the named commits, no ancestry walk; the
+                        --  default sorts them by commit date (newest first),
+                        --  =unsorted keeps the order given.
+                        Commits := Include;
+                        if not No_Walk_Unsorted then
+                           declare
+                              function Newer
+                                (A, B : Version.Objects.Object_Id_Storage)
+                                 return Boolean
+                              is (Version.Objects.Commit_Committer_Time
+                                    (Version.Objects.Read_Object (Repo, A))
+                                  > Version.Objects.Commit_Committer_Time
+                                      (Version.Objects.Read_Object (Repo, B)));
+                           begin
+                              for P in Commits.First_Index
+                                         .. Commits.Last_Index - 1
+                              loop
+                                 for Q in P + 1 .. Commits.Last_Index loop
+                                    if Newer (Commits (Q), Commits (P)) then
+                                       declare
+                                          T : constant Version.Objects.Object_Id_Storage
+                                            := Commits (P);
+                                       begin
+                                          Commits (P) := Commits (Q);
+                                          Commits (Q) := T;
+                                       end;
+                                    end if;
+                                 end loop;
+                              end loop;
+                           end;
+                        end if;
+                     else
+                        Commits :=
+                          Version.History.Rev_List
+                            (Repo, Include, Parsed.Exclude, Selection);
+                     end if;
 
                      --  git's --author/--grep are regular expressions over
                      --  the author identity and the commit message; matching
@@ -12186,6 +12366,7 @@ package body Version.CLI is
                      --  metacharacter, so they are compiled properly.
                      if Has_Author or else Has_Committer
                        or else not Grep_List.Is_Empty
+                       or else Has_Pickaxe
                      then
                         Commits :=
                           Filter_Commits
@@ -12200,7 +12381,9 @@ package body Version.CLI is
                              Grep_Patterns => Grep_List,
                              Ignore_Case   => Ignore_Case,
                              Invert_Grep   => Invert_Grep,
-                             All_Match     => All_Match);
+                             All_Match     => All_Match,
+                             Pickaxe_S     => To_String (Pickaxe_S),
+                             Pickaxe_G     => To_String (Pickaxe_G));
                      end if;
 
                      --  --since/--until bound the committer date.
@@ -12460,10 +12643,14 @@ package body Version.CLI is
                                             ("tree " & Spec & ASCII.LF & ASCII.LF
                                              & To_String (Listing));
                                        else
+                                          --  git dies (128) on a path absent
+                                          --  from the named tree.
                                           Error_Line
-                                            ("path does not exist in "
-                                             & Rev_Part & ": " & Path_Part);
-                                          Set_Command_Failure;
+                                            ("fatal: path '" & Path_Part
+                                             & "' does not exist in '"
+                                             & Rev_Part & "'");
+                                          Ada.Command_Line.Set_Exit_Status
+                                            (Fatal_Exit);
                                        end if;
                                     end;
                                  end if;
@@ -18688,6 +18875,40 @@ package body Version.CLI is
                   exit when Bad;
                   I := I + 1;
                end loop;
+
+               --  git dies (128) when the argument names no existing ref and
+               --  is not a resolvable revision; an existing ref that simply
+               --  has no reflog (e.g. a tag) prints nothing and exits 0.
+               if not Bad then
+                  declare
+                     FR : constant String := Full_Ref (To_String (Ref_Arg));
+                     Ref_OK : Boolean :=
+                       FR = "HEAD" or else Version.Refs.Ref_Exists (Repo, FR);
+                  begin
+                     if not Ref_OK then
+                        begin
+                           declare
+                              Ignore : constant Version.Objects.Hex_Object_Id :=
+                                Version.Revisions.Resolve_Commit
+                                  (Repo, To_String (Ref_Arg));
+                           begin
+                              pragma Unreferenced (Ignore);
+                              Ref_OK := True;
+                           end;
+                        exception
+                           when others =>
+                              Ref_OK := False;
+                        end;
+                     end if;
+                     if not Ref_OK then
+                        Error_Line
+                          ("fatal: ambiguous argument '"
+                           & To_String (Ref_Arg) & "': unknown revision");
+                        Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                        Bad := True;
+                     end if;
+                  end;
+               end if;
 
                if not Bad then
                   declare
