@@ -19850,6 +19850,8 @@ package body Version.CLI is
                Emit_Sig  : Boolean := True;
                Sig       : Unbounded_String := To_Unbounded_String ("2.54.0");
                Start_No  : Positive := 1;
+               Context   : Natural := 3;   --  -U<n>/--unified=<n>
+               Show_Summary : Boolean := True;   --  --stat drops the summary
 
                function All_Digits (S : String) return Boolean is
                  (S'Length > 0
@@ -19921,6 +19923,16 @@ package body Version.CLI is
                           (A (A'First + 17 .. A'Last));
                      elsif A = "--numbered-files" then
                         null;   --  affects on-disk names only; a no-op here
+                     elsif A = "--stat" then
+                        --  git shows the diffstat by default; an explicit
+                        --  --stat additionally drops the create/delete summary.
+                        Show_Summary := False;
+                     elsif Has_Prefix (A, "-U")
+                       and then All_Digits (A (A'First + 2 .. A'Last))
+                     then
+                        Context := Natural'Value (A (A'First + 2 .. A'Last));
+                     elsif Has_Prefix (A, "--unified=") then
+                        Context := Natural'Value (A (A'First + 10 .. A'Last));
                      elsif A = "--no-signature" then
                         Emit_Sig := False;
                      elsif Has_Prefix (A, "--signature=") then
@@ -20035,7 +20047,9 @@ package body Version.CLI is
                                       Numbering => Numbering,
                                       Reroll    => Reroll,
                                       Emit_Signature => Emit_Sig,
-                                      Signature => To_String (Sig));
+                                      Signature => To_String (Sig),
+                                      Context   => Context,
+                                      Show_Summary => Show_Summary);
                               begin
                                  if Stdout then
                                     --  Byte-exact: Ada.Text_IO.Put would leave the
