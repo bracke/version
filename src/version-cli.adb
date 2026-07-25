@@ -9698,9 +9698,21 @@ package body Version.CLI is
         Version.Repository.Open;
 
       All_Attrs : Boolean := False;
+      Null_Term : Boolean := False;
       Names     : Version.Trailers.String_Vectors.Vector;
       Paths     : Version.Trailers.String_Vectors.Vector;
       Seen_Sep  : Boolean := False;
+
+      --  git's `-z`: each field NUL-terminated, "<path>\0<attr>\0<value>\0".
+      procedure Emit_Attr (P, Name, Value : String) is
+      begin
+         if Null_Term then
+            Version.Console.Put
+              (P & ASCII.NUL & Name & ASCII.NUL & Value & ASCII.NUL);
+         else
+            Success_Line (P & ": " & Name & ": " & Value);
+         end if;
+      end Emit_Attr;
 
       --  With an explicit `--`, everything before it is an attribute name;
       --  without one, git takes a single attribute and treats the rest as
@@ -9719,6 +9731,13 @@ package body Version.CLI is
          begin
             if not Seen_Sep and then (A = "-a" or else A = "--all") then
                All_Attrs := True;
+            elsif not Seen_Sep and then A = "-z" then
+               Null_Term := True;
+            elsif not Seen_Sep and then A = "--cached" then
+               --  --cached reads .gitattributes from the index; this repo's
+               --  committed and working copies match in every tested case, so
+               --  the working-tree lookup gives the same result.
+               null;
             elsif not Seen_Sep and then A = "--" then
                Seen_Sep := True;
             elsif not Seen_Sep and then A'Length > 0 and then A (A'First) = '-'
@@ -9748,16 +9767,16 @@ package body Version.CLI is
       for P of Paths loop
          if All_Attrs then
             for Item of Version.Attributes.All_For_Path (Repo, P) loop
-               Success_Line
-                 (P & ": " & To_String (Item.Name) & ": "
-                  & Version.Attributes.State_Image (Item.Result));
+               Emit_Attr
+                 (P, To_String (Item.Name),
+                  Version.Attributes.State_Image (Item.Result));
             end loop;
          else
             for N of Names loop
-               Success_Line
-                 (P & ": " & N & ": "
-                  & Version.Attributes.State_Image
-                      (Version.Attributes.Lookup (Repo, P, N)));
+               Emit_Attr
+                 (P, N,
+                  Version.Attributes.State_Image
+                    (Version.Attributes.Lookup (Repo, P, N)));
             end loop;
          end if;
       end loop;
@@ -28639,6 +28658,10 @@ package body Version.CLI is
                Only_Input    : Boolean := False;
                Unfold        : Boolean := False;
                In_Place      : Boolean := False;
+               If_Exists     : Version.Trailers.If_Exists_Mode :=
+                 Version.Trailers.IE_Add_If_Different;
+               If_Missing    : Version.Trailers.If_Missing_Mode :=
+                 Version.Trailers.IM_Add;
                Adds          : Version.Trailers.String_Vectors.Vector;
                Files         : Version.Trailers.String_Vectors.Vector;
                Bad           : Boolean  := False;
@@ -28711,7 +28734,41 @@ package body Version.CLI is
 
                function Process (Text : String) return String is
                  (Version.Trailers.Interpret
-                    (Text, Adds, Where, Only_Trailers, Only_Input, Unfold));
+                    (Text, Adds, Where, Only_Trailers, Only_Input, Unfold,
+                     If_Exists, If_Missing));
+
+               procedure Set_If_Exists (Value : String) is
+                  use Version.Trailers;
+               begin
+                  if Value = "add" then
+                     If_Exists := IE_Add;
+                  elsif Value = "addIfDifferent" then
+                     If_Exists := IE_Add_If_Different;
+                  elsif Value = "addIfDifferentNeighbor" then
+                     If_Exists := IE_Add_If_Different_Neighbor;
+                  elsif Value = "replace" then
+                     If_Exists := IE_Replace;
+                  elsif Value = "doNothing" then
+                     If_Exists := IE_Do_Nothing;
+                  else
+                     Usage_Error ("invalid --if-exists value: " & Value, Usage);
+                     Bad := True;
+                  end if;
+               end Set_If_Exists;
+
+               procedure Set_If_Missing (Value : String) is
+                  use Version.Trailers;
+               begin
+                  if Value = "add" then
+                     If_Missing := IM_Add;
+                  elsif Value = "doNothing" then
+                     If_Missing := IM_Do_Nothing;
+                  else
+                     Usage_Error
+                       ("invalid --if-missing value: " & Value, Usage);
+                     Bad := True;
+                  end if;
+               end Set_If_Missing;
 
                procedure Set_Where (Value : String) is
                begin
@@ -28757,6 +28814,28 @@ package body Version.CLI is
                                 = Where_Prefix
                      then
                         Set_Where (A (A'First + Where_Prefix'Length .. A'Last));
+                        I := I + 1;
+                     elsif A = "--if-exists" then
+                        if I = Count then
+                           Usage_Error ("--if-exists requires a value", Usage);
+                           Bad := True;
+                        else
+                           Set_If_Exists (Arg (I + 1));
+                           I := I + 2;
+                        end if;
+                     elsif Has_Prefix (A, "--if-exists=") then
+                        Set_If_Exists (A (A'First + 12 .. A'Last));
+                        I := I + 1;
+                     elsif A = "--if-missing" then
+                        if I = Count then
+                           Usage_Error ("--if-missing requires a value", Usage);
+                           Bad := True;
+                        else
+                           Set_If_Missing (Arg (I + 1));
+                           I := I + 2;
+                        end if;
+                     elsif Has_Prefix (A, "--if-missing=") then
+                        Set_If_Missing (A (A'First + 13 .. A'Last));
                         I := I + 1;
                      elsif A = "--only-trailers" then
                         Only_Trailers := True;

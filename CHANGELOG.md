@@ -1,3 +1,5 @@
+- Git parity: `interpret-trailers --if-exists <action>` (add/addIfDifferent/replace/doNothing) and `--if-missing <action>` (add/doNothing) control how a `--trailer` is applied when its token is or isn't already present.
+- Git parity: `check-attr -z` (NUL-separated output) and `--cached`.
 - Git parity: classic `config` gains `--type=int`/`--type=bool-or-int` unit parsing, `--type=bool` that dies on a non-boolean value, `--rename-section`, `--name-only --get-regexp`, multivar-overwrite/unset refusal (exit 5), and `--global`/`--system`/`--file <missing>` reads that miss (get) or die (list) instead of reading the local config.
 - Git parity: subcommand-style `config` (git 2.46+) — `config list`/`get`/`set`/`unset`/`rename-section`/`remove-section` with their options (`--all`, `--regexp`, `--value`, `--default`, `--type=`, `--name-only`, `--show-scope`, `--show-origin`, `--show-names`, `--null`, scope flags), matching git's outputs and exit codes.
 - Git parity: `config --add` appends the new value at the end of the key's section block, as git does (was inserted next to the other values).
