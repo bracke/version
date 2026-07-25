@@ -3747,8 +3747,9 @@ package body Version.CLI is
         or else Data (Data'First .. Data'First + 3)
                 /= Character'Val (255) & "tOc"
       then
-         Error_Line ("unsupported or truncated pack index");
-         Set_Command_Failure;
+         --  git dies (128) on a truncated or non-index stream.
+         Error_Line ("fatal: unsupported or truncated pack index");
+         Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
          return;
       end if;
 
@@ -3794,8 +3795,8 @@ package body Version.CLI is
          Id : constant Version.Objects.Hex_Object_Id :=
            Version.Revisions.Resolve (Repo, Arg (2));
 
-         Content : constant String :=
-           Version.Objects.Content (Version.Objects.Read_Object (Repo, Id));
+         Obj : constant Version.Objects.Git_Object :=
+           Version.Objects.Read_Object (Repo, Id);
 
          Hex : constant String := Version.Objects.To_String (Id);
 
@@ -3804,13 +3805,21 @@ package body Version.CLI is
          Path : constant String :=
            ".merge_file_" & Hex (Hex'First .. Hex'First + 5);
       begin
-         Version.Files.Write_Binary_File (Path, Content);
+         if Version.Objects.Kind (Obj) /= Version.Objects.Blob_Object then
+            --  git only unpacks a blob; anything else dies.
+            Error_Line ("fatal: " & Arg (2) & " is not a blob");
+            Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+            return;
+         end if;
+         Version.Files.Write_Binary_File (Path, Version.Objects.Content (Obj));
          Success_Line (Path);
       end;
    exception
-      when E : Ada.IO_Exceptions.Data_Error | Ada.IO_Exceptions.Name_Error =>
-         Error_Line (Ada.Exceptions.Exception_Message (E));
-         Set_Command_Failure;
+      when Ada.IO_Exceptions.Data_Error | Ada.IO_Exceptions.Name_Error
+         | Constraint_Error =>
+         --  An unresolvable or malformed id: git dies (128).
+         Error_Line ("fatal: unable to unpack " & Arg (2));
+         Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
    end Run_Unpack_File_Command;
 
    --  `prune-packed [-n|--dry-run] [-q|--quiet]` -- drop the loose objects
@@ -29372,8 +29381,9 @@ package body Version.CLI is
          elsif Command = "mktree" then
             declare
                Usage : constant String :=
-                 "version mktree [--missing]  (reads tree entries on stdin)";
+                 "version mktree [-z] [--missing]  (reads tree entries on stdin)";
                Allow_Missing : Boolean := False;
+               Null_Term     : Boolean := False;
                Bad : Boolean := False;
 
                function Read_Stdin return String is
@@ -29400,6 +29410,9 @@ package body Version.CLI is
                for I in 2 .. Count loop
                   if Arg (I) = "--missing" then
                      Allow_Missing := True;
+                  elsif Arg (I) = "-z" then
+                     --  -z: entries are NUL-terminated (and paths unquoted).
+                     Null_Term := True;
                   else
                      Usage_Error ("unknown mktree option: " & Arg (I), Usage);
                      Bad := True;
@@ -29430,10 +29443,13 @@ package body Version.CLI is
                      --  Parse "<mode> SP <type> SP <sha> TAB <path>" per line.
                      while Pos <= Input'Last and then not Failed loop
                         declare
+                           Term     : constant Character :=
+                             (if Null_Term then Character'Val (0)
+                              else Character'Val (10));
                            Line_End : Natural := Pos;
                         begin
                            while Line_End <= Input'Last
-                             and then Input (Line_End) /= Character'Val (10)
+                             and then Input (Line_End) /= Term
                            loop
                               Line_End := Line_End + 1;
                            end loop;
@@ -29958,13 +29974,18 @@ package body Version.CLI is
                end if;
 
                if not Found then
-                  --  git dies (exit 128) on input that is not a well-formed
-                  --  archive carrying a commit id.
-                  Ada.Text_IO.Put_Line
-                    (Ada.Text_IO.Standard_Error,
-                     "fatal: git get-tar-commit-id: EOF before reading tar"
-                     & " header: No such file or directory");
-                  Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                  if Tar'Length < 512 then
+                     --  A short read cannot even hold one tar header: git dies.
+                     Ada.Text_IO.Put_Line
+                       (Ada.Text_IO.Standard_Error,
+                        "fatal: git get-tar-commit-id: EOF before reading tar"
+                        & " header: No such file or directory");
+                     Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                  else
+                     --  A well-formed archive with no commit-id comment (e.g. a
+                     --  tree archive): git exits 1 silently.
+                     Set_Command_Failure;
+                  end if;
                end if;
             end;
 
