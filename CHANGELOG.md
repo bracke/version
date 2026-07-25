@@ -1,3 +1,4 @@
+- Git parity: `apply -` reads the patch from stdin, and the `apply` info modes (`--stat`/`--numstat`/`--shortstat`/`--summary`) combine, rendered in git's fixed order.
 - Git parity: `mktree -z` reads NUL-terminated tree entries; `show-index` on a truncated/non-index stream and `unpack-file` on a non-blob or bad id die (128); `unpack-file` rejects a non-blob; `get-tar-commit-id` exits 1 (silently) on a well-formed archive with no commit id, reserving 128 for a short read.
 - Git parity: `show --raw` prints raw diff records, and `show --first-parent` shows a merge's first-parent diff (both via `Version.Show`).
 - Git parity: `log -S<string>` / `-G<regex>` (pickaxe) keep commits that change a string's occurrence count / whose diff adds or removes a line matching the regex; merges are skipped as git does.

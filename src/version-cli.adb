@@ -19411,14 +19411,13 @@ package body Version.CLI is
                  "version apply [--check] [-R] [-p<n>] [--index] [--cached]"
                  & " [PATCHFILE]";
                Opts     : Version.Apply.Apply_Options;
-               --  0 = apply, 1 = --stat, 2 = --numstat, 3 = --shortstat,
-               --  4 = --summary. The summary modes describe the patch without
-               --  touching the tree.
-               Summ_Mode : Natural := 0;
-               --  --stat and --summary combine (stat block, then summary),
-               --  unlike the single-value Summ_Mode; git renders both in order.
-               Want_Stat_S    : Boolean := False;
-               Want_Summary_S : Boolean := False;
+               --  The info modes describe the patch without touching the tree.
+               --  They combine: git renders stat, numstat, shortstat, then
+               --  summary, in that fixed order, for whichever are requested.
+               Want_Stat      : Boolean := False;
+               Want_Numstat   : Boolean := False;
+               Want_Shortstat : Boolean := False;
+               Want_Summary   : Boolean := False;
                Bad_Opt  : Boolean := False;
                Bad_Text : Unbounded_String;
                File_Idx : Natural := 0;
@@ -19598,13 +19597,13 @@ package body Version.CLI is
                   if Arg (I) = "--check" then
                      Opts.Check := True;
                   elsif Arg (I) = "--stat" then
-                     Summ_Mode := 1;
-                     Want_Stat_S := True;
+                     Want_Stat := True;
                   elsif Arg (I) = "--numstat" then
-                     Summ_Mode := 2;
+                     Want_Numstat := True;
+                  elsif Arg (I) = "--shortstat" then
+                     Want_Shortstat := True;
                   elsif Arg (I) = "--summary" then
-                     Summ_Mode := 4;
-                     Want_Summary_S := True;
+                     Want_Summary := True;
                   elsif Has_Prefix (Arg (I), "--directory=") then
                      Directory := To_Unbounded_String
                        (Arg (I) (Arg (I)'First + 12 .. Arg (I)'Last));
@@ -19650,6 +19649,11 @@ package body Version.CLI is
                            Bad_Text := To_Unbounded_String (Arg (I));
                            exit;
                      end;
+                  elsif Arg (I) = "-" then
+                     --  git's "-" operand means read the patch from stdin,
+                     --  which is what File_Idx = 0 already selects below.
+                     I := I + 1;
+                     exit;
                   elsif Arg (I) = "--" then
                      I := I + 1;
                      exit;
@@ -19692,25 +19696,32 @@ package body Version.CLI is
                        Filtered_Patch
                          (Raw_Patch, To_String (Directory), Includes, Excludes);
                   begin
-                     if Want_Stat_S and then Want_Summary_S then
-                        --  git renders the diffstat, then the summary lines.
-                        Version.Console.Put
-                          (Version.Diff.Summarize_Patch
-                             (Patch_Text, Version.Diff.Summary_Stat));
-                        Version.Console.Put
-                          (Version.Diff.Summarize_Patch
-                             (Patch_Text, Version.Diff.Summary_Names));
-                     elsif Summ_Mode /= 0 then
+                     if Want_Stat or else Want_Numstat
+                       or else Want_Shortstat or else Want_Summary
+                     then
                         --  A summary describes the patch, so the tree is not
-                        --  touched even under --index/--cached.
-                        Version.Console.Put
-                          (Version.Diff.Summarize_Patch
-                             (Patch_Text,
-                              (case Summ_Mode is
-                                  when 1 => Version.Diff.Summary_Stat,
-                                  when 2 => Version.Diff.Summary_Numstat,
-                                  when 3 => Version.Diff.Summary_Shortstat,
-                                  when others => Version.Diff.Summary_Names)));
+                        --  touched even under --index/--cached. Several may be
+                        --  requested at once; git prints them in this order.
+                        if Want_Stat then
+                           Version.Console.Put
+                             (Version.Diff.Summarize_Patch
+                                (Patch_Text, Version.Diff.Summary_Stat));
+                        end if;
+                        if Want_Numstat then
+                           Version.Console.Put
+                             (Version.Diff.Summarize_Patch
+                                (Patch_Text, Version.Diff.Summary_Numstat));
+                        end if;
+                        if Want_Shortstat then
+                           Version.Console.Put
+                             (Version.Diff.Summarize_Patch
+                                (Patch_Text, Version.Diff.Summary_Shortstat));
+                        end if;
+                        if Want_Summary then
+                           Version.Console.Put
+                             (Version.Diff.Summarize_Patch
+                                (Patch_Text, Version.Diff.Summary_Names));
+                        end if;
                      else
                         --  git's --whitespace check: every added line is
                         --  scanned for whitespace errors (trailing blanks,
