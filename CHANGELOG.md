@@ -1,3 +1,4 @@
+- Git parity: `revert --abort`/`cherry-pick --abort` die (128) when no such operation is in progress; `mv -n`/`--dry-run` reports the planned rename without moving.
 - Git parity: `reset -q` (quiet), several mode flags with the last winning (e.g. `--hard --soft`), and dying (128) on two revisions or a mode flag combined with a pathspec.
 - Git parity: `format-patch --stat` (diffstat without the create/delete summary) and `-U<n>`/`--unified=<n>` (diff context).
 - Git parity: `apply -` reads the patch from stdin, and the `apply` info modes (`--stat`/`--numstat`/`--shortstat`/`--summary`) combine, rendered in git's fixed order.

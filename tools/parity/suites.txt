@@ -50,7 +50,7 @@ configtext.fixture      configtext.cases      -     7
 configtext.fixture      configtext2.cases     -     2
 diffplumb.fixture       diffplumb.cases       -    14
 diffplumb2.fixture      diffplumb2.cases      -     6
-wtmutate.fixture        wtmutate.cases        -    13
+wtmutate.fixture        wtmutate.cases        -    10
 wtmutate2.fixture       wtmutate2.cases       -     6
 wtmutate3.fixture       wtmutate3.cases       -    10
 

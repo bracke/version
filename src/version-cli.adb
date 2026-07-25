@@ -16801,8 +16801,15 @@ package body Version.CLI is
                   Success_Line ("continued cherry-pick");
 
                elsif Count = 2 and then Arg (2) = "--abort" then
-                  Version.Cherry_Pick.Abort_Cherry_Pick;
-                  Success_Line ("aborted cherry-pick");
+                  begin
+                     Version.Cherry_Pick.Abort_Cherry_Pick;
+                     Success_Line ("aborted cherry-pick");
+                  exception
+                     when others =>
+                        --  git dies (128) when there is nothing to abort.
+                        Stderr_Line ("fatal: no cherry-pick in progress");
+                        Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                  end;
 
                elsif Count >= 2 then
                   declare
@@ -16910,8 +16917,15 @@ package body Version.CLI is
                   Success_Line ("continued revert");
 
                elsif Count = 2 and then Arg (2) = "--abort" then
-                  Version.Revert.Abort_Revert;
-                  Success_Line ("aborted revert");
+                  begin
+                     Version.Revert.Abort_Revert;
+                     Success_Line ("aborted revert");
+                  exception
+                     when others =>
+                        --  git dies (128) when there is nothing to abort.
+                        Stderr_Line ("fatal: no revert in progress");
+                        Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                  end;
 
                elsif Count >= 2 then
                   declare
@@ -19011,8 +19025,10 @@ package body Version.CLI is
          elsif Command = "mv" then
             declare
                Usage : constant String :=
-                 "version mv [-f] SOURCE DEST | version mv [-f] SOURCE... DIR";
+                 "version mv [-f] [-n] SOURCE DEST"
+                 & " | version mv [-f] SOURCE... DIR";
                Force    : Boolean := False;
+               Dry_Run  : Boolean := False;
                Bad_Opt  : Boolean := False;
                Bad_Text : Unbounded_String;
                I        : Positive := 2;
@@ -19022,6 +19038,9 @@ package body Version.CLI is
                loop
                   if Arg (I) = "-f" or else Arg (I) = "--force" then
                      Force := True;
+                     I := I + 1;
+                  elsif Arg (I) = "-n" or else Arg (I) = "--dry-run" then
+                     Dry_Run := True;
                      I := I + 1;
                   elsif Arg (I) = "--" then
                      I := I + 1;
@@ -19100,6 +19119,15 @@ package body Version.CLI is
                           and then Ada.Directories.Kind (Src)
                                    = Ada.Directories.Directory;
                      begin
+                        if Dry_Run then
+                           --  git's -n reports the planned rename without
+                           --  touching the index or working tree.
+                           Success_Line
+                             ("Checking rename of '" & Src & "' to '"
+                              & Dest & "'");
+                           Success_Line ("Renaming " & Src & " to " & Dest);
+                           return;
+                        end if;
                         --  git renames a directory with one rename(2), so the
                         --  new directory appears but its parent must already
                         --  exist. Replaying that as a file-by-file move would
