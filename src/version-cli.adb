@@ -10560,6 +10560,10 @@ package body Version.CLI is
                Summary : Boolean := False;
                Raw_Flag : Boolean := False;
                Patch_With_Raw : Boolean := False;
+               Patch_With_Stat : Boolean := False;
+               Diff_Filter_V : Unbounded_String := Null_Unbounded_String;
+               Diff_Text_Flag : Boolean := False;
+               No_Index_Flag : Boolean := False;
                Compact_Flag : Boolean := False;
                Stat_Width_V : Natural := 0;
                Dirstat_On   : Boolean := False;
@@ -10777,6 +10781,22 @@ package body Version.CLI is
                      if Rename_Mode = Version.Diff.Renames_Default then
                         Rename_Mode := Version.Diff.Renames_On;
                      end if;
+                  elsif Arg (I) = "--patch-with-stat" then
+                     --  The --stat summary, a blank line, then the patch.
+                     Patch_With_Stat := True;
+                  elsif Has_Prefix (Arg (I), "--diff-filter=") then
+                     --  Select shown paths by change letter (ACDMRT, lower
+                     --  excludes); rename letters need detection on.
+                     Diff_Filter_V := To_Unbounded_String
+                       (Arg (I) (Arg (I)'First + 14 .. Arg (I)'Last));
+                     if Rename_Mode = Version.Diff.Renames_Default
+                       and then (Ada.Strings.Fixed.Index
+                                   (To_String (Diff_Filter_V), "R") /= 0
+                                 or else Ada.Strings.Fixed.Index
+                                   (To_String (Diff_Filter_V), "C") /= 0)
+                     then
+                        Rename_Mode := Version.Diff.Renames_On;
+                     end if;
                   elsif Arg (I) = "--numstat" then
                      Numstat := True;
                   elsif Arg (I) = "--shortstat" then
@@ -10828,6 +10848,12 @@ package body Version.CLI is
                      Silent := True;
                   elsif Arg (I) = "--binary" then
                      Binary_Patch := True;
+                  elsif Arg (I) = "--text" or else Arg (I) = "-a" then
+                     --  Treat every file as text, even with NUL bytes.
+                     Diff_Text_Flag := True;
+                  elsif Arg (I) = "--no-index" then
+                     --  Compare two files outside any repository.
+                     No_Index_Flag := True;
                   elsif Arg (I) = "--no-color" or else Arg (I) = "--color=never"
                     or else Arg (I) = "--color=auto"
                   then
@@ -10869,6 +10895,8 @@ package body Version.CLI is
                         Raw => Raw_Flag,
                         Compact_Summary => Compact_Flag,
                         Stat_Width => Stat_Width_V,
+                        Diff_Filter => Diff_Filter_V,
+                        Diff_Text => Diff_Text_Flag,
                         Name_Only => Name_Only,
                         Name_Status => Name_Status,
                         Context_Lines => Context,
@@ -10876,6 +10904,78 @@ package body Version.CLI is
                         Rename_Score => Rename_Score,
                         Binary_Patch => Binary_Patch,
                         others => <>);
+
+               --  `--no-index <old> <new>`: diff two files outside the repo.
+               --  Exit 1 when they differ, 0 when identical (like `diff`).
+               if No_Index_Flag then
+                  if LCount /= 3 then
+                     Usage_Error
+                       ("--no-index needs exactly two paths", Usage);
+                     return;
+                  end if;
+                  declare
+                     use Ada.Streams.Stream_IO;
+                     function Slurp (Path : String; OK : out Boolean)
+                       return String
+                     is
+                        F   : File_Type;
+                        Acc : Unbounded_String;
+                        Buf : Ada.Streams.Stream_Element_Array (1 .. 65536);
+                        Lst : Ada.Streams.Stream_Element_Offset;
+                        use type Ada.Streams.Stream_Element_Offset;
+                     begin
+                        OK := True;
+                        Open (F, In_File, Path);
+                        while not End_Of_File (F) loop
+                           Read (F, Buf, Lst);
+                           declare
+                              S : String (1 .. Natural (Lst));
+                           begin
+                              for K in 1 .. Lst loop
+                                 S (Natural (K)) := Character'Val (Buf (K));
+                              end loop;
+                              Append (Acc, S);
+                           end;
+                        end loop;
+                        Close (F);
+                        return To_String (Acc);
+                     exception
+                        when others =>
+                           OK := False;
+                           return "";
+                     end Slurp;
+
+                     P1 : constant String := LArg (2);
+                     P2 : constant String := LArg (3);
+                     OK1, OK2 : Boolean;
+                     C1 : constant String := Slurp (P1, OK1);
+                     C2 : constant String := Slurp (P2, OK2);
+                  begin
+                     if not OK1 or else not OK2 then
+                        --  git prints "error: Could not access '<path>'" and
+                        --  exits 1 (not a die()).
+                        Ada.Text_IO.Put_Line
+                          (Ada.Text_IO.Standard_Error,
+                           "error: Could not access '"
+                           & (if not OK1 then P1 else P2) & "'");
+                        Ada.Command_Line.Set_Exit_Status (1);
+                        return;
+                     end if;
+                     declare
+                        Patch : constant String :=
+                          Version.Diff.No_Index_Diff
+                            (Old_Path => P1, New_Path => P2,
+                             Old_Text => C1, New_Text => C2,
+                             Context  => Context);
+                     begin
+                        Emit (Patch);
+                        if Patch'Length > 0 then
+                           Ada.Command_Line.Set_Exit_Status (1);
+                        end if;
+                     end;
+                     return;
+                  end;
+               end if;
 
                --  Range notation as a single operand: `A..B` diffs A against
                --  B, `A...B` diffs their merge base against B. An empty side
@@ -10932,11 +11032,15 @@ package body Version.CLI is
                                 (Repo, Old_Id, New_Id,
                                  (Opts with delta Raw => True))
                               & ASCII.LF
-                              & Version.Diff.Diff_Commits
-                                  (Repo, Old_Id, New_Id, Opts)
-                            else
-                              Version.Diff.Diff_Commits
-                                (Repo, Old_Id, New_Id, Opts)));
+                              else "")
+                           & (if Patch_With_Stat then
+                                Version.Diff.Diff_Commits
+                                  (Repo, Old_Id, New_Id,
+                                   (Opts with delta Stat => True))
+                                & ASCII.LF
+                              else "")
+                           & Version.Diff.Diff_Commits
+                               (Repo, Old_Id, New_Id, Opts));
                         return;
                      end;
                   exception
@@ -11096,11 +11200,15 @@ package body Version.CLI is
                                 (Repo, Old_Id, New_Id,
                                  (Opts with delta Raw => True))
                               & ASCII.LF
-                              & Version.Diff.Diff_Commits
-                                  (Repo, Old_Id, New_Id, Opts)
-                            else
-                              Version.Diff.Diff_Commits
-                                (Repo, Old_Id, New_Id, Opts)));
+                              else "")
+                           & (if Patch_With_Stat then
+                                Version.Diff.Diff_Commits
+                                  (Repo, Old_Id, New_Id,
+                                   (Opts with delta Stat => True))
+                                & ASCII.LF
+                              else "")
+                           & Version.Diff.Diff_Commits
+                               (Repo, Old_Id, New_Id, Opts));
                      else
                         Emit
                           (Version.Diff.Diff_Working_Tree

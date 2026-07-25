@@ -1,3 +1,7 @@
+- Git parity: `diff --no-index <old> <new>` diffs two files outside any repository (SHA-1 blob ids, exit 1 when they differ), via the new `Version.Diff.No_Index_Diff`.
+- Git parity: `diff --diff-filter=<letters>` selects shown paths by change status (uppercase includes, lowercase excludes) across every output format.
+- Git parity: `diff --text`/`-a` renders files with NUL bytes as a text patch instead of "Binary files ... differ".
+- Git parity: `diff --patch-with-stat` prints the `--stat` summary, a blank line, then the patch.
 - Git parity: `diff --dirstat[=<param,...>]` (and `--cumulative`) reports per-directory change share, a faithful port of git's show_dirstat/gather_dirstat with the changes/lines/files modes, cut-off percentage, cumulative rollup, and rename detection.
 - Git parity: `diff --stat=<width>[,<name-width>[,<count>]]` sets the diffstat line width (leading number).
 - Git parity: `diff-tree --compact-summary` prints the annotated diffstat (renames stay off unless -M, as plumbing).
