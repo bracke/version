@@ -1,3 +1,6 @@
+- Git parity: subcommand-style `config` (git 2.46+) — `config list`/`get`/`set`/`unset`/`rename-section`/`remove-section` with their options (`--all`, `--regexp`, `--value`, `--default`, `--type=`, `--name-only`, `--show-scope`, `--show-origin`, `--show-names`, `--null`, scope flags), matching git's outputs and exit codes.
+- Git parity: `config --add` appends the new value at the end of the key's section block, as git does (was inserted next to the other values).
+- Git parity: `config rename-section OLD NEW` (new `Version.Config.Rename_Section`).
 - Git parity: `diff --no-index <old> <new>` diffs two files outside any repository (SHA-1 blob ids, exit 1 when they differ), via the new `Version.Diff.No_Index_Diff`.
 - Git parity: `diff --diff-filter=<letters>` selects shown paths by change status (uppercase includes, lowercase excludes) across every output format.
 - Git parity: `diff --text`/`-a` renders files with NUL bytes as a text patch instead of "Binary files ... differ".

@@ -3595,8 +3595,8 @@ package body Version.CLI.Tests is
          "version config get KEY",
          "config get missing key");
       Check_Usage_Failure
-        ("config get --name-only",
-         "unknown config get option: --name-only",
+        ("config get --bogus",
+         "unknown config get option: --bogus",
          "version config get KEY",
          "config get unknown option");
       Check_Usage_Failure

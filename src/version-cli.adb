@@ -1115,6 +1115,11 @@ package body Version.CLI is
       end if;
    end Is_Classic_Config_Invocation;
 
+   --  git's 2.46+ subcommand verbs, handled by Run_Config_Subcommand.
+   function Is_Config_Subcommand (A : String) return Boolean is
+     (A = "list" or else A = "get" or else A = "set" or else A = "unset"
+      or else A = "remove-section" or else A = "rename-section");
+
    procedure Run_Classic_Config_Command is
       Usage : constant String :=
         "version config [--get|--unset] NAME [VALUE] | config --list";
@@ -1396,6 +1401,465 @@ package body Version.CLI is
          Set_Command_Failure;
       end if;
    end Run_Classic_Config_Command;
+
+   --  git's subcommand-style `config <verb> ...` (2.46+). The verb and its own
+   --  options replace the old flag spellings (`get --all` == `--get-all`,
+   --  `set --append` == `--add`, ...); it reuses the same Version.Config
+   --  primitives as the classic form.
+   procedure Run_Config_Subcommand is
+      Repo : constant Version.Repository.Repository_Handle :=
+        Version.Repository.Open;
+      Sub  : constant String := Arg (2);
+      Usage : constant String :=
+        (if Sub = "get" then "version config get KEY"
+         elsif Sub = "set" then "version config set KEY VALUE"
+         elsif Sub = "unset" then "version config unset KEY"
+         elsif Sub = "remove-section" then "version config remove-section NAME"
+         elsif Sub = "rename-section"
+         then "version config rename-section OLD NEW"
+         else "version config list");
+      NL    : constant Character := ASCII.LF;
+
+      Name_Only, Null_Term, Show_Scope, Show_Origin, Show_Names : Boolean :=
+        False;
+      Want_All, Want_Regexp, Want_Append, Global_Scope : Boolean := False;
+      As_Bool, As_Int : Boolean := False;
+      Have_Default : Boolean := False;
+      Default_Text : Unbounded_String;
+      Have_VFilter : Boolean := False;
+      VFilter      : Unbounded_String;
+      Pos  : array (1 .. 3) of Unbounded_String;
+      NPos : Natural := 0;
+      I    : Positive := 3;
+
+      function CI_Equal (A, B : String) return Boolean is
+        (Lower_ASCII (A) = Lower_ASCII (B));
+
+      function Regex_Matches (Pattern, Text : String) return Boolean is
+      begin
+         return GNAT.Regpat.Match
+                  (GNAT.Regpat.Compile (Pattern), Text) >= Text'First;
+      exception
+         when others =>
+            return False;
+      end Regex_Matches;
+
+      function Bool_Norm (Raw : String; OK : out Boolean) return String is
+         L : constant String := Lower_ASCII (Version.Config.Trim (Raw));
+      begin
+         OK := True;
+         if L = "true" or else L = "yes" or else L = "on" or else L = "1" then
+            return "true";
+         elsif L = "false" or else L = "no" or else L = "off"
+           or else L = "0" or else L = ""
+         then
+            return "false";
+         else
+            OK := False;
+            return "";
+         end if;
+      end Bool_Norm;
+
+      function Int_Norm (Raw : String; OK : out Boolean) return String is
+         T    : constant String := Version.Config.Trim (Raw);
+         Mult : Long_Long_Integer := 1;
+         Last : Integer;
+      begin
+         OK := True;
+         if T'Length = 0 then
+            OK := False;
+            return "";
+         end if;
+         Last := T'Last;
+         case T (T'Last) is
+            when 'k' | 'K' => Mult := 1024;               Last := T'Last - 1;
+            when 'm' | 'M' => Mult := 1024 * 1024;        Last := T'Last - 1;
+            when 'g' | 'G' => Mult := 1024 * 1024 * 1024; Last := T'Last - 1;
+            when others    => null;
+         end case;
+         return Ada.Strings.Fixed.Trim
+           (Long_Long_Integer'Image
+              (Long_Long_Integer'Value (T (T'First .. Last)) * Mult),
+            Ada.Strings.Left);
+      exception
+         when others =>
+            OK := False;
+            return "";
+      end Int_Norm;
+
+      --  git dies (128) on a value that will not convert to the asked type.
+      procedure Type_Error (Key, Raw : String) is
+      begin
+         Ada.Text_IO.Put_Line
+           (Ada.Text_IO.Standard_Error,
+            "fatal: bad "
+            & (if As_Bool then "boolean" else "numeric")
+            & " config value '" & Raw & "' for '" & Key & "'");
+         Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+      end Type_Error;
+
+      --  Apply --type=; sets OK False (caller emits Type_Error) on a bad value.
+      function Typed (Raw : String; OK : out Boolean) return String is
+      begin
+         if As_Bool then
+            return Bool_Norm (Raw, OK);
+         elsif As_Int then
+            return Int_Norm (Raw, OK);
+         else
+            OK := True;
+            return Raw;
+         end if;
+      end Typed;
+
+      function Scope_Prefix return String is
+        (if Show_Scope then "local" & ASCII.HT
+         elsif Show_Origin then "file:.git/config" & ASCII.HT
+         else "");
+
+      --  How many stored entries a key names (to tell a multivar apart).
+      function Value_Count (Key : String) return Natural is
+         N : Natural := 0;
+      begin
+         for E of Version.Config.Read_All (Repo) loop
+            if CI_Equal (Version.Config.Config_Entry_Name (E), Key) then
+               N := N + 1;
+            end if;
+         end loop;
+         return N;
+      end Value_Count;
+
+      function Section_Exists (Section : String) return Boolean is
+      begin
+         for E of Version.Config.Read_All (Repo) loop
+            if CI_Equal (To_String (E.Section), Section) then
+               return True;
+            end if;
+         end loop;
+         return False;
+      end Section_Exists;
+   begin
+      --  Parse options and positionals after the verb (from index 3).
+      while I <= Count loop
+         declare
+            A : constant String := Arg (I);
+         begin
+            if A = "--name-only" then
+               Name_Only := True;
+            elsif A = "--null" or else A = "-z" then
+               Null_Term := True;
+            elsif A = "--show-scope" then
+               Show_Scope := True;
+            elsif A = "--show-origin" then
+               Show_Origin := True;
+            elsif A = "--show-names" then
+               Show_Names := True;
+            elsif A = "--all" then
+               Want_All := True;
+            elsif A = "--regexp" then
+               Want_Regexp := True;
+            elsif A = "--append" then
+               Want_Append := True;
+            elsif A = "--fixed-value" then
+               null;
+            elsif A = "--local" or else A = "--worktree" then
+               null;   --  one config file here; scoping the read changes nothing
+            elsif A = "--global" or else A = "--system" then
+               Global_Scope := True;
+            elsif Has_Prefix (A, "--file=") then
+               null;   --  read this repo's config (the usual --file .git/config)
+            elsif A = "--file" or else A = "-f" then
+               if I < Count then
+                  I := I + 1;   --  skip the path; only this repo's config is read
+               end if;
+            elsif A = "--bool" or else A = "--type=bool" then
+               As_Bool := True;
+            elsif A = "--int" or else A = "--type=int"
+              or else A = "--type=bool-or-int"
+            then
+               As_Int := True;
+            elsif A = "--path" or else A = "--type=path"
+              or else A = "--type=string" or else A = "--type=color"
+              or else A = "--url"
+            then
+               null;   --  stored form already suits these here
+            elsif A = "--default" then
+               if I >= Count then
+                  Usage_Error ("--default requires a value", Usage);
+                  return;
+               end if;
+               Have_Default := True;
+               Default_Text := To_Unbounded_String (Arg (I + 1));
+               I := I + 1;
+            elsif A = "--value" then
+               if I >= Count then
+                  Usage_Error ("--value requires a value", Usage);
+                  return;
+               end if;
+               Have_VFilter := True;
+               VFilter := To_Unbounded_String (Arg (I + 1));
+               I := I + 1;
+            elsif A'Length > 0 and then A (A'First) = '-' then
+               Usage_Error ("unknown config " & Sub & " option: " & A, Usage);
+               return;
+            elsif NPos < 3 then
+               NPos := NPos + 1;
+               Pos (NPos) := To_Unbounded_String (A);
+            else
+               Usage_Error ("too many config " & Sub & " arguments", Usage);
+               return;
+            end if;
+         end;
+         I := I + 1;
+      end loop;
+
+      if Sub = "list" then
+         if NPos > 0 then
+            Usage_Error ("too many config list arguments", Usage);
+            return;
+         elsif Global_Scope then
+            --  This tool keeps no global/system config file, so git's read of
+            --  it fails; git dies (128) rather than listing nothing.
+            Ada.Text_IO.Put_Line
+              (Ada.Text_IO.Standard_Error,
+               "fatal: unable to read config file");
+            Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+            return;
+         end if;
+         for E of Version.Config.Read_All (Repo) loop
+            declare
+               Nm : constant String := Version.Config.Config_Entry_Name (E);
+               Vl : constant String := To_String (E.Value);
+            begin
+               if Null_Term then
+                  if Name_Only then
+                     Version.Console.Put (Nm & ASCII.NUL);
+                  else
+                     Version.Console.Put (Nm & NL & Vl & ASCII.NUL);
+                  end if;
+               elsif Name_Only then
+                  Version.Console.Put (Scope_Prefix & Nm & NL);
+               else
+                  Version.Console.Put (Scope_Prefix & Nm & "=" & Vl & NL);
+               end if;
+            end;
+         end loop;
+         return;
+      end if;
+
+      if Sub = "get" then
+         if NPos < 1 then
+            Usage_Error ("missing config key", Usage);
+            return;
+         elsif NPos > 1 then
+            Usage_Error ("too many config get arguments", Usage);
+            return;
+         elsif Global_Scope then
+            --  A global/system read this tool does not keep: nothing found.
+            if Have_Default then
+               Version.Console.Put (To_String (Default_Text) & NL);
+            else
+               Set_Command_Failure;
+            end if;
+            return;
+         end if;
+         declare
+            Pat        : constant String := To_String (Pos (1));
+            Found      : Boolean := False;
+            Last_Value : Unbounded_String;
+         begin
+            for E of Version.Config.Read_All (Repo) loop
+               declare
+                  Nm  : constant String :=
+                    Version.Config.Config_Entry_Name (E);
+                  Vl  : constant String := To_String (E.Value);
+                  Hit : constant Boolean :=
+                    (if Want_Regexp then Regex_Matches (Pat, Nm)
+                     else CI_Equal (Nm, Pat));
+               begin
+                  if Hit
+                    and then (not Have_VFilter
+                              or else Vl = To_String (VFilter))
+                  then
+                     Found := True;
+                     Last_Value := E.Value;
+                     if Want_All then
+                        declare
+                           TOK : Boolean;
+                           TV  : constant String := Typed (Vl, TOK);
+                        begin
+                           if not TOK then
+                              Type_Error (Nm, Vl);
+                              return;
+                           end if;
+                           --  git's `get --name-only` prints an empty field.
+                           if Name_Only then
+                              Version.Console.Put
+                                ((if Null_Term then "" & ASCII.NUL
+                                  else "" & NL));
+                           elsif Show_Names then
+                              Version.Console.Put
+                                (Nm & " " & TV
+                                 & (if Null_Term then ASCII.NUL else NL));
+                           else
+                              Version.Console.Put
+                                (Scope_Prefix & TV
+                                 & (if Null_Term then ASCII.NUL else NL));
+                           end if;
+                        end;
+                     end if;
+                  end if;
+               end;
+            end loop;
+
+            if not Want_All then
+               --  A single read returns the last value that matched.
+               if Found then
+                  declare
+                     TOK : Boolean;
+                     TV  : constant String := Typed (To_String (Last_Value), TOK);
+                  begin
+                     if not TOK then
+                        Type_Error (Pat, To_String (Last_Value));
+                        return;
+                     end if;
+                     if Name_Only then
+                        Version.Console.Put ("" & NL);
+                     else
+                        Version.Console.Put (Scope_Prefix & TV & NL);
+                     end if;
+                  end;
+               elsif Have_Default then
+                  Version.Console.Put (To_String (Default_Text) & NL);
+               else
+                  Set_Command_Failure;
+               end if;
+            elsif not Found then
+               if Have_Default then
+                  Version.Console.Put (To_String (Default_Text) & NL);
+               else
+                  Set_Command_Failure;
+               end if;
+            end if;
+         end;
+         return;
+      end if;
+
+      if Sub = "set" then
+         if NPos < 1 then
+            Usage_Error ("missing config key", Usage);
+            return;
+         elsif NPos < 2 then
+            Usage_Error ("missing config value", Usage);
+            return;
+         elsif NPos > 2 then
+            Usage_Error ("too many config set arguments", Usage);
+            return;
+         end if;
+         declare
+            Key   : constant String := To_String (Pos (1));
+            Raw   : constant String := To_String (Pos (2));
+            Store : Unbounded_String := Pos (2);
+            TOK   : Boolean;
+         begin
+            if As_Bool or else As_Int then
+               declare
+                  TV : constant String := Typed (Raw, TOK);
+               begin
+                  if not TOK then
+                     Type_Error (Key, Raw);
+                     return;
+                  end if;
+                  Store := To_Unbounded_String (TV);
+               end;
+            end if;
+            if Want_Append then
+               Version.Config.Add_Value (Repo, Key, To_String (Store));
+            elsif Want_All then
+               Version.Config.Set_Key (Repo, Key, To_String (Store));
+            elsif Value_Count (Key) > 1 then
+               --  git refuses to overwrite a multivar without --all (exit 5).
+               Ada.Text_IO.Put_Line
+                 (Ada.Text_IO.Standard_Error,
+                  "warning: " & Key & " has multiple values");
+               Ada.Command_Line.Set_Exit_Status
+                 (Ada.Command_Line.Exit_Status (5));
+            else
+               Version.Config.Set_Key (Repo, Key, To_String (Store));
+            end if;
+         end;
+         return;
+      end if;
+
+      if Sub = "unset" then
+         if NPos < 1 then
+            Usage_Error ("missing config key", Usage);
+            return;
+         elsif NPos > 1 then
+            Usage_Error ("too many config unset arguments", Usage);
+            return;
+         end if;
+         declare
+            Key : constant String := To_String (Pos (1));
+         begin
+            if not Version.Config.Has_Key (Repo, Key) then
+               Ada.Command_Line.Set_Exit_Status
+                 (Ada.Command_Line.Exit_Status (5));   --  nothing to unset
+            elsif Want_All then
+               Version.Config.Unset_All (Repo, Key);
+            elsif Value_Count (Key) > 1 then
+               Ada.Text_IO.Put_Line
+                 (Ada.Text_IO.Standard_Error,
+                  "warning: " & Key & " has multiple values");
+               Ada.Command_Line.Set_Exit_Status
+                 (Ada.Command_Line.Exit_Status (5));
+            else
+               Version.Config.Unset_Key (Repo, Key);
+            end if;
+         end;
+         return;
+      end if;
+
+      if Sub = "remove-section" then
+         if NPos < 1 then
+            Usage_Error ("missing section name", Usage);
+            return;
+         end if;
+         declare
+            Sec : constant String := To_String (Pos (1));
+         begin
+            if not Section_Exists (Sec) then
+               Ada.Text_IO.Put_Line
+                 (Ada.Text_IO.Standard_Error,
+                  "fatal: no such section: " & Sec);
+               Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+            else
+               Version.Config.Remove_Section (Repo, Sec);
+            end if;
+         end;
+         return;
+      end if;
+
+      if Sub = "rename-section" then
+         if NPos < 2 then
+            Usage_Error ("rename-section needs OLD and NEW", Usage);
+            return;
+         end if;
+         declare
+            Old_Name : constant String := To_String (Pos (1));
+         begin
+            if not Section_Exists (Old_Name) then
+               Ada.Text_IO.Put_Line
+                 (Ada.Text_IO.Standard_Error,
+                  "fatal: no such section: " & Old_Name);
+               Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+            else
+               Version.Config.Rename_Section
+                 (Repo, Old_Name, To_String (Pos (2)));
+            end if;
+         end;
+         return;
+      end if;
+   end Run_Config_Subcommand;
 
    --  git's `log --author=<pat>` and `--grep=<pat>`: keep the commits whose
    --  author identity, respectively whose message, matches. Both are regular
@@ -24612,6 +25076,12 @@ package body Version.CLI is
                end;
 
             end if;
+
+         elsif Command = "config"
+           and then Count >= 2
+           and then Is_Config_Subcommand (Arg (2))
+         then
+            Run_Config_Subcommand;
 
          elsif Command = "config"
            and then Count >= 2
