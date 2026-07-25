@@ -1,3 +1,4 @@
+- Git parity: `show --raw` prints raw diff records, and `show --first-parent` shows a merge's first-parent diff (both via `Version.Show`).
 - Git parity: `log -S<string>` / `-G<regex>` (pickaxe) keep commits that change a string's occurrence count / whose diff adds or removes a line matching the regex; merges are skipped as git does.
 - Git parity: `log --no-walk[=sorted|unsorted]` shows just the named commits without walking ancestry.
 - Git parity: `show <rev>:<path>` for a path absent from the tree dies (128), and `reflog show <nonexistent-ref>` dies (128), as git does.

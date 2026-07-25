@@ -12490,6 +12490,8 @@ package body Version.CLI is
                Numstat  : Boolean := False;
                Shortstat : Boolean := False;
                Summary  : Boolean := False;
+               Raw_Flag : Boolean := False;
+               First_Parent : Boolean := False;
                Fmt      : Unbounded_String;
                Fmt_Oneline : Boolean := False;
                Date_Mode : Unbounded_String;
@@ -12509,6 +12511,10 @@ package body Version.CLI is
                      Shortstat := True;
                   elsif Arg (I) = "--summary" then
                      Summary := True;
+                  elsif Arg (I) = "--raw" then
+                     Raw_Flag := True;
+                  elsif Arg (I) = "--first-parent" then
+                     First_Parent := True;
                   elsif Arg (I) = "-s" or else Arg (I) = "--no-patch" then
                      No_Patch := True;
                   elsif Arg (I) = "--oneline" then
@@ -12553,6 +12559,7 @@ package body Version.CLI is
                         Numstat     => Numstat,
                         Shortstat   => Shortstat,
                         Summary     => Summary,
+                        Raw         => Raw_Flag,
                         others      => <>);
                   begin
                      for R_Idx in Revs.First_Index .. Revs.Last_Index loop
@@ -12664,7 +12671,8 @@ package body Version.CLI is
                                     Oneline  => Oneline,
                                     Format   => To_String (Fmt),
                                     Format_Oneline => Fmt_Oneline,
-                                    Date_Mode => To_String (Date_Mode)));
+                                    Date_Mode => To_String (Date_Mode),
+                                    First_Parent => First_Parent));
                            end if;
                         end;
                      end loop;

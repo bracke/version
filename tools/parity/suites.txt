@@ -44,7 +44,7 @@ mergeconflict.fixture   mergeconflict.cases   -     0
 refs.fixture            refs.cases            -    28
 refs2.fixture           refs2.cases           -     1
 plumbing.fixture        plumbing.cases        -    18
-histinspect.fixture     histinspect.cases     -    12
+histinspect.fixture     histinspect.cases     -    10
 histinspect2.fixture    histinspect2.cases    -    17
 configtext.fixture      configtext.cases      -     7
 configtext.fixture      configtext2.cases     -     2
