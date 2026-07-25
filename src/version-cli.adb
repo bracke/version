@@ -1120,6 +1120,52 @@ package body Version.CLI is
      (A = "list" or else A = "get" or else A = "set" or else A = "unset"
       or else A = "remove-section" or else A = "rename-section");
 
+   --  Canonicalise a config value under --type=bool: git's accepted spellings
+   --  fold to "true"/"false"; anything else is a bad boolean (OK False).
+   function Config_Bool_Norm (Raw : String; OK : out Boolean) return String is
+      L : constant String := Lower_ASCII (Version.Config.Trim (Raw));
+   begin
+      OK := True;
+      if L = "true" or else L = "yes" or else L = "on" or else L = "1" then
+         return "true";
+      elsif L = "false" or else L = "no" or else L = "off"
+        or else L = "0" or else L = ""
+      then
+         return "false";
+      else
+         OK := False;
+         return "";
+      end if;
+   end Config_Bool_Norm;
+
+   --  --type=int: parse git's k/m/g unit suffixes; OK False on a bad number.
+   function Config_Int_Norm (Raw : String; OK : out Boolean) return String is
+      T    : constant String := Version.Config.Trim (Raw);
+      Mult : Long_Long_Integer := 1;
+      Last : Integer;
+   begin
+      OK := True;
+      if T'Length = 0 then
+         OK := False;
+         return "";
+      end if;
+      Last := T'Last;
+      case T (T'Last) is
+         when 'k' | 'K' => Mult := 1024;               Last := T'Last - 1;
+         when 'm' | 'M' => Mult := 1024 * 1024;        Last := T'Last - 1;
+         when 'g' | 'G' => Mult := 1024 * 1024 * 1024; Last := T'Last - 1;
+         when others    => null;
+      end case;
+      return Ada.Strings.Fixed.Trim
+        (Long_Long_Integer'Image
+           (Long_Long_Integer'Value (T (T'First .. Last)) * Mult),
+         Ada.Strings.Left);
+   exception
+      when others =>
+         OK := False;
+         return "";
+   end Config_Int_Norm;
+
    procedure Run_Classic_Config_Command is
       Usage : constant String :=
         "version config [--get|--unset] NAME [VALUE] | config --list";
@@ -1137,8 +1183,12 @@ package body Version.CLI is
       Want_Unset_All : Boolean := False;
       Want_Add     : Boolean := False;
       Want_Replace : Boolean := False;
+      Want_Rename  : Boolean := False;
       Global_Scope : Boolean := False;
       Remove_Sect  : Boolean := False;
+
+      --  Raised by Typed when a value will not convert to --type=; git dies.
+      Config_Type_Bad : exception;
 
       --  git's config key-regex is a POSIX ERE over the whole "section.key".
       function Regex_Matches (Pattern, Text : String) return Boolean is
@@ -1149,8 +1199,32 @@ package body Version.CLI is
          when others =>
             return False;
       end Regex_Matches;
+
+      function Section_Exists (Section : String) return Boolean is
+      begin
+         for E of Version.Config.Read_All (Repo) loop
+            if Lower_ASCII (To_String (E.Section)) = Lower_ASCII (Section) then
+               return True;
+            end if;
+         end loop;
+         return False;
+      end Section_Exists;
+
+      function Value_Count (Name : String) return Natural is
+         N : Natural := 0;
+      begin
+         for E of Version.Config.Read_All (Repo) loop
+            if Lower_ASCII (Version.Config.Config_Entry_Name (E)) =
+                 Lower_ASCII (Name)
+            then
+               N := N + 1;
+            end if;
+         end loop;
+         return N;
+      end Value_Count;
       As_Bool      : Boolean := False;
       As_Int       : Boolean := False;
+      As_Bool_Or_Int : Boolean := False;
       Have_Default : Boolean := False;
       Default_Text : Unbounded_String;
       Key          : Unbounded_String;
@@ -1159,28 +1233,37 @@ package body Version.CLI is
       Have_Value   : Boolean := False;
       I            : Positive := 2;
 
-      --  git prints a boolean canonically whatever spelling is stored.
-      function Bool_Text (Raw : String) return String is
-         Lower : constant String := Lower_ASCII (Version.Config.Trim (Raw));
-      begin
-         if Lower = "true" or else Lower = "yes" or else Lower = "on"
-           or else Lower = "1"
-         then
-            return "true";
-         else
-            return "false";
-         end if;
-      end Bool_Text;
-
+      --  Apply --type= to a value; git dies (Config_Type_Bad) when the stored
+      --  value does not fit the asked type (e.g. --type=bool on "T").
       function Typed (Raw : String) return String is
+         OK : Boolean := True;
       begin
          if As_Bool then
-            return Bool_Text (Raw);
+            return R : constant String := Config_Bool_Norm (Raw, OK) do
+               if not OK then
+                  raise Config_Type_Bad;
+               end if;
+            end return;
          elsif As_Int then
-            return Ada.Strings.Fixed.Trim
-              (Long_Long_Integer'Image
-                 (Long_Long_Integer'Value (Version.Config.Trim (Raw))),
-               Ada.Strings.Left);
+            return R : constant String := Config_Int_Norm (Raw, OK) do
+               if not OK then
+                  raise Config_Type_Bad;
+               end if;
+            end return;
+         elsif As_Bool_Or_Int then
+            --  git tries bool spellings first, then an integer.
+            declare
+               B : constant String := Config_Bool_Norm (Raw, OK);
+            begin
+               if OK then
+                  return B;
+               end if;
+            end;
+            return R : constant String := Config_Int_Norm (Raw, OK) do
+               if not OK then
+                  raise Config_Type_Bad;
+               end if;
+            end return;
          else
             return Raw;
          end if;
@@ -1214,6 +1297,8 @@ package body Version.CLI is
                Want_Replace := True;
             elsif A = "--remove-section" then
                Remove_Sect := True;
+            elsif A = "--rename-section" then
+               Want_Rename := True;
             elsif A = "--local" or else A = "--worktree" then
                --  This tool has one config file, so naming which one to read
                --  or write changes nothing; accepted so scripts that scope a
@@ -1224,19 +1309,25 @@ package body Version.CLI is
                --  refusing the flag would break `config --global --get`;
                --  treat it as a read of nothing rather than an error.
                Global_Scope := True;
-            elsif Has_Prefix (A, "--file=") or else A = "--file"
-              or else A = "-f"
-            then
-               if A = "--file" or else A = "-f" then
-                  I := I + 1;   --  skip the path; only this repo's config is read
+            elsif Has_Prefix (A, "--file=") then
+               --  Read the named file when it exists (usually .git/config, this
+               --  repo's own); a missing file reads as an empty config.
+               if not Ada.Directories.Exists (A (A'First + 7 .. A'Last)) then
+                  Global_Scope := True;
                end if;
-               Global_Scope := True;
+            elsif A = "--file" or else A = "-f" then
+               if I < Count then
+                  if not Ada.Directories.Exists (Arg (I + 1)) then
+                     Global_Scope := True;
+                  end if;
+                  I := I + 1;
+               end if;
             elsif A = "--bool" or else A = "--type=bool" then
                As_Bool := True;
-            elsif A = "--int" or else A = "--type=int"
-              or else A = "--type=bool-or-int"
-            then
+            elsif A = "--int" or else A = "--type=int" then
                As_Int := True;
+            elsif A = "--type=bool-or-int" then
+               As_Bool_Or_Int := True;
             elsif A = "--path" or else A = "--type=path"
               or else A = "--type=string" or else A = "--type=color"
             then
@@ -1266,19 +1357,26 @@ package body Version.CLI is
          I := I + 1;
       end loop;
 
-      --  --global/--system/--file read a config this tool does not keep, so a
-      --  get there finds nothing (exit 1) and a list is empty.
-      if Global_Scope and then not Have_Key then
-         if not List_Mode then
-            Set_Command_Failure;
+      --  --global/--system/--file <missing> name a config this tool does not
+      --  keep. git's read of it fails: a list dies (128, "unable to read"),
+      --  and a get finds nothing (exit 1, or the --default).
+      if Global_Scope then
+         if List_Mode then
+            Ada.Text_IO.Put_Line
+              (Ada.Text_IO.Standard_Error,
+               "fatal: unable to read config file");
+            Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+         elsif Have_Key and then not Have_Value then
+            if Have_Default then
+               Success_Line (Typed (To_String (Default_Text)));
+            else
+               Set_Command_Failure;
+            end if;
          end if;
          return;
       end if;
 
       if List_Mode then
-         if Global_Scope then
-            return;
-         end if;
          if Null_Term then
             for E of Version.Config.Read_All (Repo) loop
                declare
@@ -1324,7 +1422,11 @@ package body Version.CLI is
                begin
                   if Hit then
                      Found := True;
-                     if Want_Get_Regexp then
+                     if Name_Only then
+                        Version.Console.Put
+                          (Nm & (if Null_Term then "" & ASCII.NUL
+                                 else "" & ASCII.LF));
+                     elsif Want_Get_Regexp then
                         Version.Console.Put
                           (Nm & " " & Typed (To_String (E.Value))
                            & (if Null_Term then "" & ASCII.NUL
@@ -1355,16 +1457,36 @@ package body Version.CLI is
          return;
       end if;
 
+      if Want_Rename then
+         if not Have_Value then
+            Usage_Error ("--rename-section needs OLD and NEW", Usage);
+            return;
+         elsif Section_Exists (To_String (Key)) then
+            Version.Config.Rename_Section
+              (Repo, To_String (Key), To_String (Value));
+         else
+            Ada.Text_IO.Put_Line
+              (Ada.Text_IO.Standard_Error,
+               "fatal: no such section: " & To_String (Key));
+            Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+         end if;
+         return;
+      end if;
+
       if Want_Unset or else Want_Unset_All then
          --  git distinguishes "nothing to unset" (5) from a real failure.
          if not Version.Config.Has_Key (Repo, To_String (Key)) then
             Ada.Command_Line.Set_Exit_Status
               (Ada.Command_Line.Exit_Status (5));
-            return;
-         end if;
-         --  --unset-all clears every value; --unset removes the single value
-         --  and refuses a multivar, which Unset_Key already enforces.
-         if Want_Unset_All then
+         elsif not Want_Unset_All and then Value_Count (To_String (Key)) > 1
+         then
+            --  git refuses to unset one value of a multivar (exit 5).
+            Ada.Text_IO.Put_Line
+              (Ada.Text_IO.Standard_Error,
+               "warning: " & To_String (Key) & " has multiple values");
+            Ada.Command_Line.Set_Exit_Status
+              (Ada.Command_Line.Exit_Status (5));
+         elsif Want_Unset_All then
             Version.Config.Unset_All (Repo, To_String (Key));
          else
             Version.Config.Unset_Key (Repo, To_String (Key));
@@ -1376,17 +1498,28 @@ package body Version.CLI is
       --  --replace-all collapses the key to the single value given.
       if Want_Add and then Have_Value then
          Version.Config.Add_Value
-           (Repo, To_String (Key), To_String (Value));
+           (Repo, To_String (Key), Typed (To_String (Value)));
          return;
       end if;
 
       if Want_Replace and then Have_Value then
-         Version.Config.Set_Key (Repo, To_String (Key), To_String (Value));
+         Version.Config.Set_Key
+           (Repo, To_String (Key), Typed (To_String (Value)));
          return;
       end if;
 
       if Have_Value and then not Want_Get then
-         Version.Config.Set_Key (Repo, To_String (Key), To_String (Value));
+         if Value_Count (To_String (Key)) > 1 then
+            --  git refuses to overwrite a multivar without --replace-all.
+            Ada.Text_IO.Put_Line
+              (Ada.Text_IO.Standard_Error,
+               "warning: " & To_String (Key) & " has multiple values");
+            Ada.Command_Line.Set_Exit_Status
+              (Ada.Command_Line.Exit_Status (5));
+         else
+            Version.Config.Set_Key
+              (Repo, To_String (Key), Typed (To_String (Value)));
+         end if;
          return;
       end if;
 
@@ -1400,6 +1533,13 @@ package body Version.CLI is
       else
          Set_Command_Failure;
       end if;
+   exception
+      when Config_Type_Bad =>
+         --  git dies (128) reporting the value it could not convert.
+         Ada.Text_IO.Put_Line
+           (Ada.Text_IO.Standard_Error,
+            "fatal: bad config value for '" & To_String (Key) & "'");
+         Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
    end Run_Classic_Config_Command;
 
    --  git's subcommand-style `config <verb> ...` (2.46+). The verb and its own
@@ -1444,49 +1584,6 @@ package body Version.CLI is
             return False;
       end Regex_Matches;
 
-      function Bool_Norm (Raw : String; OK : out Boolean) return String is
-         L : constant String := Lower_ASCII (Version.Config.Trim (Raw));
-      begin
-         OK := True;
-         if L = "true" or else L = "yes" or else L = "on" or else L = "1" then
-            return "true";
-         elsif L = "false" or else L = "no" or else L = "off"
-           or else L = "0" or else L = ""
-         then
-            return "false";
-         else
-            OK := False;
-            return "";
-         end if;
-      end Bool_Norm;
-
-      function Int_Norm (Raw : String; OK : out Boolean) return String is
-         T    : constant String := Version.Config.Trim (Raw);
-         Mult : Long_Long_Integer := 1;
-         Last : Integer;
-      begin
-         OK := True;
-         if T'Length = 0 then
-            OK := False;
-            return "";
-         end if;
-         Last := T'Last;
-         case T (T'Last) is
-            when 'k' | 'K' => Mult := 1024;               Last := T'Last - 1;
-            when 'm' | 'M' => Mult := 1024 * 1024;        Last := T'Last - 1;
-            when 'g' | 'G' => Mult := 1024 * 1024 * 1024; Last := T'Last - 1;
-            when others    => null;
-         end case;
-         return Ada.Strings.Fixed.Trim
-           (Long_Long_Integer'Image
-              (Long_Long_Integer'Value (T (T'First .. Last)) * Mult),
-            Ada.Strings.Left);
-      exception
-         when others =>
-            OK := False;
-            return "";
-      end Int_Norm;
-
       --  git dies (128) on a value that will not convert to the asked type.
       procedure Type_Error (Key, Raw : String) is
       begin
@@ -1502,9 +1599,9 @@ package body Version.CLI is
       function Typed (Raw : String; OK : out Boolean) return String is
       begin
          if As_Bool then
-            return Bool_Norm (Raw, OK);
+            return Config_Bool_Norm (Raw, OK);
          elsif As_Int then
-            return Int_Norm (Raw, OK);
+            return Config_Int_Norm (Raw, OK);
          else
             OK := True;
             return Raw;
@@ -1566,10 +1663,18 @@ package body Version.CLI is
             elsif A = "--global" or else A = "--system" then
                Global_Scope := True;
             elsif Has_Prefix (A, "--file=") then
-               null;   --  read this repo's config (the usual --file .git/config)
+               --  Read the named file if it exists (the usual case is
+               --  .git/config, this repo's own config); a missing file reads
+               --  as empty, so treat it like an out-of-scope config.
+               if not Ada.Directories.Exists (A (A'First + 7 .. A'Last)) then
+                  Global_Scope := True;
+               end if;
             elsif A = "--file" or else A = "-f" then
                if I < Count then
-                  I := I + 1;   --  skip the path; only this repo's config is read
+                  if not Ada.Directories.Exists (Arg (I + 1)) then
+                     Global_Scope := True;
+                  end if;
+                  I := I + 1;
                end if;
             elsif A = "--bool" or else A = "--type=bool" then
                As_Bool := True;

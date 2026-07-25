@@ -1,3 +1,4 @@
+- Git parity: classic `config` gains `--type=int`/`--type=bool-or-int` unit parsing, `--type=bool` that dies on a non-boolean value, `--rename-section`, `--name-only --get-regexp`, multivar-overwrite/unset refusal (exit 5), and `--global`/`--system`/`--file <missing>` reads that miss (get) or die (list) instead of reading the local config.
 - Git parity: subcommand-style `config` (git 2.46+) — `config list`/`get`/`set`/`unset`/`rename-section`/`remove-section` with their options (`--all`, `--regexp`, `--value`, `--default`, `--type=`, `--name-only`, `--show-scope`, `--show-origin`, `--show-names`, `--null`, scope flags), matching git's outputs and exit codes.
 - Git parity: `config --add` appends the new value at the end of the key's section block, as git does (was inserted next to the other values).
 - Git parity: `config rename-section OLD NEW` (new `Version.Config.Rename_Section`).
