@@ -21097,8 +21097,8 @@ package body Version.CLI is
                Dirty_Mark : Unbounded_String := To_Unbounded_String ("-dirty");
                Abbrev   : Natural := 7;
                Pattern  : Unbounded_String;
-               Rev      : Unbounded_String;
-               Has_Rev  : Boolean := False;
+               Exclude  : Unbounded_String;
+               Revs     : Version.Trailers.String_Vectors.Vector;
                Bad      : Boolean := False;
                I        : Positive := 2;
             begin
@@ -21147,13 +21147,24 @@ package body Version.CLI is
                            I := I + 1;
                            Pattern := To_Unbounded_String (Arg (I));
                         end if;
+                     elsif Has_Prefix (A, "--exclude=") then
+                        Exclude :=
+                          To_Unbounded_String (A (A'First + 10 .. A'Last));
+                     elsif A = "--exclude" then
+                        if I = Count then
+                           Usage_Error
+                             ("describe --exclude needs a pattern", Usage);
+                           Bad := True;
+                        else
+                           I := I + 1;
+                           Exclude := To_Unbounded_String (Arg (I));
+                        end if;
                      elsif A = "--first-parent" or else A = "--candidates"
                        or else Has_Prefix (A, "--candidates=")
-                       or else A = "--exclude" or else Has_Prefix (A, "--exclude=")
                      then
                         --  These narrow which tag wins but not, on the fixtures
                         --  here, which one does; accepted without effect.
-                        if A = "--candidates" or else A = "--exclude" then
+                        if A = "--candidates" then
                            I := I + 1;
                         end if;
                      elsif A = "--contains" then
@@ -21167,13 +21178,8 @@ package body Version.CLI is
                         Usage_Error
                           ("unknown describe option: " & A, Usage);
                         Bad := True;
-                     elsif Has_Rev then
-                        Usage_Error
-                          ("describe takes at most one revision", Usage);
-                        Bad := True;
                      else
-                        Rev := To_Unbounded_String (A);
-                        Has_Rev := True;
+                        Revs.Append (A);   --  git describes each in turn
                      end if;
                   end;
                   I := I + 1;
@@ -21183,67 +21189,79 @@ package body Version.CLI is
                   declare
                      Repo : constant Version.Repository.Repository_Handle :=
                        Version.Repository.Open;
-                     Commit : constant Version.Objects.Hex_Object_Id :=
-                       (if Has_Rev
-                        then Version.Revisions.Resolve_Commit
-                               (Repo, To_String (Rev))
-                        else Version.Objects.To_Object_Id
-                               (Version.Refs.Current_Commit_Id (Repo)));
 
-                     --  --dirty appends a mark when the working tree differs
-                     --  from HEAD; it only applies to describing HEAD itself.
-                     function Dirty_Suffix return String is
-                     begin
-                        if not Dirty or else Has_Rev then
-                           return "";
-                        end if;
-                        declare
-                           St : constant Version.Status.Status_Result :=
-                             Version.Status.Current_Status;
+                     --  Describe one revision (empty Spec = HEAD); git prints
+                     --  one line per revision named on the command line.
+                     procedure Describe_One (Spec : String; Is_Head : Boolean) is
+                        Commit : constant Version.Objects.Hex_Object_Id :=
+                          (if Is_Head
+                           then Version.Objects.To_Object_Id
+                                  (Version.Refs.Current_Commit_Id (Repo))
+                           else Version.Revisions.Resolve_Commit (Repo, Spec));
+
+                        --  --dirty applies only to describing HEAD itself.
+                        function Dirty_Suffix return String is
                         begin
-                           if St.Staged.Is_Empty
-                             and then St.Changes.Is_Empty
-                           then
+                           if not Dirty or else not Is_Head then
                               return "";
                            end if;
-                           return To_String (Dirty_Mark);
-                        end;
-                     end Dirty_Suffix;
-
-                     function Described return String is
-                     begin
-                        if All_Refs then
-                           return Version.Describe.Describe_By_Any_Ref
-                             (Repo, Commit, Long, Abbrev,
-                              To_String (Pattern));
-                        end if;
-                        return Version.Describe.Describe
-                          (Repo, Commit, All_Tags, Long, Abbrev,
-                           To_String (Pattern));
-                     end Described;
-                  begin
-                     Success_Line (Described & Dirty_Suffix);
-                  exception
-                     when E : Ada.IO_Exceptions.Data_Error =>
-                        --  --always falls back to the abbreviated commit id
-                        --  when nothing names it, rather than failing.
-                        if Always then
                            declare
-                              Hex : constant String :=
-                                Version.Objects.To_String (Commit);
-                              N : constant Natural :=
-                                (if Abbrev = 0 then 7
-                                 else Natural'Min (Natural'Max (Abbrev, 4),
-                                                   Hex'Length));
+                              St : constant Version.Status.Status_Result :=
+                                Version.Status.Current_Status;
                            begin
-                              Success_Line
-                                (Hex (Hex'First .. Hex'First + N - 1)
-                                 & Dirty_Suffix);
+                              if St.Staged.Is_Empty
+                                and then St.Changes.Is_Empty
+                              then
+                                 return "";
+                              end if;
+                              return To_String (Dirty_Mark);
                            end;
-                        else
-                           Error_Line (Ada.Exceptions.Exception_Message (E));
-                           Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
-                        end if;
+                        end Dirty_Suffix;
+
+                        function Described return String is
+                        begin
+                           if All_Refs then
+                              return Version.Describe.Describe_By_Any_Ref
+                                (Repo, Commit, Long, Abbrev,
+                                 To_String (Pattern), To_String (Exclude));
+                           end if;
+                           return Version.Describe.Describe
+                             (Repo, Commit, All_Tags, Long, Abbrev,
+                              To_String (Pattern), To_String (Exclude));
+                        end Described;
+                     begin
+                        Success_Line (Described & Dirty_Suffix);
+                     exception
+                        when E : Ada.IO_Exceptions.Data_Error =>
+                           --  --always falls back to the abbreviated commit id
+                           --  when nothing names it, rather than failing.
+                           if Always then
+                              declare
+                                 Hex : constant String :=
+                                   Version.Objects.To_String (Commit);
+                                 N : constant Natural :=
+                                   (if Abbrev = 0 then 7
+                                    else Natural'Min (Natural'Max (Abbrev, 4),
+                                                      Hex'Length));
+                              begin
+                                 Success_Line
+                                   (Hex (Hex'First .. Hex'First + N - 1)
+                                    & Dirty_Suffix);
+                              end;
+                           else
+                              Error_Line
+                                (Ada.Exceptions.Exception_Message (E));
+                              Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                           end if;
+                     end Describe_One;
+                  begin
+                     if Revs.Is_Empty then
+                        Describe_One ("", Is_Head => True);
+                     else
+                        for R of Revs loop
+                           Describe_One (R, Is_Head => False);
+                        end loop;
+                     end if;
                   end;
                end if;
             end;
