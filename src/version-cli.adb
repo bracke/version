@@ -21107,58 +21107,124 @@ package body Version.CLI is
                begin
                   return (if N = 0 then "-" else Img (Img'First + 1 .. Img'Last));
                end Pos_Img;
+
+               No_Patch : Boolean := False;   --  -s/--no-patch
+               Factor   : Natural := 60;      --  --creation-factor
+               Bad      : Boolean := False;
+               Ops      : Version.Rev_Args.String_Vectors.Vector;
             begin
-               if Count /= 3
-                 or else Dotdot (Arg (2)) = 0 or else Dotdot (Arg (3)) = 0
-               then
-                  Usage_Error ("range-diff requires two BASE..TIP ranges", Usage);
-               else
+               for I in 2 .. Count loop
                   declare
+                     A : constant String := Arg (I);
+                  begin
+                     if A = "-s" or else A = "--no-patch" then
+                        No_Patch := True;
+                     elsif Has_Prefix (A, "--creation-factor=") then
+                        begin
+                           Factor := Natural'Value (A (A'First + 18 .. A'Last));
+                        exception
+                           when others =>
+                              Usage_Error
+                                ("invalid creation factor: " & A, Usage);
+                              Bad := True;
+                        end;
+                     elsif A'Length > 0 and then A (A'First) = '-' then
+                        Usage_Error
+                          ("unknown range-diff option: " & A, Usage);
+                        Bad := True;
+                     else
+                        Ops.Append (A);
+                     end if;
+                  end;
+                  exit when Bad;
+               end loop;
+
+               --  git accepts two "BASE..TIP" ranges, or the three-argument
+               --  "<base> <old-tip> <new-tip>" shorthand (a shared base).
+               if not Bad then
+                  declare
+                     NOps : constant Natural := Natural (Ops.Length);
                      Repo : constant Version.Repository.Repository_Handle :=
                        Version.Repository.Open;
-                     R1 : constant String := Arg (2);
-                     R2 : constant String := Arg (3);
-                     D1 : constant Natural := Dotdot (R1);
-                     D2 : constant Natural := Dotdot (R2);
-                     Pairs : constant Version.Range_Diff.Pairing_Vectors.Vector :=
-                       Version.Range_Diff.Compare
-                         (Repo,
-                          Old_Base => Version.Revisions.Resolve_Commit
-                                        (Repo, R1 (R1'First .. D1 - 1)),
-                          Old_Tip  => Version.Revisions.Resolve_Commit
-                                        (Repo, R1 (D1 + 2 .. R1'Last)),
-                          New_Base => Version.Revisions.Resolve_Commit
-                                        (Repo, R2 (R2'First .. D2 - 1)),
-                          New_Tip  => Version.Revisions.Resolve_Commit
-                                        (Repo, R2 (D2 + 2 .. R2'Last)));
-
-                     use type Version.Range_Diff.Pair_Status;
+                     OB, OT, NB, NT : Unbounded_String;
+                     OK : Boolean := True;
                   begin
-                     for P of Pairs loop
+                     if NOps = 2
+                       and then Dotdot (Ops.Element (1)) /= 0
+                       and then Dotdot (Ops.Element (2)) /= 0
+                     then
                         declare
-                           Old_H : constant String :=
-                             (if P.Old_Pos = 0 then "-------"
-                              else To_String (P.Old_Id)
-                                     (1 .. 1 + 6));
-                           New_H : constant String :=
-                             (if P.New_Pos = 0 then "-------"
-                              else To_String (P.New_Id)
-                                     (1 .. 1 + 6));
-                           Op : constant String :=
-                             (case P.Status is
-                                 when Version.Range_Diff.Unchanged => "=",
-                                 when Version.Range_Diff.Changed   => "!",
-                                 when Version.Range_Diff.Removed   => "<",
-                                 when Version.Range_Diff.Added     => ">");
+                           R1 : constant String := Ops.Element (1);
+                           R2 : constant String := Ops.Element (2);
+                           D1 : constant Natural := Dotdot (R1);
+                           D2 : constant Natural := Dotdot (R2);
                         begin
-                           --  git separates the number and the abbrev by a
-                           --  colon and two spaces on each side.
-                           Success_Line
-                             (Pos_Img (P.Old_Pos) & ":  " & Old_H & " " & Op
-                              & " " & Pos_Img (P.New_Pos) & ":  " & New_H & " "
-                              & To_String (P.Subject));
+                           OB := To_Unbounded_String (R1 (R1'First .. D1 - 1));
+                           OT := To_Unbounded_String (R1 (D1 + 2 .. R1'Last));
+                           NB := To_Unbounded_String (R2 (R2'First .. D2 - 1));
+                           NT := To_Unbounded_String (R2 (D2 + 2 .. R2'Last));
                         end;
-                     end loop;
+                     elsif NOps = 3 then
+                        OB := To_Unbounded_String (Ops.Element (1));
+                        OT := To_Unbounded_String (Ops.Element (2));
+                        NB := To_Unbounded_String (Ops.Element (1));
+                        NT := To_Unbounded_String (Ops.Element (3));
+                     else
+                        OK := False;
+                     end if;
+
+                     if not OK then
+                        Usage_Error
+                          ("range-diff requires two BASE..TIP ranges", Usage);
+                     else
+                        declare
+                           Pairs : constant
+                             Version.Range_Diff.Pairing_Vectors.Vector :=
+                               Version.Range_Diff.Compare
+                                 (Repo,
+                                  Old_Base => Version.Revisions.Resolve_Commit
+                                                (Repo, To_String (OB)),
+                                  Old_Tip  => Version.Revisions.Resolve_Commit
+                                                (Repo, To_String (OT)),
+                                  New_Base => Version.Revisions.Resolve_Commit
+                                                (Repo, To_String (NB)),
+                                  New_Tip  => Version.Revisions.Resolve_Commit
+                                                (Repo, To_String (NT)),
+                                  Creation_Factor => Factor);
+                           use type Version.Range_Diff.Pair_Status;
+                        begin
+                           for P of Pairs loop
+                              declare
+                                 Old_H : constant String :=
+                                   (if P.Old_Pos = 0 then "-------"
+                                    else To_String (P.Old_Id) (1 .. 7));
+                                 New_H : constant String :=
+                                   (if P.New_Pos = 0 then "-------"
+                                    else To_String (P.New_Id) (1 .. 7));
+                                 Op : constant String :=
+                                   (case P.Status is
+                                       when Version.Range_Diff.Unchanged => "=",
+                                       when Version.Range_Diff.Changed   => "!",
+                                       when Version.Range_Diff.Removed   => "<",
+                                       when Version.Range_Diff.Added     => ">");
+                              begin
+                                 Success_Line
+                                   (Pos_Img (P.Old_Pos) & ":  " & Old_H & " "
+                                    & Op & " " & Pos_Img (P.New_Pos) & ":  "
+                                    & New_H & " " & To_String (P.Subject));
+                                 if not No_Patch
+                                   and then P.Status =
+                                              Version.Range_Diff.Changed
+                                 then
+                                    Version.Console.Put
+                                      (Version.Range_Diff.Inner_Diff
+                                         (To_String (P.Old_Patch),
+                                          To_String (P.New_Patch)));
+                                 end if;
+                              end;
+                           end loop;
+                        end;
+                     end if;
                   end;
                end if;
             end;

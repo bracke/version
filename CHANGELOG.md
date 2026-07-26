@@ -1,3 +1,4 @@
+- Git parity: `range-diff` pairs commits by a diff-of-diffs cost matrix (min-cost assignment bounded by `--creation-factor`) instead of by subject, honours `-s`/`--no-patch` and the three-argument form, and renders the diff-of-diffs body under a changed pair.
 - Git parity: `format-patch --cover-letter` emits the series cover (subject/blurb placeholders, author shortlog, cumulative diffstat) ahead of the patches.
 - Git parity: `log --left-right`/`--cherry-mark`/`--cherry-pick`/`--left-only`/`--right-only`/`--cherry` mark and filter a symmetric `A...B` range by side and patch equivalence.
 - Git parity: `shortlog --all` seeds every ref tip, and `cherry <upstream> <head> <limit>` restricts the reported commits to `<limit>..<head>`.
