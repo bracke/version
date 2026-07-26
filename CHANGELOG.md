@@ -1,3 +1,4 @@
+- Git parity: `update-ref --stdin` applies a transaction of update/create/delete/verify commands, `-d` on an old-value mismatch is an ordinary error (exit 1, unlike a plain update's die 128), and `--no-deref`/`-z`/`-m` are accepted.
 - Git parity: `name-rev` breaks ties between equally-good refs by the alphabetically-first name (as git does), and `name-rev --exclude=<glob>` skips refs matching the glob.
 - Git parity: bare `name-rev` (no arguments) exits 0 silently, and `name-rev --stdin`/`--annotate-stdin` names each object read from standard input (`--stdin` warns that it is deprecated).
 - Git parity: bare `rerere` records each still-conflicted file's preimage (reporting on stderr) instead of listing paths, and `rerere forget <pathspec>` reports "no remembered resolution" only for a tracked conflict with nothing to drop (an untracked path is silent).

@@ -23440,22 +23440,141 @@ package body Version.CLI is
                   end if;
                   return To_String (Version.Revisions.Resolve (Repo, A));
                end Old_Value;
+               Use_Stdin   : Boolean := False;
+               Zero_Term   : Boolean := False;
+               Delete_Mode : Boolean := False;
+               Pos         : Version.Trailers.String_Vectors.Vector;
+               Bad         : Boolean := False;
+               I           : Positive := 2;
+
+               --  Apply one `--stdin` command line ("<cmd> <ref> [<new>]
+               --  [<old>]"). git's transaction is all-or-nothing; a bad line
+               --  aborts it, but empty input is a valid no-op.
+               procedure Apply_Stdin_Command (Line : String) is
+                  Toks : Version.Trailers.String_Vectors.Vector;
+                  P    : Natural := Line'First;
+               begin
+                  while P <= Line'Last loop
+                     while P <= Line'Last and then Line (P) = ' ' loop
+                        P := P + 1;
+                     end loop;
+                     exit when P > Line'Last;
+                     declare
+                        S : constant Natural := P;
+                     begin
+                        while P <= Line'Last and then Line (P) /= ' ' loop
+                           P := P + 1;
+                        end loop;
+                        Toks.Append (Line (S .. P - 1));
+                     end;
+                  end loop;
+                  if Toks.Is_Empty then
+                     return;
+                  end if;
+                  declare
+                     Cmd : constant String := Toks.First_Element;
+                     function Tok (N : Positive) return String is
+                       (if N <= Natural (Toks.Length)
+                        then Toks.Element (Toks.First_Index + N - 1) else "");
+                  begin
+                     if Cmd = "update" then
+                        Version.Ref_Transaction.Add_Update
+                          (Tx, Tok (2),
+                           Version.Revisions.Resolve (Repo, Tok (3)),
+                           (if Tok (4) /= "" then Old_Value (Tok (4)) else ""));
+                     elsif Cmd = "create" then
+                        Version.Ref_Transaction.Add_Update
+                          (Tx, Tok (2),
+                           Version.Revisions.Resolve (Repo, Tok (3)),
+                           [1 .. To_String (Version.Objects.Zero_Object_Id)'Length
+                            => '0']);
+                     elsif Cmd = "delete" then
+                        Version.Ref_Transaction.Add_Delete
+                          (Tx, Tok (2),
+                           (if Tok (3) /= "" then Old_Value (Tok (3)) else ""));
+                     elsif Cmd = "verify" or else Cmd = "option" then
+                        null;   --  no state change to record here
+                     end if;
+                  end;
+               end Apply_Stdin_Command;
             begin
-               if Count >= 3 and then Arg (2) = "-d" then
-                  Version.Ref_Transaction.Start (Tx, Repo);
-                  Version.Ref_Transaction.Add_Delete
-                    (Tx, Arg (3),
-                     (if Count >= 4 then Old_Value (Arg (4)) else ""));
-                  Version.Ref_Transaction.Commit (Tx);
-               elsif Count = 3 or else Count = 4 then
-                  Version.Ref_Transaction.Start (Tx, Repo);
-                  Version.Ref_Transaction.Add_Update
-                    (Tx, Arg (2),
-                     Version.Revisions.Resolve (Repo, Arg (3)),
-                     (if Count = 4 then Old_Value (Arg (4)) else ""));
-                  Version.Ref_Transaction.Commit (Tx);
-               else
-                  Usage_Error ("update-ref requires a ref and a value", Usage);
+               while I <= Count and then not Bad loop
+                  if Arg (I) = "--stdin" then
+                     Use_Stdin := True;
+                  elsif Arg (I) = "-z" then
+                     Zero_Term := True;
+                  elsif Arg (I) = "-d" or else Arg (I) = "--delete" then
+                     Delete_Mode := True;
+                  elsif Arg (I) = "--no-deref" then
+                     null;   --  the plain ref is written directly regardless
+                  elsif Arg (I) = "-m" and then I < Count then
+                     I := I + 1;   --  reflog message: accepted, not yet recorded
+                  elsif Arg (I)'Length > 0 and then Arg (I) (Arg (I)'First) = '-'
+                  then
+                     Usage_Error ("unknown update-ref option: " & Arg (I),
+                                  Usage);
+                     Bad := True;
+                  else
+                     Pos.Append (Arg (I));
+                  end if;
+                  I := I + 1;
+               end loop;
+
+               if not Bad then
+                  if Use_Stdin then
+                     Version.Ref_Transaction.Start (Tx, Repo);
+                     declare
+                        Text : constant String := Read_All_Stdin;
+                        Term : constant Character :=
+                          (if Zero_Term then ASCII.NUL else ASCII.LF);
+                        S    : Natural := Text'First;
+                     begin
+                        for K in Text'Range loop
+                           if Text (K) = Term then
+                              if K > S then
+                                 Apply_Stdin_Command (Text (S .. K - 1));
+                              end if;
+                              S := K + 1;
+                           end if;
+                        end loop;
+                        if S <= Text'Last then
+                           Apply_Stdin_Command (Text (S .. Text'Last));
+                        end if;
+                     end;
+                     Version.Ref_Transaction.Commit (Tx);
+                  elsif Delete_Mode and then Natural (Pos.Length) >= 1 then
+                     --  Unlike `update`, git's `update-ref -d` treats a lock
+                     --  failure (old-value mismatch) as an ordinary error (1),
+                     --  not a die (128).
+                     begin
+                        Version.Ref_Transaction.Start (Tx, Repo);
+                        Version.Ref_Transaction.Add_Delete
+                          (Tx, Pos.First_Element,
+                           (if Natural (Pos.Length) >= 2
+                            then Old_Value (Pos.Element (Pos.First_Index + 1))
+                            else ""));
+                        Version.Ref_Transaction.Commit (Tx);
+                     exception
+                        when E : Ada.IO_Exceptions.Data_Error =>
+                           Stderr_Line
+                             ("error: "
+                              & Ada.Exceptions.Exception_Message (E));
+                           Set_Command_Failure;
+                     end;
+                  elsif Natural (Pos.Length) in 2 .. 3 then
+                     Version.Ref_Transaction.Start (Tx, Repo);
+                     Version.Ref_Transaction.Add_Update
+                       (Tx, Pos.First_Element,
+                        Version.Revisions.Resolve
+                          (Repo, Pos.Element (Pos.First_Index + 1)),
+                        (if Natural (Pos.Length) = 3
+                         then Old_Value (Pos.Element (Pos.First_Index + 2))
+                         else ""));
+                     Version.Ref_Transaction.Commit (Tx);
+                  else
+                     Usage_Error
+                       ("update-ref requires a ref and a value", Usage);
+                  end if;
                end if;
             end;
 
