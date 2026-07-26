@@ -26907,22 +26907,53 @@ package body Version.CLI is
                   or else T = "pack-refs" or else T = "prefetch");
 
                --  Tasks that touch object storage map onto version's GC;
-               --  pack-refs and commit-graph do their own real work below,
-               --  and prefetch remains a no-op.
+               --  pack-refs, commit-graph and incremental-repack do their own
+               --  real work below, and prefetch remains a no-op.
                function Is_Object_Task (T : String) return Boolean is
-                 (T = "gc" or else T = "loose-objects"
-                  or else T = "incremental-repack");
+                 (T = "gc" or else T = "loose-objects");
 
                --  git's maintenance actually packs the refs and writes the
                --  commit-graph; these were stubbed out as no-ops.
                procedure Run_Auxiliary_Task (T : String) is
                   Repo : constant Version.Repository.Repository_Handle :=
                     Version.Repository.Open;
+
+                  function Has_Packs return Boolean is
+                     Dir : constant String :=
+                       Version.Files.Join
+                         (Version.Repository.Common_Git_Dir (Repo),
+                          "objects/pack");
+                     Search : Ada.Directories.Search_Type;
+                     Found  : Boolean;
+                  begin
+                     if not Ada.Directories.Exists (Dir) then
+                        return False;
+                     end if;
+                     Ada.Directories.Start_Search
+                       (Search, Dir, "*.pack",
+                        [Ada.Directories.Ordinary_File => True, others => False]);
+                     Found := Ada.Directories.More_Entries (Search);
+                     Ada.Directories.End_Search (Search);
+                     return Found;
+                  end Has_Packs;
                begin
                   if T = "pack-refs" then
                      Version.Packed_Refs.Pack_Refs (Repo);
                   elsif T = "commit-graph" then
                      Version.Commit_Graph.Write (Repo);
+                  elsif T = "incremental-repack" then
+                     --  git's incremental-repack writes a multi-pack-index; on
+                     --  a repo with no pack to index it fails (exit 1).
+                     if not Has_Packs then
+                        Stderr_Line ("error: no pack files to index.");
+                        Stderr_Line ("error: failed to write multi-pack-index");
+                        Stderr_Line
+                          ("error: task 'incremental-repack' failed");
+                        Ada.Command_Line.Set_Exit_Status
+                          (Ada.Command_Line.Exit_Status (1));
+                     else
+                        Version.Multi_Pack_Index.Write (Repo);
+                     end if;
                   end if;
                exception
                   when others =>
