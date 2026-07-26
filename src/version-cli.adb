@@ -2216,6 +2216,79 @@ package body Version.CLI is
       return Result;
    end Filter_Commits;
 
+   --  git's post-commit summary, shared by commit/revert/cherry-pick:
+   --    [<branch>|detached HEAD [(root-commit)] <abbrev>] <subject>
+   --    [ Date: <author-date>]            -- when Force_Date (sequencer, --date)
+   --    <N file(s) changed, ...>          -- shortstat + create/delete/mode
+   procedure Print_Commit_Summary
+     (Repo       : Version.Repository.Repository_Handle;
+      New_Id     : Version.Objects.Hex_Object_Id;
+      Force_Date : Boolean := False)
+   is
+      Obj     : constant Version.Objects.Git_Object :=
+        Version.Objects.Read_Object (Repo, New_Id);
+      Content : constant String := Version.Objects.Content (Obj);
+      Hex     : constant String := Version.Objects.To_String (New_Id);
+      Abbrev  : constant String := Hex (Hex'First .. Hex'First + 6);
+      Parents : constant Version.Objects.Object_Id_Vectors.Vector :=
+        Version.Objects.Commit_Parent_Ids (Obj);
+      Is_Root : constant Boolean := Parents.Is_Empty;
+      Subject : constant String :=
+        Version.Objects.Commit_Message_First_Line (Obj);
+      Label   : constant String :=
+        (if Version.Refs.Is_Detached (Repo) then "detached HEAD"
+         else Version.Refs.Current_Branch_Name (Repo));
+
+      Stat_Opts : constant Version.Diff.Diff_Options :=
+        (Shortstat => True, Summary => True, others => <>);
+
+      --  The "<unixtime> <tz>" tail of the commit's "author " header.
+      function Author_Date return String is
+         P : Natural := Content'First;
+      begin
+         while P <= Content'Last loop
+            declare
+               E : Natural := P;
+            begin
+               while E <= Content'Last and then Content (E) /= ASCII.LF loop
+                  E := E + 1;
+               end loop;
+               declare
+                  Line : constant String := Content (P .. E - 1);
+                  GT   : Natural := 0;
+               begin
+                  exit when Line'Length = 0;   --  blank line ends the header
+                  if Has_Prefix (Line, "author ") then
+                     for K in reverse Line'Range loop
+                        if Line (K) = '>' then
+                           GT := K;
+                           exit;
+                        end if;
+                     end loop;
+                     if GT /= 0 and then GT + 2 <= Line'Last then
+                        return Line (GT + 2 .. Line'Last);
+                     end if;
+                  end if;
+               end;
+               P := E + 1;
+            end;
+         end loop;
+         return "";
+      end Author_Date;
+   begin
+      Success_Line
+        ("[" & Label & (if Is_Root then " (root-commit)" else "")
+         & " " & Abbrev & "] " & Subject);
+      if Force_Date then
+         Success_Line (" Date: " & Version.Ref_Format.Git_Date (Author_Date));
+      end if;
+      Version.Console.Put
+        ((if Is_Root
+          then Version.Diff.Diff_Root_Commit (Repo, New_Id, Stat_Opts)
+          else Version.Diff.Diff_Commits
+                 (Repo, Parents.First_Element, New_Id, Stat_Opts)));
+   end Print_Commit_Summary;
+
    --  Write the local ref a fetch refspec's destination half names, from the
    --  id the remote advertises for its source half. Without this the
    --  destination is silently dropped and the caller is told the fetch
@@ -12977,11 +13050,15 @@ package body Version.CLI is
                      Signing_Key => To_String (Signing_Key));
                end if;
 
-               Success_Line
-                 ("saved "
-                  & Short_Id
-                      (Version.Refs.Current_Commit_Id
-                         (Version.Repository.Open)));
+               declare
+                  Repo : constant Version.Repository.Repository_Handle :=
+                    Version.Repository.Open;
+               begin
+                  Print_Commit_Summary
+                    (Repo,
+                     Version.Objects.To_Object_Id
+                       (Version.Refs.Current_Commit_Id (Repo)));
+               end;
             end;
 
          elsif Command = "branch" then
@@ -16842,6 +16919,9 @@ package body Version.CLI is
                            Has_Mainline := True;
                            I := I + 2;
 
+                        elsif Arg (I) = "--no-edit" then
+                           I := I + 1;   --  never edits a message anyway
+
                         elsif Arg (I)'Length > 0
                           and then Arg (I) (Arg (I)'First) = '-'
                         then
@@ -16865,16 +16945,14 @@ package body Version.CLI is
                         Repo           : constant Version.Repository.Repository_Handle :=
                           Version.Repository.Open;
                         Commits        : Version.Cherry_Pick_State.Commit_Vectors.Vector;
-                        First_Revision : Unbounded_String;
                      begin
                         I := 2;
                         while I <= Count loop
                            if Arg (I) = "-m" or else Arg (I) = "--mainline" then
                               I := I + 2;
+                           elsif Arg (I) = "--no-edit" then
+                              I := I + 1;
                            else
-                              if Commits.Is_Empty then
-                                 First_Revision := To_Unbounded_String (Arg (I));
-                              end if;
                               --  A revision that does not resolve is git's
                               --  die() (128), distinct from a conflict (1).
                               declare
@@ -16895,9 +16973,32 @@ package body Version.CLI is
                            end if;
                         end loop;
 
-                        Version.Cherry_Pick.Start (Commits, Mainline);
-                        Success_Line
-                          ("cherry-picked " & To_String (First_Revision));
+                        declare
+                           Old_Head : constant String :=
+                             Version.Refs.Current_Commit_Id (Repo);
+                        begin
+                           Version.Cherry_Pick.Start (Commits, Mainline);
+                           declare
+                              Excl : Version.History.Commit_Id_Vectors.Vector;
+                              New_Ones : Version.History.Commit_Id_Vectors.Vector;
+                           begin
+                              Excl.Append
+                                (Version.Objects.To_Object_Id (Old_Head));
+                              New_Ones :=
+                                Version.History.Rev_List
+                                  (Repo,
+                                   Include =>
+                                     [Version.Objects.To_Object_Id
+                                        (Version.Refs.Current_Commit_Id (Repo))],
+                                   Exclude => Excl);
+                              for J in reverse
+                                New_Ones.First_Index .. New_Ones.Last_Index
+                              loop
+                                 Print_Commit_Summary
+                                   (Repo, New_Ones (J), Force_Date => True);
+                              end loop;
+                           end;
+                        end;
                      end;
                   end;
 
@@ -16958,6 +17059,10 @@ package body Version.CLI is
                            Has_Mainline := True;
                            I := I + 2;
 
+                        elsif Arg (I) = "--no-edit" or else Arg (I) = "--edit"
+                        then
+                           I := I + 1;   --  never opens an editor anyway
+
                         elsif Arg (I)'Length > 0
                           and then Arg (I) (Arg (I)'First) = '-'
                         then
@@ -16980,16 +17085,15 @@ package body Version.CLI is
                         Repo           : constant Version.Repository.Repository_Handle :=
                           Version.Repository.Open;
                         Commits        : Version.Revert_State.Commit_Vectors.Vector;
-                        First_Revision : Unbounded_String;
                      begin
                         I := 2;
                         while I <= Count loop
                            if Arg (I) = "-m" or else Arg (I) = "--mainline" then
                               I := I + 2;
+                           elsif Arg (I) = "--no-edit" or else Arg (I) = "--edit"
+                           then
+                              I := I + 1;
                            else
-                              if Commits.Is_Empty then
-                                 First_Revision := To_Unbounded_String (Arg (I));
-                              end if;
                               --  A revision that does not resolve is git's
                               --  die() (128), distinct from a conflict (1).
                               declare
@@ -17010,8 +17114,34 @@ package body Version.CLI is
                            end if;
                         end loop;
 
-                        Version.Revert.Start (Commits, Mainline);
-                        Success_Line ("reverted " & To_String (First_Revision));
+                        declare
+                           Old_Head : constant String :=
+                             Version.Refs.Current_Commit_Id (Repo);
+                        begin
+                           Version.Revert.Start (Commits, Mainline);
+                           --  git prints a summary for each created commit, in
+                           --  creation order (oldest first).
+                           declare
+                              Excl : Version.History.Commit_Id_Vectors.Vector;
+                              New_Ones : Version.History.Commit_Id_Vectors.Vector;
+                           begin
+                              Excl.Append
+                                (Version.Objects.To_Object_Id (Old_Head));
+                              New_Ones :=
+                                Version.History.Rev_List
+                                  (Repo,
+                                   Include =>
+                                     [Version.Objects.To_Object_Id
+                                        (Version.Refs.Current_Commit_Id (Repo))],
+                                   Exclude => Excl);
+                              for J in reverse
+                                New_Ones.First_Index .. New_Ones.Last_Index
+                              loop
+                                 Print_Commit_Summary
+                                   (Repo, New_Ones (J), Force_Date => True);
+                              end loop;
+                           end;
+                        end;
                      end;
                   end;
 

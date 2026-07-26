@@ -2612,9 +2612,10 @@ package body Version.CLI.Tests is
       begin
          Run_CLI_Capture (Root, Command, Output, Status);
          Assert (Status = 0, Context & " must succeed");
+         --  git's commit summary: "[<branch> <sha>] <subject>" then a stat.
          Assert_Contains
            (Ada.Strings.Unbounded.To_String (Output),
-            "saved ",
+            "] ",
             Context & " output");
       end Check_Success;
 

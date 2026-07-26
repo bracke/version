@@ -1,3 +1,4 @@
+- Git parity: `commit`, `revert`, and `cherry-pick` print git's commit summary — `[<branch>|detached HEAD [(root-commit)] <sha>] <subject>`, a ` Date:` line for revert/cherry-pick, and the shortstat plus create/delete/mode summary — instead of the old terse line. `revert`/`cherry-pick` accept `--no-edit`.
 - Git parity: `name-rev --refs=<glob>` restricts naming to refs matching the glob; `replace -d` on a missing replace ref exits 1 (not 255).
 - Git parity: `revert --abort`/`cherry-pick --abort` die (128) when no such operation is in progress; `mv -n`/`--dry-run` reports the planned rename without moving.
 - Git parity: `reset -q` (quiet), several mode flags with the last winning (e.g. `--hard --soft`), and dying (128) on two revisions or a mode flag combined with a pathspec.
