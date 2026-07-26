@@ -18936,6 +18936,7 @@ package body Version.CLI is
                   declare
                      Mode       : Version.Reset.Reset_Mode := Version.Reset.Mixed;
                      Quiet      : Boolean := False;
+                     Keep_Merge : Boolean := False;   --  --keep / --merge
                      Bad_Option : Boolean := False;
                      Bad_Text   : Unbounded_String;
                      N_Revs     : Natural := 0;
@@ -18948,10 +18949,17 @@ package body Version.CLI is
                      loop
                         if Arg (I) = "--soft" then
                            Mode := Version.Reset.Soft;
+                           Keep_Merge := False;
                         elsif Arg (I) = "--mixed" then
                            Mode := Version.Reset.Mixed;
+                           Keep_Merge := False;
                         elsif Arg (I) = "--hard" then
                            Mode := Version.Reset.Hard;
+                           Keep_Merge := False;
+                        elsif Arg (I) = "--keep" or else Arg (I) = "--merge" then
+                           --  Reset HEAD/index/worktree but keep local changes;
+                           --  refuse if a reset file has any (data-loss guard).
+                           Keep_Merge := True;
                         elsif Arg (I) = "-q" or else Arg (I) = "--quiet" then
                            Quiet := True;
                         else
@@ -18984,7 +18992,42 @@ package body Version.CLI is
                            Repo   : constant Version.Repository.Repository_Handle
                              := Version.Repository.Open;
                            Target : constant String := To_String (Rev);
+
+                           --  A clean tree lets --keep/--merge reset the
+                           --  working tree; any staged or unstaged change means
+                           --  a reset file might carry local work git refuses
+                           --  to discard.
+                           function Tree_Clean return Boolean is
+                              Head_Tree : constant
+                                Version.Objects.Hex_Object_Id :=
+                                  Version.Objects.Commit_Tree_Id
+                                    (Version.Objects.Read_Object
+                                       (Repo,
+                                        Version.Objects.To_Object_Id
+                                          (Version.Refs.Current_Commit_Id
+                                             (Repo))));
+                           begin
+                              return Version.Diff.Raw_Diff_Files (Repo) = ""
+                                and then Version.Diff.Raw_Diff_Index
+                                           (Repo, Head_Tree, Cached => True) = "";
+                           end Tree_Clean;
                         begin
+                           if Keep_Merge then
+                              if Tree_Clean then
+                                 --  Nothing to keep: reset fully, silently.
+                                 Version.Reset.Reset_To_Commit
+                                   (Repo, Version.Reset.Hard, Target);
+                              else
+                                 Stderr_Line
+                                   ("error: Entry not uptodate. Cannot merge.");
+                                 Stderr_Line
+                                   ("fatal: Could not reset index file to "
+                                    & "revision '" & Target & "'.");
+                                 Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                              end if;
+                              return;
+                           end if;
+
                            Version.Reset.Reset_To_Commit (Repo, Mode, Target);
 
                            if Quiet then

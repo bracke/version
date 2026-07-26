@@ -1,3 +1,4 @@
+- Git parity: `reset --keep`/`--merge` reset HEAD, index, and working tree from a clean tree (silently), and refuse (128) when a change would be lost.
 - Git parity: `commit`, `revert`, and `cherry-pick` print git's commit summary — `[<branch>|detached HEAD [(root-commit)] <sha>] <subject>`, a ` Date:` line for revert/cherry-pick, and the shortstat plus create/delete/mode summary — instead of the old terse line. `revert`/`cherry-pick` accept `--no-edit`.
 - Git parity: `name-rev --refs=<glob>` restricts naming to refs matching the glob; `replace -d` on a missing replace ref exits 1 (not 255).
 - Git parity: `revert --abort`/`cherry-pick --abort` die (128) when no such operation is in progress; `mv -n`/`--dry-run` reports the planned rename without moving.
