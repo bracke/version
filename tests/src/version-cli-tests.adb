@@ -3467,9 +3467,9 @@ package body Version.CLI.Tests is
       Configure_User (Root);
       Ada.Directories.Set_Directory (Root);
 
-      Check_Success
+      --  git's remote add/set-url/rename/remove are silent on success.
+      Check_Status_Success
         ("remote add origin https://example.invalid/project.git",
-         "added remote origin",
          "remote add");
       Check_Success
         ("remote list",
@@ -3480,18 +3480,15 @@ package body Version.CLI.Tests is
          "https://example.invalid/project.git",
          "remote get-url");
       Check_Status_Success ("remote exists origin", "remote exists");
-      Check_Success
+      Check_Status_Success
         ("remote set-url origin https://example.invalid/new.git",
-         "updated remote origin",
          "remote set-url");
-      Check_Success
+      Check_Status_Success
         ("remote rename origin upstream",
-         "renamed remote origin to upstream",
          "remote rename");
       Check_Status_Success ("remote exists upstream", "remote exists renamed");
-      Check_Success
+      Check_Status_Success
         ("remote remove upstream",
-         "deleted remote upstream",
          "remote remove");
 
       Ada.Directories.Set_Directory (Old_Dir);

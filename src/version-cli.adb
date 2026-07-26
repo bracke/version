@@ -26665,20 +26665,32 @@ package body Version.CLI is
                   --  Bare `remote` lists the remote names; `-v` follows each
                   --  name with its URL and whether it is the fetch or push
                   --  side, which is git's default listing.
-                  if Subcommand = "-v" or else Subcommand = "--verbose" then
-                     for R of Version.Remotes.List_Remotes loop
-                        Success_Line
-                          (To_String (R.Name) & ASCII.HT
-                           & To_String (R.Url) & " (fetch)");
-                        Success_Line
-                          (To_String (R.Name) & ASCII.HT
-                           & To_String (R.Url) & " (push)");
-                     end loop;
-                  else
-                     for R of Version.Remotes.List_Remotes loop
-                        Success_Line (To_String (R.Name));
-                     end loop;
-                  end if;
+                  declare
+                     Rs : Version.Remotes.Remote_Vectors.Vector :=
+                       Version.Remotes.List_Remotes;
+                     function Before
+                       (L, R : Version.Remotes.Remote) return Boolean is
+                       (L.Name < R.Name);
+                     package Srt is new
+                       Version.Remotes.Remote_Vectors.Generic_Sorting (Before);
+                  begin
+                     --  git lists the remotes sorted by name.
+                     Srt.Sort (Rs);
+                     if Subcommand = "-v" or else Subcommand = "--verbose" then
+                        for R of Rs loop
+                           Success_Line
+                             (To_String (R.Name) & ASCII.HT
+                              & To_String (R.Url) & " (fetch)");
+                           Success_Line
+                             (To_String (R.Name) & ASCII.HT
+                              & To_String (R.Url) & " (push)");
+                        end loop;
+                     else
+                        for R of Rs loop
+                           Success_Line (To_String (R.Name));
+                        end loop;
+                     end if;
+                  end;
                   return;
 
                elsif Subcommand = "list" then
@@ -26693,19 +26705,173 @@ package body Version.CLI is
                      Ada.Text_IO.Put (Version.Remotes.List_Text);
                   end;
 
+               elsif Subcommand = "show" then
+                  --  With no name, `show` lists the remotes; a name plus -n
+                  --  (--no-query) prints its configuration without contacting
+                  --  the remote.
+                  declare
+                     Usage : constant String :=
+                       "version remote show [-n] [NAME...]";
+                     Names : Version.Rev_Args.String_Vectors.Vector;
+                     Bad   : Boolean := False;
+                  begin
+                     for I in 3 .. Count loop
+                        if Arg (I) = "-n" or else Arg (I) = "--no-query" then
+                           null;
+                        elsif Is_Option (Arg (I)) then
+                           Usage_Error
+                             ("unknown remote show option: " & Arg (I), Usage);
+                           Bad := True;
+                           exit;
+                        else
+                           Names.Append (Arg (I));
+                        end if;
+                     end loop;
+
+                     if not Bad and then Names.Is_Empty then
+                        declare
+                           Rs : Version.Remotes.Remote_Vectors.Vector :=
+                             Version.Remotes.List_Remotes;
+                           function Before
+                             (L, R : Version.Remotes.Remote) return Boolean is
+                             (L.Name < R.Name);
+                           package Srt is new
+                             Version.Remotes.Remote_Vectors.Generic_Sorting
+                               (Before);
+                        begin
+                           Srt.Sort (Rs);
+                           for R of Rs loop
+                              Success_Line (To_String (R.Name));
+                           end loop;
+                        end;
+                     elsif not Bad then
+                        for N of Names loop
+                           if not Version.Remotes.Remote_Exists (N) then
+                              Error_Line ("No such remote: '" & N & "'");
+                              Ada.Command_Line.Set_Exit_Status (2);
+                           else
+                              declare
+                                 Url : constant String :=
+                                   Version.Remotes.Get_Url (N);
+                                 Repo : constant
+                                   Version.Repository.Repository_Handle :=
+                                     Version.Repository.Open;
+                                 --  Branches whose branch.<x>.remote is N,
+                                 --  paired with the short merge ref.
+                                 Tracked : Version.Trailers.String_Vectors
+                                             .Vector;
+                                 BPfx : constant String := "branch """;
+                              begin
+                                 Success_Line ("* remote " & N);
+                                 Success_Line ("  Fetch URL: " & Url);
+                                 Success_Line ("  Push  URL: " & Url);
+                                 Success_Line
+                                   ("  HEAD branch: (not queried)");
+
+                                 for E of Version.Config.Read_All (Repo) loop
+                                    declare
+                                       Sec : constant String :=
+                                         To_String (E.Section);
+                                    begin
+                                       if E.Key = "remote"
+                                         and then To_String (E.Value) = N
+                                         and then Sec'Length > BPfx'Length + 1
+                                         and then Sec
+                                                    (Sec'First .. Sec'First
+                                                     + BPfx'Length - 1) = BPfx
+                                         and then Sec (Sec'Last) = '"'
+                                       then
+                                          Tracked.Append
+                                            (Sec (Sec'First + BPfx'Length
+                                                  .. Sec'Last - 1));
+                                       end if;
+                                    end;
+                                 end loop;
+
+                                 if not Tracked.Is_Empty then
+                                    Success_Line
+                                      ("  Local branch"
+                                       & (if Natural (Tracked.Length) > 1
+                                          then "es" else "")
+                                       & " configured for 'git pull':");
+                                    for Br of Tracked loop
+                                       declare
+                                          Merge : constant String :=
+                                            (if Version.Config.Has_Key
+                                               (Repo, "branch." & Br & ".merge")
+                                             then Version.Config.Get_Value
+                                               (Repo,
+                                                "branch." & Br & ".merge")
+                                             else "");
+                                          Short : constant String :=
+                                            (if Has_Prefix
+                                               (Merge, "refs/heads/")
+                                             then Merge
+                                               (Merge'First + 11 .. Merge'Last)
+                                             else Merge);
+                                       begin
+                                          Success_Line
+                                            ("    " & Br & " merges with remote "
+                                             & Short);
+                                       end;
+                                    end loop;
+                                 end if;
+
+                                 Success_Line
+                                   ("  Local ref configured for 'git push' "
+                                    & "(status not queried):");
+                                 Success_Line
+                                   ("    (matching) pushes to (matching)");
+                              end;
+                           end if;
+                        end loop;
+                     end if;
+                  end;
+
                elsif Subcommand = "get-url" then
                   declare
                      Usage : constant String := "version remote get-url NAME";
                      Name  : Unbounded_String;
-                     OK    : Boolean := False;
+                     Have_Name : Boolean := False;
+                     Bad   : Boolean := False;
                   begin
-                     Parse_One_Remote_Name (Usage, "get-url", Name, OK);
-                     if not OK then
-                        return;
-                     end if;
+                     --  --all/--push select the URL set; with one URL per
+                     --  remote (this tool's model) they all name the same one.
+                     for I in 3 .. Count loop
+                        if Arg (I) = "--all" or else Arg (I) = "--push" then
+                           null;
+                        elsif Is_Option (Arg (I)) then
+                           Usage_Error
+                             ("unknown remote get-url option: " & Arg (I),
+                              Usage);
+                           Bad := True;
+                           exit;
+                        elsif not Have_Name then
+                           Name := To_Unbounded_String (Arg (I));
+                           Have_Name := True;
+                        else
+                           Reject_Extra (I, "get-url", Usage);
+                           Bad := True;
+                           exit;
+                        end if;
+                     end loop;
 
-                     Ada.Text_IO.Put
-                       (Version.Remotes.Get_Url_Text (To_String (Name)));
+                     if not Bad then
+                        if not Have_Name then
+                           Usage_Error ("missing remote name", Usage);
+                        elsif not Version.Remotes.Remote_Exists
+                                    (To_String (Name))
+                        then
+                           --  git: exit 2 for an unknown remote.
+                           Error_Line
+                             ("No such remote '" & To_String (Name) & "'");
+                           Ada.Command_Line.Set_Exit_Status (2);
+                        else
+                           Version.Console.Put
+                             (Version.Remotes.Get_Url (To_String (Name))
+                              & ASCII.LF);
+                        end if;
+                     end if;
                   end;
 
                elsif Subcommand = "exists" then
@@ -26743,8 +26909,15 @@ package body Version.CLI is
                         return;
                      end if;
 
-                     Version.Remotes.Add_Remote (Name => Arg (3), Url => Arg (4));
-                     Success_Line ("added remote " & Arg (3));
+                     if Version.Remotes.Remote_Exists (Arg (3)) then
+                        --  git: exit 3 when the remote already exists.
+                        Error_Line
+                          ("remote " & Arg (3) & " already exists.");
+                        Ada.Command_Line.Set_Exit_Status (3);
+                     else
+                        Version.Remotes.Add_Remote
+                          (Name => Arg (3), Url => Arg (4));
+                     end if;
                   end;
 
                elsif Subcommand = "set-url" then
@@ -26767,7 +26940,6 @@ package body Version.CLI is
                      end if;
 
                      Version.Remotes.Set_Url (Name => Arg (3), Url => Arg (4));
-                     Success_Line ("updated remote " & Arg (3));
                   end;
 
                elsif Subcommand = "rename" then
@@ -26789,13 +26961,19 @@ package body Version.CLI is
                         return;
                      end if;
 
-                     Version.Remotes.Rename_Remote
-                       (Old_Name => Arg (3), New_Name => Arg (4));
-                     Success_Line
-                       ("renamed remote " & Arg (3) & " to " & Arg (4));
+                     if not Version.Remotes.Remote_Exists (Arg (3)) then
+                        --  git: exit 2 for an unknown remote.
+                        Error_Line ("No such remote: '" & Arg (3) & "'");
+                        Ada.Command_Line.Set_Exit_Status (2);
+                     else
+                        Version.Remotes.Rename_Remote
+                          (Old_Name => Arg (3), New_Name => Arg (4));
+                     end if;
                   end;
 
-               elsif Subcommand = "delete" or else Subcommand = "remove" then
+               elsif Subcommand = "delete" or else Subcommand = "remove"
+                 or else Subcommand = "rm"
+               then
                   declare
                      Usage : constant String :=
                        "version remote " & Subcommand & " NAME";
@@ -26807,8 +26985,15 @@ package body Version.CLI is
                         return;
                      end if;
 
-                     Version.Remotes.Delete_Remote (To_String (Name));
-                     Success_Line ("deleted remote " & To_String (Name));
+                     if not Version.Remotes.Remote_Exists (To_String (Name))
+                     then
+                        --  git: exit 2 for an unknown remote.
+                        Error_Line
+                          ("No such remote: '" & To_String (Name) & "'");
+                        Ada.Command_Line.Set_Exit_Status (2);
+                     else
+                        Version.Remotes.Delete_Remote (To_String (Name));
+                     end if;
                   end;
 
                elsif Subcommand = "prune" then
