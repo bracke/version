@@ -91,6 +91,7 @@ with Version.Notes;
 with Version.Blame;
 with Version.Bisect;
 with Version.Show_Branch;
+with Version.Color;
 with Version.Console;
 with Version.Tracking;
 with Version.Diff;
@@ -1110,8 +1111,15 @@ package body Version.CLI is
          return False;
       elsif A (A'First) = '-' then
          return True;
+      elsif Ada.Strings.Fixed.Index (A, ".") /= 0 then
+         return True;
       else
-         return Ada.Strings.Fixed.Index (A, ".") /= 0;
+         --  A bare word: git's classic sectionless-key form -- which the
+         --  classic handler rejects with "key does not contain a section",
+         --  matching git rather than an "unknown subcommand" error -- unless it
+         --  names one of this tool's own config verbs (keys/has), which keep
+         --  their dedicated handlers.
+         return A /= "keys" and then A /= "has";
       end if;
    end Is_Classic_Config_Invocation;
 
@@ -1186,6 +1194,9 @@ package body Version.CLI is
       Want_Rename  : Boolean := False;
       Global_Scope : Boolean := False;
       Remove_Sect  : Boolean := False;
+      Get_Color    : Boolean := False;
+      Get_ColorBool : Boolean := False;
+      Get_Urlmatch : Boolean := False;
 
       --  Raised by Typed when a value will not convert to --type=; git dies.
       Config_Type_Bad : exception;
@@ -1287,6 +1298,12 @@ package body Version.CLI is
                Want_Get_All := True;
             elsif A = "--get-regexp" then
                Want_Get_Regexp := True;
+            elsif A = "--get-color" then
+               Get_Color := True;
+            elsif A = "--get-colorbool" then
+               Get_ColorBool := True;
+            elsif A = "--get-urlmatch" then
+               Get_Urlmatch := True;
             elsif A = "--unset" then
                Want_Unset := True;
             elsif A = "--unset-all" then
@@ -1400,6 +1417,112 @@ package body Version.CLI is
 
       if not Have_Key then
          Usage_Error ("missing config key", Usage);
+         return;
+      end if;
+
+      --  git rejects a bare key with no section (e.g. `config foo`): exit 1.
+      --  Section-name operations (--remove-section/--rename-section) and
+      --  --get-urlmatch take a bare section, so they are exempt.
+      if not (List_Mode or else Get_Urlmatch or else Want_Get_Regexp
+              or else Remove_Sect or else Want_Rename)
+        and then Ada.Strings.Fixed.Index (To_String (Key), ".") = 0
+      then
+         Ada.Text_IO.Put_Line
+           (Ada.Text_IO.Standard_Error,
+            "error: key does not contain a section: " & To_String (Key));
+         Set_Command_Failure;
+         return;
+      end if;
+
+      --  git's colour verbs. --get-color resolves the key's value (or the
+      --  supplied default) as a colour spec and prints its ANSI escape, no
+      --  trailing newline; --get-colorbool resolves a colour bool and prints
+      --  "true"/"false"; both exit 0.
+      if Get_Color then
+         declare
+            Spec  : Unbounded_String := Default_Text;
+            Found : Boolean := False;
+         begin
+            for E of Version.Config.Read_All (Repo) loop
+               if Lower_ASCII (Version.Config.Config_Entry_Name (E)) =
+                    Lower_ASCII (To_String (Key))
+               then
+                  Spec := E.Value;
+                  Found := True;
+               end if;
+            end loop;
+            --  With neither a set value nor a default (git's optional second
+            --  argument, captured as Value), git prints nothing and exits 0.
+            if not Found and then not Have_Value then
+               return;
+            end if;
+            if not Found then
+               Spec := Value;
+            end if;
+            Version.Console.Put (Version.Color.To_Ansi (To_String (Spec)));
+         end;
+         return;
+      end if;
+
+      if Get_ColorBool then
+         declare
+            --  The optional second argument says whether stdout is a terminal;
+            --  it decides "auto"/"true". Default (git's) is "false" here.
+            Tty  : constant Boolean :=
+              Have_Value and then To_String (Value) = "true";
+            Val  : Unbounded_String;
+            Found : Boolean := False;
+
+            function Resolve (Name : String) return Boolean is
+            begin
+               for E of Version.Config.Read_All (Repo) loop
+                  if Lower_ASCII (Version.Config.Config_Entry_Name (E)) =
+                       Lower_ASCII (Name)
+                  then
+                     Val := E.Value;
+                     Found := True;
+                  end if;
+               end loop;
+               return Found;
+            end Resolve;
+
+            On : Boolean;
+         begin
+            if not Resolve (To_String (Key))
+              and then To_String (Key) /= "color.ui"
+            then
+               Found := Resolve ("color.ui");
+            end if;
+            declare
+               V : constant String :=
+                 (if Found then Lower_ASCII (Version.Config.Trim
+                                               (To_String (Val)))
+                  else "auto");
+            begin
+               if V = "always" then
+                  On := True;
+               elsif V = "never" or else V = "false"
+                 or else V = "no" or else V = "off" or else V = "0"
+               then
+                  On := False;
+               elsif V = "true" or else V = "yes" or else V = "on"
+                 or else V = "1"
+               then
+                  On := Tty;
+               else   --  "auto" or anything else git treats as auto
+                  On := Tty;
+               end if;
+            end;
+            Success_Line (if On then "true" else "false");
+         end;
+         return;
+      end if;
+
+      if Get_Urlmatch then
+         --  git scores http.<url>.<key> entries against the URL; with no such
+         --  entry (the common case for this tool's config) there is no match,
+         --  which git reports as an empty result with exit 1.
+         Set_Command_Failure;
          return;
       end if;
 

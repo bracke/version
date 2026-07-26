@@ -3575,11 +3575,21 @@ package body Version.CLI.Tests is
          "unknown config option: --nonsense-flag",
          "version config [--get|--unset] NAME [VALUE] | config --list",
          "config unknown top-level option");
-      Check_Usage_Failure
-        ("config edit",
-         "unknown config subcommand: edit",
-         "version config <subcommand>",
-         "config unknown subcommand");
+      --  A bare word that is not a subcommand verb is git's classic
+      --  interface with a sectionless key, which git rejects (exit 1, "key
+      --  does not contain a section") rather than treating as an unknown
+      --  subcommand.
+      declare
+         Output : Ada.Strings.Unbounded.Unbounded_String;
+         Status : Integer;
+      begin
+         Run_CLI_Capture (Root, "config nosectionkey", Output, Status);
+         Assert (Status = 1, "config sectionless key must fail with exit 1");
+         Assert_Contains
+           (Ada.Strings.Unbounded.To_String (Output),
+            "error: key does not contain a section",
+            "config sectionless key detail");
+      end;
       Check_Usage_Failure
         ("config list extra",
          "too many config list arguments",
