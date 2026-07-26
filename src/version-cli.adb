@@ -28586,6 +28586,7 @@ package body Version.CLI is
                Name_Only : Boolean := False;
                Always    : Boolean := False;
                All_Refs  : Boolean := False;
+               Refs_Pat  : Unbounded_String;   --  --refs=<glob>
 
                --  git's name-rev, which walks every parent (a commit
                --  reachable only through a merge's second parent is named
@@ -28594,7 +28595,8 @@ package body Version.CLI is
                  (Repo   : Version.Repository.Repository_Handle;
                   Target : Version.Objects.Hex_Object_Id) return String
                is (Version.Name_Rev.Describe_Commit
-                     (Repo, Target, Tags_Only => Tags_Only));
+                     (Repo, Target, Tags_Only => Tags_Only,
+                      Refs_Pattern => To_String (Refs_Pat)));
             begin
                for I in 2 .. Count loop
                   if Arg (I) = "--tags" then
@@ -28609,6 +28611,9 @@ package body Version.CLI is
                      Always := True;
                   elsif Arg (I) = "--all" then
                      All_Refs := True;
+                  elsif Has_Prefix (Arg (I), "--refs=") then
+                     Refs_Pat := To_Unbounded_String
+                       (Arg (I) (Arg (I)'First + 7 .. Arg (I)'Last));
                   elsif Arg (I)'Length > 0 and then Arg (I) (Arg (I)'First) = '-'
                   then
                      Usage_Error
@@ -30744,10 +30749,11 @@ package body Version.CLI is
                                  Success_Line
                                    ("Deleted replace ref '" & Oid & "'");
                               else
+                                 --  git's `replace -d` on a missing ref exits
+                                 --  1 (unlike its other errors, which die 255).
                                  Error_Line
                                    ("replace ref '" & Oid & "' not found");
-                                 Ada.Command_Line.Set_Exit_Status
-                                   (Ada.Command_Line.Exit_Status (255));
+                                 Set_Command_Failure;
                               end if;
                            end;
                         end loop;
