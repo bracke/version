@@ -28845,6 +28845,7 @@ package body Version.CLI is
                Name_Only : Boolean := False;
                Always    : Boolean := False;
                All_Refs  : Boolean := False;
+               Read_Stdin : Boolean := False;   --  --stdin/--annotate-stdin
                Refs_Pat  : Unbounded_String;   --  --refs=<glob>
 
                --  git's name-rev, which walks every parent (a commit
@@ -28873,6 +28874,17 @@ package body Version.CLI is
                   elsif Has_Prefix (Arg (I), "--refs=") then
                      Refs_Pat := To_Unbounded_String
                        (Arg (I) (Arg (I)'First + 7 .. Arg (I)'Last));
+                  elsif Arg (I) = "--stdin" then
+                     --  git renamed this to --annotate-stdin and warns.
+                     Read_Stdin := True;
+                     Stderr_Line
+                       ("warning: --stdin is deprecated. Please use "
+                        & "--annotate-stdin instead, which is functionally "
+                        & "equivalent.");
+                     Stderr_Line
+                       ("This option will be removed in a future release.");
+                  elsif Arg (I) = "--annotate-stdin" then
+                     Read_Stdin := True;
                   elsif Arg (I)'Length > 0 and then Arg (I) (Arg (I)'First) = '-'
                   then
                      Usage_Error
@@ -28886,7 +28898,58 @@ package body Version.CLI is
                   declare
                      Repo : constant Version.Repository.Repository_Handle :=
                        Version.Repository.Open;
-                     Any  : Boolean := False;
+
+                     --  Name one object (a command-line operand or a --stdin
+                     --  line): a tag ref gives "tags/<name>", a commit is named
+                     --  via Best_Name, anything else is "undefined".
+                     procedure Name_Object (Spec : String) is
+                        Raw  : Version.Objects.Hex_Object_Id;
+                        Name : Unbounded_String;
+                     begin
+                        Raw := Version.Revisions.Resolve (Repo, Spec);
+                        if Version.Objects.Kind
+                             (Version.Objects.Read_Object (Repo, Raw))
+                           = Version.Objects.Tag_Object
+                        then
+                           declare
+                              Tag_Pats :
+                                Version.Ref_Format.String_Vectors.Vector;
+                           begin
+                              Tag_Pats.Append ("refs/tags/");
+                              for R of Version.Ref_Format.For_Each_Ref
+                                (Repo, Tag_Pats, Format => "%(refname)")
+                              loop
+                                 if To_String
+                                      (Version.Refs.Resolve_Ref (Repo, R))
+                                    = To_String (Raw)
+                                 then
+                                    Name := To_Unbounded_String
+                                      ("tags/" & R (R'First + 10 .. R'Last));
+                                    exit;
+                                 end if;
+                              end loop;
+                           end;
+                        end if;
+                        if Length (Name) = 0 then
+                           if Version.Objects.Kind
+                                (Version.Objects.Read_Object (Repo, Raw))
+                              = Version.Objects.Commit_Object
+                           then
+                              Name := To_Unbounded_String (Best_Name (Repo, Raw));
+                           else
+                              Name := To_Unbounded_String ("undefined");
+                           end if;
+                        end if;
+                        if Name_Only then
+                           Success_Line (To_String (Name));
+                        else
+                           Success_Line (Spec & " " & To_String (Name));
+                        end if;
+                     exception
+                        when Ada.IO_Exceptions.Data_Error | Constraint_Error =>
+                           Stderr_Line
+                             ("Could not get sha1 for " & Spec & ". Skipping.");
+                     end Name_Object;
                   begin
                      --  --all names every commit in the repository, in
                      --  rev-list order, instead of the ones named on the
@@ -28925,75 +28988,41 @@ package body Version.CLI is
                         if Arg (I)'Length = 0
                           or else Arg (I) (Arg (I)'First) /= '-'
                         then
-                           Any := True;
-                           declare
-                              --  name-rev names the input OBJECT: a tag object
-                              --  named by a tag ref is "tags/<name>" (no ^0);
-                              --  a commit is named via Best_Name (with ^0 for an
-                              --  annotated tag at its tip). Resolve runs in the
-                              --  body so an unresolvable operand is caught and
-                              --  skipped rather than aborting.
-                              Raw  : Version.Objects.Hex_Object_Id;
-                              Name : Unbounded_String;
-                           begin
-                              Raw := Version.Revisions.Resolve (Repo, Arg (I));
-                              if Version.Objects.Kind
-                                   (Version.Objects.Read_Object (Repo, Raw))
-                                = Version.Objects.Tag_Object
-                              then
-                                 declare
-                                    Tag_Pats :
-                                      Version.Ref_Format.String_Vectors.Vector;
-                                 begin
-                                    Tag_Pats.Append ("refs/tags/");
-                                    for R of Version.Ref_Format.For_Each_Ref
-                                      (Repo, Tag_Pats, Format => "%(refname)")
-                                    loop
-                                       if To_String
-                                            (Version.Refs.Resolve_Ref (Repo, R))
-                                          = To_String (Raw)
-                                       then
-                                          Name := To_Unbounded_String
-                                            ("tags/"
-                                             & R (R'First + 10 .. R'Last));
-                                          exit;
-                                       end if;
-                                    end loop;
-                                 end;
-                              end if;
-                              if Length (Name) = 0 then
-                                 if Version.Objects.Kind
-                                      (Version.Objects.Read_Object (Repo, Raw))
-                                   = Version.Objects.Commit_Object
-                                 then
-                                    Name := To_Unbounded_String
-                                      (Best_Name (Repo, Raw));
-                                 else
-                                    --  A tree or blob has no commit name; git
-                                    --  reports "undefined".
-                                    Name := To_Unbounded_String ("undefined");
-                                 end if;
-                              end if;
-                              if Name_Only then
-                                 Success_Line (To_String (Name));
-                              else
-                                 Success_Line
-                                   (Arg (I) & " " & To_String (Name));
-                              end if;
-                           exception
-                              when Ada.IO_Exceptions.Data_Error
-                                 | Constraint_Error =>
-                                 --  git skips an operand it cannot resolve,
-                                 --  warning but still exiting 0.
-                                 Stderr_Line
-                                   ("Could not get sha1 for " & Arg (I)
-                                    & ". Skipping.");
-                           end;
+                           Name_Object (Arg (I));
                         end if;
                      end loop;
-                     if not Any then
-                        Usage_Error ("name-rev requires a commit", Usage);
+
+                     --  --stdin/--annotate-stdin names each whitespace-separated
+                     --  token read from standard input.
+                     if Read_Stdin then
+                        declare
+                           Text : constant String := Read_All_Stdin;
+                           P    : Natural := Text'First;
+                        begin
+                           while P <= Text'Last loop
+                              while P <= Text'Last
+                                and then Text (P) in ' ' | ASCII.HT | ASCII.LF
+                                                     | ASCII.CR
+                              loop
+                                 P := P + 1;
+                              end loop;
+                              exit when P > Text'Last;
+                              declare
+                                 S : constant Natural := P;
+                              begin
+                                 while P <= Text'Last
+                                   and then Text (P) not in ' ' | ASCII.HT
+                                                            | ASCII.LF | ASCII.CR
+                                 loop
+                                    P := P + 1;
+                                 end loop;
+                                 Name_Object (Text (S .. P - 1));
+                              end;
+                           end loop;
+                        end;
                      end if;
+                     --  git's bare `name-rev` (no operands, no --all/--stdin)
+                     --  just exits 0.
                   end;
                end if;
             end;
