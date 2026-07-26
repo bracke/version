@@ -28847,6 +28847,7 @@ package body Version.CLI is
                All_Refs  : Boolean := False;
                Read_Stdin : Boolean := False;   --  --stdin/--annotate-stdin
                Refs_Pat  : Unbounded_String;   --  --refs=<glob>
+               Excl_Pat  : Unbounded_String;   --  --exclude=<glob>
 
                --  git's name-rev, which walks every parent (a commit
                --  reachable only through a merge's second parent is named
@@ -28856,7 +28857,8 @@ package body Version.CLI is
                   Target : Version.Objects.Hex_Object_Id) return String
                is (Version.Name_Rev.Describe_Commit
                      (Repo, Target, Tags_Only => Tags_Only,
-                      Refs_Pattern => To_String (Refs_Pat)));
+                      Refs_Pattern => To_String (Refs_Pat),
+                      Exclude_Pattern => To_String (Excl_Pat)));
             begin
                for I in 2 .. Count loop
                   if Arg (I) = "--tags" then
@@ -28874,6 +28876,9 @@ package body Version.CLI is
                   elsif Has_Prefix (Arg (I), "--refs=") then
                      Refs_Pat := To_Unbounded_String
                        (Arg (I) (Arg (I)'First + 7 .. Arg (I)'Last));
+                  elsif Has_Prefix (Arg (I), "--exclude=") then
+                     Excl_Pat := To_Unbounded_String
+                       (Arg (I) (Arg (I)'First + 10 .. Arg (I)'Last));
                   elsif Arg (I) = "--stdin" then
                      --  git renamed this to --annotate-stdin and warns.
                      Read_Stdin := True;

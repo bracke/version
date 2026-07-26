@@ -1,3 +1,4 @@
+- Git parity: `name-rev` breaks ties between equally-good refs by the alphabetically-first name (as git does), and `name-rev --exclude=<glob>` skips refs matching the glob.
 - Git parity: bare `name-rev` (no arguments) exits 0 silently, and `name-rev --stdin`/`--annotate-stdin` names each object read from standard input (`--stdin` warns that it is deprecated).
 - Git parity: bare `rerere` records each still-conflicted file's preimage (reporting on stderr) instead of listing paths, and `rerere forget <pathspec>` reports "no remembered resolution" only for a tracked conflict with nothing to drop (an untracked path is silent).
 - Git parity: `maintenance run --task=incremental-repack` writes a multi-pack-index and fails (exit 1) when there is no pack to index, as git does.
