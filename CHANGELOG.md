@@ -1,3 +1,4 @@
+- Git parity: `multi-pack-index write` dies (255) when there is no pack to index, and a bare `repack` prints "Nothing new to pack." only when every reachable object is already packed (git packs loose objects silently).
 - Git parity: `merge-one-file` with a wrong argument count prints git's usage to stdout and exits 1; `rerere forget` without paths forgets every recorded resolution (with git's deprecation warning) instead of failing.
 - Git parity: `revert -n`/`--no-commit` and `cherry-pick -n`/`--no-commit` apply the change to the index and working tree without committing or moving HEAD (via a `No_Commit` option on `Version.Revert`/`Cherry_Pick.Start`).
 - Git parity: `reset --keep`/`--merge` reset HEAD, index, and working tree from a clean tree (silently), and refuse (128) when a change would be lost.

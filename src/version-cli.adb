@@ -7582,6 +7582,30 @@ package body Version.CLI is
         Version.Repository.Open;
 
       Sub : Unbounded_String;
+
+      --  git's multi-pack-index write refuses (255) when there is no pack to
+      --  index -- a repository with only loose objects.
+      function Has_Packs return Boolean is
+         Dir : constant String :=
+           Version.Files.Join
+             (Version.Repository.Common_Git_Dir (Repo), "objects/pack");
+      begin
+         if not Ada.Directories.Exists (Dir) then
+            return False;
+         end if;
+         declare
+            Search : Ada.Directories.Search_Type;
+            Ent    : Ada.Directories.Directory_Entry_Type;
+            Found  : Boolean := False;
+         begin
+            Ada.Directories.Start_Search
+              (Search, Dir, "*.pack",
+               [Ada.Directories.Ordinary_File => True, others => False]);
+            Found := Ada.Directories.More_Entries (Search);
+            Ada.Directories.End_Search (Search);
+            return Found;
+         end;
+      end Has_Packs;
    begin
       for I in 2 .. Count loop
          declare
@@ -7594,7 +7618,13 @@ package body Version.CLI is
       end loop;
 
       if Sub = "write" then
-         Version.Multi_Pack_Index.Write (Repo);
+         if not Has_Packs then
+            Error_Line ("error: no pack files to index.");
+            Ada.Command_Line.Set_Exit_Status
+              (Ada.Command_Line.Exit_Status (255));
+         else
+            Version.Multi_Pack_Index.Write (Repo);
+         end if;
 
       elsif Sub = "verify" then
          declare
@@ -26762,8 +26792,9 @@ package body Version.CLI is
                      Result : constant Version.Maintenance.Maintenance_Result :=
                        Version.Maintenance.Repack (Version.Repository.Open);
                   begin
-                     pragma Unreferenced (Result);
-                     if not Silent then
+                     --  git prints this only when the new pack would add
+                     --  nothing the existing packs do not already hold.
+                     if not Silent and then Result.Nothing_New then
                         Success_Line ("Nothing new to pack.");
                      end if;
                   end;
