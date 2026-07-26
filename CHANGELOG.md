@@ -1,3 +1,4 @@
+- Git parity: `format-patch --cover-letter` emits the series cover (subject/blurb placeholders, author shortlog, cumulative diffstat) ahead of the patches.
 - Git parity: `log --left-right`/`--cherry-mark`/`--cherry-pick`/`--left-only`/`--right-only`/`--cherry` mark and filter a symmetric `A...B` range by side and patch equivalence.
 - Git parity: `shortlog --all` seeds every ref tip, and `cherry <upstream> <head> <limit>` restricts the reported commits to `<limit>..<head>`.
 - Git parity: `worktree list -z`/`--porcelain -z` (NUL records, `-z` requires `--porcelain`), `worktree repair` with no path, and `submodule summary` with no submodules configured.

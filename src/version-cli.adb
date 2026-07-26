@@ -20546,6 +20546,7 @@ package body Version.CLI is
                Start_No  : Positive := 1;
                Context   : Natural := 3;   --  -U<n>/--unified=<n>
                Show_Summary : Boolean := True;   --  --stat drops the summary
+               Cover     : Boolean := False;   --  --cover-letter
 
                function All_Digits (S : String) return Boolean is
                  (S'Length > 0
@@ -20615,6 +20616,8 @@ package body Version.CLI is
                      elsif Has_Prefix (A, "--subject-prefix=") then
                         Prefix := To_Unbounded_String
                           (A (A'First + 17 .. A'Last));
+                     elsif A = "--cover-letter" then
+                        Cover := True;
                      elsif A = "--numbered-files" then
                         null;   --  affects on-disk names only; a no-op here
                      elsif A = "--stat" then
@@ -20726,6 +20729,24 @@ package body Version.CLI is
                              Natural (Commits.Length);
                            N     : Natural := 0;
                         begin
+                           --  git's --cover-letter prepends message 0, then the
+                           --  usual blank line before the first patch (only the
+                           --  --stdout form is a single stream; -o writes it as
+                           --  0000-cover-letter.patch, out of scope here).
+                           if Cover and then Stdout and then Total > 0 then
+                              Version.Console.Put
+                                (Version.Format_Patch.Cover_Letter
+                                   (Repo, Commits,
+                                    (if Total = 0 then 1
+                                     else Start_No + Total - 1),
+                                    Prefix       => To_String (Prefix),
+                                    Numbering    => Numbering,
+                                    Reroll       => Reroll,
+                                    Context      => Context,
+                                    Show_Summary => Show_Summary));
+                              Version.Console.Put ([1 => ASCII.LF]);
+                           end if;
+
                            for C of Commits loop
                               N := N + 1;
                               declare
