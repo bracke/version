@@ -1,3 +1,4 @@
+- Git parity: `merge-one-file` with a wrong argument count prints git's usage to stdout and exits 1; `rerere forget` without paths forgets every recorded resolution (with git's deprecation warning) instead of failing.
 - Git parity: `revert -n`/`--no-commit` and `cherry-pick -n`/`--no-commit` apply the change to the index and working tree without committing or moving HEAD (via a `No_Commit` option on `Version.Revert`/`Cherry_Pick.Start`).
 - Git parity: `reset --keep`/`--merge` reset HEAD, index, and working tree from a clean tree (silently), and refuse (128) when a change would be lost.
 - Git parity: `commit`, `revert`, and `cherry-pick` print git's commit summary — `[<branch>|detached HEAD [(root-commit)] <sha>] <subject>`, a ` Date:` line for revert/cherry-pick, and the shortstat plus create/delete/mode summary — instead of the old terse line. `revert`/`cherry-pick` accept `--no-edit`.

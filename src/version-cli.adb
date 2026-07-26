@@ -4195,10 +4195,19 @@ package body Version.CLI is
         Version.Repository.Open;
    begin
       if Count /= 8 then
-         Error_Line
-           ("usage: version merge-one-file <orig blob> <our blob> "
-            & "<their blob> <path> <orig mode> <our mode> <their mode>");
-         Set_Usage_Failure;
+         --  git's merge-one-file prints its usage to stdout (twice, a quirk of
+         --  its two-line template) and exits 1.
+         declare
+            U : constant String :=
+              "usage: git merge-one-file <orig blob> <our blob> <their blob>"
+              & " <path> <orig mode> <our mode> <their mode>" & ASCII.LF;
+         begin
+            Version.Console.Put
+              (U & ASCII.LF & U & ASCII.LF
+               & "Blob ids and modes should be empty for missing files."
+               & ASCII.LF);
+         end;
+         Set_Command_Failure;
          return;
       end if;
 
@@ -32044,7 +32053,15 @@ package body Version.CLI is
                   Version.Files.Delete_File_If_Exists (MR_Path);
                elsif Sub = "forget" then
                   if Count < 3 then
-                     Usage_Error ("rerere forget requires a pathspec", Usage);
+                     --  git accepts the deprecated pathless form: forget every
+                     --  recorded resolution, with a warning, and exits 0.
+                     Stderr_Line
+                       ("warning: 'git rerere forget' without paths is "
+                        & "deprecated");
+                     for I in Keys.First_Index .. Keys.Last_Index loop
+                        Version.Files.Delete_File_If_Exists
+                          (Postimage (Keys (I)));
+                     end loop;
                   else
                      for J in 3 .. Count loop
                         for I in Keys.First_Index .. Keys.Last_Index loop
