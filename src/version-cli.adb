@@ -9937,7 +9937,9 @@ package body Version.CLI is
       Tags  : Boolean := False;
       Exit_Code : Boolean := False;
       Refs_Only : Boolean := False;
+      Get_Url_Only : Boolean := False;
       Remote : Unbounded_String;
+      Have_Remote : Boolean := False;
       Patterns : Version.Trailers.String_Vectors.Vector;
    begin
       for I in 2 .. Count loop
@@ -9954,20 +9956,35 @@ package body Version.CLI is
                null;
             elsif A = "--refs" then
                Refs_Only := True;
+            elsif A = "--get-url" then
+               Get_Url_Only := True;
             elsif A'Length > 0 and then A (A'First) = '-' then
                Error_Line ("unknown option: " & A);
                Set_Usage_Failure;
                return;
-            elsif Remote = "" then
+            elsif not Have_Remote then
                Remote := To_Unbounded_String (A);
+               Have_Remote := True;
             else
                Patterns.Append (A);
             end if;
          end;
       end loop;
 
-      if Remote = "" then
+      if not Have_Remote then
          Remote := To_Unbounded_String ("origin");
+      end if;
+
+      --  `--get-url` prints the URL a fetch would use, without contacting it:
+      --  a configured remote resolves through its config, anything else is
+      --  taken as the URL itself.
+      if Get_Url_Only then
+         Version.Console.Put
+           ((if Version.Remotes.Remote_Exists (To_String (Remote))
+             then Version.Remotes.Get_Url (To_String (Remote))
+             else To_String (Remote))
+            & ASCII.LF);
+         return;
       end if;
 
       declare
@@ -10068,8 +10085,9 @@ package body Version.CLI is
    exception
       when E : Ada.IO_Exceptions.Data_Error | Ada.IO_Exceptions.Name_Error
          | Ada.IO_Exceptions.Use_Error =>
+         --  git dies (128) when it cannot reach or read the remote.
          Error_Line (Ada.Exceptions.Exception_Message (E));
-         Set_Command_Failure;
+         Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
    end Run_Ls_Remote_Command;
 
    --  `check-attr [-a|--all] [--] <attr>... <pathname>...`
@@ -20044,9 +20062,31 @@ package body Version.CLI is
 
                      elsif Sub = "verify" or else Sub = "list-heads" then
                         declare
-                           Info : constant Version.Bundle.Bundle_Info :=
-                             Version.Bundle.Read_Header (File);
+                           Info : Version.Bundle.Bundle_Info;
+
+                           --  list-heads with ref arguments shows only the
+                           --  refs matching them (exact name or a trailing
+                           --  "/<name>" component).
+                           function Kept (Name : String) return Boolean is
+                           begin
+                              if Count < 4 then
+                                 return True;
+                              end if;
+                              for J in 4 .. Count loop
+                                 if Name = Arg (J)
+                                   or else (Name'Length > Arg (J)'Length + 1
+                                            and then Name
+                                              (Name'Last - Arg (J)'Length
+                                               .. Name'Last) = "/" & Arg (J))
+                                 then
+                                    return True;
+                                 end if;
+                              end loop;
+                              return False;
+                           end Kept;
                         begin
+                           Info := Version.Bundle.Read_Header (File);
+
                            if Sub = "verify" then
                               if Natural (Info.Refs.Length) = 1 then
                                  Success_Line
@@ -20060,8 +20100,11 @@ package body Version.CLI is
                            end if;
 
                            for R of Info.Refs loop
-                              Success_Line
-                                (To_String (R.Id) & " " & To_String (R.Name));
+                              if Sub = "verify" or else Kept (To_String (R.Name))
+                              then
+                                 Success_Line
+                                   (To_String (R.Id) & " " & To_String (R.Name));
+                              end if;
                            end loop;
 
                            if Sub = "verify" then
@@ -20069,8 +20112,22 @@ package body Version.CLI is
                                  Success_Line
                                    ("The bundle records a complete history.");
                               end if;
-                              Success_Line (File & " is okay");
+                              --  The object-id width tells sha1 from sha256.
+                              Success_Line
+                                ("The bundle uses this hash algorithm: "
+                                 & (if not Info.Refs.Is_Empty
+                                      and then To_String
+                                                 (Info.Refs.First_Element.Id)'
+                                                   Length = 64
+                                    then "sha256" else "sha1"));
+                              --  git prints the "is okay" line on stderr.
+                              Error_Line (File & " is okay");
                            end if;
+                        exception
+                           when E : others =>
+                              --  A file that is not a bundle: git exits 1.
+                              Error_Line (User_Error_Text (E));
+                              Set_Command_Failure;
                         end;
 
                      elsif Sub = "unbundle" then
@@ -27221,8 +27278,38 @@ package body Version.CLI is
                Source        : Unbounded_String;
                Target        : Unbounded_String;
                Operand_Count : Natural := 0;
+               Quiet         : Boolean := False;
 
                Filter_Eq     : constant String := "--filter=";
+
+               --  git's default target: the last path component of the source
+               --  with a trailing ".git" (and any trailing slashes) removed.
+               function Guess_Target (Src : String) return String is
+                  Last : Integer := Src'Last;
+               begin
+                  while Last >= Src'First and then Src (Last) = '/' loop
+                     Last := Last - 1;
+                  end loop;
+                  declare
+                     First : Integer := Last;
+                  begin
+                     while First > Src'First
+                       and then Src (First - 1) /= '/'
+                     loop
+                        First := First - 1;
+                     end loop;
+                     declare
+                        Base : String := Src (First .. Last);
+                     begin
+                        if Base'Length > 4
+                          and then Base (Base'Last - 3 .. Base'Last) = ".git"
+                        then
+                           return Base (Base'First .. Base'Last - 4);
+                        end if;
+                        return Base;
+                     end;
+                  end;
+               end Guess_Target;
             begin
                while I <= Count loop
                   if Arg (I)'Length >= Filter_Eq'Length
@@ -27276,6 +27363,10 @@ package body Version.CLI is
                      Recursive := True;
                      I := I + 1;
 
+                  elsif Arg (I) = "-q" or else Arg (I) = "--quiet" then
+                     Quiet := True;
+                     I := I + 1;
+
                   elsif Arg (I)'Length > 0
                     and then Arg (I) (Arg (I)'First) = '-'
                   then
@@ -27296,7 +27387,13 @@ package body Version.CLI is
                   end if;
                end loop;
 
-               if Operand_Count < 2 then
+               if Operand_Count = 1 then
+                  --  git derives the target directory from the source URL.
+                  Target :=
+                    To_Unbounded_String (Guess_Target (To_String (Source)));
+               end if;
+
+               if Operand_Count = 0 then
                   Usage_Error ("missing clone source or target", Usage);
                   return;
                elsif Has_Depth and then Recursive then
@@ -27331,8 +27428,12 @@ package body Version.CLI is
                      Target => To_String (Target));
                end if;
 
-               Success_Line
-                 ("cloned " & To_String (Source) & " to " & To_String (Target));
+               --  git reports clone progress on stderr; stdout stays empty.
+               if not Quiet then
+                  Error_Line
+                    ("Cloning into '" & To_String (Target) & "'...");
+                  Error_Line ("done.");
+               end if;
             end;
 
          elsif Command = "pack-refs" then

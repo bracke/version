@@ -2465,11 +2465,13 @@ package body Version.CLI.Tests is
          "version fetch [--depth N|--deepen N|--unshallow] REMOTE [REF]",
          "fetch unshallow+depth mutually exclusive");
 
+      --  git derives the target from the source when only one is given, so a
+      --  bare `clone` with no operands is the error instead.
       Check_Usage_Failure
-        ("clone source",
+        ("clone",
          "missing clone source or target",
          "version clone [--depth N|--recursive|--filter SPEC] SOURCE TARGET",
-         "clone missing target");
+         "clone missing source");
       Check_Usage_Failure
         ("clone --recursive --recursive source target",
          "duplicate option: --recursive",
