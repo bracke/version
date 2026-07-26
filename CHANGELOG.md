@@ -1,3 +1,4 @@
+- Git parity: `log --left-right`/`--cherry-mark`/`--cherry-pick`/`--left-only`/`--right-only`/`--cherry` mark and filter a symmetric `A...B` range by side and patch equivalence.
 - Git parity: `shortlog --all` seeds every ref tip, and `cherry <upstream> <head> <limit>` restricts the reported commits to `<limit>..<head>`.
 - Git parity: `worktree list -z`/`--porcelain -z` (NUL records, `-z` requires `--porcelain`), `worktree repair` with no path, and `submodule summary` with no submodules configured.
 - Git parity: `diff --src-prefix=`/`--dst-prefix=`/`--no-prefix`/`--default-prefix` set the header path prefixes.

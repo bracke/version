@@ -36,6 +36,7 @@ with Version.Pathspec;
 with Version.Platform;
 with Version.Working_Tree;
 with Version.Ignore;
+with Version.Patch_Id;
 with Version.Rev_Args;
 with Version.Revisions;
 with Version.Credential;
@@ -12261,6 +12262,16 @@ package body Version.CLI is
                --  --not flips following revisions into exclusions (^rev).
                Negate      : Boolean := False;
                Want_Parents : Boolean := False;   --  --parents
+               --  git's symmetric-range marking: --left-right prefixes each
+               --  commit with </> for its side, --cherry-mark replaces that
+               --  with = for a commit whose patch already exists on the other
+               --  side, --cherry-pick drops those, and --left-only/--right-only
+               --  keep one side. --cherry is a shorthand.
+               Left_Right  : Boolean := False;
+               Cherry_Mark : Boolean := False;
+               Cherry_Pick : Boolean := False;
+               Left_Only   : Boolean := False;
+               Right_Only  : Boolean := False;
                Decorate    : Version.Log.Decorate_Mode :=
                  Version.Log.No_Decorate;
                --  --since/--after and --until/--before bound the committer
@@ -12327,6 +12338,21 @@ package body Version.CLI is
                      Decorate := Version.Log.Full_Decorate;
                   elsif Arg (I) = "--parents" then
                      Want_Parents := True;
+                  elsif Arg (I) = "--left-right" then
+                     Left_Right := True;
+                  elsif Arg (I) = "--cherry-mark" then
+                     Cherry_Mark := True;
+                  elsif Arg (I) = "--cherry-pick" then
+                     Cherry_Pick := True;
+                  elsif Arg (I) = "--left-only" then
+                     Left_Only := True;
+                  elsif Arg (I) = "--right-only" then
+                     Right_Only := True;
+                  elsif Arg (I) = "--cherry" then
+                     --  git: --right-only --cherry-mark --no-merges.
+                     Right_Only := True;
+                     Cherry_Mark := True;
+                     Walk.No_Merges := True;
                   elsif Arg (I) = "--not" then
                      Negate := True;
                   elsif Arg (I) = "--no-merges" then
@@ -12721,6 +12747,181 @@ package body Version.CLI is
                               Raw         => Raw,
                               Context     => Context,
                               Oneline     => True));
+                     elsif Oneline
+                       and then (Left_Right or else Cherry_Mark
+                                 or else Cherry_Pick or else Left_Only
+                                 or else Right_Only)
+                     then
+                        --  git's --left-right/--cherry marking over a
+                        --  symmetric A...B range: classify each commit by its
+                        --  side and (for --cherry-mark/-pick) whether its patch
+                        --  already exists on the other side, then prefix the
+                        --  oneline with </>/=/+ as git does.
+                        declare
+                           Left_Tip  : Version.Objects.Hex_Object_Id;
+                           Right_Tip : Version.Objects.Hex_Object_Id;
+                           Have_Range : Boolean := False;
+
+                           function Contains
+                             (V : Version.History.Commit_Id_Vectors.Vector;
+                              C : Version.Objects.Hex_Object_Id)
+                              return Boolean
+                           is
+                              Target : constant String :=
+                                Version.Objects.To_String (C);
+                           begin
+                              for E of V loop
+                                 if Version.Objects.To_String (E) = Target then
+                                    return True;
+                                 end if;
+                              end loop;
+                              return False;
+                           end Contains;
+
+                           function Pid_In
+                             (Pids : Version.Rev_Args.String_Vectors.Vector;
+                              P    : String) return Boolean is
+                           begin
+                              for E of Pids loop
+                                 if E = P then
+                                    return True;
+                                 end if;
+                              end loop;
+                              return False;
+                           end Pid_In;
+                        begin
+                           for Op of Operands loop
+                              for K in Op'First .. Op'Last - 2 loop
+                                 if Op (K) = '.' and then Op (K + 1) = '.'
+                                   and then Op (K + 2) = '.'
+                                 then
+                                    Left_Tip :=
+                                      Version.Revisions.Resolve_Commit
+                                        (Repo, Op (Op'First .. K - 1));
+                                    Right_Tip :=
+                                      Version.Revisions.Resolve_Commit
+                                        (Repo, Op (K + 3 .. Op'Last));
+                                    Have_Range := True;
+                                    exit;
+                                 end if;
+                              end loop;
+                           end loop;
+
+                           if not Have_Range then
+                              --  Without a symmetric range the marks are
+                              --  meaningless; fall back to the plain listing.
+                              Version.Console.Put
+                                (Version.Log.Log_Oneline_List_Text
+                                   (Repo, Commits,
+                                    With_Parents => Want_Parents,
+                                    Decorate => Decorate));
+                           else
+                              declare
+                                 L_Inc : Version.History.Commit_Id_Vectors
+                                           .Vector;
+                                 R_Inc : Version.History.Commit_Id_Vectors
+                                           .Vector;
+                                 L_Exc : Version.History.Commit_Id_Vectors
+                                           .Vector;
+                                 R_Exc : Version.History.Commit_Id_Vectors
+                                           .Vector;
+                                 Opt   : Version.History.Rev_List_Options;
+                                 Need_Pids : constant Boolean :=
+                                   Cherry_Mark or else Cherry_Pick;
+                                 L_Pids : Version.Rev_Args.String_Vectors.Vector;
+                                 R_Pids : Version.Rev_Args.String_Vectors.Vector;
+                                 Out_Text : Unbounded_String;
+                              begin
+                                 L_Inc.Append (Left_Tip);
+                                 R_Exc.Append (Left_Tip);
+                                 R_Inc.Append (Right_Tip);
+                                 L_Exc.Append (Right_Tip);
+                                 declare
+                                    Left_Ids : constant Version.History
+                                                 .Commit_Id_Vectors.Vector :=
+                                      Version.History.Rev_List
+                                        (Repo, L_Inc, L_Exc, Opt);
+                                    Right_Ids : constant Version.History
+                                                  .Commit_Id_Vectors.Vector :=
+                                      Version.History.Rev_List
+                                        (Repo, R_Inc, R_Exc, Opt);
+                                 begin
+                                    if Need_Pids then
+                                       for C of Left_Ids loop
+                                          L_Pids.Append
+                                            (Version.Patch_Id.Of_Commit
+                                               (Repo, C));
+                                       end loop;
+                                       for C of Right_Ids loop
+                                          R_Pids.Append
+                                            (Version.Patch_Id.Of_Commit
+                                               (Repo, C));
+                                       end loop;
+                                    end if;
+
+                                    for C of Commits loop
+                                       declare
+                                          Is_Left : constant Boolean :=
+                                            Contains (Left_Ids, C);
+                                          Equivalent : Boolean := False;
+                                          Marker : Unbounded_String;
+                                       begin
+                                          if (Left_Only and then not Is_Left)
+                                            or else (Right_Only and then Is_Left)
+                                          then
+                                             goto Skip;
+                                          end if;
+
+                                          if Need_Pids then
+                                             declare
+                                                P : constant String :=
+                                                  Version.Patch_Id.Of_Commit
+                                                    (Repo, C);
+                                             begin
+                                                Equivalent :=
+                                                  (if Is_Left
+                                                   then Pid_In (R_Pids, P)
+                                                   else Pid_In (L_Pids, P));
+                                             end;
+                                          end if;
+
+                                          if Cherry_Pick and then Equivalent then
+                                             goto Skip;
+                                          end if;
+
+                                          if Cherry_Mark and then Equivalent then
+                                             Marker := To_Unbounded_String ("=");
+                                          elsif Left_Right then
+                                             Marker := To_Unbounded_String
+                                               (if Is_Left then "<" else ">");
+                                          elsif Cherry_Mark then
+                                             Marker := To_Unbounded_String ("+");
+                                          end if;
+
+                                          declare
+                                             One : Version.History
+                                                     .Commit_Id_Vectors.Vector;
+                                          begin
+                                             One.Append (C);
+                                             Append
+                                               (Out_Text,
+                                                (if Length (Marker) = 0 then ""
+                                                 else To_String (Marker) & " ")
+                                                & Version.Log
+                                                    .Log_Oneline_List_Text
+                                                      (Repo, One,
+                                                       With_Parents =>
+                                                         Want_Parents,
+                                                       Decorate => Decorate));
+                                          end;
+                                          <<Skip>>
+                                       end;
+                                    end loop;
+                                    Version.Console.Put (To_String (Out_Text));
+                                 end;
+                              end;
+                           end if;
+                        end;
                      elsif Oneline then
                         Version.Console.Put
                           (Version.Log.Log_Oneline_List_Text
