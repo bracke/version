@@ -1,3 +1,4 @@
+- Git parity: `shortlog --all` seeds every ref tip, and `cherry <upstream> <head> <limit>` restricts the reported commits to `<limit>..<head>`.
 - Git parity: `worktree list -z`/`--porcelain -z` (NUL records, `-z` requires `--porcelain`), `worktree repair` with no path, and `submodule summary` with no submodules configured.
 - Git parity: `diff --src-prefix=`/`--dst-prefix=`/`--no-prefix`/`--default-prefix` set the header path prefixes.
 - Git parity: `config --get-color`/`--get-colorbool` resolve colour specs and bools, `--get-urlmatch` reports no match, a sectionless key is rejected (exit 1) rather than mistaken for a subcommand, and a hook's stdout is routed to stderr as git does.

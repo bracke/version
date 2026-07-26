@@ -20748,6 +20748,7 @@ package body Version.CLI is
                Bad_Text : Unbounded_String;
                Up_Arg   : Unbounded_String;
                Head_Arg : Unbounded_String;
+               Limit_Arg : Unbounded_String;
                Ops      : Natural := 0;
                Abbrev   : Natural := 0;   --  0 = the full 40/64-hex id
                I        : Positive := 2;
@@ -20779,6 +20780,8 @@ package body Version.CLI is
                            Up_Arg := To_Unbounded_String (A);
                         elsif Ops = 2 then
                            Head_Arg := To_Unbounded_String (A);
+                        elsif Ops = 3 then
+                           Limit_Arg := To_Unbounded_String (A);
                         else
                            Bad_Opt := True;
                            Bad_Text := To_Unbounded_String (A);
@@ -20827,7 +20830,14 @@ package body Version.CLI is
                         end;
                      end if;
 
-                     for E of Version.Cherry.Status (Repo, Up_Id, Head_Id) loop
+                     for E of Version.Cherry.Status
+                       (Repo, Up_Id, Head_Id,
+                        Limit =>
+                          (if Ops >= 3
+                           then Version.Revisions.Resolve_Commit
+                                  (Repo, To_String (Limit_Arg))
+                           else Version.Objects.Zero_Object_Id))
+                     loop
                         declare
                            Mark : constant String :=
                              (if E.Equivalent_Upstream then "- " else "+ ");
@@ -20940,6 +20950,7 @@ package body Version.CLI is
                By_Count : Boolean := False;
                Email    : Boolean := False;
                No_Merges : Boolean := False;
+               Seed_All : Boolean := False;
                Bad_Opt  : Boolean := False;
                Bad_Text : Unbounded_String;
                Operands : Version.Rev_Args.String_Vectors.Vector;
@@ -20963,6 +20974,8 @@ package body Version.CLI is
                         Operands.Append (A);
                      elsif A = "--no-merges" then
                         No_Merges := True;
+                     elsif A = "--all" then
+                        Seed_All := True;
                      elsif A'Length >= 2 and then A (A'First) = '-'
                        and then A (A'First + 1) /= '-'
                      then
@@ -21019,6 +21032,14 @@ package body Version.CLI is
                      package Sorter is new
                        Version.Shortlog.Group_Vectors.Generic_Sorting (Fewer);
                   begin
+                     --  git's --all seeds every ref tip (branches, tags,
+                     --  remotes) in addition to any named revisions.
+                     if Seed_All then
+                        for Tip of Version.Rev_Args.Ref_Tips (Repo) loop
+                           Include.Append (Tip);
+                        end loop;
+                     end if;
+
                      --  Bare shortlog summarizes HEAD; a pathspec restricts the
                      --  walk to commits that touch those paths.
                      if Include.Is_Empty and then Parsed.Exclude.Is_Empty then

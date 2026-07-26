@@ -41,11 +41,11 @@ output.fixture          output.cases          sub
 
 merge.fixture           merge.cases           -     0
 mergeconflict.fixture   mergeconflict.cases   -     0
-refs.fixture            refs.cases            -    16
+refs.fixture            refs.cases            -    15
 refs2.fixture           refs2.cases           -     0
 plumbing.fixture        plumbing.cases        -    12
 histinspect.fixture     histinspect.cases     -    10
-histinspect2.fixture    histinspect2.cases    -    15
+histinspect2.fixture    histinspect2.cases    -    14
 configtext.fixture      configtext.cases      -     1
 configtext.fixture      configtext2.cases     -     1
 diffplumb.fixture       diffplumb.cases       -    12
