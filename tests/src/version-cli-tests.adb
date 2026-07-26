@@ -2962,8 +2962,8 @@ package body Version.CLI.Tests is
          Revert_Usage,
          "revert duplicate mainline option");
       Check_Usage_Failure
-        ("revert --no-commit HEAD",
-         "unknown revert option: --no-commit",
+        ("revert --strategy ours HEAD",
+         "unknown revert option: --strategy",
          Revert_Usage,
          "revert unknown option");
       Check_Usage_Failure

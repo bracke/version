@@ -16892,11 +16892,15 @@ package body Version.CLI is
                   declare
                      Mainline       : Natural := 0;
                      Has_Mainline   : Boolean := False;
+                     No_Commit      : Boolean := False;   --  -n/--no-commit
                      Revision_Count : Natural := 0;
                      I              : Natural := 2;
                   begin
                      while I <= Count loop
-                        if Arg (I) = "-m" or else Arg (I) = "--mainline" then
+                        if Arg (I) = "-n" or else Arg (I) = "--no-commit" then
+                           No_Commit := True;
+                           I := I + 1;
+                        elsif Arg (I) = "-m" or else Arg (I) = "--mainline" then
                            if Has_Mainline then
                               Usage_Error ("duplicate option: " & Arg (I), Usage);
                               return;
@@ -16950,7 +16954,10 @@ package body Version.CLI is
                         while I <= Count loop
                            if Arg (I) = "-m" or else Arg (I) = "--mainline" then
                               I := I + 2;
-                           elsif Arg (I) = "--no-edit" then
+                           elsif Arg (I) = "--no-edit"
+                             or else Arg (I) = "-n"
+                             or else Arg (I) = "--no-commit"
+                           then
                               I := I + 1;
                            else
                               --  A revision that does not resolve is git's
@@ -16977,7 +16984,8 @@ package body Version.CLI is
                            Old_Head : constant String :=
                              Version.Refs.Current_Commit_Id (Repo);
                         begin
-                           Version.Cherry_Pick.Start (Commits, Mainline);
+                           Version.Cherry_Pick.Start
+                             (Commits, Mainline, No_Commit => No_Commit);
                            declare
                               Excl : Version.History.Commit_Id_Vectors.Vector;
                               New_Ones : Version.History.Commit_Id_Vectors.Vector;
@@ -17032,11 +17040,15 @@ package body Version.CLI is
                   declare
                      Mainline       : Natural := 0;
                      Has_Mainline   : Boolean := False;
+                     No_Commit      : Boolean := False;   --  -n/--no-commit
                      Revision_Count : Natural := 0;
                      I              : Natural := 2;
                   begin
                      while I <= Count loop
-                        if Arg (I) = "-m" or else Arg (I) = "--mainline" then
+                        if Arg (I) = "-n" or else Arg (I) = "--no-commit" then
+                           No_Commit := True;
+                           I := I + 1;
+                        elsif Arg (I) = "-m" or else Arg (I) = "--mainline" then
                            if Has_Mainline then
                               Usage_Error ("duplicate option: " & Arg (I), Usage);
                               return;
@@ -17091,6 +17103,8 @@ package body Version.CLI is
                            if Arg (I) = "-m" or else Arg (I) = "--mainline" then
                               I := I + 2;
                            elsif Arg (I) = "--no-edit" or else Arg (I) = "--edit"
+                             or else Arg (I) = "-n"
+                             or else Arg (I) = "--no-commit"
                            then
                               I := I + 1;
                            else
@@ -17118,7 +17132,8 @@ package body Version.CLI is
                            Old_Head : constant String :=
                              Version.Refs.Current_Commit_Id (Repo);
                         begin
-                           Version.Revert.Start (Commits, Mainline);
+                           Version.Revert.Start
+                             (Commits, Mainline, No_Commit => No_Commit);
                            --  git prints a summary for each created commit, in
                            --  creation order (oldest first).
                            declare
