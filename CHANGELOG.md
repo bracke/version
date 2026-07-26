@@ -1,3 +1,4 @@
+- Git parity: bare `rerere` records each still-conflicted file's preimage (reporting on stderr) instead of listing paths, and `rerere forget <pathspec>` reports "no remembered resolution" only for a tracked conflict with nothing to drop (an untracked path is silent).
 - Git parity: `maintenance run --task=incremental-repack` writes a multi-pack-index and fails (exit 1) when there is no pack to index, as git does.
 - Git parity: `multi-pack-index write` dies (255) when there is no pack to index, and a bare `repack` prints "Nothing new to pack." only when every reachable object is already packed (git packs loose objects silently).
 - Git parity: `merge-one-file` with a wrong argument count prints git's usage to stdout and exits 1; `rerere forget` without paths forgets every recorded resolution (with git's deprecation warning) instead of failing.

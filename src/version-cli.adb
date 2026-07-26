@@ -32091,10 +32091,21 @@ package body Version.CLI is
                end Work_Has_Markers;
             begin
                Load_Merge_RR;
-               if Sub = "" or else Sub = "status" then
+               if Sub = "status" then
                   for I in Keys.First_Index .. Keys.Last_Index loop
                      if Ada.Directories.Exists (Preimage (Keys (I))) then
                         Success_Line (Paths (I));
+                     end if;
+                  end loop;
+               elsif Sub = "" then
+                  --  Bare `rerere` records the preimage of each still-conflicted
+                  --  file, reporting each on standard error.
+                  for I in Keys.First_Index .. Keys.Last_Index loop
+                     if not Ada.Directories.Exists (Postimage (Keys (I)))
+                       and then Work_Has_Markers (Paths (I))
+                     then
+                        Stderr_Line
+                          ("Recorded preimage for '" & Paths (I) & "'");
                      end if;
                   end loop;
                elsif Sub = "remaining" then
@@ -32126,12 +32137,32 @@ package body Version.CLI is
                      end loop;
                   else
                      for J in 3 .. Count loop
-                        for I in Keys.First_Index .. Keys.Last_Index loop
-                           if Paths (I) = Arg (J) then
-                              Version.Files.Delete_File_If_Exists
-                                (Postimage (Keys (I)));
+                        declare
+                           --  A conflicted (rerere-tracked) path the pathspec
+                           --  selects; "." selects them all.
+                           Matched : Boolean := False;
+                           Forgot  : Boolean := False;
+                        begin
+                           for I in Keys.First_Index .. Keys.Last_Index loop
+                              if Arg (J) = "." or else Paths (I) = Arg (J) then
+                                 Matched := True;
+                                 if Ada.Directories.Exists
+                                      (Postimage (Keys (I)))
+                                 then
+                                    Version.Files.Delete_File_If_Exists
+                                      (Postimage (Keys (I)));
+                                    Forgot := True;
+                                 end if;
+                              end if;
+                           end loop;
+                           --  A tracked path with no resolution to drop is an
+                           --  error; a path that names no conflict is silent.
+                           if Matched and then not Forgot then
+                              Stderr_Line
+                                ("error: no remembered resolution for '"
+                                 & Arg (J) & "'");
                            end if;
-                        end loop;
+                        end;
                      end loop;
                   end if;
                elsif Sub = "diff" then
