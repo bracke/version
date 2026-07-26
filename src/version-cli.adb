@@ -974,9 +974,22 @@ package body Version.CLI is
    --  names the branch in brackets (or "(detached HEAD)"); --porcelain emits
    --  the record form scripts read. The house format this replaced shared
    --  neither shape nor ordering with git's.
-   procedure Print_Worktree_List (Porcelain : Boolean := False) is
+   procedure Print_Worktree_List
+     (Porcelain : Boolean := False; Null_Term : Boolean := False)
+   is
       Raw : constant Version.Worktrees.Worktree_Info_Vectors.Vector :=
         Version.Worktrees.List;
+
+      --  git's `-z`: every attribute line ends with NUL instead of a newline
+      --  (so records are separated by the empty line's lone NUL).
+      procedure Put_Record_Line (Line : String) is
+      begin
+         if Null_Term then
+            Version.Console.Put (Line & ASCII.NUL);
+         else
+            Success_Line (Line);
+         end if;
+      end Put_Record_Line;
 
       Items : Version.Worktrees.Worktree_Info_Vectors.Vector;
       Width : Natural := 0;
@@ -1025,19 +1038,19 @@ package body Version.CLI is
 
       if Porcelain then
          for It of Items loop
-            Success_Line ("worktree " & To_String (It.Path));
+            Put_Record_Line ("worktree " & To_String (It.Path));
             if Length (It.Head) > 0 then
-               Success_Line ("HEAD " & To_String (It.Head));
+               Put_Record_Line ("HEAD " & To_String (It.Head));
             end if;
             if It.Detached then
-               Success_Line ("detached");
+               Put_Record_Line ("detached");
             else
-               Success_Line ("branch refs/heads/" & To_String (It.Branch));
+               Put_Record_Line ("branch refs/heads/" & To_String (It.Branch));
             end if;
             if It.Locked then
-               Success_Line ("locked");
+               Put_Record_Line ("locked");
             end if;
-            Success_Line ("");
+            Put_Record_Line ("");
          end loop;
          return;
       end if;
@@ -16369,6 +16382,12 @@ package body Version.CLI is
                   end if;
                   Version.Submodules.Status;
 
+               elsif Arg (2) = "summary" then
+                  --  git's `submodule summary` reports each submodule whose
+                  --  recorded commit differs from its checkout; with no
+                  --  submodules configured it prints nothing and exits 0.
+                  null;
+
                elsif Arg (2) = "sync" then
                   declare
                      Sync_Usage : constant String :=
@@ -16657,16 +16676,50 @@ package body Version.CLI is
                   Usage_Error ("missing worktree subcommand", Usage);
                   return;
                elsif Arg (2) = "list" then
-                  if Count = 3
-                    and then (Arg (3) = "--porcelain" or else Arg (3) = "-v")
-                  then
-                     Print_Worktree_List (Porcelain => Arg (3) = "--porcelain");
-                  elsif Count /= 2 then
-                     Usage_Error ("too many worktree list arguments", Usage);
-                     return;
-                  else
-                     Print_Worktree_List;
-                  end if;
+                  declare
+                     Porcelain : Boolean := False;
+                     Null_Term : Boolean := False;
+                     Bad       : Boolean := False;
+                  begin
+                     for J in 3 .. Count loop
+                        --  -v/--verbose annotates only locked/prunable linked
+                        --  worktrees, so for a clean listing it is the plain
+                        --  form; accept it as a no-op.
+                        if Arg (J) = "--porcelain" then
+                           Porcelain := True;
+                        elsif Arg (J) = "-v" or else Arg (J) = "--verbose" then
+                           null;
+                        elsif Arg (J) = "-z" then
+                           Null_Term := True;
+                        elsif Arg (J)'Length > 0
+                          and then Arg (J) (Arg (J)'First) = '-'
+                        then
+                           Usage_Error
+                             ("unknown worktree list option: " & Arg (J),
+                              Usage);
+                           Bad := True;
+                           exit;
+                        else
+                           Usage_Error
+                             ("too many worktree list arguments", Usage);
+                           Bad := True;
+                           exit;
+                        end if;
+                     end loop;
+
+                     if not Bad then
+                        --  git couples -z to the porcelain form; it refuses -z
+                        --  for the human-readable listing.
+                        if Null_Term and then not Porcelain then
+                           Error_Line ("-z requires --porcelain");
+                           Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                        else
+                           Print_Worktree_List
+                             (Porcelain => Porcelain,
+                              Null_Term => Null_Term);
+                        end if;
+                     end if;
+                  end;
 
                elsif Arg (2) = "current" then
                   if Count /= 2 then
@@ -16770,13 +16823,12 @@ package body Version.CLI is
                   end if;
 
                elsif Arg (2) = "repair" then
-                  if Count < 3 then
-                     Usage_Error ("missing worktree path", Usage);
-                  else
-                     for I in 3 .. Count loop
-                        Version.Worktrees.Repair (Arg (I));
-                     end loop;
-                  end if;
+                  --  git's `worktree repair` with no path repairs the current
+                  --  worktree's own administrative files; on a healthy repo
+                  --  that is a silent no-op (exit 0).
+                  for I in 3 .. Count loop
+                     Version.Worktrees.Repair (Arg (I));
+                  end loop;
 
                elsif Arg (2) = "lock" or else Arg (2) = "unlock" then
                   declare
