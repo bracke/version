@@ -29717,10 +29717,6 @@ package body Version.CLI is
                              (Version.Revisions.Resolve_Commit (Repo, Op));
                         end loop;
 
-                        declare
-                           --  Merge_Base raises Data_Error when the histories
-                           --  are disjoint; git prints nothing and exits 1.
-                           No_Base : Boolean := False;
                         begin
                            if Is_Ancestor then
                               if not Version.History.Is_Ancestor
@@ -29747,26 +29743,31 @@ package body Version.CLI is
                                  end if;
                               end;
                            else
-                              --  More than two commits reduce to one best
-                              --  common ancestor, folded pairwise.
+                              --  git's `merge-base A B C...` computes the best
+                              --  common ancestors of the first commit and the
+                              --  union of the rest (merge_bases_many), then
+                              --  prints the first; two commits are the special
+                              --  case with a single-element rest.
                               declare
-                                 Acc : Version.Objects.Hex_Object_Id :=
-                                   Ids (Ids.First_Index);
+                                 Rest : Version.History.Commit_Id_Vectors.Vector;
                               begin
                                  for K in Ids.First_Index + 1 .. Ids.Last_Index
                                  loop
-                                    Acc := Version.History.Merge_Base
-                                      (Repo, Acc, Ids (K));
-                                    if Version.Objects.Id_Length (Acc) = 0 then
-                                       No_Base := True;
-                                       exit;
-                                    end if;
+                                    Rest.Append (Ids (K));
                                  end loop;
-                                 if No_Base then
-                                    Set_Command_Failure;
-                                 else
-                                    Success_Line (To_String (Acc));
-                                 end if;
+                                 declare
+                                    Bases : constant
+                                      Version.History.Commit_Id_Vectors.Vector :=
+                                        Version.History.Merge_Bases_Many
+                                          (Repo, Ids (Ids.First_Index), Rest);
+                                 begin
+                                    if Bases.Is_Empty then
+                                       Set_Command_Failure;
+                                    else
+                                       Success_Line
+                                         (To_String (Bases.First_Element));
+                                    end if;
+                                 end;
                               end;
                            end if;
                         exception
