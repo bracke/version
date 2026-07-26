@@ -11545,6 +11545,11 @@ package body Version.CLI is
                Quiet     : Boolean := False;
                Silent    : Boolean := False;   --  -s / --no-patch
                Binary_Patch : Boolean := False;
+               --  git's --src-prefix/--dst-prefix/--no-prefix header prefixes.
+               Src_Prefix_V : Unbounded_String :=
+                 To_Unbounded_String ("a/");
+               Dst_Prefix_V : Unbounded_String :=
+                 To_Unbounded_String ("b/");
 
                function LArg (Index : Positive) return String is
                  (To_String (LArgs (Index)));
@@ -11814,6 +11819,18 @@ package body Version.CLI is
                   elsif Arg (I) = "--no-index" then
                      --  Compare two files outside any repository.
                      No_Index_Flag := True;
+                  elsif Arg (I) = "--no-prefix" then
+                     Src_Prefix_V := Null_Unbounded_String;
+                     Dst_Prefix_V := Null_Unbounded_String;
+                  elsif Arg (I) = "--default-prefix" then
+                     Src_Prefix_V := To_Unbounded_String ("a/");
+                     Dst_Prefix_V := To_Unbounded_String ("b/");
+                  elsif Has_Prefix (Arg (I), "--src-prefix=") then
+                     Src_Prefix_V := To_Unbounded_String
+                       (Arg (I) (Arg (I)'First + 13 .. Arg (I)'Last));
+                  elsif Has_Prefix (Arg (I), "--dst-prefix=") then
+                     Dst_Prefix_V := To_Unbounded_String
+                       (Arg (I) (Arg (I)'First + 13 .. Arg (I)'Last));
                   elsif Arg (I) = "--no-color" or else Arg (I) = "--color=never"
                     or else Arg (I) = "--color=auto"
                   then
@@ -11863,6 +11880,8 @@ package body Version.CLI is
                         Detect_Renames => Rename_Mode,
                         Rename_Score => Rename_Score,
                         Binary_Patch => Binary_Patch,
+                        Src_Prefix => Src_Prefix_V,
+                        Dst_Prefix => Dst_Prefix_V,
                         others => <>);
 
                --  `--no-index <old> <new>`: diff two files outside the repo.

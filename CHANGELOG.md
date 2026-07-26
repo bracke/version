@@ -1,3 +1,4 @@
+- Git parity: `diff --src-prefix=`/`--dst-prefix=`/`--no-prefix`/`--default-prefix` set the header path prefixes.
 - Git parity: `config --get-color`/`--get-colorbool` resolve colour specs and bools, `--get-urlmatch` reports no match, a sectionless key is rejected (exit 1) rather than mistaken for a subcommand, and a hook's stdout is routed to stderr as git does.
 - Git parity: `describe` names each of several revisions in turn, and `--exclude=<glob>` drops candidate tags matching the glob.
 - Git parity: `update-ref --stdin` applies a transaction of update/create/delete/verify commands, `-d` on an old-value mismatch is an ordinary error (exit 1, unlike a plain update's die 128), and `--no-deref`/`-z`/`-m` are accepted.
