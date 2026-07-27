@@ -27285,6 +27285,145 @@ package body Version.CLI is
                      end if;
                   end;
 
+               elsif Subcommand = "set-head" then
+                  --  `set-head <name> -a` points refs/remotes/<name>/HEAD at
+                  --  the remote's default branch, but only when its
+                  --  remote-tracking ref exists (git errors otherwise).
+                  declare
+                     Repo : constant Version.Repository.Repository_Handle :=
+                       Version.Repository.Open;
+                     Name : Unbounded_String;
+                     Auto : Boolean := False;
+                     Bad  : Boolean := False;
+                  begin
+                     for I in 3 .. Count loop
+                        if Arg (I) = "-a" or else Arg (I) = "--auto" then
+                           Auto := True;
+                        elsif Is_Option (Arg (I)) then
+                           Usage_Error
+                             ("unknown remote set-head option: " & Arg (I),
+                              "version remote set-head NAME (-a | <branch>)");
+                           Bad := True;
+                           exit;
+                        elsif Length (Name) = 0 then
+                           Name := To_Unbounded_String (Arg (I));
+                        end if;
+                     end loop;
+
+                     if not Bad then
+                        if not Version.Remotes.Remote_Exists (To_String (Name))
+                        then
+                           Error_Line
+                             ("No such remote: '" & To_String (Name) & "'");
+                           Ada.Command_Line.Set_Exit_Status (2);
+                        elsif Auto then
+                           declare
+                              URL : constant String :=
+                                Version.Remotes.Get_Url (To_String (Name));
+                              Head_Path : constant String :=
+                                (if Ada.Directories.Exists
+                                      (Version.Files.Join (URL, "HEAD"))
+                                 then Version.Files.Join (URL, "HEAD")
+                                 else Version.Files.Join
+                                        (Version.Files.Join (URL, ".git"),
+                                         "HEAD"));
+                              Default : Unbounded_String;
+                           begin
+                              if Ada.Directories.Exists (Head_Path) then
+                                 declare
+                                    C : constant String :=
+                                      Version.Files.Read_Binary_File
+                                        (Head_Path);
+                                    P : constant String := "ref: refs/heads/";
+                                 begin
+                                    if C'Length > P'Length
+                                      and then C (C'First .. C'First + P'Length
+                                                  - 1) = P
+                                    then
+                                       declare
+                                          B : constant String :=
+                                            C (C'First + P'Length .. C'Last);
+                                          L : Integer := B'Last;
+                                       begin
+                                          while L >= B'First
+                                            and then B (L) <= ' '
+                                          loop
+                                             L := L - 1;
+                                          end loop;
+                                          Default := To_Unbounded_String
+                                            (B (B'First .. L));
+                                       end;
+                                    end if;
+                                 end;
+                              end if;
+
+                              declare
+                                 Trk : constant String :=
+                                   "refs/remotes/" & To_String (Name) & "/"
+                                   & To_String (Default);
+                              begin
+                                 if Length (Default) = 0
+                                   or else not Version.Refs.Ref_Exists
+                                                 (Repo, Trk)
+                                 then
+                                    Error_Line ("Not a valid ref: " & Trk);
+                                    Set_Command_Failure;
+                                 else
+                                    Version.Files.Write_Binary_File_Atomic
+                                      (Path    =>
+                                         Version.Files.Join
+                                           (Version.Repository.Common_Git_Dir
+                                              (Repo),
+                                            "refs/remotes/" & To_String (Name)
+                                            & "/HEAD"),
+                                       Content =>
+                                         "ref: " & Trk & ASCII.LF);
+                                    Success_Line
+                                      (To_String (Name) & "/HEAD set to "
+                                       & To_String (Default));
+                                 end if;
+                              end;
+                           end;
+                        else
+                           Usage_Error
+                             ("remote set-head requires -a or a branch",
+                              "version remote set-head NAME (-a | <branch>)");
+                        end if;
+                     end if;
+                  end;
+
+               elsif Subcommand = "update" then
+                  --  git fetches every configured remote, printing
+                  --  "Fetching <name>" on stdout, and exits 1 if any failed.
+                  declare
+                     Repo : constant Version.Repository.Repository_Handle :=
+                       Version.Repository.Open;
+                     Any_Failed : Boolean := False;
+                  begin
+                     for R of Version.Remotes.List_Remotes loop
+                        declare
+                           Name   : constant String := To_String (R.Name);
+                           Before : constant Fetch_Ref_Maps.Map :=
+                             Snapshot_Fetch_Refs (Repo, Name);
+                        begin
+                           Success_Line ("Fetching " & Name);
+                           begin
+                              Version.Fetch.Fetch (Name);
+                              Write_Fetch_Head_All (Repo, Name);
+                              Create_Remote_Head_If_Missing (Repo, Name);
+                              Print_Fetch_Summary (Repo, Name, Before);
+                           exception
+                              when others =>
+                                 Error_Line ("could not fetch " & Name);
+                                 Any_Failed := True;
+                           end;
+                        end;
+                     end loop;
+                     if Any_Failed then
+                        Set_Command_Failure;
+                     end if;
+                  end;
+
                elsif Is_Option (Subcommand) then
                   Usage_Error
                     ("unknown remote option: " & Subcommand,

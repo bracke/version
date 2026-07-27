@@ -1,3 +1,4 @@
+- Git parity: `remote update` fetches every configured remote ("Fetching <name>", exit 1 on failure), and `remote set-head <name> -a` points the remote HEAD at its default branch (erroring when the tracking ref is absent).
 - Git parity: `remote rename`/`set-url` rewrite the `[remote "…"]` section in place rather than moving it to the end of the config.
 - Git parity: `clone --bare`/`--mirror` create a bare repository (mirror records the remote with `fetch = +refs/*:refs/*` and `mirror = true`), and running a command from inside a bare repository now finds it.
 - Git parity: `init` defaults the initial branch to `master` (git's built-in default), takes `-b`/`--initial-branch`, `-q`, prints "Initialized empty/Reinitialized existing Git repository in <abspath>/" with the default-branch hint on stderr, and seeds `description` and `info/exclude`.
