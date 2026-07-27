@@ -1,3 +1,4 @@
+- Git parity: `push` reports its progress on stderr (empty stdout), and FETCH_HEAD records the remote URL without its trailing `.git`.
 - Git parity: `ls-remote --get-url` prints the resolved URL and an unreachable remote dies (128); `bundle verify` reports the hash algorithm (with "is okay" on stderr), `bundle list-heads` filters to the named refs, and a non-bundle file exits 1; `clone` reports progress on stderr (empty stdout), takes `-q`, and derives the target directory from the source URL.
 - Git parity: `remote` lists sorted; `add`/`set-url`/`rename`/`remove` are silent; `rm` alias; `show`/`show -n`; `get-url --all`/`--push`; `add` accepts any URL and errors (exit 3) on an existing remote; `add`/`rename`/`remove`/`get-url` on an unknown remote exit 2.
 - Git parity: `merge-base A B C...` returns the best common ancestors of the first commit and the union of the rest (git's merge_bases_many), rather than a pairwise fold.

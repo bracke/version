@@ -3168,6 +3168,12 @@ package body Version.CLI is
       end;
    end Print_Fetch_Summary;
 
+   --  The URL git records in FETCH_HEAD's "of <url>" field drops a trailing
+   --  ".git" (so ".git/origin.git" is written ".git/origin").
+   function Fetch_Head_URL (U : String) return String is
+     (if U'Length > 4 and then U (U'Last - 3 .. U'Last) = ".git"
+      then U (U'First .. U'Last - 4) else U);
+
    --  git's summary for an explicit `fetch/pull <remote> <ref>`: the named ref
    --  git records every fetched branch in .git/FETCH_HEAD, one line per ref:
    --  "<id>\t<not-for-merge>\tbranch '<name>' of <url>". The branch the
@@ -3249,13 +3255,15 @@ package body Version.CLI is
                      For_Merge := To_Unbounded_String
                        (Line & Character'Val (9)
                         & "branch '" & Short & "' of "
-                        & To_String (Raw_URL) & Character'Val (10));
+                        & Fetch_Head_URL (To_String (Raw_URL))
+                        & Character'Val (10));
                   else
                      Append
                        (Others_Text,
                         Line & "not-for-merge" & Character'Val (9)
                         & "branch '" & Short & "' of "
-                        & To_String (Raw_URL) & Character'Val (10));
+                        & Fetch_Head_URL (To_String (Raw_URL))
+                        & Character'Val (10));
                   end if;
                end;
             end if;
@@ -3316,7 +3324,7 @@ package body Version.CLI is
                Content =>
                  Id & Character'Val (9) & Character'Val (9)
                  & Kind & " '" & Ref_Name & "' of "
-                 & To_String (Raw_URL) & Character'Val (10));
+                 & Fetch_Head_URL (To_String (Raw_URL)) & Character'Val (10));
          end;
       exception
          when others =>
@@ -28030,7 +28038,7 @@ package body Version.CLI is
                            Dest_Ref    => Dst,
                            Force       => Spec_Force,
                            Run_Hooks   => Run_Hooks);
-                        Success_Line
+                        Stderr_Line
                           ("pushed " & R & " to " & Dst & " on " & Remote);
                      end;
                   end loop;
@@ -28061,7 +28069,7 @@ package body Version.CLI is
                         Branch_Name => Raw (Spec_First .. Raw'Last),
                         Run_Hooks   => Run_Hooks,
                         Force       => Spec_Force);
-                     Success_Line
+                     Stderr_Line
                        ("pushed " & Raw (Spec_First .. Raw'Last)
                         & " to " & Remote);
                   else
@@ -28076,7 +28084,7 @@ package body Version.CLI is
                              (Remote_Name => Remote,
                               Force        => Spec_Force,
                               Run_Hooks    => Run_Hooks);
-                           Success_Line
+                           Stderr_Line
                              ("pushed matching branches to " & Remote);
                         elsif Dst'Length = 0 then
                            Usage_Error
@@ -28089,7 +28097,7 @@ package body Version.CLI is
                              (Remote_Name => Remote,
                               Ref_Name    => Dst,
                               Run_Hooks   => Run_Hooks);
-                           Success_Line
+                           Stderr_Line
                              ("deleted " & Dst & " on " & Remote);
                         elsif Ada.Strings.Fixed.Index (Src, "*") /= 0
                           and then Ada.Strings.Fixed.Index (Dst, "*") /= 0
@@ -28103,7 +28111,7 @@ package body Version.CLI is
                               Dest_Ref    => Normalize_Ref (Dst),
                               Force       => Spec_Force,
                               Run_Hooks   => Run_Hooks);
-                           Success_Line
+                           Stderr_Line
                              ("pushed " & Src & " to "
                               & Normalize_Ref (Dst) & " on " & Remote);
                         end if;
@@ -28309,7 +28317,7 @@ package body Version.CLI is
                         Commands    => Atomic_Cmds,
                         Force       => False,
                         Run_Hooks   => not No_Verify);
-                     Success_Line
+                     Stderr_Line
                        ("atomically deleted"
                         & Natural'Image (Natural (Atomic_Cmds.Length))
                         & " ref(s) on " & To_String (Remote_Name));
@@ -28322,7 +28330,7 @@ package body Version.CLI is
                           (Remote_Name => To_String (Remote_Name),
                            Ref_Name    => Ref_Arg,
                            Run_Hooks   => not No_Verify);
-                        Success_Line
+                        Stderr_Line
                           ("deleted " & Ref_Arg & " on "
                            & To_String (Remote_Name));
                      end loop;
@@ -28341,7 +28349,7 @@ package body Version.CLI is
                     (Remote_Name => To_String (Remote_Name),
                      Run_Hooks   => not No_Verify,
                      Force       => Force);
-                  Success_Line ("pushed tags to " & To_String (Remote_Name));
+                  Stderr_Line ("pushed tags to " & To_String (Remote_Name));
 
                elsif Operand_Count = 0 then
                   Usage_Error ("missing push remote", Usage);
@@ -28362,14 +28370,14 @@ package body Version.CLI is
                           (Remote_Name => To_String (Remote_Name),
                            Force        => Force,
                            Run_Hooks    => not No_Verify);
-                        Success_Line
+                        Stderr_Line
                           ("pushed matching branches to "
                            & To_String (Remote_Name));
                      else
                         Version.Push.Push_Default
                           (Remote_Name => To_String (Remote_Name),
                            Run_Hooks   => not No_Verify);
-                        Success_Line ("pushed to " & To_String (Remote_Name));
+                        Stderr_Line ("pushed to " & To_String (Remote_Name));
                      end if;
                   end;
 
@@ -28383,7 +28391,7 @@ package body Version.CLI is
                      Commands    => Atomic_Cmds,
                      Force       => Force or else Atomic_Force,
                      Run_Hooks   => not No_Verify);
-                  Success_Line
+                  Stderr_Line
                     ("atomically pushed"
                      & Natural'Image (Natural (Atomic_Cmds.Length))
                      & " ref(s) to " & To_String (Remote_Name));
