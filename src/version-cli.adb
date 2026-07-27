@@ -3869,7 +3869,9 @@ package body Version.CLI is
       Show_Local    : Boolean := True;
       Show_Remote   : Boolean := False;
       Remote_Prefix : Boolean := True;
-      Ignore_Case   : Boolean := False)
+      Ignore_Case   : Boolean := False;
+      Merge_Filter  : String := "";
+      Merge_Negate  : Boolean := False)
    is
       Repo : constant Version.Repository.Repository_Handle :=
         Version.Repository.Open;
@@ -3884,6 +3886,33 @@ package body Version.CLI is
       function Selected (Name : String) return Boolean is
         (Pattern'Length = 0
          or else Glob_Match (Name, Pattern, Ignore_Case));
+
+      --  git's --merged/--no-merged: keep only branches whose tip is (or, for
+      --  --no-merged, is not) reachable from the filter commit.
+      Have_Filter : constant Boolean := Merge_Filter'Length > 0;
+      Filter_Id   : constant Version.Objects.Hex_Object_Id :=
+        (if Have_Filter
+         then Version.Revisions.Resolve_Commit (Repo, Merge_Filter)
+         else Version.Objects.Zero_Object_Id);
+
+      function Merged_Ok (Ref : String) return Boolean is
+      begin
+         if not Have_Filter then
+            return True;
+         end if;
+         declare
+            Tip : constant Version.Objects.Hex_Object_Id :=
+              Version.Revisions.Resolve_Commit (Repo, Ref);
+            Is_Anc : constant Boolean :=
+              Version.Objects."=" (Tip, Filter_Id)
+              or else Version.History.Is_Ancestor (Repo, Tip, Filter_Id);
+         begin
+            return Is_Anc xor Merge_Negate;
+         end;
+      exception
+         when others =>
+            return Merge_Negate;
+      end Merged_Ok;
    begin
       if Show_Local then
          declare
@@ -3896,7 +3925,9 @@ package body Version.CLI is
                declare
                   Name : constant String := To_String (Branches.Element (I));
                begin
-                  if Selected (Name) then
+                  if Selected (Name)
+                    and then Merged_Ok ("refs/heads/" & Name)
+                  then
                      Ada.Text_IO.Put_Line
                        ((if Name = Current then "* " else "  ") & Name);
                   end if;
@@ -3924,7 +3955,14 @@ package body Version.CLI is
                   Tgt  : constant String :=
                     (if Bar = 0 then "" else Line (Bar + 1 .. Line'Last));
                begin
-                  if Selected (Name) then
+                  --  A symref (origin/HEAD) is filtered by the commit its
+                  --  target resolves to, since the symref file itself is not
+                  --  an object id.
+                  if Selected (Name)
+                    and then Merged_Ok
+                               ("refs/remotes/"
+                                & (if Tgt = "" then Name else Tgt))
+                  then
                      Ada.Text_IO.Put_Line
                        ("  " & (if Remote_Prefix then "remotes/" else "")
                         & Name
@@ -13936,6 +13974,75 @@ package body Version.CLI is
                      loop
                         Success_Line (Line);
                      end loop;
+                  end;
+               elsif (for some I in 2 .. Count =>
+                        Arg (I) = "-a" or else Arg (I) = "--all"
+                        or else Arg (I) = "-r" or else Arg (I) = "--remotes")
+                 and then (for some I in 2 .. Count =>
+                             Arg (I) = "--merged" or else Arg (I) = "--no-merged"
+                             or else Has_Prefix (Arg (I), "--merged=")
+                             or else Has_Prefix (Arg (I), "--no-merged="))
+               then
+                  --  `branch (-a|-r) (--merged|--no-merged) [<commit>] [<glob>]`:
+                  --  the remotes/all listing filtered to branches whose tip is
+                  --  (or is not) reachable from <commit> (default HEAD).
+                  declare
+                     Want_A : Boolean := False;
+                     Want_R : Boolean := False;
+                     Negate : Boolean := False;
+                     Rev    : Unbounded_String := To_Unbounded_String ("HEAD");
+                     Got_Rev : Boolean := False;
+                     Pat    : Unbounded_String;
+                     I      : Natural := 2;
+                  begin
+                     while I <= Count loop
+                        declare
+                           A : constant String := Arg (I);
+                        begin
+                           if A = "-a" or else A = "--all" then
+                              Want_A := True;
+                           elsif A = "-r" or else A = "--remotes" then
+                              Want_R := True;
+                           elsif A = "--merged" or else A = "--no-merged" then
+                              Negate := A = "--no-merged";
+                              if I < Count and then Arg (I + 1)'Length > 0
+                                and then Arg (I + 1) (Arg (I + 1)'First) /= '-'
+                              then
+                                 Rev := To_Unbounded_String (Arg (I + 1));
+                                 Got_Rev := True;
+                                 I := I + 1;
+                              end if;
+                           elsif Has_Prefix (A, "--merged=") then
+                              Negate := False;
+                              Rev := To_Unbounded_String
+                                (A (A'First + 9 .. A'Last));
+                           elsif Has_Prefix (A, "--no-merged=") then
+                              Negate := True;
+                              Rev := To_Unbounded_String
+                                (A (A'First + 12 .. A'Last));
+                           elsif A = "--list" or else A = "-i"
+                             or else A = "--ignore-case"
+                           then
+                              null;
+                           elsif A'Length > 0 and then A (A'First) = '-' then
+                              null;
+                           elsif not Got_Rev and then Length (Pat) = 0 then
+                              --  A lone trailing token is the merge commit.
+                              Rev := To_Unbounded_String (A);
+                              Got_Rev := True;
+                           else
+                              Pat := To_Unbounded_String (A);
+                           end if;
+                        end;
+                        I := I + 1;
+                     end loop;
+                     Print_Branch_List
+                       (Pattern       => To_String (Pat),
+                        Show_Local     => not Want_R or else Want_A,
+                        Show_Remote    => Want_R or else Want_A,
+                        Remote_Prefix  => Want_A,
+                        Merge_Filter   => To_String (Rev),
+                        Merge_Negate   => Negate);
                   end;
                elsif (for some I in 2 .. Count =>
                         Arg (I) = "--list" or else Arg (I) = "--ignore-case"
