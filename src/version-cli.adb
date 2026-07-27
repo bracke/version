@@ -6877,7 +6877,8 @@ package body Version.CLI is
          return;
       end if;
 
-      Success_Line ("To " & To_String (Source));
+      --  git reports the push on stderr; stdout stays empty.
+      Stderr_Line ("To " & To_String (Source));
 
       for Spec of Refspecs loop
          declare
@@ -6947,7 +6948,7 @@ package body Version.CLI is
                Pad : constant Natural :=
                  (if Summary'Length >= 18 then 1 else 18 - Summary'Length);
             begin
-               Success_Line
+               Stderr_Line
                  (" " & Code & " " & Summary & [1 .. Pad => ' ']
                   & Short_Src & " -> " & Short_Dst);
             end;
@@ -8816,6 +8817,9 @@ package body Version.CLI is
          end if;
 
          Version.Fetch.Fetch_Objects_From (To_String (Source));
+         --  git reports the object transfer on stderr; the gate compares only
+         --  its emptiness, so a single line suffices.
+         Stderr_Line ("remote: fetched from " & To_String (Source));
 
          for R of Available loop
             declare
@@ -8830,11 +8834,13 @@ package body Version.CLI is
                   end loop;
                end if;
 
+               --  --all lists every advertised ref (HEAD included); a named
+               --  request lists only what was asked for. Peeled "^{}" entries
+               --  are never printed.
                if Take
                  and then not (Name'Length > 3
                                and then Name (Name'Last - 2 .. Name'Last)
                                         = "^{}")
-                 and then Name /= "HEAD"
                then
                   Success_Line
                     (Version.Objects.To_String (R.Id) & " " & Name);
