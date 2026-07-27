@@ -976,10 +976,17 @@ package body Version.CLI is
    --  the record form scripts read. The house format this replaced shared
    --  neither shape nor ordering with git's.
    procedure Print_Worktree_List
-     (Porcelain : Boolean := False; Null_Term : Boolean := False)
+     (Porcelain : Boolean := False;
+      Null_Term : Boolean := False;
+      Verbose   : Boolean := False)
    is
       Raw : constant Version.Worktrees.Worktree_Info_Vectors.Vector :=
         Version.Worktrees.List;
+
+      --  A worktree whose directory is gone is "prunable"; git reports the
+      --  same reason its `prune` would.
+      Prunable_Reason : constant String :=
+        "gitdir file points to non-existent location";
 
       --  git's `-z`: every attribute line ends with NUL instead of a newline
       --  (so records are separated by the empty line's lone NUL).
@@ -1051,6 +1058,9 @@ package body Version.CLI is
             if It.Locked then
                Put_Record_Line ("locked");
             end if;
+            if It.Missing then
+               Put_Record_Line ("prunable " & Prunable_Reason);
+            end if;
             Put_Record_Line ("");
          end loop;
          return;
@@ -1066,11 +1076,19 @@ package body Version.CLI is
             Pad  : constant String :=
               [1 .. Natural'Max (Width - Path'Length, 0) => ' '];
          begin
+            --  Verbose moves an annotation that carries a reason (a prunable
+            --  worktree always does) onto a following tab-indented line;
+            --  otherwise the annotation stays inline.
             Success_Line
               (Path & Pad & " " & Abbrev (To_String (It.Head)) & " "
                & (if It.Detached then "(detached HEAD)"
                   else "[" & To_String (It.Branch) & "]")
-               & (if It.Locked then " locked" else ""));
+               & (if It.Locked then " locked" else "")
+               & (if It.Missing and then not Verbose then " prunable"
+                  else ""));
+            if It.Missing and then Verbose then
+               Success_Line (ASCII.HT & "prunable: " & Prunable_Reason);
+            end if;
          end;
       end loop;
    end Print_Worktree_List;
@@ -17269,16 +17287,16 @@ package body Version.CLI is
                   declare
                      Porcelain : Boolean := False;
                      Null_Term : Boolean := False;
+                     Verbose   : Boolean := False;
                      Bad       : Boolean := False;
                   begin
                      for J in 3 .. Count loop
-                        --  -v/--verbose annotates only locked/prunable linked
-                        --  worktrees, so for a clean listing it is the plain
-                        --  form; accept it as a no-op.
+                        --  -v/--verbose puts a prunable/locked reason on its own
+                        --  tab-indented line instead of inline.
                         if Arg (J) = "--porcelain" then
                            Porcelain := True;
                         elsif Arg (J) = "-v" or else Arg (J) = "--verbose" then
-                           null;
+                           Verbose := True;
                         elsif Arg (J) = "-z" then
                            Null_Term := True;
                         elsif Arg (J)'Length > 0
@@ -17306,7 +17324,8 @@ package body Version.CLI is
                         else
                            Print_Worktree_List
                              (Porcelain => Porcelain,
-                              Null_Term => Null_Term);
+                              Null_Term => Null_Term,
+                              Verbose   => Verbose);
                         end if;
                      end if;
                   end;
@@ -17392,15 +17411,54 @@ package body Version.CLI is
                   end;
 
                elsif Arg (2) = "remove" then
-                  if Count = 2 then
-                     Usage_Error ("missing worktree path", Usage);
-                     return;
-                  elsif Count > 3 then
-                     Usage_Error ("too many worktree remove arguments", Usage);
-                     return;
-                  end if;
-                  --  git removes a worktree silently.
-                  Version.Worktrees.Remove (Arg (3));
+                  declare
+                     Force_Count : Natural := 0;
+                     Target      : Unbounded_String;
+                     Bad         : Boolean := False;
+                  begin
+                     for I in 3 .. Count loop
+                        if Arg (I) = "-f" or else Arg (I) = "--force" then
+                           Force_Count := Force_Count + 1;
+                        elsif Arg (I)'Length > 0
+                          and then Arg (I) (Arg (I)'First) = '-'
+                        then
+                           Usage_Error
+                             ("unknown worktree remove option: " & Arg (I),
+                              Usage);
+                           Bad := True;
+                           exit;
+                        elsif Length (Target) = 0 then
+                           Target := To_Unbounded_String (Arg (I));
+                        else
+                           Usage_Error
+                             ("too many worktree remove arguments", Usage);
+                           Bad := True;
+                           exit;
+                        end if;
+                     end loop;
+
+                     if not Bad then
+                        if Length (Target) = 0 then
+                           Usage_Error ("missing worktree path", Usage);
+                        elsif Version.Worktrees.Is_Locked (To_String (Target))
+                          and then Force_Count < 2
+                        then
+                           --  git refuses to remove a locked worktree unless
+                           --  the force flag is given twice.
+                           Error_Line
+                             ("fatal: cannot remove a locked working tree;");
+                           Error_Line
+                             ("use 'remove -f -f' to override or unlock first");
+                           Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                        else
+                           --  git removes a worktree silently; a force flag
+                           --  also discards local modifications.
+                           Version.Worktrees.Remove
+                             (To_String (Target),
+                              Force => Force_Count >= 1);
+                        end if;
+                     end if;
+                  end;
 
                elsif Arg (2) = "move" then
                   if Count /= 4 then
@@ -17425,14 +17483,26 @@ package body Version.CLI is
                      Reason  : Unbounded_String;
                      Target  : Unbounded_String;
                      Bad     : Boolean := False;
+                     I       : Natural := 3;
                   begin
-                     for I in 3 .. Count loop
+                     while I <= Count loop
                         if Arg (I)'Length > 9
                           and then Arg (I) (Arg (I)'First .. Arg (I)'First + 8)
                                    = "--reason="
                         then
                            Reason := To_Unbounded_String
                              (Arg (I) (Arg (I)'First + 9 .. Arg (I)'Last));
+                           I := I + 1;
+                        elsif Arg (I) = "--reason" then
+                           --  git also takes the reason as a separate argument.
+                           if I = Count then
+                              Usage_Error
+                                ("--reason requires a value", Usage);
+                              Bad := True;
+                              exit;
+                           end if;
+                           Reason := To_Unbounded_String (Arg (I + 1));
+                           I := I + 2;
                         elsif Arg (I)'Length > 0
                           and then Arg (I) (Arg (I)'First) = '-'
                         then
@@ -17443,6 +17513,7 @@ package body Version.CLI is
                            exit;
                         elsif Length (Target) = 0 then
                            Target := To_Unbounded_String (Arg (I));
+                           I := I + 1;
                         else
                            Usage_Error
                              ("too many worktree " & Arg (2) & " arguments",
@@ -17497,8 +17568,9 @@ package body Version.CLI is
 
                      if not Bad then
                         if Dry_Run or else Verbose then
+                           --  git reports each removal on stderr.
                            for Item of Version.Worktrees.Prunable loop
-                              Success_Line
+                              Error_Line
                                 ("Removing worktrees/"
                                  & To_String (Item.Name) & ": "
                                  & To_String (Item.Reason));
