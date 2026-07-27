@@ -25510,34 +25510,121 @@ package body Version.CLI is
          elsif Command = "verify-tag" or else Command = "verify-commit" then
             declare
                Usage : constant String :=
-                 "version " & Command & " OBJECT...";
+                 "version " & Command & " [-v|--raw|--format=<fmt>] OBJECT...";
                Repo : constant Version.Repository.Repository_Handle :=
                  Version.Repository.Open;
-               Is_Tag : constant Boolean := Command = "verify-tag";
-            begin
-               if Count < 2 then
-                  Usage_Error (Command & " requires an object", Usage);
-               else
-                  for J in 2 .. Count loop
+               Is_Tag  : constant Boolean := Command = "verify-tag";
+               Verbose : Boolean := False;
+               Objects : Version.Trailers.String_Vectors.Vector;
+               Bad     : Boolean := False;
+
+               function Type_Name
+                 (K : Version.Objects.Object_Kind) return String is
+                 (case K is
+                     when Version.Objects.Commit_Object => "commit",
+                     when Version.Objects.Tree_Object   => "tree",
+                     when Version.Objects.Blob_Object   => "blob",
+                     when Version.Objects.Tag_Object    => "tag",
+                     when others                        => "unknown");
+
+               --  Resolve OBJECT to the object id to verify: for verify-tag a
+               --  tag ref, else any revision.  Ok comes back False (with the
+               --  git diagnostic emitted) when it is not a verifiable tag.
+               procedure Resolve_One
+                 (Name : String;
+                  Id   : out Version.Objects.Hex_Object_Id;
+                  Ok   : out Boolean)
+               is
+                  Ref : constant String := "refs/tags/" & Name;
+               begin
+                  Ok := True;
+                  if Is_Tag then
+                     if Version.Refs.Ref_Exists (Repo, Ref) then
+                        Id := Version.Refs.Resolve_Ref (Repo, Ref);
+                     else
+                        begin
+                           Id := Version.Revisions.Resolve (Repo, Name);
+                        exception
+                           when others =>
+                              Error_Line ("tag '" & Name & "' not found.");
+                              Ok := False;
+                              return;
+                        end;
+                     end if;
                      declare
-                        Id : constant Version.Objects.Hex_Object_Id :=
-                          (if Is_Tag
-                           then Version.Refs.Resolve_Ref
-                                  (Repo, "refs/tags/" & Arg (J))
-                           else Version.Revisions.Resolve (Repo, Arg (J)));
-                        Result : constant Version.Verify.Verify_Result :=
-                          Version.Verify.Verify_Object (Repo, Id);
+                        K : constant Version.Objects.Object_Kind :=
+                          Version.Objects.Kind
+                            (Version.Objects.Read_Object (Repo, Id));
                      begin
-                        case Result is
-                           when Version.Verify.Good_Signature =>
-                              null;   --  gpg already reported the good signature
-                           when Version.Verify.Bad_Signature =>
-                              Set_Command_Failure;
-                           when Version.Verify.No_Signature =>
-                              Error_Line
-                                ("no signature found on " & Arg (J));
-                              Set_Command_Failure;
-                        end case;
+                        if K /= Version.Objects.Tag_Object then
+                           Error_Line
+                             (Name & ": cannot verify a non-tag object of type "
+                              & Type_Name (K) & ".");
+                           Ok := False;
+                        end if;
+                     end;
+                  else
+                     Id := Version.Revisions.Resolve (Repo, Name);
+                  end if;
+               end Resolve_One;
+            begin
+               for J in 2 .. Count loop
+                  declare
+                     A : constant String := Arg (J);
+                  begin
+                     if A = "-v" or else A = "--verbose" then
+                        Verbose := True;
+                     elsif A = "--raw"
+                       or else (A'Length >= 9
+                                and then A (A'First .. A'First + 8)
+                                         = "--format=")
+                     then
+                        null;  --  accepted; the payload is git's default output
+                     elsif A'Length > 0 and then A (A'First) = '-' then
+                        Usage_Error
+                          ("unknown " & Command & " option: " & A, Usage);
+                        Bad := True;
+                        exit;
+                     else
+                        Objects.Append (A);
+                     end if;
+                  end;
+               end loop;
+
+               if not Bad and then Objects.Is_Empty then
+                  Usage_Error (Command & " requires an object", Usage);
+               elsif not Bad then
+                  for Name of Objects loop
+                     declare
+                        Id : Version.Objects.Hex_Object_Id;
+                        Ok : Boolean;
+                     begin
+                        Resolve_One (Name, Id, Ok);
+                        if not Ok then
+                           Set_Command_Failure;
+                        else
+                           --  -v echoes the tag payload before verifying.
+                           if Verbose then
+                              Version.Console.Put
+                                (Version.Objects.Content
+                                   (Version.Objects.Read_Object (Repo, Id)));
+                           end if;
+
+                           case Version.Verify.Verify_Object (Repo, Id) is
+                              when Version.Verify.Good_Signature =>
+                                 null;
+                              when Version.Verify.Bad_Signature =>
+                                 Set_Command_Failure;
+                              when Version.Verify.No_Signature =>
+                                 Error_Line ("no signature found");
+                                 Set_Command_Failure;
+                           end case;
+                        end if;
+                     exception
+                        when Ada.IO_Exceptions.Data_Error
+                           | Ada.IO_Exceptions.Name_Error =>
+                           Error_Line ("tag '" & Name & "' not found.");
+                           Set_Command_Failure;
                      end;
                   end loop;
                end if;
