@@ -16954,7 +16954,7 @@ package body Version.CLI is
                   --  git's `submodule summary` reports each submodule whose
                   --  recorded commit differs from its checkout; with no
                   --  submodules configured it prints nothing and exits 0.
-                  null;
+                  Version.Submodules.Summary;
 
                elsif Arg (2) = "sync" then
                   declare
@@ -16994,24 +16994,25 @@ package body Version.CLI is
 
                elsif Arg (2) = "foreach" then
                   declare
-                     Foreach_Usage : constant String :=
-                       "version submodule foreach [--recursive] COMMAND";
                      Recursive : Boolean := False;
+                     Quiet     : Boolean := False;
                      First     : Natural := 3;
                   begin
-                     if First <= Count and then Arg (First) = "--recursive" then
-                        Recursive := True;
+                     --  Leading options precede the command; the first
+                     --  non-option begins it, and the rest is joined with
+                     --  spaces (git allows an empty command, run as `sh -c ""`).
+                     while First <= Count loop
+                        if Arg (First) = "--recursive" then
+                           Recursive := True;
+                        elsif Arg (First) = "-q" or else Arg (First) = "--quiet"
+                        then
+                           Quiet := True;
+                        else
+                           exit;
+                        end if;
                         First := First + 1;
-                     end if;
+                     end loop;
 
-                     if First > Count then
-                        Usage_Error
-                          ("missing submodule foreach command", Foreach_Usage);
-                        return;
-                     end if;
-
-                     --  The remainder of the command line is the shell command
-                     --  (git joins the arguments with spaces).
                      declare
                         Command : Unbounded_String;
                      begin
@@ -17022,7 +17023,9 @@ package body Version.CLI is
                            Append (Command, Arg (I));
                         end loop;
                         Version.Submodules.Foreach
-                          (To_String (Command), Recursive => Recursive);
+                          (To_String (Command),
+                           Recursive => Recursive,
+                           Quiet     => Quiet);
                      end;
                   end;
 
