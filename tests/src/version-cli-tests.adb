@@ -2445,8 +2445,8 @@ package body Version.CLI.Tests is
          "version fetch [--depth N|--deepen N|--unshallow] REMOTE [REF]",
          "fetch duplicate depth");
       Check_Usage_Failure
-        ("fetch --prune origin",
-         "unknown fetch option: --prune",
+        ("fetch --nonsense-flag origin",
+         "unknown fetch option: --nonsense-flag",
          "version fetch [--depth N|--deepen N|--unshallow] REMOTE [REF]",
          "fetch unknown option");
       Check_Usage_Failure

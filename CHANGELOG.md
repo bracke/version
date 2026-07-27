@@ -1,3 +1,4 @@
+- Git parity: a first `fetch` points `refs/remotes/<remote>/HEAD` at the remote's default branch, and `--prune`/`-p` is accepted.
 - Git parity: `fetch --dry-run`/`-n` contacts the remote but writes nothing, and `pull --no-rebase` (and other merge-default flags) are accepted.
 - Git parity: `push --dry-run`/`-n` skips the update, `-u`/`--set-upstream` records the branch's upstream and reports it on stdout, and `--porcelain` is accepted.
 - Git parity: `push` reports its progress on stderr (empty stdout), advances the matching remote-tracking ref, and a rejected non-fast-forward update exits 1 (not a fatal 128); FETCH_HEAD records the remote URL without its trailing `.git`.

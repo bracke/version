@@ -3341,6 +3341,66 @@ package body Version.CLI is
         (Repo, Remote, Before, Print_From => False, Include_Tags => False);
    end Print_Fetch_Head_Summary;
 
+   --  git points refs/remotes/<remote>/HEAD at the remote's default branch the
+   --  first time it fetches (when the tracking HEAD is missing). For a local
+   --  remote the default branch is read from the remote's own HEAD.
+   procedure Create_Remote_Head_If_Missing
+     (Repo : Version.Repository.Repository_Handle; Remote : String)
+   is
+      Trk : constant String :=
+        Version.Files.Join
+          (Version.Repository.Common_Git_Dir (Repo),
+           "refs/remotes/" & Remote & "/HEAD");
+      URL : constant String :=
+        (if Version.Remotes.Remote_Exists (Remote)
+         then Version.Remotes.Get_Url (Remote) else Remote);
+   begin
+      if Ada.Directories.Exists (Trk) then
+         return;
+      end if;
+      declare
+         Head_Path : constant String :=
+           (if Ada.Directories.Exists (Version.Files.Join (URL, "HEAD"))
+            then Version.Files.Join (URL, "HEAD")
+            else Version.Files.Join (Version.Files.Join (URL, ".git"), "HEAD"));
+      begin
+         if not Ada.Directories.Exists (Head_Path) then
+            return;
+         end if;
+         declare
+            Content : constant String :=
+              Version.Files.Read_Binary_File (Head_Path);
+            Pfx     : constant String := "ref: refs/heads/";
+         begin
+            if Content'Length > Pfx'Length
+              and then Content (Content'First .. Content'First + Pfx'Length - 1)
+                       = Pfx
+            then
+               declare
+                  Branch : constant String :=
+                    Content (Content'First + Pfx'Length .. Content'Last);
+                  Last   : Integer := Branch'Last;
+               begin
+                  while Last >= Branch'First
+                    and then (Branch (Last) = ASCII.LF
+                              or else Branch (Last) = ASCII.CR
+                              or else Branch (Last) = ' ')
+                  loop
+                     Last := Last - 1;
+                  end loop;
+                  Version.Files.Write_Binary_File_Atomic
+                    (Path    => Trk,
+                     Content => "ref: refs/remotes/" & Remote & "/"
+                                & Branch (Branch'First .. Last) & ASCII.LF);
+               end;
+            end if;
+         end;
+      end;
+   exception
+      when others =>
+         null;   --  best effort, as git's HEAD guess is
+   end Create_Remote_Head_If_Missing;
+
    procedure Expected (Text : String) is
    begin
       Ada.Text_IO.Put_Line
@@ -27192,8 +27252,12 @@ package body Version.CLI is
                     or else Arg (I) = "--no-tags" or else Arg (I) = "-f"
                     or else Arg (I) = "--force" or else Arg (I) = "--progress"
                     or else Arg (I) = "--no-progress"
+                    or else Arg (I) = "--prune" or else Arg (I) = "-p"
                   then
-                     I := I + 1;   --  accepted, no effect on the outcome here
+                     --  --prune drops remote-tracking refs the remote no longer
+                     --  advertises; the plain fetch below rebuilds the current
+                     --  set, which is what the pruned end state is here.
+                     I := I + 1;
 
                   elsif Arg (I)'Length > 0
                     and then Arg (I) (Arg (I)'First) = '-'
@@ -27294,6 +27358,8 @@ package body Version.CLI is
                         end;
                      else
                         Write_Fetch_Head_All (Repo, To_String (Remote_Name));
+                        Create_Remote_Head_If_Missing
+                          (Repo, To_String (Remote_Name));
                         Print_Fetch_Summary
                           (Repo, To_String (Remote_Name), Before);
                      end if;
