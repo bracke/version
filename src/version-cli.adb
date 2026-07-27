@@ -22405,6 +22405,7 @@ package body Version.CLI is
                Long     : Boolean := False;
                Always   : Boolean := False;
                All_Refs : Boolean := False;
+               Contains : Boolean := False;
                Dirty    : Boolean := False;
                Dirty_Mark : Unbounded_String := To_Unbounded_String ("-dirty");
                Abbrev   : Natural := 7;
@@ -22480,12 +22481,10 @@ package body Version.CLI is
                            I := I + 1;
                         end if;
                      elsif A = "--contains" then
-                        --  A different search entirely (the nearest tag that
-                        --  CONTAINS the commit); not implemented, and refused
-                        --  rather than answered with the wrong direction.
-                        Usage_Error
-                          ("describe --contains is not supported", Usage);
-                        Bad := True;
+                        --  The opposite search: name the commit by the nearest
+                        --  ref that CONTAINS it (name-rev), tags-only unless
+                        --  --all widens it to every ref.
+                        Contains := True;
                      elsif A'Length > 0 and then A (A'First) = '-' then
                         Usage_Error
                           ("unknown describe option: " & A, Usage);
@@ -22532,6 +22531,31 @@ package body Version.CLI is
 
                         function Described return String is
                         begin
+                           --  --contains delegates to name-rev: name Commit by
+                           --  a descendant ref.  Without --all the search is
+                           --  restricted to tags and the "tags/" namespace is
+                           --  dropped ("v2.0^0"); --all keeps it ("tags/...").
+                           if Contains then
+                              declare
+                                 Name : constant String :=
+                                   Version.Name_Rev.Describe_Commit
+                                     (Repo, Commit,
+                                      Tags_Only => not All_Refs);
+                              begin
+                                 if Name = Version.Name_Rev.Undefined then
+                                    raise Ada.IO_Exceptions.Data_Error
+                                      with "cannot describe '"
+                                           & Version.Objects.To_String (Commit)
+                                           & "'";
+                                 end if;
+                                 if not All_Refs
+                                   and then Has_Prefix (Name, "tags/")
+                                 then
+                                    return Name (Name'First + 5 .. Name'Last);
+                                 end if;
+                                 return Name;
+                              end;
+                           end if;
                            if All_Refs then
                               return Version.Describe.Describe_By_Any_Ref
                                 (Repo, Commit, Long, Abbrev,
