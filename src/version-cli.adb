@@ -27997,6 +27997,40 @@ package body Version.CLI is
                  (if R'Length >= 5 and then R (R'First .. R'First + 4) = "refs/"
                   then R else "refs/heads/" & R);
 
+               --  After a successful push git advances the corresponding
+               --  remote-tracking ref (the remote's fetch refspec maps
+               --  refs/heads/* onto refs/remotes/<remote>/*). Best effort.
+               procedure Update_Tracking
+                 (Remote, Dest_Ref, Source : String)
+               is
+                  HP : constant String := "refs/heads/";
+               begin
+                  if Dest_Ref'Length > HP'Length
+                    and then Dest_Ref (Dest_Ref'First
+                                       .. Dest_Ref'First + HP'Length - 1) = HP
+                  then
+                     declare
+                        Repo : constant
+                          Version.Repository.Repository_Handle :=
+                            Version.Repository.Open;
+                        Trk : constant String :=
+                          "refs/remotes/" & Remote & "/"
+                          & Dest_Ref (Dest_Ref'First + HP'Length
+                                      .. Dest_Ref'Last);
+                        Txn : Version.Ref_Transaction.Transaction;
+                     begin
+                        Version.Ref_Transaction.Start (Txn, Repo);
+                        Version.Ref_Transaction.Add_Update
+                          (Txn, Trk,
+                           Version.Revisions.Resolve_Commit (Repo, Source));
+                        Version.Ref_Transaction.Commit (Txn);
+                     end;
+                  end if;
+               exception
+                  when others =>
+                     null;
+               end Update_Tracking;
+
                --  Expand a "<src>*<...>:<dst>*<...>" wildcard refspec into one
                --  concrete push per matching local ref (git parity; git sends
                --  these in one batched request, we send one per ref, matching
@@ -28069,6 +28103,9 @@ package body Version.CLI is
                         Branch_Name => Raw (Spec_First .. Raw'Last),
                         Run_Hooks   => Run_Hooks,
                         Force       => Spec_Force);
+                     Update_Tracking
+                       (Remote, "refs/heads/" & Raw (Spec_First .. Raw'Last),
+                        Raw (Spec_First .. Raw'Last));
                      Stderr_Line
                        ("pushed " & Raw (Spec_First .. Raw'Last)
                         & " to " & Remote);
@@ -28111,6 +28148,7 @@ package body Version.CLI is
                               Dest_Ref    => Normalize_Ref (Dst),
                               Force       => Spec_Force,
                               Run_Hooks   => Run_Hooks);
+                           Update_Tracking (Remote, Normalize_Ref (Dst), Src);
                            Stderr_Line
                              ("pushed " & Src & " to "
                               & Normalize_Ref (Dst) & " on " & Remote);
@@ -28405,6 +28443,25 @@ package body Version.CLI is
                         not No_Verify);
                   end loop;
                end if;
+            exception
+               when E : Ada.IO_Exceptions.Data_Error =>
+                  --  git distinguishes a rejected update (non-fast-forward)
+                  --  from a fatal error: a rejection exits 1, everything else
+                  --  dies (128).
+                  declare
+                     M : constant String :=
+                       Ada.Exceptions.Exception_Message (E);
+                  begin
+                     if Ada.Strings.Fixed.Index (M, "non-fast-forward") /= 0
+                       or else Ada.Strings.Fixed.Index
+                                 (M, "not an ancestor") /= 0
+                     then
+                        Error_Line (M);
+                        Set_Command_Failure;
+                     else
+                        raise;
+                     end if;
+                  end;
             end;
 
          elsif Command = "lfs" then
