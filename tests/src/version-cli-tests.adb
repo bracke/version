@@ -2825,11 +2825,8 @@ package body Version.CLI.Tests is
 
       Old_Dir : constant String := Ada.Directories.Current_Directory;
    begin
-      Check_Usage_Failure
-        ("submodule",
-         "missing submodule subcommand",
-         Top_Usage,
-         "submodule missing subcommand");
+      --  Bare `submodule` is `submodule status` (git parity), so it is no
+      --  longer a usage error; an unknown subcommand fails with exit 1.
       Check_Usage_Failure
         ("submodule frobnicate",
          "unknown submodule subcommand: frobnicate",
@@ -3226,7 +3223,8 @@ package body Version.CLI.Tests is
       Root : constant String :=
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Usage : constant String :=
-        "version worktree add [--detach] PATH BRANCH_OR_REV";
+        "version worktree add [-b|-B <branch>] [--detach]"
+        & " [--no-checkout] [--lock] PATH [COMMIT-ISH]";
       Top_Usage : constant String := "version worktree SUBCOMMAND [ARGS]";
 
       procedure Check_Usage_Failure
@@ -3299,21 +3297,9 @@ package body Version.CLI.Tests is
          "missing worktree path",
          Usage,
          "worktree add missing path");
-      Check_Usage_Failure
-        ("worktree add ../wt",
-         "missing worktree branch",
-         Usage,
-         "worktree add missing branch");
-      Check_Usage_Failure
-        ("worktree add --detach ../wt",
-         "missing worktree revision",
-         Usage,
-         "worktree add detached missing revision");
-      Check_Usage_Failure
-        ("worktree add --detach --detach ../wt HEAD",
-         "duplicate option: --detach",
-         Usage,
-         "worktree add duplicate detach");
+      --  A bare path (new branch from its basename), --detach without a
+      --  revision (detach HEAD), and a repeated --detach are all valid git
+      --  parity now, so they are no longer usage errors.
       Check_Usage_Failure
         ("worktree add --orphan ../wt main",
          "unknown worktree add option: --orphan",

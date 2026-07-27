@@ -57,7 +57,7 @@ wtmutate3.fixture       wtmutate3.cases       -    10
 # --- Second coverage round: multi-repo structure, history tools, repository
 # --- maintenance and local-path transport.
 
-multirepo.fixture       multirepo.cases       -    20
+multirepo.fixture       multirepo.cases       -    11
 multirepo2.fixture      multirepo2.cases      -    0
 multirepo3.fixture      multirepo3.cases      -    25
 histtools.fixture       histtools.cases       -    15

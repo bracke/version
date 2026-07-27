@@ -16818,8 +16818,16 @@ package body Version.CLI is
                end Submodule_Paths_Exist;
             begin
                if Count < 2 then
-                  Usage_Error ("missing submodule subcommand", Usage);
-                  return;
+                  --  Bare `submodule` is `submodule status`.
+                  declare
+                     Repo : constant Version.Repository.Repository_Handle :=
+                       Version.Repository.Open;
+                  begin
+                     for It of Version.Submodules.Statuses (Repo) loop
+                        Success_Line
+                          (Version.Submodules.Status_Line_Git (Repo, It));
+                     end loop;
+                  end;
                elsif Arg (2) = "init" then
                   declare
                      Init_Usage : constant String :=
@@ -17294,9 +17302,11 @@ package body Version.CLI is
                   end;
 
                else
-                  Usage_Error
-                    ("unknown submodule subcommand: " & Arg (2), Usage);
-                  return;
+                  --  git exits 1 (not a usage error, 129) for an unknown
+                  --  submodule subcommand, printing the usage.
+                  Error_Line ("unknown submodule subcommand: " & Arg (2));
+                  Expected (Usage);
+                  Set_Command_Failure;
                end if;
             end;
 
@@ -17364,73 +17374,191 @@ package body Version.CLI is
                elsif Arg (2) = "add" then
                   declare
                      Add_Usage    : constant String :=
-                       "version worktree add [--detach] PATH BRANCH_OR_REV";
+                       "version worktree add [-b|-B <branch>] [--detach]"
+                       & " [--no-checkout] [--lock] PATH [COMMIT-ISH]";
                      I             : Natural := 3;
                      Detached      : Boolean := False;
+                     No_Checkout   : Boolean := False;
+                     Do_Lock       : Boolean := False;
+                     New_Branch    : Unbounded_String;
+                     Force_Branch  : Boolean := False;
+                     Has_New_Br    : Boolean := False;
                      Path          : Unbounded_String;
-                     Branch_Or_Rev : Unbounded_String;
+                     Commit_Ish    : Unbounded_String;
                      Operand_Count : Natural := 0;
-                  begin
-                     while I <= Count loop
-                        if Arg (I) = "--detach" then
-                           if Detached then
-                              Usage_Error ("duplicate option: --detach", Add_Usage);
-                              return;
+                     Bad           : Boolean := False;
+
+                     --  Accept "-b x", "-bx" and "--branch=x" (likewise -B).
+                     function Take_Branch (Short, Long : String) return Boolean
+                     is
+                        A : constant String := Arg (I);
+                     begin
+                        if A = Short or else A = Long then
+                           if I = Count then
+                              Usage_Error (A & " requires a value", Add_Usage);
+                              Bad := True;
+                              return True;
                            end if;
-
-                           Detached := True;
                            I := I + 1;
-
+                           New_Branch := To_Unbounded_String (Arg (I));
+                           return True;
+                        elsif A'Length > 2
+                          and then A (A'First .. A'First + 1) = Short
+                        then
+                           New_Branch :=
+                             To_Unbounded_String (A (A'First + 2 .. A'Last));
+                           return True;
+                        elsif A'Length > Long'Length + 1
+                          and then A (A'First .. A'First + Long'Length - 1) = Long
+                          and then A (A'First + Long'Length) = '='
+                        then
+                           New_Branch := To_Unbounded_String
+                             (A (A'First + Long'Length + 1 .. A'Last));
+                           return True;
+                        end if;
+                        return False;
+                     end Take_Branch;
+                  begin
+                     while I <= Count and then not Bad loop
+                        if Arg (I) = "--detach" then
+                           Detached := True;
+                        elsif Arg (I) = "--no-checkout" or else Arg (I) = "-n"
+                        then
+                           No_Checkout := True;
+                        elsif Arg (I) = "--lock" then
+                           Do_Lock := True;
+                        elsif Arg (I) = "-f" or else Arg (I) = "--force" then
+                           null;  --  accepted; branch-in-use is still refused
+                        elsif Take_Branch ("-b", "--branch") then
+                           Has_New_Br := not Bad;
+                        elsif Take_Branch ("-B", "--branch-force") then
+                           Has_New_Br := not Bad;
+                           Force_Branch := True;
                         elsif Arg (I)'Length > 0
                           and then Arg (I) (Arg (I)'First) = '-'
                         then
                            Usage_Error
-                             ("unknown worktree add option: " & Arg (I), Add_Usage);
-                           return;
-
+                             ("unknown worktree add option: " & Arg (I),
+                              Add_Usage);
+                           Bad := True;
                         else
                            Operand_Count := Operand_Count + 1;
                            if Operand_Count = 1 then
                               Path := To_Unbounded_String (Arg (I));
                            elsif Operand_Count = 2 then
-                              Branch_Or_Rev := To_Unbounded_String (Arg (I));
+                              Commit_Ish := To_Unbounded_String (Arg (I));
                            else
                               Usage_Error
                                 ("too many worktree add arguments", Add_Usage);
-                              return;
+                              Bad := True;
                            end if;
-                           I := I + 1;
                         end if;
+                        I := I + 1;
                      end loop;
 
-                     if Operand_Count = 0 then
-                        Usage_Error ("missing worktree path", Add_Usage);
-                        return;
-                     elsif Operand_Count = 1 and then Detached then
-                        Usage_Error ("missing worktree revision", Add_Usage);
-                        return;
-                     elsif Operand_Count = 1 then
-                        Usage_Error ("missing worktree branch", Add_Usage);
-                        return;
-                     elsif Detached then
-                        --  git narrates the preparation on stderr and reports
-                        --  the commit landed on, on stdout -- the same split
-                        --  as a detaching checkout.
-                        Stderr_Line
-                          ("Preparing worktree (detached HEAD "
-                           & To_String (Branch_Or_Rev) & ")");
-                        Version.Worktrees.Add_Detached
-                          (Path => To_String (Path),
-                           Rev  => To_String (Branch_Or_Rev));
-                        Report_Worktree_Head (To_String (Branch_Or_Rev));
-                     else
-                        Stderr_Line
-                          ("Preparing worktree (checking out '"
-                           & To_String (Branch_Or_Rev) & "')");
-                        Version.Worktrees.Add
-                          (Path   => To_String (Path),
-                           Branch => To_String (Branch_Or_Rev));
-                        Report_Worktree_Head (To_String (Branch_Or_Rev));
+                     if not Bad then
+                        declare
+                           P     : constant String := To_String (Path);
+                           CI    : constant String := To_String (Commit_Ish);
+                           Start : constant String :=
+                             (if CI'Length > 0 then CI else "HEAD");
+
+                           --  The last path component (git names the auto
+                           --  branch after it), trailing slashes ignored.
+                           function Base_Of (S : String) return String is
+                              Last : Integer := S'Last;
+                           begin
+                              while Last >= S'First and then S (Last) = '/' loop
+                                 Last := Last - 1;
+                              end loop;
+                              for K in reverse S'First .. Last loop
+                                 if S (K) = '/' then
+                                    return S (K + 1 .. Last);
+                                 end if;
+                              end loop;
+                              return S (S'First .. Last);
+                           end Base_Of;
+
+                           procedure Finish_Attached (Branch : String) is
+                           begin
+                              Version.Worktrees.Add (P, Branch, No_Checkout);
+                              if not No_Checkout then
+                                 Report_Worktree_Head (Branch);
+                              end if;
+                           end Finish_Attached;
+
+                           procedure Finish_Detached (Rev : String) is
+                           begin
+                              Stderr_Line
+                                ("Preparing worktree (detached HEAD "
+                                 & Rev & ")");
+                              Version.Worktrees.Add_Detached
+                                (P, Rev, No_Checkout);
+                              if not No_Checkout then
+                                 Report_Worktree_Head (Rev);
+                              end if;
+                           end Finish_Detached;
+
+                           procedure Make_New_Branch (Name : String) is
+                              Repo : constant
+                                Version.Repository.Repository_Handle :=
+                                  Version.Repository.Open;
+                              Id   : constant String :=
+                                Version.Objects.To_String
+                                  (Version.Revisions.Resolve_Commit
+                                     (Repo, Start));
+                           begin
+                              if Force_Branch
+                                and then Version.Branch.Branch_Exists (Name)
+                              then
+                                 Version.Branch.Delete_Branch
+                                   (Name, Force => True);
+                              end if;
+                              Version.Branch.Create_Branch (Name, Id);
+                              Stderr_Line
+                                ("Preparing worktree (new branch '"
+                                 & Name & "')");
+                              Finish_Attached (Name);
+                           end Make_New_Branch;
+                        begin
+                           if Operand_Count = 0 then
+                              Usage_Error ("missing worktree path", Add_Usage);
+                           elsif Has_New_Br then
+                              Make_New_Branch (To_String (New_Branch));
+                           elsif Detached then
+                              Finish_Detached (Start);
+                           elsif Operand_Count = 2 then
+                              --  An existing branch is checked out attached;
+                              --  anything else is resolved as a detached commit.
+                              if Version.Branch.Branch_Exists (CI) then
+                                 Stderr_Line
+                                   ("Preparing worktree (checking out '"
+                                    & CI & "')");
+                                 Finish_Attached (CI);
+                              else
+                                 Finish_Detached (CI);
+                              end if;
+                           else
+                              --  Bare `add <path>`: the path's basename names a
+                              --  branch to check out, or a new branch to create.
+                              declare
+                                 Base : constant String := Base_Of (P);
+                              begin
+                                 if Version.Branch.Branch_Exists (Base) then
+                                    Stderr_Line
+                                      ("Preparing worktree (checking out '"
+                                       & Base & "')");
+                                    Finish_Attached (Base);
+                                 else
+                                    Make_New_Branch (Base);
+                                 end if;
+                              end;
+                           end if;
+
+                           if Do_Lock and then not Bad then
+                              Version.Worktrees.Lock (P);
+                           end if;
+                        end;
                      end if;
                   end;
 
