@@ -10048,6 +10048,7 @@ package body Version.CLI is
       Exit_Code : Boolean := False;
       Refs_Only : Boolean := False;
       Get_Url_Only : Boolean := False;
+      Symref : Boolean := False;
       Remote : Unbounded_String;
       Have_Remote : Boolean := False;
       Patterns : Version.Trailers.String_Vectors.Vector;
@@ -10068,6 +10069,8 @@ package body Version.CLI is
                Refs_Only := True;
             elsif A = "--get-url" then
                Get_Url_Only := True;
+            elsif A = "--symref" then
+               Symref := True;
             elsif A'Length > 0 and then A (A'First) = '-' then
                Error_Line ("unknown option: " & A);
                Set_Usage_Failure;
@@ -10100,6 +10103,10 @@ package body Version.CLI is
       declare
          Refs : constant Version.Upload_Pack.Advertised_Ref_Vectors.Vector :=
            Version.Fetch.List_Remote_Refs (To_String (Remote));
+         Head_Symref : constant String :=
+           (if Symref then Version.Fetch.Remote_Head_Symref
+                             (To_String (Remote))
+            else "");
          Shown : Natural := 0;
 
          function Wanted (Name : String) return Boolean is
@@ -10181,6 +10188,13 @@ package body Version.CLI is
                then
                   null;   --  --refs hides HEAD and peeled "^{}" entries
                elsif Wanted (Name) and then Selected (Name) then
+                  --  --symref prefixes a symbolic ref with the "ref: <target>"
+                  --  line git advertises; in practice only HEAD is a symref.
+                  if Symref and then Name = "HEAD"
+                    and then Head_Symref'Length > 0
+                  then
+                     Success_Line ("ref: " & Head_Symref & ASCII.HT & Name);
+                  end if;
                   Success_Line
                     (Version.Objects.To_String (R.Id) & ASCII.HT & Name);
                   Shown := Shown + 1;
@@ -25876,6 +25890,35 @@ package body Version.CLI is
                        Version.Refs.Current_Branch_Name (Repo);
                      Remote : Unbounded_String := Remote_Arg;
                      Target : Unbounded_String;
+
+                     --  git's `pull --rebase` fast-forwards (and reports it as
+                     --  a merge would) when HEAD is a strict ancestor of the
+                     --  upstream, rather than replaying zero commits.
+                     function Pull_Would_Fast_Forward return Boolean is
+                        Head_Now : constant String :=
+                          Version.Refs.Current_Commit_Id (Repo);
+                     begin
+                        if not Version.Objects.Is_Valid_Hex_Object_Id
+                                 (Head_Now)
+                        then
+                           return False;
+                        end if;
+                        declare
+                           Tgt : constant Version.Objects.Hex_Object_Id :=
+                             Version.Revisions.Resolve_Commit
+                               (Repo, To_String (Target));
+                        begin
+                           return Head_Now /= Version.Objects.To_String (Tgt)
+                             and then Version.History.Is_Ancestor
+                               (Repo       => Repo,
+                                Base_Id    =>
+                                  Version.Objects.To_Object_Id (Head_Now),
+                                Derived_Id => Tgt);
+                        end;
+                     exception
+                        when others =>
+                           return False;
+                     end Pull_Would_Fast_Forward;
                   begin
                      if Length (Branch_Arg) > 0 then
                         Target := To_Unbounded_String
@@ -25913,9 +25956,17 @@ package body Version.CLI is
                            Print_Fetch_Summary
                              (Repo, To_String (Remote), Fetch_Before);
                         end if;
+                     exception
+                        --  A failed fetch (unreachable or missing remote) makes
+                        --  git's pull exit 1, not die (128).
+                        when E : others =>
+                           Error_Line
+                             ("fatal: " & Ada.Exceptions.Exception_Message (E));
+                           Set_Command_Failure;
+                           return;
                      end;
 
-                     if Do_Rebase then
+                     if Do_Rebase and then not Pull_Would_Fast_Forward then
                         Version.Rebase.Start (To_String (Target));
                         Success_Line
                           ("Successfully rebased and updated " & Branch & ".");
@@ -27815,6 +27866,25 @@ package body Version.CLI is
                      end;
                   end;
                end Guess_Target;
+
+               --  git honours --depth only over a smart transport; a local
+               --  source (a plain path, or a file:// URL) cannot be made
+               --  shallow, so git warns and clones in full instead of failing.
+               function Is_Local_Source (Src : String) return Boolean is
+               begin
+                  for K in Src'First .. Src'Last - 2 loop
+                     if Src (K .. K + 2) = "://" then
+                        return Src'Length >= 7
+                          and then Src (Src'First .. Src'First + 6) = "file://";
+                     end if;
+                     exit when Src (K) = '/';
+                     if Src (K) = ':' then
+                        --  An scp-style host:path remote.
+                        return False;
+                     end if;
+                  end loop;
+                  return True;
+               end Is_Local_Source;
             begin
                while I <= Count loop
                   if Arg (I)'Length >= Filter_Eq'Length
@@ -27922,6 +27992,21 @@ package body Version.CLI is
                   --  git derives the target directory from the source URL.
                   Target :=
                     To_Unbounded_String (Guess_Target (To_String (Source)));
+               end if;
+
+               --  A shallow local clone is impossible, so git ignores --depth
+               --  (with a warning) rather than failing; drop it here so the
+               --  clone proceeds in full.  The mutually-exclusive-option checks
+               --  below still fire for --depth with --recursive/--filter.
+               if Has_Depth
+                 and then not Recursive
+                 and then not Has_Filter
+                 and then Operand_Count >= 1
+                 and then Is_Local_Source (To_String (Source))
+               then
+                  Error_Line ("warning: --depth is ignored in local clones;"
+                              & " use file:// instead.");
+                  Has_Depth := False;
                end if;
 
                if Operand_Count = 0 then
@@ -28522,6 +28607,7 @@ package body Version.CLI is
                Atomic        : Boolean := False;
                Dry_Run       : Boolean := False;
                Set_Upstream  : Boolean := False;
+               Porcelain     : Boolean := False;
                Remote_Name   : Unbounded_String;
                Operand_Count : Natural := 0;
                Refspecs      : Version.Ref_Format.String_Vectors.Vector;
@@ -28532,6 +28618,72 @@ package body Version.CLI is
                function Normalize_Ref (R : String) return String is
                  (if R'Length >= 5 and then R (R'First .. R'First + 4) = "refs/"
                   then R else "refs/heads/" & R);
+
+               --  A ref's current id on the remote ("" when it does not yet
+               --  exist), captured before a push for --porcelain's report.
+               function Remote_Old_Id (Remote, Dst_Ref : String) return String
+               is
+               begin
+                  for R of Version.Fetch.List_Remote_Refs (Remote) loop
+                     if To_String (R.Name) = Dst_Ref then
+                        return Version.Objects.To_String (R.Id);
+                     end if;
+                  end loop;
+                  return "";
+               exception
+                  when others =>
+                     return "";
+               end Remote_Old_Id;
+
+               --  The id a local ref resolves to now, for the "after" side of
+               --  the --porcelain report; "" when it cannot be resolved.
+               function Local_Ref_Id (Ref : String) return String is
+                  Repo : constant Version.Repository.Repository_Handle :=
+                    Version.Repository.Open;
+               begin
+                  return Version.Objects.To_String
+                    (Version.Revisions.Resolve_Commit (Repo, Ref));
+               exception
+                  when others =>
+                     return "";
+               end Local_Ref_Id;
+
+               --  git's per-ref porcelain line:
+               --  "<flag>\t<local>:<remote>\t<summary>".
+               procedure Emit_Push_Porcelain
+                 (Local_Ref, Dst_Ref, Old_Id, New_Id : String;
+                  Forced : Boolean)
+               is
+                  Is_Tag : constant Boolean :=
+                    Dst_Ref'Length > 10
+                    and then Dst_Ref (Dst_Ref'First .. Dst_Ref'First + 9)
+                             = "refs/tags/";
+                  function Ab (Id : String) return String is
+                    (if Id'Length >= 7
+                     then Id (Id'First .. Id'First + 6) else Id);
+                  Flag    : Character;
+                  Summary : Unbounded_String;
+               begin
+                  if Old_Id = "" then
+                     Flag := '*';
+                     Summary := To_Unbounded_String
+                       (if Is_Tag then "[new tag]" else "[new branch]");
+                  elsif Old_Id = New_Id then
+                     Flag := '=';
+                     Summary := To_Unbounded_String ("[up to date]");
+                  elsif Forced then
+                     Flag := '+';
+                     Summary :=
+                       To_Unbounded_String (Ab (Old_Id) & "..." & Ab (New_Id));
+                  else
+                     Flag := ' ';
+                     Summary :=
+                       To_Unbounded_String (Ab (Old_Id) & ".." & Ab (New_Id));
+                  end if;
+                  Version.Console.Put
+                    (Flag & ASCII.HT & Local_Ref & ":" & Dst_Ref
+                     & ASCII.HT & To_String (Summary) & ASCII.LF);
+               end Emit_Push_Porcelain;
 
                --  After a successful push git advances the corresponding
                --  remote-tracking ref (the remote's fetch refspec maps
@@ -28639,6 +28791,8 @@ package body Version.CLI is
                         --  A bare name that is a tag rather than a branch is
                         --  pushed to refs/tags/<name> (git resolves the ref).
                         Is_Tag : Boolean := False;
+                        Dst_Ref : Unbounded_String;
+                        Old_Id  : Unbounded_String;
                      begin
                         if not Version.Branch.Branch_Exists (Br) then
                            declare
@@ -28650,6 +28804,14 @@ package body Version.CLI is
                                 Version.Refs.Ref_Exists
                                   (Repo, "refs/tags/" & Br);
                            end;
+                        end if;
+
+                        Dst_Ref := To_Unbounded_String
+                          ((if Is_Tag then "refs/tags/" else "refs/heads/")
+                           & Br);
+                        if Porcelain then
+                           Old_Id := To_Unbounded_String
+                             (Remote_Old_Id (Remote, To_String (Dst_Ref)));
                         end if;
 
                         if not Dry_Run then
@@ -28683,7 +28845,17 @@ package body Version.CLI is
                               end if;
                            end if;
                         end if;
-                        Stderr_Line ("pushed " & Br & " to " & Remote);
+                        if Porcelain then
+                           Emit_Push_Porcelain
+                             (Local_Ref => To_String (Dst_Ref),
+                              Dst_Ref   => To_String (Dst_Ref),
+                              Old_Id    => To_String (Old_Id),
+                              New_Id    =>
+                                Local_Ref_Id (To_String (Dst_Ref)),
+                              Forced    => Spec_Force);
+                        else
+                           Stderr_Line ("pushed " & Br & " to " & Remote);
+                        end if;
                      end;
                   else
                      declare
@@ -28718,16 +28890,34 @@ package body Version.CLI is
                            Expand_Glob_Push
                              (Remote, Src, Dst, Spec_Force, Run_Hooks);
                         else
-                           Version.Push.Push_Refspec
-                             (Remote_Name => Remote,
-                              Source      => Src,
-                              Dest_Ref    => Normalize_Ref (Dst),
-                              Force       => Spec_Force,
-                              Run_Hooks   => Run_Hooks);
-                           Update_Tracking (Remote, Normalize_Ref (Dst), Src);
-                           Stderr_Line
-                             ("pushed " & Src & " to "
-                              & Normalize_Ref (Dst) & " on " & Remote);
+                           declare
+                              Old_Id : constant String :=
+                                (if Porcelain
+                                 then Remote_Old_Id
+                                        (Remote, Normalize_Ref (Dst))
+                                 else "");
+                           begin
+                              Version.Push.Push_Refspec
+                                (Remote_Name => Remote,
+                                 Source      => Src,
+                                 Dest_Ref    => Normalize_Ref (Dst),
+                                 Force       => Spec_Force,
+                                 Run_Hooks   => Run_Hooks);
+                              Update_Tracking
+                                (Remote, Normalize_Ref (Dst), Src);
+                              if Porcelain then
+                                 Emit_Push_Porcelain
+                                   (Local_Ref => Src,
+                                    Dst_Ref   => Normalize_Ref (Dst),
+                                    Old_Id    => Old_Id,
+                                    New_Id    => Local_Ref_Id (Src),
+                                    Forced    => Spec_Force);
+                              else
+                                 Stderr_Line
+                                   ("pushed " & Src & " to "
+                                    & Normalize_Ref (Dst) & " on " & Remote);
+                              end if;
+                           end;
                         end if;
                      end;
                   end if;
@@ -28889,9 +29079,7 @@ package body Version.CLI is
                      I := I + 1;
 
                   elsif Arg (I) = "--porcelain" then
-                     --  Accepted; the default stderr summary already omits the
-                     --  stdout machine format, which the gate does not exercise
-                     --  beyond acceptance.
+                     Porcelain := True;
                      I := I + 1;
 
                   elsif Arg (I)'Length > 0
@@ -29052,11 +29240,26 @@ package body Version.CLI is
                else
                   --  One or more refspecs: process each (glob refspecs expand
                   --  to one push per matching local ref).
+                  if Porcelain then
+                     --  git frames the machine report with the destination URL
+                     --  and a trailing "Done", all on stdout.
+                     Version.Console.Put
+                       ("To "
+                        & (if Version.Remotes.Remote_Exists
+                                (To_String (Remote_Name))
+                           then Version.Remotes.Get_Url
+                                  (To_String (Remote_Name))
+                           else To_String (Remote_Name))
+                        & ASCII.LF);
+                  end if;
                   for Spec of Refspecs loop
                      Process_One_Refspec
                        (To_String (Remote_Name), Spec, Force,
                         not No_Verify);
                   end loop;
+                  if Porcelain then
+                     Version.Console.Put ("Done" & ASCII.LF);
+                  end if;
                end if;
             exception
                when E : Ada.IO_Exceptions.Data_Error =>
