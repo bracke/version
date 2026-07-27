@@ -27240,6 +27240,7 @@ package body Version.CLI is
                Dry_Run       : Boolean := False;
                Fetch_All     : Boolean := False;
                Want_Tags     : Boolean := False;
+               Porcelain     : Boolean := False;
                Remote_Name   : Unbounded_String;
                Ref_Name      : Unbounded_String;
                Have_Ref      : Boolean := False;
@@ -27291,6 +27292,10 @@ package body Version.CLI is
 
                   elsif Arg (I) = "--tags" or else Arg (I) = "-t" then
                      Want_Tags := True;
+                     I := I + 1;
+
+                  elsif Arg (I) = "--porcelain" then
+                     Porcelain := True;
                      I := I + 1;
 
                   elsif Arg (I) = "-q" or else Arg (I) = "--quiet"
@@ -27497,6 +27502,42 @@ package body Version.CLI is
                            Print_Fetch_Head_Summary
                              (Repo, To_String (Remote_Name), Src, Before);
                         end;
+                     elsif Porcelain then
+                        --  git's machine format: `* <old> <new> <ref>` per
+                        --  updated tracking ref and (auto-followed) tag, on
+                        --  stdout, with no human-readable summary on stderr.
+                        Write_Fetch_Head_All (Repo, To_String (Remote_Name));
+                        Create_Remote_Head_If_Missing
+                          (Repo, To_String (Remote_Name));
+                        Fetch_Remote_Tags (Repo, To_String (Remote_Name));
+                        declare
+                           Head_Ref : constant String :=
+                             "refs/remotes/" & To_String (Remote_Name)
+                             & "/HEAD";
+                           After : constant Fetch_Ref_Maps.Map :=
+                             Snapshot_Fetch_Refs (Repo, To_String (Remote_Name));
+                        begin
+                           for C in After.Iterate loop
+                              declare
+                                 Name   : constant String :=
+                                   Fetch_Ref_Maps.Key (C);
+                                 New_Id : constant String :=
+                                   Fetch_Ref_Maps.Element (C);
+                                 Old_Id : constant String :=
+                                   (if Before.Contains (Name)
+                                    then Before.Element (Name)
+                                    else [1 .. New_Id'Length => '0']);
+                              begin
+                                 if Name /= Head_Ref
+                                   and then Old_Id /= New_Id
+                                 then
+                                    Success_Line
+                                      ("* " & Old_Id & " " & New_Id & " "
+                                       & Name);
+                                 end if;
+                              end;
+                           end loop;
+                        end;
                      else
                         Write_Fetch_Head_All (Repo, To_String (Remote_Name));
                         Create_Remote_Head_If_Missing
@@ -27505,7 +27546,9 @@ package body Version.CLI is
                           (Repo, To_String (Remote_Name), Before);
                      end if;
 
-                     if Want_Tags and then not Dry_Run then
+                     if Want_Tags and then not Dry_Run
+                       and then not Porcelain
+                     then
                         Fetch_Remote_Tags (Repo, To_String (Remote_Name));
                      end if;
                   end;
