@@ -10473,6 +10473,7 @@ package body Version.CLI is
       Squash : Boolean := False;
       Rejoin : Boolean := False;
       Ignore_Joins : Boolean := False;
+      Annotate : Unbounded_String;
       Operands : Version.Trailers.String_Vectors.Vector;
       Bad      : Boolean := False;
 
@@ -10486,9 +10487,98 @@ package body Version.CLI is
          Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, "fatal: " & Text);
          Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
       end Fatal;
+
+      --  git-subtree's own `die` (validation errors, as opposed to a failing
+      --  underlying git command) exits 1, not 128.
+      procedure Die_1 (Text : String) is
+      begin
+         Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, "fatal: " & Text);
+         Set_Command_Failure;
+      end Die_1;
+
+      --  git dispatches an unknown/absent subcommand through git-subtree's
+      --  option parser, which prints its (verbatim) usage on stdout and exits
+      --  129.  git-subtree is git's own contrib script, so the text -- down to
+      --  the "git subtree" spelling -- is reproduced exactly for byte parity.
+      procedure Print_Usage_129 is
+         LF : constant Character := ASCII.LF;
+      begin
+         Version.Console.Put
+           ("usage: git subtree add   --prefix=<prefix> [-S[=<key-id>]]"
+            & " <commit>" & LF
+            & "   or: git subtree add   --prefix=<prefix> [-S[=<key-id>]]"
+            & " <repository> <ref>" & LF
+            & "   or: git subtree merge --prefix=<prefix> [-S[=<key-id>]]"
+            & " <commit>" & LF
+            & "   or: git subtree split --prefix=<prefix> [-S[=<key-id>]]"
+            & " [<commit>]" & LF
+            & "   or: git subtree pull  --prefix=<prefix> [-S[=<key-id>]]"
+            & " <repository> <ref>" & LF
+            & "   or: git subtree push  --prefix=<prefix> [-S[=<key-id>]]"
+            & " <repository> <refspec>" & LF
+            & LF
+            & "    -h, --help            show the help" & LF
+            & "    -q, --quiet           quiet" & LF
+            & "    -d, --debug           show debug messages" & LF
+            & "    -P, --[no-]prefix ... the name of the subdir to split out"
+            & LF
+            & LF
+            & "options for 'split' (also: 'push')" & LF
+            & "    --[no-]annotate ...   add a prefix to commit message of"
+            & " new commits" & LF
+            & "    -b, --branch ...      create a new branch from the split"
+            & " subtree" & LF
+            & "    --[no-]ignore-joins   ignore prior --rejoin commits" & LF
+            & "    --[no-]onto ...       try connecting new tree to an"
+            & " existing one" & LF
+            & "    --[no-]rejoin         merge the new branch back into HEAD"
+            & LF
+            & LF
+            & "options for 'add' and 'merge' (also: 'pull', 'split --rejoin',"
+            & " and 'push --rejoin')" & LF
+            & "    --[no-]squash         merge subtree changes as a single"
+            & " commit" & LF
+            & "    -m, --message ...     use the given message as the commit"
+            & " message for the merge commit" & LF
+            & "    -S, --[no-]gpg-sign[=<key-id>]" & LF
+            & "                          GPG-sign commits. The keyid argument"
+            & " is optional and defaults to the committer identity" & LF
+            & LF);
+         Set_Usage_Failure;
+      end Print_Usage_129;
+
+      --  git-subtree narrates split progress on stderr ("<i>/<n> (<m>) [<k>]").
+      --  Only its non-emptiness is contract; the counts track the rev's
+      --  reachable history.
+      procedure Emit_Progress (Repo : Version.Repository.Repository_Handle;
+                               Rev  : String)
+      is
+         Count : Natural := 0;
+      begin
+         if Quiet_Mode then
+            return;
+         end if;
+         begin
+            Count := Natural
+              (Version.History.Rev_List
+                 (Repo,
+                  [Version.Revisions.Resolve_Commit (Repo, Rev)]).Length);
+         exception
+            when others =>
+               Count := 0;
+         end;
+         declare
+            N : constant String :=
+              Ada.Strings.Fixed.Trim (Natural'Image (Count), Ada.Strings.Left);
+         begin
+            Ada.Text_IO.Put_Line
+              (Ada.Text_IO.Standard_Error,
+               N & "/" & N & " (" & N & ") [0]");
+         end;
+      end Emit_Progress;
    begin
       if Sub = "" then
-         Fatal ("you must provide a subtree command");
+         Print_Usage_129;
          return;
       end if;
 
@@ -10514,6 +10604,12 @@ package body Version.CLI is
                Msg := To_Unbounded_String (A (A'First + 10 .. A'Last));
             elsif A'Length > 9 and then A (A'First .. A'First + 8) = "--branch=" then
                Branch := To_Unbounded_String (A (A'First + 9 .. A'Last));
+            elsif A'Length > 11
+              and then A (A'First .. A'First + 10) = "--annotate="
+            then
+               Annotate := To_Unbounded_String (A (A'First + 11 .. A'Last));
+            elsif A = "--annotate" and then I < Count then
+               Annotate := To_Unbounded_String (Arg (I + 1));
             elsif (A = "-m" or else A = "--message") and then I < Count then
                Msg := To_Unbounded_String (Arg (I + 1));
             elsif (A = "-b" or else A = "--branch") and then I < Count then
@@ -10522,6 +10618,7 @@ package body Version.CLI is
               and then (Arg (I - 1) = "-m" or else Arg (I - 1) = "--message"
                         or else Arg (I - 1) = "-b"
                         or else Arg (I - 1) = "--branch"
+                        or else Arg (I - 1) = "--annotate"
                         or else Arg (I - 1) = "-P"
                         or else Arg (I - 1) = "--prefix")
             then
@@ -10539,7 +10636,7 @@ package body Version.CLI is
       end loop;
 
       if Bad or else Prefix = "" then
-         Fatal ("you must provide the --prefix option.");
+         Die_1 ("you must provide the --prefix option.");
          return;
       end if;
 
@@ -10547,17 +10644,41 @@ package body Version.CLI is
 
       begin
          if Sub = "add" then
+            if Ops not in 1 | 2 then
+               Die_1 ("you must provide <commit> or <repository> <ref>");
+               return;
+            end if;
+
+            --  git validates that the prefix does not already exist before it
+            --  fetches (and echoes the fetch), so a clashing prefix fails
+            --  without the "git fetch" line on stdout.
+            declare
+               Repo    : constant Version.Repository.Repository_Handle :=
+                 Version.Repository.Open;
+               Head_Id : constant Version.Objects.Hex_Object_Id :=
+                 Version.Revisions.Resolve_Commit (Repo, "HEAD");
+            begin
+               if Version.Subtree.Subtree_Tree_Id
+                    (Repo, Head_Id, To_String (Prefix)) /= ""
+               then
+                  Die_1
+                    (Version.Subtree.Prefix_Exists_Diagnostic
+                       (To_String (Prefix)));
+                  return;
+               end if;
+            exception
+               when Ada.IO_Exceptions.Data_Error
+                  | Ada.IO_Exceptions.Name_Error =>
+                  null;  --  no HEAD yet: nothing to clash with
+            end;
+
             if Ops = 1 then
                Version.Subtree.Add
                  (To_String (Prefix), "", Op (1), Squash, To_String (Msg));
-            elsif Ops = 2 then
+            else
                Success_Line ("git fetch " & Op (1) & " " & Op (2));
                Version.Subtree.Add
                  (To_String (Prefix), Op (1), Op (2), Squash, To_String (Msg));
-            else
-               Error_Line
-                 ("Provide either a commit or a repository and commit.");
-               return;
             end if;
 
             Stderr_Line ("Added dir '" & To_String (Prefix) & "'");
@@ -10594,8 +10715,10 @@ package body Version.CLI is
                     Onto   => To_String (Onto),
                     Rejoin => Rejoin,
                     Ignore_Joins => Ignore_Joins,
+                    Annotate => To_String (Annotate),
                     Updated => Updated);
             begin
+               Emit_Progress (Repo, (if Ops >= 1 then Op (1) else "HEAD"));
                if Branch /= "" then
                   Stderr_Line
                     ((if Updated then "Updated" else "Created") & " branch '"
@@ -10624,6 +10747,7 @@ package body Version.CLI is
             begin
                Success_Line
                  ("git push using:  " & Op (1) & " " & Spec);
+               Emit_Progress (Version.Repository.Open, Local);
                Version.Subtree.Push
                  (Prefix     => To_String (Prefix),
                   Repository => Op (1),
@@ -10637,9 +10761,12 @@ package body Version.CLI is
             Fatal ("unknown command '" & Sub & "'");
          end if;
       exception
-         when E : Ada.IO_Exceptions.Use_Error
-            | Ada.IO_Exceptions.Data_Error
+         when E : Ada.IO_Exceptions.Use_Error =>
+            --  subtree's own validation `die` -> exit 1.
+            Die_1 (Ada.Exceptions.Exception_Message (E));
+         when E : Ada.IO_Exceptions.Data_Error
             | Ada.IO_Exceptions.Name_Error =>
+            --  A failing underlying git operation -> exit 128, as git's does.
             Fatal (Ada.Exceptions.Exception_Message (E));
       end;
    end Run_Subtree_Command;
