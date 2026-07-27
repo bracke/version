@@ -10600,6 +10600,8 @@ package body Version.CLI is
                Ignore_Joins := True;
             elsif A'Length > 7 and then A (A'First .. A'First + 6) = "--onto=" then
                Onto := To_Unbounded_String (A (A'First + 7 .. A'Last));
+            elsif A = "--onto" and then I < Count then
+               Onto := To_Unbounded_String (Arg (I + 1));
             elsif A'Length > 10 and then A (A'First .. A'First + 9) = "--message=" then
                Msg := To_Unbounded_String (A (A'First + 10 .. A'Last));
             elsif A'Length > 9 and then A (A'First .. A'First + 8) = "--branch=" then
@@ -10619,6 +10621,7 @@ package body Version.CLI is
                         or else Arg (I - 1) = "-b"
                         or else Arg (I - 1) = "--branch"
                         or else Arg (I - 1) = "--annotate"
+                        or else Arg (I - 1) = "--onto"
                         or else Arg (I - 1) = "-P"
                         or else Arg (I - 1) = "--prefix")
             then
@@ -10687,7 +10690,7 @@ package body Version.CLI is
             if (Sub = "merge" and then Ops /= 1)
               or else (Sub = "pull" and then Ops /= 2)
             then
-               Error_Line
+               Die_1
                  (if Sub = "pull" then "you must provide <repository> <ref>"
                   else "you must provide exactly one revision, and optionally "
                        & "a repository.");
@@ -10725,14 +10728,35 @@ package body Version.CLI is
                      & To_String (Branch) & "'");
                end if;
 
-               Success_Line (Version.Objects.To_String (Result));
+               --  The resulting tip is the command's output, printed even
+               --  under -q (which only silences the progress narration).
+               Version.Console.Put
+                 (Version.Objects.To_String (Result) & ASCII.LF);
             end;
 
          elsif Sub = "push" then
             if Ops /= 2 then
-               Fatal ("you must provide <repository> <refspec>");
+               Die_1 ("you must provide <repository> <refspec>");
                return;
             end if;
+
+            --  Push splits the prefix out first, so a prefix that is not a
+            --  subtree fails (exit 1) before the "git push using" line.
+            declare
+               Repo    : constant Version.Repository.Repository_Handle :=
+                 Version.Repository.Open;
+               Head_Id : constant Version.Objects.Hex_Object_Id :=
+                 Version.Revisions.Resolve_Commit (Repo, "HEAD");
+            begin
+               if Version.Subtree.Subtree_Tree_Id
+                    (Repo, Head_Id, To_String (Prefix)) = ""
+               then
+                  Die_1
+                    (Version.Subtree.Prefix_Missing_Diagnostic
+                       (To_String (Prefix)));
+                  return;
+               end if;
+            end;
 
             declare
                Spec : constant String :=
@@ -10766,8 +10790,14 @@ package body Version.CLI is
             Die_1 (Ada.Exceptions.Exception_Message (E));
          when E : Ada.IO_Exceptions.Data_Error
             | Ada.IO_Exceptions.Name_Error =>
-            --  A failing underlying git operation -> exit 128, as git's does.
-            Fatal (Ada.Exceptions.Exception_Message (E));
+            --  split/merge/push validate their revisions and report a failed
+            --  push through git-subtree's own `die` (exit 1); add and pull let
+            --  the underlying git command's status (128) surface.
+            if Sub in "split" | "merge" | "push" then
+               Die_1 (Ada.Exceptions.Exception_Message (E));
+            else
+               Fatal (Ada.Exceptions.Exception_Message (E));
+            end if;
       end;
    end Run_Subtree_Command;
 
