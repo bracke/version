@@ -13305,6 +13305,13 @@ package body Version.CLI is
                Ref_Set       : Boolean := False;
                Skip_Next     : Boolean := False;
                Bad_Format    : Boolean := False;
+               Quiet         : Boolean := False;
+               --  git's default branch when init.defaultBranch is unset is
+               --  "master"; --initial-branch/-b overrides it.
+               Branch        : Unbounded_String :=
+                 To_Unbounded_String ("master");
+               Branch_Explicit : Boolean := False;
+               IB_Prefix     : constant String := "--initial-branch=";
 
                procedure Apply_Format (Value : String) is
                begin
@@ -13356,6 +13363,31 @@ package body Version.CLI is
                            return;
                         end if;
                         Bare := True;
+
+                     elsif Arg (I) = "-q" or else Arg (I) = "--quiet" then
+                        Quiet := True;
+
+                     elsif Arg (I) = "-b" or else Arg (I) = "--initial-branch"
+                     then
+                        if I >= Count then
+                           Usage_Error
+                             ("--initial-branch requires a value", Usage);
+                           return;
+                        end if;
+                        Branch := To_Unbounded_String (Arg (I + 1));
+                        Branch_Explicit := True;
+                        Skip_Next := True;
+
+                     elsif Arg (I)'Length > IB_Prefix'Length
+                       and then Arg (I)
+                                  (Arg (I)'First
+                                   .. Arg (I)'First + IB_Prefix'Length - 1)
+                                = IB_Prefix
+                     then
+                        Branch := To_Unbounded_String
+                          (Arg (I)
+                             (Arg (I)'First + IB_Prefix'Length .. Arg (I)'Last));
+                        Branch_Explicit := True;
 
                      elsif Arg (I) = "--object-format" then
                         if I >= Count then
@@ -13420,28 +13452,61 @@ package body Version.CLI is
                end if;
 
                declare
-                  --  git reports "Reinitialized" when the repository already
-                  --  exists; version keeps its own house wording but likewise
-                  --  distinguishes a fresh init from a reinit.
+                  --  git reports "Reinitialized existing" when the repository
+                  --  already exists, else "Initialized empty", and names the
+                  --  absolute path of the git directory with a trailing slash.
                   Reinit : constant Boolean :=
                     (if Bare
                      then Version.Files.Is_Directory
                             (Version.Files.Join (To_String (Target), "objects"))
                      else Version.Files.Is_Directory
                             (Version.Files.Join (To_String (Target), ".git")));
-                  Verb : constant String :=
-                    (if Reinit then "reinitialized" else "initialized");
                begin
                   if Bare then
                      Version.Init.Init_Bare
-                       (To_String (Target), Object_Format, Ref_Storage);
-                     Success_Line
-                       (Verb & " bare repository in " & To_String (Target));
+                       (To_String (Target), Object_Format, Ref_Storage,
+                        Initial_Branch => To_String (Branch));
                   else
                      Version.Init.Init
-                       (To_String (Target), Object_Format, Ref_Storage);
-                     Success_Line
-                       (Verb & " repository in " & To_String (Target));
+                       (To_String (Target), Object_Format, Ref_Storage,
+                        Initial_Branch => To_String (Branch));
+                  end if;
+
+                  --  git prints a hint on stderr when it falls back to the
+                  --  built-in default branch name (no init.defaultBranch and no
+                  --  --initial-branch); the gate compares only its emptiness.
+                  if not Quiet and then not Reinit
+                    and then not Branch_Explicit
+                  then
+                     Error_Line
+                       ("hint: Using '" & To_String (Branch)
+                        & "' as the name for the initial branch. This default"
+                        & " branch name");
+                     Error_Line
+                       ("hint: is subject to change. To configure the initial"
+                        & " branch name to use in all");
+                     Error_Line
+                       ("hint: of your new repositories, which will suppress"
+                        & " this warning, call:");
+                     Error_Line
+                       ("hint:" & ASCII.HT
+                        & "git config --global init.defaultBranch <name>");
+                  end if;
+
+                  if not Quiet then
+                     declare
+                        Abs_Git : constant String :=
+                          Ada.Directories.Full_Name
+                            (if Bare then To_String (Target)
+                             else Version.Files.Join
+                                    (To_String (Target), ".git"));
+                     begin
+                        Success_Line
+                          ((if Reinit
+                            then "Reinitialized existing Git repository in "
+                            else "Initialized empty Git repository in ")
+                           & Abs_Git & "/");
+                     end;
                   end if;
                end;
             end;

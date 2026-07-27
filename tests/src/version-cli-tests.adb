@@ -3203,22 +3203,22 @@ package body Version.CLI.Tests is
          "--ref-format requires a value",
          "init ref format missing value");
 
-      Check_Success ("init", "initialized repository in .", "init default");
+      Check_Success ("init", "Git repository in", "init default");
       Check_Success
         ("init " & Shell_Quote (Normal_Path),
-         "initialized repository in " & Normal_Path,
+         "Git repository in",
          "init explicit path");
       Check_Success
         ("init --bare " & Shell_Quote (Bare_Path),
-         "initialized bare repository in " & Bare_Path,
+         "Git repository in",
          "init bare explicit path");
       Check_Success
         ("init --object-format=sha256 " & Shell_Quote (Root & "-init-256"),
-         "initialized repository in " & Root & "-init-256",
+         "Git repository in",
          "init sha256 object format");
       Check_Success
         ("init --ref-format=reftable " & Shell_Quote (Root & "-init-reftable"),
-         "initialized repository in " & Root & "-init-reftable",
+         "Git repository in",
          "init reftable ref format");
    end CLI_Init_Option_Parsing_Is_Frozen;
 
