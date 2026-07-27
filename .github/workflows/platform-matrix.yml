@@ -51,7 +51,7 @@ jobs:
           VERSION_PLATFORM_CI_EVIDENCE_DIR: .release/platform-ci-evidence
         run: tools/bin/check_platform_ci_matrix posix
       - name: Upload POSIX platform evidence
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: platform-posix-evidence
           path: version/.release/platform-ci-evidence/platform-posix.txt
@@ -103,7 +103,7 @@ jobs:
           VERSION_PLATFORM_CI_EVIDENCE_DIR: .release/platform-ci-evidence
         run: ./tools/bin/check_platform_ci_matrix.exe windows
       - name: Upload Windows platform evidence
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: platform-windows-evidence
           path: version/.release/platform-ci-evidence/platform-windows.txt
@@ -140,7 +140,7 @@ jobs:
       - name: Install OpenSSL headers
         run: sudo apt-get update && sudo apt-get install -y libssl-dev
       - name: Download platform evidence
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: version/.release/platform-ci-evidence
       - name: Build version
