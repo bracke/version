@@ -16815,37 +16815,47 @@ package body Version.CLI is
                elsif Arg (2) = "update" then
                   declare
                      Update_Usage : constant String :=
-                       "version submodule update [--recursive]";
-                     I        : Natural := 3;
+                       "version submodule update [--init] [--recursive]"
+                       & " [--checkout] [--] [PATH...]";
+                     I         : Natural := 3;
                      Recursive : Boolean := False;
+                     Init_Miss : Boolean := False;
+                     Paths     : Version.Submodules.Path_Vectors.Vector;
+                     Bad       : Boolean := False;
                   begin
-                     while I <= Count loop
+                     while I <= Count and then not Bad loop
                         if Arg (I) = "--recursive" then
-                           if Recursive then
-                              Usage_Error ("duplicate option: --recursive", Update_Usage);
-                              return;
-                           end if;
-
                            Recursive := True;
-                           I := I + 1;
-
+                        elsif Arg (I) = "--init" or else Arg (I) = "-i" then
+                           Init_Miss := True;
+                        elsif Arg (I) = "--checkout"
+                          or else Arg (I) = "--quiet" or else Arg (I) = "-q"
+                          or else Arg (I) = "--no-fetch" or else Arg (I) = "--"
+                        then
+                           --  --checkout is the default mode; -q/--no-fetch
+                           --  suppress output/fetches we do not emit anyway.
+                           null;
                         elsif Arg (I)'Length > 0
                           and then Arg (I) (Arg (I)'First) = '-'
                         then
                            Usage_Error
                              ("unknown submodule update option: " & Arg (I),
                               Update_Usage);
-                           return;
-
+                           Bad := True;
                         else
-                           Usage_Error
-                             ("too many submodule update arguments", Update_Usage);
-                           return;
+                           Paths.Append (Arg (I));
                         end if;
+                        I := I + 1;
                      end loop;
 
-                     Version.Submodules.Update (Recursive => Recursive);
-                     Success_Line ("updated submodules");
+                     if not Bad
+                       and then Submodule_Paths_Exist (Paths)
+                     then
+                        Version.Submodules.Update
+                          (Recursive    => Recursive,
+                           Init_Missing => Init_Miss,
+                           Paths        => Paths);
+                     end if;
                   end;
 
                elsif Arg (2) = "status" then

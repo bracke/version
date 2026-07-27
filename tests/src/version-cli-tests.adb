@@ -2788,7 +2788,8 @@ package body Version.CLI.Tests is
       Root : constant String :=
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Usage : constant String :=
-        "version submodule update [--recursive]";
+        "version submodule update [--init] [--recursive] [--checkout]"
+        & " [--] [PATH...]";
       Top_Usage : constant String := "version submodule SUBCOMMAND [ARGS]";
 
       procedure Check_Usage_Failure
@@ -2848,31 +2849,24 @@ package body Version.CLI.Tests is
          "unknown submodule status option: --bogus",
          "version submodule status [--cached] [--recursive] [--] [PATH...]",
          "submodule status unknown option");
+      --  --checkout and <path> are valid now (git parity), so a bogus option
+      --  is the frozen usage error; --recursive is idempotent, not a dup error.
       Check_Usage_Failure
-        ("submodule update --recursive --recursive",
-         "duplicate option: --recursive",
-         Usage,
-         "submodule update duplicate recursive");
-      Check_Usage_Failure
-        ("submodule update --checkout",
-         "unknown submodule update option: --checkout",
+        ("submodule update --bogus",
+         "unknown submodule update option: --bogus",
          Usage,
          "submodule update unknown option");
-      Check_Usage_Failure
-        ("submodule update path",
-         "too many submodule update arguments",
-         Usage,
-         "submodule update extra operand");
 
       Version.Init.Init (Root);
       Ada.Directories.Set_Directory (Root);
+      --  With no submodules, update is a silent no-op (like git).
       Check_Success
         ("submodule update",
-         "updated submodules",
+         "",
          "submodule update default");
       Check_Success
         ("submodule update --recursive",
-         "updated submodules",
+         "",
          "submodule update recursive");
       Ada.Directories.Set_Directory (Old_Dir);
    exception
