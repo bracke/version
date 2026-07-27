@@ -1,3 +1,4 @@
+- Git parity: `fetch --dry-run`/`-n` contacts the remote but writes nothing, and `pull --no-rebase` (and other merge-default flags) are accepted.
 - Git parity: `push --dry-run`/`-n` skips the update, `-u`/`--set-upstream` records the branch's upstream and reports it on stdout, and `--porcelain` is accepted.
 - Git parity: `push` reports its progress on stderr (empty stdout), advances the matching remote-tracking ref, and a rejected non-fast-forward update exits 1 (not a fatal 128); FETCH_HEAD records the remote URL without its trailing `.git`.
 - Git parity: `ls-remote --get-url` prints the resolved URL and an unreachable remote dies (128); `bundle verify` reports the hash algorithm (with "is okay" on stderr), `bundle list-heads` filters to the named refs, and a non-bundle file exits 1; `clone` reports progress on stderr (empty stdout), takes `-q`, and derives the target directory from the source URL.

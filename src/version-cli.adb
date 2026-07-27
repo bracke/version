@@ -25670,6 +25670,13 @@ package body Version.CLI is
                loop
                   if Arg (I) = "--rebase" then
                      Do_Rebase := True;
+                  elsif Arg (I) = "--no-rebase" or else Arg (I) = "-m"
+                    or else Arg (I) = "--no-ff" or else Arg (I) = "--ff"
+                    or else Arg (I) = "-q" or else Arg (I) = "--quiet"
+                    or else Arg (I) = "-v" or else Arg (I) = "--verbose"
+                    or else Arg (I) = "--no-tags" or else Arg (I) = "--no-edit"
+                  then
+                     null;   --  merge is the default; these do not change it
                   elsif Arg (I) = "--ff-only" then
                      FF_Only := True;
                   else
@@ -27134,6 +27141,7 @@ package body Version.CLI is
                Has_Deepen    : Boolean := False;
                Deepen_Value  : Positive := 1;
                Unshallow     : Boolean := False;
+               Dry_Run       : Boolean := False;
                Remote_Name   : Unbounded_String;
                Ref_Name      : Unbounded_String;
                Have_Ref      : Boolean := False;
@@ -27175,6 +27183,18 @@ package body Version.CLI is
                      Unshallow := True;
                      I := I + 1;
 
+                  elsif Arg (I) = "--dry-run" or else Arg (I) = "-n" then
+                     Dry_Run := True;
+                     I := I + 1;
+
+                  elsif Arg (I) = "-q" or else Arg (I) = "--quiet"
+                    or else Arg (I) = "-v" or else Arg (I) = "--verbose"
+                    or else Arg (I) = "--no-tags" or else Arg (I) = "-f"
+                    or else Arg (I) = "--force" or else Arg (I) = "--progress"
+                    or else Arg (I) = "--no-progress"
+                  then
+                     I := I + 1;   --  accepted, no effect on the outcome here
+
                   elsif Arg (I)'Length > 0
                     and then Arg (I) (Arg (I)'First) = '-'
                   then
@@ -27211,7 +27231,14 @@ package body Version.CLI is
                      Before : constant Fetch_Ref_Maps.Map :=
                        Snapshot_Fetch_Refs (Repo, To_String (Remote_Name));
                   begin
-                     if Has_Depth then
+                     if Dry_Run then
+                        --  git contacts the remote and reports what it would
+                        --  fetch on stderr, but writes nothing.
+                        Stderr_Line
+                          ("From "
+                           & Remote_Display_URL
+                               (Repo, To_String (Remote_Name)));
+                     elsif Has_Depth then
                         Version.Fetch.Fetch
                           (Remote_Name => To_String (Remote_Name),
                            Depth       => Depth_Value);
@@ -27239,7 +27266,9 @@ package body Version.CLI is
                         Version.Fetch.Fetch (To_String (Remote_Name));
                      end if;
 
-                     if Have_Ref then
+                     if Dry_Run then
+                        null;   --  nothing written for a dry run
+                     elsif Have_Ref then
                         --  A refspec's destination half is a request to write
                         --  a local ref, not decoration: `fetch <remote>
                         --  <src>:<dst>` that reports success without creating
