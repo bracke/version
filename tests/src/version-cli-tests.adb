@@ -2834,11 +2834,13 @@ package body Version.CLI.Tests is
          "unknown submodule subcommand: frobnicate",
          Top_Usage,
          "submodule unknown subcommand");
+      --  `submodule init <path>` is valid (git initializes only those paths),
+      --  so a bogus option is the frozen usage error instead.
       Check_Usage_Failure
-        ("submodule init extra",
-         "too many submodule init arguments",
-         Top_Usage,
-         "submodule init extra argument");
+        ("submodule init --bogus",
+         "unknown submodule init option: --bogus",
+         "version submodule init [--] [PATH...]",
+         "submodule init unknown option");
       --  `submodule status <path>` is valid (git filters by submodule path),
       --  so a bogus option is the frozen usage error instead.
       Check_Usage_Failure

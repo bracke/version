@@ -16735,17 +16735,82 @@ package body Version.CLI is
          elsif Command = "submodule" then
             declare
                Usage : constant String := "version submodule SUBCOMMAND [ARGS]";
+
+               --  git exits 1 when a path argument to a submodule subcommand
+               --  names something that is not a submodule.  Returns True (and
+               --  stays silent) when every path is a known submodule or the
+               --  list is empty; otherwise reports and fails the command.
+               function Submodule_Paths_Exist
+                 (Paths : Version.Submodules.Path_Vectors.Vector)
+                  return Boolean
+               is
+                  Repo  : constant Version.Repository.Repository_Handle :=
+                    Version.Repository.Open;
+                  Items : constant
+                    Version.Submodules.Submodule_Status_Vectors.Vector :=
+                      Version.Submodules.Statuses (Repo);
+                  OK    : Boolean := True;
+               begin
+                  for P of Paths loop
+                     declare
+                        Found : Boolean := False;
+                     begin
+                        for It of Items loop
+                           if To_String (It.Path) = P then
+                              Found := True;
+                           end if;
+                        end loop;
+                        if not Found then
+                           Error_Line
+                             ("error: pathspec '" & P
+                              & "' did not match any submodule");
+                           OK := False;
+                        end if;
+                     end;
+                  end loop;
+
+                  if not OK then
+                     Set_Command_Failure;
+                  end if;
+                  return OK;
+               end Submodule_Paths_Exist;
             begin
                if Count < 2 then
                   Usage_Error ("missing submodule subcommand", Usage);
                   return;
                elsif Arg (2) = "init" then
-                  if Count /= 2 then
-                     Usage_Error ("too many submodule init arguments", Usage);
-                     return;
-                  end if;
-                  Version.Submodules.Init;
-                  Success_Line ("initialized submodules");
+                  declare
+                     Init_Usage : constant String :=
+                       "version submodule init [--] [PATH...]";
+                     Paths : Version.Submodules.Path_Vectors.Vector;
+                     Bad   : Boolean := False;
+                  begin
+                     for I in 3 .. Count loop
+                        if Arg (I) = "--quiet" or else Arg (I) = "-q"
+                          or else Arg (I) = "--"
+                        then
+                           null;
+                        elsif Arg (I)'Length > 0
+                          and then Arg (I) (Arg (I)'First) = '-'
+                        then
+                           Usage_Error
+                             ("unknown submodule init option: " & Arg (I),
+                              Init_Usage);
+                           Bad := True;
+                           exit;
+                        else
+                           Paths.Append (Arg (I));
+                        end if;
+                     end loop;
+
+                     --  git announces each registration on stderr and leaves
+                     --  stdout empty.
+                     if not Bad
+                       and then Submodule_Paths_Exist (Paths)
+                     then
+                        Version.Submodules.Init (Paths);
+                     end if;
+                  end;
 
                elsif Arg (2) = "update" then
                   declare
@@ -16884,20 +16949,37 @@ package body Version.CLI is
                elsif Arg (2) = "sync" then
                   declare
                      Sync_Usage : constant String :=
-                       "version submodule sync [--recursive]";
+                       "version submodule sync [--recursive] [--] [PATH...]";
                      Recursive  : Boolean := False;
+                     Paths      : Version.Submodules.Path_Vectors.Vector;
+                     Bad        : Boolean := False;
                   begin
                      for I in 3 .. Count loop
                         if Arg (I) = "--recursive" then
                            Recursive := True;
-                        else
+                        elsif Arg (I) = "--quiet" or else Arg (I) = "-q"
+                          or else Arg (I) = "--"
+                        then
+                           null;
+                        elsif Arg (I)'Length > 0
+                          and then Arg (I) (Arg (I)'First) = '-'
+                        then
                            Usage_Error
                              ("unknown submodule sync option: " & Arg (I),
                               Sync_Usage);
-                           return;
+                           Bad := True;
+                           exit;
+                        else
+                           Paths.Append (Arg (I));
                         end if;
                      end loop;
-                     Version.Submodules.Sync (Recursive => Recursive);
+
+                     if not Bad
+                       and then Submodule_Paths_Exist (Paths)
+                     then
+                        Version.Submodules.Sync
+                          (Recursive => Recursive, Paths => Paths);
+                     end if;
                   end;
 
                elsif Arg (2) = "foreach" then
@@ -16966,10 +17048,12 @@ package body Version.CLI is
                         return;
                      end if;
 
-                     Version.Submodules.Deinit
-                       (Paths          => Paths,
-                        All_Submodules => All_S,
-                        Force          => Force);
+                     if Submodule_Paths_Exist (Paths) then
+                        Version.Submodules.Deinit
+                          (Paths          => Paths,
+                           All_Submodules => All_S,
+                           Force          => Force);
+                     end if;
                   end;
 
                elsif Arg (2) = "add" then
