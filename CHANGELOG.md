@@ -1,3 +1,4 @@
+- Git parity: `update-ref` dereferences a symbolic ref and updates the ref it points at (not the symref file) unless `--no-deref`, and `rev-parse` resolves a remote symref (`refs/remotes/*/HEAD`) to its target's commit.
 - Git parity: `branch -a`/`-r` honour `--merged`/`--no-merged [<commit>]`, filtering the all/remote listing to branches whose tip is (or is not) reachable from the commit; a remote symref (origin/HEAD) is filtered by the commit its target resolves to.
 - Git parity: `for-each-ref`/`branch`/`tag` `--format` support the `%(push)` atom (a branch's push-destination remote-tracking ref, with a `:short` form).
 - Git parity: `describe --contains` names a commit by the nearest descendant ref (name-rev): tags-only by default (dropping the `tags/` namespace, e.g. `v2.0^0`), all refs under `--all` (keeping it), and exit 128 when nothing contains the commit; `describe --all` breaks a same-commit tag tie by the newest tagger date.

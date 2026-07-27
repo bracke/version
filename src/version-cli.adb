@@ -24904,9 +24904,48 @@ package body Version.CLI is
                Use_Stdin   : Boolean := False;
                Zero_Term   : Boolean := False;
                Delete_Mode : Boolean := False;
+               No_Deref    : Boolean := False;
                Pos         : Version.Trailers.String_Vectors.Vector;
                Bad         : Boolean := False;
                I           : Positive := 2;
+
+               --  git updates the ref a symbolic ref points at, not the symref
+               --  file, unless --no-deref; follow the chain to the concrete
+               --  target (refs/remotes/*/HEAD -> refs/remotes/*/<branch>).
+               function Deref (Ref : String) return String is
+                  Path : constant String :=
+                    Version.Files.Join
+                      (Version.Repository.Common_Git_Dir (Repo), Ref);
+               begin
+                  if No_Deref
+                    or else not Ada.Directories.Exists (Path)
+                    or else Ada.Directories.Kind (Path)
+                            /= Ada.Directories.Ordinary_File
+                  then
+                     return Ref;
+                  end if;
+                  declare
+                     Raw : constant String :=
+                       Version.Files.Read_Binary_File (Path);
+                     NL  : constant Natural :=
+                       Ada.Strings.Fixed.Index (Raw, "" & ASCII.LF);
+                     Line : constant String :=
+                       Ada.Strings.Fixed.Trim
+                         ((if NL = 0 then Raw else Raw (Raw'First .. NL - 1)),
+                          Ada.Strings.Both);
+                  begin
+                     if Has_Prefix (Line, "ref: ") then
+                        return Deref
+                          (Ada.Strings.Fixed.Trim
+                             (Line (Line'First + 5 .. Line'Last),
+                              Ada.Strings.Both));
+                     end if;
+                     return Ref;
+                  end;
+               exception
+                  when others =>
+                     return Ref;
+               end Deref;
 
                --  Apply one `--stdin` command line ("<cmd> <ref> [<new>]
                --  [<old>]"). git's transaction is all-or-nothing; a bad line
@@ -24967,7 +25006,7 @@ package body Version.CLI is
                   elsif Arg (I) = "-d" or else Arg (I) = "--delete" then
                      Delete_Mode := True;
                   elsif Arg (I) = "--no-deref" then
-                     null;   --  the plain ref is written directly regardless
+                     No_Deref := True;
                   elsif Arg (I) = "-m" and then I < Count then
                      I := I + 1;   --  reflog message: accepted, not yet recorded
                   elsif Arg (I)'Length > 0 and then Arg (I) (Arg (I)'First) = '-'
@@ -25010,7 +25049,7 @@ package body Version.CLI is
                      begin
                         Version.Ref_Transaction.Start (Tx, Repo);
                         Version.Ref_Transaction.Add_Delete
-                          (Tx, Pos.First_Element,
+                          (Tx, Deref (Pos.First_Element),
                            (if Natural (Pos.Length) >= 2
                             then Old_Value (Pos.Element (Pos.First_Index + 1))
                             else ""));
@@ -25025,7 +25064,7 @@ package body Version.CLI is
                   elsif Natural (Pos.Length) in 2 .. 3 then
                      Version.Ref_Transaction.Start (Tx, Repo);
                      Version.Ref_Transaction.Add_Update
-                       (Tx, Pos.First_Element,
+                       (Tx, Deref (Pos.First_Element),
                         Version.Revisions.Resolve
                           (Repo, Pos.Element (Pos.First_Index + 1)),
                         (if Natural (Pos.Length) = 3
