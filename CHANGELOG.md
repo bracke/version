@@ -1,3 +1,4 @@
+- Git parity: `push <remote> <tag>` pushes a tag by name to refs/tags, and bare `push` sends the current branch to its configured remote.
 - Git parity: `fetch-pack --all` lists the remote HEAD alongside the other refs (and reports the transfer on stderr); `send-pack` reports its ref updates on stderr so stdout stays empty.
 - Git parity: `clone -b <branch>` checks out that branch, `--no-checkout` leaves the working tree empty, and a clone packs its fetched refs (`pack-refs --all`) so only the loose HEAD symrefs remain.
 - Git parity: `fetch --porcelain` writes the machine-readable `* <old> <new> <ref>` lines (with tag auto-follow) to stdout.

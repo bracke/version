@@ -2530,10 +2530,13 @@ package body Version.CLI.Tests is
          end;
       end Check_Usage_Failure;
    begin
+      --  Bare `push` now pushes the current branch to its configured remote
+      --  (git parity), so it is no longer a usage error; `--delete` without a
+      --  ref still is.
       Check_Usage_Failure
-        ("push",
-         "missing push remote",
-         "push missing remote");
+        ("push --delete origin",
+         "push --delete requires a remote and a ref",
+         "push delete missing ref");
       --  Multiple refspec operands are now accepted (git parity: they push
       --  several refs in one invocation), so "push REMOTE a b" is no longer a
       --  usage error. Option-parsing freeze is still exercised by the cases

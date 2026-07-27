@@ -28416,27 +28416,51 @@ package body Version.CLI is
                   if Colon = 0 then
                      declare
                         Br : constant String := Raw (Spec_First .. Raw'Last);
+                        --  A bare name that is a tag rather than a branch is
+                        --  pushed to refs/tags/<name> (git resolves the ref).
+                        Is_Tag : Boolean := False;
                      begin
+                        if not Version.Branch.Branch_Exists (Br) then
+                           declare
+                              Repo : constant
+                                Version.Repository.Repository_Handle :=
+                                  Version.Repository.Open;
+                           begin
+                              Is_Tag :=
+                                Version.Refs.Ref_Exists
+                                  (Repo, "refs/tags/" & Br);
+                           end;
+                        end if;
+
                         if not Dry_Run then
-                           Version.Push.Push
-                             (Remote_Name => Remote,
-                              Branch_Name => Br,
-                              Run_Hooks   => Run_Hooks,
-                              Force       => Spec_Force);
-                           Update_Tracking
-                             (Remote, "refs/heads/" & Br, Br);
-                           if Set_Upstream then
-                              declare
-                                 Repo : constant
-                                   Version.Repository.Repository_Handle :=
-                                     Version.Repository.Open;
-                              begin
-                                 Version.Tracking.Set_Upstream
-                                   (Repo, Br, Remote, "refs/heads/" & Br);
-                                 Success_Line
-                                   ("branch '" & Br & "' set up to track '"
-                                    & Remote & "/" & Br & "'.");
-                              end;
+                           if Is_Tag then
+                              Version.Push.Push_Refspec
+                                (Remote_Name => Remote,
+                                 Source      => "refs/tags/" & Br,
+                                 Dest_Ref    => "refs/tags/" & Br,
+                                 Force       => Spec_Force,
+                                 Run_Hooks   => Run_Hooks);
+                           else
+                              Version.Push.Push
+                                (Remote_Name => Remote,
+                                 Branch_Name => Br,
+                                 Run_Hooks   => Run_Hooks,
+                                 Force       => Spec_Force);
+                              Update_Tracking
+                                (Remote, "refs/heads/" & Br, Br);
+                              if Set_Upstream then
+                                 declare
+                                    Repo : constant
+                                      Version.Repository.Repository_Handle :=
+                                        Version.Repository.Open;
+                                 begin
+                                    Version.Tracking.Set_Upstream
+                                      (Repo, Br, Remote, "refs/heads/" & Br);
+                                    Success_Line
+                                      ("branch '" & Br & "' set up to track '"
+                                       & Remote & "/" & Br & "'.");
+                                 end;
+                              end if;
                            end if;
                         end if;
                         Stderr_Line ("pushed " & Br & " to " & Remote);
@@ -28736,8 +28760,33 @@ package body Version.CLI is
                   Stderr_Line ("pushed tags to " & To_String (Remote_Name));
 
                elsif Operand_Count = 0 then
-                  Usage_Error ("missing push remote", Usage);
-                  return;
+                  --  Bare `push` sends the current branch to its configured
+                  --  remote (branch.<x>.remote, else origin), like git.
+                  declare
+                     Repo : constant Version.Repository.Repository_Handle :=
+                       Version.Repository.Open;
+                     Branch : constant String :=
+                       Version.Refs.Current_Branch_Name (Repo);
+                     Key    : constant String :=
+                       "branch." & Branch & ".remote";
+                     Rmt    : Unbounded_String;
+                  begin
+                     if Version.Config.Has_Key (Repo, Key) then
+                        Rmt := To_Unbounded_String
+                          (Version.Config.Get_Value (Repo, Key));
+                     elsif Version.Remotes.Remote_Exists ("origin") then
+                        Rmt := To_Unbounded_String ("origin");
+                     else
+                        Error_Line ("No configured push destination.");
+                        Set_Command_Failure;
+                        return;
+                     end if;
+
+                     Version.Push.Push_Default
+                       (Remote_Name => To_String (Rmt),
+                        Run_Hooks   => not No_Verify);
+                     Stderr_Line ("pushed to " & To_String (Rmt));
+                  end;
 
                elsif Refspecs.Is_Empty then
                   declare
