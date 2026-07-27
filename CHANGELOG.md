@@ -1,3 +1,4 @@
+- Git parity: `fetch <path-or-url> [<ref>]` fetches an anonymous remote to FETCH_HEAD only (no remote-tracking ref), like git.
 - Git parity: `fetch --all` fetches every configured remote ("Fetching <name>", exit 1 on failure) and `fetch --tags`/`-t` brings all of the remote's tags into refs/tags.
 - Git parity: a first `fetch` points `refs/remotes/<remote>/HEAD` at the remote's default branch, and `--prune`/`-p` is accepted.
 - Git parity: `fetch --dry-run`/`-n` contacts the remote but writes nothing, and `pull --no-rebase` (and other merge-default flags) are accepted.

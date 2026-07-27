@@ -65,7 +65,7 @@ histtools2.fixture      histtools2.cases      -    12
 histtools3.fixture      histtools3.cases      -     0
 maint.fixture           maint.cases           -     2
 maint2.fixture          maint2.cases          -     0
-transport.fixture       transport.cases       -    30
+transport.fixture       transport.cases       -    29
 auxcmd.fixture          auxcmd.cases          -     0
 mergeback.fixture       mergeback.cases       -     8
 mergeback2.fixture      mergeback2.cases      -     0

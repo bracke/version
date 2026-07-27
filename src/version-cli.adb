@@ -27369,10 +27369,72 @@ package body Version.CLI is
                   declare
                      Repo   : constant Version.Repository.Repository_Handle :=
                        Version.Repository.Open;
+                     --  A path or URL that is not a configured remote is
+                     --  anonymous: git fetches it to FETCH_HEAD only, creating
+                     --  no remote-tracking ref. Remote_Exists rejects a
+                     --  path-shaped name, which is exactly the anonymous case.
+                     function Anonymous return Boolean is
+                     begin
+                        return not Version.Remotes.Remote_Exists
+                                     (To_String (Remote_Name));
+                     exception
+                        when others =>
+                           return True;
+                     end Anonymous;
+
+                     Is_Anon : constant Boolean := Anonymous;
                      Before : constant Fetch_Ref_Maps.Map :=
-                       Snapshot_Fetch_Refs (Repo, To_String (Remote_Name));
+                       (if Is_Anon then Fetch_Ref_Maps.Empty_Map
+                        else Snapshot_Fetch_Refs
+                               (Repo, To_String (Remote_Name)));
                   begin
-                     if Dry_Run then
+                     if not Dry_Run and then Is_Anon then
+                        declare
+                           URL  : constant String := To_String (Remote_Name);
+                           Spec : constant String := To_String (Ref_Name);
+                           Colon : constant Natural :=
+                             Ada.Strings.Fixed.Index (Spec, ":");
+                           Src  : constant String :=
+                             (if Have_Ref then
+                                (if Colon = 0 then Spec
+                                 else Spec (Spec'First .. Colon - 1))
+                              else "HEAD");
+                           Full : constant String :=
+                             (if Src'Length >= 5
+                                and then Src (Src'First .. Src'First + 4)
+                                         = "refs/"
+                              then Src
+                              elsif Src = "HEAD" then "HEAD"
+                              else "refs/heads/" & Src);
+                           Found : Boolean := False;
+                        begin
+                           Version.Fetch.Fetch_Objects_From (URL);
+                           for R of Version.Fetch.List_Remote_Refs (URL) loop
+                              if To_String (R.Name) = Full then
+                                 Version.Files.Write_Binary_File_Atomic
+                                   (Path    =>
+                                      Version.Files.Join
+                                        (Version.Repository.Common_Git_Dir
+                                           (Repo),
+                                         "FETCH_HEAD"),
+                                    Content =>
+                                      Version.Objects.To_String (R.Id)
+                                      & Character'Val (9) & Character'Val (9)
+                                      & "branch '" & Src & "' of "
+                                      & Fetch_Head_URL (URL)
+                                      & Character'Val (10));
+                                 Found := True;
+                                 exit;
+                              end if;
+                           end loop;
+                           Stderr_Line ("From " & Fetch_Head_URL (URL));
+                           if Found then
+                              Stderr_Line
+                                (" * branch            " & Src
+                                 & "       -> FETCH_HEAD");
+                           end if;
+                        end;
+                     elsif Dry_Run then
                         --  git contacts the remote and reports what it would
                         --  fetch on stderr, but writes nothing.
                         Stderr_Line
@@ -27407,8 +27469,10 @@ package body Version.CLI is
                         Version.Fetch.Fetch (To_String (Remote_Name));
                      end if;
 
-                     if Dry_Run then
-                        null;   --  nothing written for a dry run
+                     if Dry_Run or else Is_Anon then
+                        --  A dry run writes nothing; an anonymous remote wrote
+                        --  its own FETCH_HEAD above. Neither creates a ref.
+                        null;
                      elsif Have_Ref then
                         --  A refspec's destination half is a request to write
                         --  a local ref, not decoration: `fetch <remote>
