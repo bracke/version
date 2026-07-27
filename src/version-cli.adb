@@ -27643,6 +27643,8 @@ package body Version.CLI is
                Quiet         : Boolean := False;
                Branch        : Unbounded_String;
                No_Checkout   : Boolean := False;
+               Bare          : Boolean := False;
+               Mirror        : Boolean := False;
 
                Filter_Eq     : constant String := "--filter=";
 
@@ -27748,6 +27750,15 @@ package body Version.CLI is
                      No_Checkout := True;
                      I := I + 1;
 
+                  elsif Arg (I) = "--bare" then
+                     Bare := True;
+                     I := I + 1;
+
+                  elsif Arg (I) = "--mirror" then
+                     Bare := True;
+                     Mirror := True;
+                     I := I + 1;
+
                   elsif Arg (I)'Length > 0
                     and then Arg (I) (Arg (I)'First) = '-'
                   then
@@ -27800,6 +27811,11 @@ package body Version.CLI is
                     (Source => To_String (Source),
                      Target => To_String (Target),
                      Depth  => Depth_Value);
+               elsif Bare then
+                  Version.Clone.Clone_Bare
+                    (Source => To_String (Source),
+                     Target => To_String (Target),
+                     Mirror => Mirror);
                elsif Recursive then
                   Version.Submodules.Clone_Recursive
                     (Url => To_String (Source), Target => To_String (Target));

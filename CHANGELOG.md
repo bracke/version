@@ -1,3 +1,4 @@
+- Git parity: `clone --bare`/`--mirror` create a bare repository (mirror records the remote with `fetch = +refs/*:refs/*` and `mirror = true`), and running a command from inside a bare repository now finds it.
 - Git parity: `init` defaults the initial branch to `master` (git's built-in default), takes `-b`/`--initial-branch`, `-q`, prints "Initialized empty/Reinitialized existing Git repository in <abspath>/" with the default-branch hint on stderr, and seeds `description` and `info/exclude`.
 - Git parity: `push <remote> <tag>` pushes a tag by name to refs/tags, and bare `push` sends the current branch to its configured remote.
 - Git parity: `fetch-pack --all` lists the remote HEAD alongside the other refs (and reports the transfer on stderr); `send-pack` reports its ref updates on stderr so stdout stays empty.

@@ -2488,8 +2488,8 @@ package body Version.CLI.Tests is
          "version clone [--depth N|--recursive|--filter SPEC] SOURCE TARGET",
          "clone combined options");
       Check_Usage_Failure
-        ("clone --mirror source target",
-         "unknown clone option: --mirror",
+        ("clone --nonsense-flag source target",
+         "unknown clone option: --nonsense-flag",
          "version clone [--depth N|--recursive|--filter SPEC] SOURCE TARGET",
          "clone unknown option");
       Check_Usage_Failure
