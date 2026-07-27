@@ -27570,6 +27570,8 @@ package body Version.CLI is
                Target        : Unbounded_String;
                Operand_Count : Natural := 0;
                Quiet         : Boolean := False;
+               Branch        : Unbounded_String;
+               No_Checkout   : Boolean := False;
 
                Filter_Eq     : constant String := "--filter=";
 
@@ -27658,6 +27660,23 @@ package body Version.CLI is
                      Quiet := True;
                      I := I + 1;
 
+                  elsif Arg (I) = "-b" or else Arg (I) = "--branch" then
+                     if I = Count then
+                        Usage_Error ("--branch requires a value", Usage);
+                        return;
+                     end if;
+                     Branch := To_Unbounded_String (Arg (I + 1));
+                     I := I + 2;
+
+                  elsif Has_Prefix (Arg (I), "--branch=") then
+                     Branch := To_Unbounded_String
+                       (Arg (I) (Arg (I)'First + 9 .. Arg (I)'Last));
+                     I := I + 1;
+
+                  elsif Arg (I) = "-n" or else Arg (I) = "--no-checkout" then
+                     No_Checkout := True;
+                     I := I + 1;
+
                   elsif Arg (I)'Length > 0
                     and then Arg (I) (Arg (I)'First) = '-'
                   then
@@ -27713,6 +27732,12 @@ package body Version.CLI is
                elsif Recursive then
                   Version.Submodules.Clone_Recursive
                     (Url => To_String (Source), Target => To_String (Target));
+               elsif Length (Branch) > 0 or else No_Checkout then
+                  Version.Clone.Clone
+                    (Source      => To_String (Source),
+                     Target      => To_String (Target),
+                     Branch      => To_String (Branch),
+                     No_Checkout => No_Checkout);
                else
                   Version.Clone.Clone
                     (Source => To_String (Source),

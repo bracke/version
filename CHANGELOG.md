@@ -1,3 +1,4 @@
+- Git parity: `clone -b <branch>` checks out that branch, `--no-checkout` leaves the working tree empty, and a clone packs its fetched refs (`pack-refs --all`) so only the loose HEAD symrefs remain.
 - Git parity: `fetch --porcelain` writes the machine-readable `* <old> <new> <ref>` lines (with tag auto-follow) to stdout.
 - Git parity: `fetch <path-or-url> [<ref>]` fetches an anonymous remote to FETCH_HEAD only (no remote-tracking ref), like git.
 - Git parity: `fetch --all` fetches every configured remote ("Fetching <name>", exit 1 on failure) and `fetch --tags`/`-t` brings all of the remote's tags into refs/tags.
