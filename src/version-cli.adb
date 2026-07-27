@@ -11317,6 +11317,15 @@ package body Version.CLI is
                         end if;
                         Mode := 1;
                      elsif not Has_Separator
+                       and then Arg (I) = "--porcelain=v2"
+                     then
+                        if Mode /= 0 then
+                           Usage_Error
+                             ("duplicate status mode option: " & Arg (I), Usage);
+                           return;
+                        end if;
+                        Mode := 5;
+                     elsif not Has_Separator
                        and then (Arg (I) = "--short" or else Arg (I) = "-s")
                      then
                         if Mode /= 0 then
@@ -11411,7 +11420,8 @@ package body Version.CLI is
                --  -z and -uno are shaping options the Print_* helpers do not
                --  take, so render through the public text builders instead.
                if (Nul_Records or else No_Untracked)
-                 and then (Mode = 1 or else Mode = 2 or else Mode = 3)
+                 and then (Mode = 1 or else Mode = 2 or else Mode = 3
+                           or else Mode = 5)
                  and then not Has_Separator
                then
                   declare
@@ -11432,6 +11442,9 @@ package body Version.CLI is
                                   (Result, Include_Ignored)
                            elsif Mode = 2
                            then Version.Status.Short_Status_Text
+                                  (Result, Include_Ignored)
+                           elsif Mode = 5
+                           then Version.Status.Porcelain_V2_Status_Text
                                   (Result, Include_Ignored)
                            else Version.Status.Branch_Status_Text
                                   (Result, Include_Ignored));
@@ -11465,6 +11478,11 @@ package body Version.CLI is
                        (Include_Ignored => Include_Ignored,
                         Ignored_Mode    => Ignored_Mode,
                         All_Untracked   => All_Untracked);
+                  elsif Mode = 5 then
+                     Version.Status.Print_Porcelain_V2_Status
+                       (Include_Ignored => Include_Ignored,
+                        Ignored_Mode    => Ignored_Mode,
+                        All_Untracked   => All_Untracked);
                   elsif Mode = 2 then
                      Version.Status.Print_Short_Status
                        (Include_Ignored => Include_Ignored,
@@ -11488,6 +11506,12 @@ package body Version.CLI is
                      Include_Ignored => Include_Ignored,
                      Ignored_Mode    => Ignored_Mode,
                         All_Untracked   => All_Untracked);
+               elsif Mode = 5 then
+                  Version.Status.Print_Porcelain_V2_Status
+                    (Pathspecs_From_Args (Path_First),
+                     Include_Ignored => Include_Ignored,
+                     Ignored_Mode    => Ignored_Mode,
+                     All_Untracked   => All_Untracked);
                elsif Mode = 2 then
                   Version.Status.Print_Short_Status
                     (Pathspecs_From_Args (Path_First),
