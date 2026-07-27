@@ -24905,9 +24905,19 @@ package body Version.CLI is
                Zero_Term   : Boolean := False;
                Delete_Mode : Boolean := False;
                No_Deref    : Boolean := False;
+               Have_Msg    : Boolean := False;
+               Msg         : Unbounded_String;
                Pos         : Version.Trailers.String_Vectors.Vector;
                Bad         : Boolean := False;
                I           : Positive := 2;
+
+               --  git records reflog updates for the ref types core.
+               --  logAllRefUpdates enables by default.
+               function Is_Logged_Ref (Ref : String) return Boolean is
+                 (Ref = "HEAD"
+                  or else Has_Prefix (Ref, "refs/heads/")
+                  or else Has_Prefix (Ref, "refs/remotes/")
+                  or else Has_Prefix (Ref, "refs/notes/"));
 
                --  git updates the ref a symbolic ref points at, not the symref
                --  file, unless --no-deref; follow the chain to the concrete
@@ -25008,7 +25018,9 @@ package body Version.CLI is
                   elsif Arg (I) = "--no-deref" then
                      No_Deref := True;
                   elsif Arg (I) = "-m" and then I < Count then
-                     I := I + 1;   --  reflog message: accepted, not yet recorded
+                     I := I + 1;
+                     Have_Msg := True;
+                     Msg := To_Unbounded_String (Arg (I));
                   elsif Arg (I)'Length > 0 and then Arg (I) (Arg (I)'First) = '-'
                   then
                      Usage_Error ("unknown update-ref option: " & Arg (I),
@@ -25062,15 +25074,48 @@ package body Version.CLI is
                            Set_Command_Failure;
                      end;
                   elsif Natural (Pos.Length) in 2 .. 3 then
-                     Version.Ref_Transaction.Start (Tx, Repo);
-                     Version.Ref_Transaction.Add_Update
-                       (Tx, Deref (Pos.First_Element),
-                        Version.Revisions.Resolve
-                          (Repo, Pos.Element (Pos.First_Index + 1)),
-                        (if Natural (Pos.Length) = 3
-                         then Old_Value (Pos.Element (Pos.First_Index + 2))
-                         else ""));
-                     Version.Ref_Transaction.Commit (Tx);
+                     declare
+                        Target : constant String :=
+                          Deref (Pos.First_Element);
+                        New_Id : constant Version.Objects.Hex_Object_Id :=
+                          Version.Revisions.Resolve
+                            (Repo, Pos.Element (Pos.First_Index + 1));
+                        --  The ref's value before the update, for the reflog
+                        --  (all-zero when it does not exist yet).
+                        function Old_Hex return String is
+                        begin
+                           return Version.Objects.To_String
+                             (Version.Refs.Resolve_Ref (Repo, Target));
+                        exception
+                           when others =>
+                              return Version.Objects.To_String
+                                (Version.Objects.Zero_Object_Id);
+                        end Old_Hex;
+                        Before : constant String := Old_Hex;
+                     begin
+                        Version.Ref_Transaction.Start (Tx, Repo);
+                        Version.Ref_Transaction.Add_Update
+                          (Tx, Target, New_Id,
+                           (if Natural (Pos.Length) = 3
+                            then Old_Value (Pos.Element (Pos.First_Index + 2))
+                            else ""));
+                        Version.Ref_Transaction.Commit (Tx);
+
+                        --  git records the -m message in the (dereferenced)
+                        --  ref's reflog; a reflog-write hiccup must not fail
+                        --  the ref update that already committed.
+                        if Have_Msg and then Is_Logged_Ref (Target) then
+                           begin
+                              Version.Reflog.Append
+                                (Repo, Target, Before,
+                                 Version.Objects.To_String (New_Id),
+                                 To_String (Msg));
+                           exception
+                              when others =>
+                                 null;
+                           end;
+                        end if;
+                     end;
                   else
                      Usage_Error
                        ("update-ref requires a ref and a value", Usage);
