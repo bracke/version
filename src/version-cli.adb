@@ -3401,6 +3401,42 @@ package body Version.CLI is
          null;   --  best effort, as git's HEAD guess is
    end Create_Remote_Head_If_Missing;
 
+   --  git's --tags: fetch every tag the remote advertises into refs/tags.
+   procedure Fetch_Remote_Tags
+     (Repo : Version.Repository.Repository_Handle; Remote : String)
+   is
+      Sfx : constant String := "^{}";
+   begin
+      --  Bring in the tag objects (a plain branch fetch does not).
+      Version.Fetch.Fetch_Objects_From (Remote);
+      for R of Version.Fetch.List_Remote_Refs (Remote) loop
+         declare
+            Name : constant String := To_String (R.Name);
+         begin
+            if Name'Length > 10
+              and then Name (Name'First .. Name'First + 9) = "refs/tags/"
+              and then not (Name'Length >= Sfx'Length
+                            and then Name (Name'Last - Sfx'Length + 1
+                                           .. Name'Last) = Sfx)
+            then
+               declare
+                  Txn : Version.Ref_Transaction.Transaction;
+               begin
+                  Version.Ref_Transaction.Start (Txn, Repo);
+                  Version.Ref_Transaction.Add_Update (Txn, Name, R.Id);
+                  Version.Ref_Transaction.Commit (Txn);
+               exception
+                  when others =>
+                     null;
+               end;
+            end if;
+         end;
+      end loop;
+   exception
+      when others =>
+         null;
+   end Fetch_Remote_Tags;
+
    procedure Expected (Text : String) is
    begin
       Ada.Text_IO.Put_Line
@@ -27202,6 +27238,8 @@ package body Version.CLI is
                Deepen_Value  : Positive := 1;
                Unshallow     : Boolean := False;
                Dry_Run       : Boolean := False;
+               Fetch_All     : Boolean := False;
+               Want_Tags     : Boolean := False;
                Remote_Name   : Unbounded_String;
                Ref_Name      : Unbounded_String;
                Have_Ref      : Boolean := False;
@@ -27247,6 +27285,14 @@ package body Version.CLI is
                      Dry_Run := True;
                      I := I + 1;
 
+                  elsif Arg (I) = "--all" then
+                     Fetch_All := True;
+                     I := I + 1;
+
+                  elsif Arg (I) = "--tags" or else Arg (I) = "-t" then
+                     Want_Tags := True;
+                     I := I + 1;
+
                   elsif Arg (I) = "-q" or else Arg (I) = "--quiet"
                     or else Arg (I) = "-v" or else Arg (I) = "--verbose"
                     or else Arg (I) = "--no-tags" or else Arg (I) = "-f"
@@ -27285,6 +27331,37 @@ package body Version.CLI is
                     ("--depth, --deepen, and --unshallow are mutually exclusive",
                      Usage);
                   return;
+               elsif Fetch_All then
+                  --  git fetches every configured remote in turn, printing
+                  --  "Fetching <name>" on stdout, and exits 1 if any failed.
+                  declare
+                     Repo : constant Version.Repository.Repository_Handle :=
+                       Version.Repository.Open;
+                     Any_Failed : Boolean := False;
+                  begin
+                     for R of Version.Remotes.List_Remotes loop
+                        declare
+                           Name   : constant String := To_String (R.Name);
+                           Before : constant Fetch_Ref_Maps.Map :=
+                             Snapshot_Fetch_Refs (Repo, Name);
+                        begin
+                           Success_Line ("Fetching " & Name);
+                           begin
+                              Version.Fetch.Fetch (Name);
+                              Write_Fetch_Head_All (Repo, Name);
+                              Create_Remote_Head_If_Missing (Repo, Name);
+                              Print_Fetch_Summary (Repo, Name, Before);
+                           exception
+                              when others =>
+                                 Error_Line ("could not fetch " & Name);
+                                 Any_Failed := True;
+                           end;
+                        end;
+                     end loop;
+                     if Any_Failed then
+                        Set_Command_Failure;
+                     end if;
+                  end;
                elsif Operand_Count = 0 then
                   Usage_Error ("missing remote", Usage);
                   return;
@@ -27362,6 +27439,10 @@ package body Version.CLI is
                           (Repo, To_String (Remote_Name));
                         Print_Fetch_Summary
                           (Repo, To_String (Remote_Name), Before);
+                     end if;
+
+                     if Want_Tags and then not Dry_Run then
+                        Fetch_Remote_Tags (Repo, To_String (Remote_Name));
                      end if;
                   end;
                end if;

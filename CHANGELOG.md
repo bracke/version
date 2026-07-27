@@ -1,3 +1,4 @@
+- Git parity: `fetch --all` fetches every configured remote ("Fetching <name>", exit 1 on failure) and `fetch --tags`/`-t` brings all of the remote's tags into refs/tags.
 - Git parity: a first `fetch` points `refs/remotes/<remote>/HEAD` at the remote's default branch, and `--prune`/`-p` is accepted.
 - Git parity: `fetch --dry-run`/`-n` contacts the remote but writes nothing, and `pull --no-rebase` (and other merge-default flags) are accepted.
 - Git parity: `push --dry-run`/`-n` skips the update, `-u`/`--set-upstream` records the branch's upstream and reports it on stdout, and `--porcelain` is accepted.
