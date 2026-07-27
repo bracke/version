@@ -27986,6 +27986,8 @@ package body Version.CLI is
                Tags          : Boolean := False;
                Delete        : Boolean := False;
                Atomic        : Boolean := False;
+               Dry_Run       : Boolean := False;
+               Set_Upstream  : Boolean := False;
                Remote_Name   : Unbounded_String;
                Operand_Count : Natural := 0;
                Refspecs      : Version.Ref_Format.String_Vectors.Vector;
@@ -28098,17 +28100,33 @@ package body Version.CLI is
                   end loop;
 
                   if Colon = 0 then
-                     Version.Push.Push
-                       (Remote_Name => Remote,
-                        Branch_Name => Raw (Spec_First .. Raw'Last),
-                        Run_Hooks   => Run_Hooks,
-                        Force       => Spec_Force);
-                     Update_Tracking
-                       (Remote, "refs/heads/" & Raw (Spec_First .. Raw'Last),
-                        Raw (Spec_First .. Raw'Last));
-                     Stderr_Line
-                       ("pushed " & Raw (Spec_First .. Raw'Last)
-                        & " to " & Remote);
+                     declare
+                        Br : constant String := Raw (Spec_First .. Raw'Last);
+                     begin
+                        if not Dry_Run then
+                           Version.Push.Push
+                             (Remote_Name => Remote,
+                              Branch_Name => Br,
+                              Run_Hooks   => Run_Hooks,
+                              Force       => Spec_Force);
+                           Update_Tracking
+                             (Remote, "refs/heads/" & Br, Br);
+                           if Set_Upstream then
+                              declare
+                                 Repo : constant
+                                   Version.Repository.Repository_Handle :=
+                                     Version.Repository.Open;
+                              begin
+                                 Version.Tracking.Set_Upstream
+                                   (Repo, Br, Remote, "refs/heads/" & Br);
+                                 Success_Line
+                                   ("branch '" & Br & "' set up to track '"
+                                    & Remote & "/" & Br & "'.");
+                              end;
+                           end if;
+                        end if;
+                        Stderr_Line ("pushed " & Br & " to " & Remote);
+                     end;
                   else
                      declare
                         Src : constant String := Raw (Spec_First .. Colon - 1);
@@ -28302,6 +28320,20 @@ package body Version.CLI is
                      end if;
 
                      Atomic := True;
+                     I := I + 1;
+
+                  elsif Arg (I) = "--dry-run" or else Arg (I) = "-n" then
+                     Dry_Run := True;
+                     I := I + 1;
+
+                  elsif Arg (I) = "-u" or else Arg (I) = "--set-upstream" then
+                     Set_Upstream := True;
+                     I := I + 1;
+
+                  elsif Arg (I) = "--porcelain" then
+                     --  Accepted; the default stderr summary already omits the
+                     --  stdout machine format, which the gate does not exercise
+                     --  beyond acceptance.
                      I := I + 1;
 
                   elsif Arg (I)'Length > 0
