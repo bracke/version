@@ -2839,11 +2839,13 @@ package body Version.CLI.Tests is
          "too many submodule init arguments",
          Top_Usage,
          "submodule init extra argument");
+      --  `submodule status <path>` is valid (git filters by submodule path),
+      --  so a bogus option is the frozen usage error instead.
       Check_Usage_Failure
-        ("submodule status extra",
-         "too many submodule status arguments",
-         Top_Usage,
-         "submodule status extra argument");
+        ("submodule status --bogus",
+         "unknown submodule status option: --bogus",
+         "version submodule status [--cached] [--recursive] [--] [PATH...]",
+         "submodule status unknown option");
       Check_Usage_Failure
         ("submodule update --recursive --recursive",
          "duplicate option: --recursive",

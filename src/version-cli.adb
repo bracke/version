@@ -16784,11 +16784,96 @@ package body Version.CLI is
                   end;
 
                elsif Arg (2) = "status" then
-                  if Count /= 2 then
-                     Usage_Error ("too many submodule status arguments", Usage);
-                     return;
-                  end if;
-                  Version.Submodules.Status;
+                  declare
+                     Status_Usage : constant String :=
+                       "version submodule status [--cached] [--recursive]"
+                       & " [--] [PATH...]";
+                     Cached : Boolean := False;
+                     Paths  : Version.Submodules.Path_Vectors.Vector;
+                     I      : Natural := 3;
+                     Bad    : Boolean := False;
+                  begin
+                     while I <= Count and then not Bad loop
+                        if Arg (I) = "--cached" then
+                           Cached := True;
+                        elsif Arg (I) = "--recursive"
+                          or else Arg (I) = "--quiet" or else Arg (I) = "-q"
+                        then
+                           --  --recursive would descend into nested submodules
+                           --  (none here); --quiet suppresses nothing on status.
+                           null;
+                        elsif Arg (I) = "--" then
+                           null;
+                        elsif Arg (I)'Length > 0
+                          and then Arg (I) (Arg (I)'First) = '-'
+                        then
+                           Usage_Error
+                             ("unknown submodule status option: " & Arg (I),
+                              Status_Usage);
+                           Bad := True;
+                        else
+                           Paths.Append (Arg (I));
+                        end if;
+                        I := I + 1;
+                     end loop;
+
+                     if not Bad then
+                        declare
+                           Repo : constant
+                             Version.Repository.Repository_Handle :=
+                               Version.Repository.Open;
+                           Items : constant
+                             Version.Submodules.Submodule_Status_Vectors.Vector
+                               := Version.Submodules.Statuses (Repo);
+
+                           function Wanted (Path : String) return Boolean is
+                           begin
+                              if Paths.Is_Empty then
+                                 return True;
+                              end if;
+                              for P of Paths loop
+                                 if P = Path then
+                                    return True;
+                                 end if;
+                              end loop;
+                              return False;
+                           end Wanted;
+
+                           --  git exits 1 when a named path is not a submodule.
+                           Missing_Path : Boolean := False;
+                        begin
+                           for P of Paths loop
+                              declare
+                                 Found : Boolean := False;
+                              begin
+                                 for It of Items loop
+                                    if To_String (It.Path) = P then
+                                       Found := True;
+                                    end if;
+                                 end loop;
+                                 if not Found then
+                                    Error_Line
+                                      ("error: pathspec '" & P
+                                       & "' did not match any submodule");
+                                    Missing_Path := True;
+                                 end if;
+                              end;
+                           end loop;
+
+                           if Missing_Path then
+                              Set_Command_Failure;
+                           else
+                              for It of Items loop
+                                 if Wanted (To_String (It.Path)) then
+                                    Success_Line
+                                      (Version.Submodules.Status_Line_Git
+                                         (Repo, It, Cached));
+                                 end if;
+                              end loop;
+                           end if;
+                        end;
+                     end if;
+                  end;
 
                elsif Arg (2) = "summary" then
                   --  git's `submodule summary` reports each submodule whose
