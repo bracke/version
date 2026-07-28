@@ -3537,13 +3537,19 @@ package body Version.CLI.Tests is
             Context & " must print nothing, as git does");
       end Check_Silent;
 
-      procedure Check_Status_Success (Command, Context : String) is
+      procedure Check_Command_Failure (Command, Detail, Context : String) is
          Output : Ada.Strings.Unbounded.Unbounded_String;
          Status : Integer;
       begin
          Run_CLI_Capture (Root, Command, Output, Status);
-         Assert (Status = 0, Context & " must succeed");
-      end Check_Status_Success;
+         Assert
+           (Status = Integer (Version.CLI.Command_Failure_Exit_Status),
+            Context & " must fail with command-failure status");
+         Assert_Contains
+           (Ada.Strings.Unbounded.To_String (Output),
+            "error: " & Detail,
+            Context & " detail");
+      end Check_Command_Failure;
 
       Old_Dir : constant String := Ada.Directories.Current_Directory;
    begin
@@ -3582,11 +3588,6 @@ package body Version.CLI.Tests is
          "version config list",
          "config list extra operand");
       Check_Usage_Failure
-        ("config keys --null",
-         "unknown config keys option: --null",
-         "version config keys",
-         "config keys unknown option");
-      Check_Usage_Failure
         ("config get",
          "missing config key",
          "version config get KEY",
@@ -3596,11 +3597,6 @@ package body Version.CLI.Tests is
          "unknown config get option: --bogus",
          "version config get KEY",
          "config get unknown option");
-      Check_Usage_Failure
-        ("config has user.name extra",
-         "too many config has arguments",
-         "version config has KEY",
-         "config has extra operand");
       Check_Usage_Failure
         ("config set user.name",
          "missing config value",
@@ -3632,14 +3628,19 @@ package body Version.CLI.Tests is
          "core.editor=ed",
          "config list");
       Check_Success
-        ("config keys",
-         "core.editor",
-         "config keys");
-      Check_Success
         ("config get core.editor",
          "ed",
          "config get");
-      Check_Status_Success ("config has core.editor", "config has");
+      --  `keys`/`has` are not subcommands: git reads them as a sectionless key
+      --  and rejects them, and so does this tool now.
+      Check_Command_Failure
+        ("config keys",
+         "key does not contain a section: keys",
+         "config keys rejected like git");
+      Check_Command_Failure
+        ("config has core.editor",
+         "key does not contain a section: has",
+         "config has rejected like git");
       Check_Silent ("config unset core.editor", "config unset");
 
       Ada.Directories.Set_Directory (Old_Dir);
@@ -4531,17 +4532,12 @@ package body Version.CLI.Tests is
       Assert_Contains
         (Help_Text, "version config list", "config command help");
       Assert_Contains
-        (Help_Text, "version config keys", "config command help");
-      Assert_Contains
         (Help_Text, "version config get KEY", "config command help");
-      Assert_Contains
-        (Help_Text, "version config has KEY", "config command help");
       Assert_Contains
         (Help_Text, "version config set KEY VALUE", "config command help");
       Assert_Contains
         (Help_Text, "version config unset KEY", "config command help");
       Assert_Contains (Help_Text, "section.key=value", "config command help");
-      Assert_Contains (Help_Text, "keys only", "config command help");
       Assert_Contains
         (Help_Text, "set one local config key", "config command help");
       Assert_Contains

@@ -68,6 +68,6 @@ Phase 43 also centralizes command-unavailable diagnostics so common precondition
 
 `docs/EDGE_CASE_EXAMPLES.md` gives copyable examples for the hardened edge cases that define the Phase 43 release contract: restore/submodule boundaries, archive unsafe path rejection, unsupported-format handling (e.g. reftable refs), hook no-rollback behavior, transport failure no-mutation guarantees, and platform CI evidence validation.
 
-* Added `version config list`, `version config keys`, `version config get KEY`, quiet `version config has KEY`, `version config set KEY VALUE`, and `version config unset KEY` support for stable local repository config inspection and narrow local key mutation.
+* Added `version config list`, `version config get KEY`, `version config set KEY VALUE`, and `version config unset KEY` support for stable local repository config inspection and narrow local key mutation.
 
 * Phase 43 also adds `version branch list --verbose` for short tip-id/subject branch inspection, `version status --branch` for a stable branch-header status view, and compatibility aliases `version branch list --contains REV`, `version branch list --merged [BRANCH]`, and `version branch list --no-merged [BRANCH]` for the existing branch reachability queries.

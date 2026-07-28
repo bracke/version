@@ -255,18 +255,16 @@ version doctor --release
 
 ## Inspect local config
 
-Use `version config list`, `version config keys`, `version config get KEY`, and `version config has KEY` to inspect or test the local repository config entries that Version reads. Use `version config set KEY VALUE` to create or update one local config key, and `version config unset KEY` to remove one local config key while preserving unrelated entries:
+Use `version config list` and `version config get KEY` to inspect the local repository config entries that Version reads. Use `version config set KEY VALUE` to create or update one local config key, and `version config unset KEY` to remove one local config key while preserving unrelated entries:
 
 ```sh
 version config list
-version config keys
 version config get KEY
-version config has KEY
 version config set KEY VALUE
 version config unset KEY
 ```
 
-`version config list` output is stable `section.key=value` text. `version config keys` prints the same flattened names without values. `version config get KEY` prints only the matching value. `version config has KEY` prints nothing and reports key existence by exit status. `version config set KEY VALUE` deterministically rewrites local `.git/config` with the selected value. `version config unset KEY` removes the selected local config key. Quoted subsections are rendered in dotted form, for example:
+`version config list` output is stable `section.key=value` text. `version config get KEY` prints only the matching value. `version config set KEY VALUE` deterministically rewrites local `.git/config` with the selected value. `version config unset KEY` removes the selected local config key. There are no `keys`/`has` subcommands — as with git, a bare word is read as a sectionless key and rejected. Quoted subsections are rendered in dotted form, for example:
 
 ```text
 remote.origin.url=https://example.invalid/project.git

@@ -47,7 +47,7 @@ plumbing.fixture        plumbing.cases        -    1
 histinspect.fixture     histinspect.cases     -     9
 histinspect2.fixture    histinspect2.cases    -     1
 configtext.fixture      configtext.cases      -     1
-configtext.fixture      configtext2.cases     -     1
+configtext.fixture      configtext2.cases     -     0
 diffplumb.fixture       diffplumb.cases       -    3
 diffplumb2.fixture      diffplumb2.cases      -     6
 wtmutate.fixture        wtmutate.cases        -     2

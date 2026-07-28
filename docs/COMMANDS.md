@@ -139,9 +139,7 @@ Syntax:
 
 ```text
 version config list
-version config keys
 version config get KEY
-version config has KEY
 version config set KEY VALUE
 version config unset KEY
 
@@ -157,7 +155,7 @@ git has two interfaces here: these subcommands, and the classic option form that
 
 Not yet implemented on either interface: multi-valued keys (`--get-all`, `--add`, `--replace-all`, `--unset-all`), scope selection (`--global`, `--system`, `--file`), `--get-regexp`, `--show-scope`/`--show-origin`, and `--rename-section`.
 
-Purpose: print local repository config entries in stable `section.key=value` form, print only flattened config keys, print the value for one local config key, quietly test whether a key exists, set one local config key, or remove one local config key. Quoted subsections are rendered as dotted names, for example `remote.origin.url=...` and `branch.main.merge=refs/heads/main`; section and variable names are lower-cased (subsection case preserved) as git canonicalises them. When reading the effective config, `list`/`keys`/`get` read git's full scope stack in order — system (`/etc/gitconfig` or `GIT_CONFIG_SYSTEM`, unless `GIT_CONFIG_NOSYSTEM`), global (`$XDG_CONFIG_HOME/git/config` then `~/.gitconfig`, or `GIT_CONFIG_GLOBAL` replacing both), then the repository's local `.git/config` and per-worktree `config.worktree` — and follow `[include]` and matching `[includeIf "gitdir:...|gitdir/i:...|onbranch:...|hasconfig:remote.*.url:..."]` directives (the include `path` resolves relative to the including file, with `~` expansion; the directive itself stays a readable key such as `include.path`). A single-valued `get` resolves to the last matching value in read order — matching git. The inspection commands are read-only. Config injected via `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_<n>`/`GIT_CONFIG_VALUE_<n>` is not yet consulted. Writes (`set`/`unset`) still target only the local `.git/config`. `version config has KEY` prints nothing, exits successfully when the key exists, and exits with command failure when the key is absent. `version config set KEY VALUE` creates or updates the selected key in local `.git/config` using deterministic rewrite semantics. `version config unset KEY` rewrites the local config without the selected key and preserves unrelated entries.
+Purpose: print local repository config entries in stable `section.key=value` form, print the value for one local config key, set one local config key, or remove one local config key. Quoted subsections are rendered as dotted names, for example `remote.origin.url=...` and `branch.main.merge=refs/heads/main`; section and variable names are lower-cased (subsection case preserved) as git canonicalises them. When reading the effective config, `list`/`get` read git's full scope stack in order — system (`/etc/gitconfig` or `GIT_CONFIG_SYSTEM`, unless `GIT_CONFIG_NOSYSTEM`), global (`$XDG_CONFIG_HOME/git/config` then `~/.gitconfig`, or `GIT_CONFIG_GLOBAL` replacing both), then the repository's local `.git/config` and per-worktree `config.worktree` — and follow `[include]` and matching `[includeIf "gitdir:...|gitdir/i:...|onbranch:...|hasconfig:remote.*.url:..."]` directives (the include `path` resolves relative to the including file, with `~` expansion; the directive itself stays a readable key such as `include.path`). A single-valued `get` resolves to the last matching value in read order — matching git. The inspection commands are read-only. Config injected via `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_<n>`/`GIT_CONFIG_VALUE_<n>` is not yet consulted. Writes (`set`/`unset`) still target only the local `.git/config`. There are no `keys` or `has` subcommands: as with git, a bare word like `keys` is read as a sectionless key and rejected. `version config set KEY VALUE` creates or updates the selected key in local `.git/config` using deterministic rewrite semantics. `version config unset KEY` rewrites the local config without the selected key and preserves unrelated entries.
 
 Examples:
 
@@ -169,17 +167,9 @@ remote.origin.url=https://example.invalid/project.git
 branch.main.remote=origin
 branch.main.merge=refs/heads/main
 
-version config keys
-user.name
-user.email
-remote.origin.url
-branch.main.remote
-branch.main.merge
-
 version config get remote.origin.url
 https://example.invalid/project.git
 
-version config has remote.origin.url
 version config set remote.origin.tagOpt --no-tags
 version config unset remote.origin.url
 ```

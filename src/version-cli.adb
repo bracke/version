@@ -1146,12 +1146,10 @@ package body Version.CLI is
       elsif Ada.Strings.Fixed.Index (A, ".") /= 0 then
          return True;
       else
-         --  A bare word: git's classic sectionless-key form -- which the
-         --  classic handler rejects with "key does not contain a section",
-         --  matching git rather than an "unknown subcommand" error -- unless it
-         --  names one of this tool's own config verbs (keys/has), which keep
-         --  their dedicated handlers.
-         return A /= "keys" and then A /= "has";
+         --  A bare word is git's classic sectionless-key form, which the
+         --  classic handler rejects with "key does not contain a section" --
+         --  matching git, including for words like `keys`/`has`.
+         return True;
       end if;
    end Is_Classic_Config_Invocation;
 
@@ -28086,19 +28084,6 @@ package body Version.CLI is
                        (Version.Config.List_Text (Version.Repository.Open));
                   end;
 
-               elsif Subcommand = "keys" then
-                  declare
-                     Usage : constant String := "version config keys";
-                  begin
-                     if Count > 2 then
-                        Reject_Extra (3, "keys", Usage);
-                        return;
-                     end if;
-
-                     Version.Console.Put
-                       (Version.Config.Keys_Text (Version.Repository.Open));
-                  end;
-
                elsif Subcommand = "get" then
                   declare
                      Usage : constant String := "version config get KEY";
@@ -28113,24 +28098,6 @@ package body Version.CLI is
                      Version.Console.Put
                        (Version.Config.Get_Text
                           (Version.Repository.Open, To_String (Key)));
-                  end;
-
-               elsif Subcommand = "has" then
-                  declare
-                     Usage : constant String := "version config has KEY";
-                     Key   : Unbounded_String;
-                     OK    : Boolean := False;
-                  begin
-                     Parse_Config_Key (Usage, "has", Key, OK);
-                     if not OK then
-                        return;
-                     end if;
-
-                     if not Version.Config.Has_Key
-                       (Version.Repository.Open, To_String (Key))
-                     then
-                        Ada.Command_Line.Set_Exit_Status (Command_Failure_Exit);
-                     end if;
                   end;
 
                elsif Subcommand = "set" then

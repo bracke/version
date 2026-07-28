@@ -506,9 +506,7 @@ package body Version.CLI.Help is
       elsif Name = "config" then
          Append_Line (Text, "Usage:");
          Append_Line (Text, "  version config list");
-         Append_Line (Text, "  version config keys");
          Append_Line (Text, "  version config get KEY");
-         Append_Line (Text, "  version config has KEY");
          Append_Line (Text, "  version config set KEY VALUE");
          Append_Line (Text, "  version config unset KEY");
          Append_Line (Text);
@@ -750,19 +748,16 @@ package body Version.CLI.Help is
       elsif Name = "config" then
          Line ("Usage:");
          Line ("  version config list");
-         Line ("  version config keys");
          Line ("  version config get KEY");
-         Line ("  version config has KEY");
          Line ("  version config set KEY VALUE");
          Line ("  version config unset KEY");
          Line;
          Line
-           ("List local repository config entries in stable section.key=value form, print local config keys only,");
+           ("List local repository config entries in stable section.key=value form,");
          Line
-           ("print one local config value, quietly test whether a key exists, set one local config key,");
+           ("print one local config value, set one local config key,");
          Line ("or remove one local config key.");
-         Line
-           ("Inspection commands are read-only; config has is quiet and reports existence by exit status.");
+         Line ("Inspection commands are read-only.");
       elsif Name = "stage" then
          Line ("Usage:");
          Line ("  version stage [-f|--force] [-A|--all] [-u|--update]"
@@ -1159,19 +1154,16 @@ package body Version.CLI.Help is
       elsif Name = "config" then
          Line ("Usage:");
          Line ("  version config list");
-         Line ("  version config keys");
          Line ("  version config get KEY");
-         Line ("  version config has KEY");
          Line ("  version config set KEY VALUE");
          Line ("  version config unset KEY");
          Line;
          Line
-           ("List local repository config entries in stable section.key=value form, print local config keys only,");
+           ("List local repository config entries in stable section.key=value form,");
          Line
-           ("print one local config value, quietly test whether a key exists, set one local config key,");
+           ("print one local config value, set one local config key,");
          Line ("or remove one local config key.");
-         Line
-           ("Inspection commands are read-only; config has is quiet and reports existence by exit status.");
+         Line ("Inspection commands are read-only.");
       elsif Name = "verify" then
          Line ("Usage:");
          Line ("  version verify");
