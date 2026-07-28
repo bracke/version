@@ -9859,6 +9859,159 @@ package body Version.CLI is
    --  Merge two commits without a worktree or an index: print the merged
    --  tree's id, and -- when the merge conflicted -- the stage 1/2/3 entries
    --  of every conflicted path, a blank line, and the merge's messages.
+   --  git's legacy `merge-tree <base> <ours> <theirs>`: a trivial per-path
+   --  3-way merge, printing a block for each path whose merged result differs
+   --  from ours ("merged" for a one-sided change, "changed in both" with
+   --  conflict markers when both sides changed), each block followed by the
+   --  @@ hunks of ours -> the result.
+   procedure Run_Trivial_Merge_Tree
+     (Repo : Version.Repository.Repository_Handle;
+      Base, Ours, Theirs : String)
+   is
+      LF : constant Character := ASCII.LF;
+
+      B_Tree : constant Version.Objects.Hex_Object_Id :=
+        Version.Revisions.Resolve_Tree (Repo, Base);
+      O_Tree : constant Version.Objects.Hex_Object_Id :=
+        Version.Revisions.Resolve_Tree (Repo, Ours);
+      T_Tree : constant Version.Objects.Hex_Object_Id :=
+        Version.Revisions.Resolve_Tree (Repo, Theirs);
+
+      type Entry_Rec is record
+         Present : Boolean := False;
+         Mode    : Unbounded_String;
+         Sha     : Unbounded_String;
+      end record;
+      package Maps is new Ada.Containers.Indefinite_Ordered_Maps
+        (Key_Type => String, Element_Type => Entry_Rec);
+      package Str_Sets is new
+        Ada.Containers.Indefinite_Ordered_Sets (String);
+
+      B_Map, O_Map, T_Map : Maps.Map;
+      Paths : Str_Sets.Set;
+
+      procedure Load
+        (Tree : Version.Objects.Hex_Object_Id; Into : in out Maps.Map) is
+      begin
+         for E of Version.Objects.Flatten_Tree (Repo, Tree) loop
+            Into.Include
+              (To_String (E.Path),
+               (Present => True,
+                Mode    => E.Mode,
+                Sha     =>
+                  To_Unbounded_String (Version.Objects.To_String (E.Id))));
+         end loop;
+      end Load;
+
+      function Look (M : Maps.Map; P : String) return Entry_Rec is
+        (if M.Contains (P) then M.Element (P) else (others => <>));
+
+      function Blob (Sha : String) return String is
+        (Version.Objects.Content
+           (Version.Objects.Read_Object
+              (Repo, Version.Objects.To_Object_Id (Sha))));
+
+      function Pad6 (S : String) return String is
+        (S & [1 .. Integer'Max (0, 6 - S'Length) => ' ']);
+
+      --  git prints only the @@ hunks; drop the "--- a/.."/"+++ b/.." header.
+      function Hunks (Path, Old_T, New_T : String) return String is
+         Full    : constant String :=
+           Version.Diff.Unified_Text_Diff (Path, Old_T, New_T);
+         P       : Natural := Full'First;
+         Skipped : Natural := 0;
+      begin
+         while P <= Full'Last and then Skipped < 2 loop
+            if Full (P) = LF then
+               Skipped := Skipped + 1;
+            end if;
+            P := P + 1;
+         end loop;
+         return Full (P .. Full'Last);
+      end Hunks;
+
+      procedure Head (S : String) is
+      begin
+         Version.Console.Put (S & LF);
+      end Head;
+
+      procedure Line (Label, Mode, Sha, Path : String) is
+      begin
+         Version.Console.Put
+           ("  " & Pad6 (Label) & " " & Mode & " " & Sha & " " & Path & LF);
+      end Line;
+   begin
+      Load (B_Tree, B_Map);
+      Load (O_Tree, O_Map);
+      Load (T_Tree, T_Map);
+      for C in B_Map.Iterate loop
+         Paths.Include (Maps.Key (C));
+      end loop;
+      for C in O_Map.Iterate loop
+         Paths.Include (Maps.Key (C));
+      end loop;
+      for C in T_Map.Iterate loop
+         Paths.Include (Maps.Key (C));
+      end loop;
+
+      for P of Paths loop
+         declare
+            B : constant Entry_Rec := Look (B_Map, P);
+            O : constant Entry_Rec := Look (O_Map, P);
+            T : constant Entry_Rec := Look (T_Map, P);
+         begin
+            if O.Present and then T.Present
+              and then O.Sha = T.Sha and then O.Mode = T.Mode
+            then
+               null;  --  identical on both sides
+            elsif O.Present and then B.Present
+              and then O.Sha = B.Sha and then O.Mode = B.Mode
+            then
+               --  ours unchanged: their change (if any) is the result.
+               if T.Present
+                 and then (T.Sha /= B.Sha or else T.Mode /= B.Mode)
+               then
+                  Head ("merged");
+                  Line ("result", To_String (T.Mode), To_String (T.Sha), P);
+                  Line ("our", To_String (O.Mode), To_String (O.Sha), P);
+                  Version.Console.Put
+                    (Hunks (P, Blob (To_String (O.Sha)),
+                            Blob (To_String (T.Sha))));
+               end if;
+            elsif T.Present and then B.Present
+              and then T.Sha = B.Sha and then T.Mode = B.Mode
+            then
+               null;  --  theirs unchanged, ours wins (result == ours)
+            elsif B.Present and then O.Present and then T.Present then
+               --  changed in both: a conflicting 3-way blob merge.
+               declare
+                  Opts      : Version.Merge.Merge_File_Options;
+                  Merged    : Unbounded_String;
+                  Conflicts : Natural;
+               begin
+                  Opts.Ours_Label := To_Unbounded_String (".our");
+                  Opts.Theirs_Label := To_Unbounded_String (".their");
+                  Opts.Simplify_No_Alnum := False;
+                  Version.Merge.Merge_File
+                    (Ours_Text   => Blob (To_String (O.Sha)),
+                     Base_Text   => Blob (To_String (B.Sha)),
+                     Theirs_Text => Blob (To_String (T.Sha)),
+                     Options     => Opts,
+                     Merged      => Merged,
+                     Conflicts   => Conflicts);
+                  Head ("changed in both");
+                  Line ("base", To_String (B.Mode), To_String (B.Sha), P);
+                  Line ("our", To_String (O.Mode), To_String (O.Sha), P);
+                  Line ("their", To_String (T.Mode), To_String (T.Sha), P);
+                  Version.Console.Put
+                    (Hunks (P, Blob (To_String (O.Sha)),
+                            To_String (Merged)));
+               end;
+            end if;
+         end;
+      end loop;
+   end Run_Trivial_Merge_Tree;
+
    procedure Run_Merge_Tree_Command is
       Repo : constant Version.Repository.Repository_Handle :=
         Version.Repository.Open;
@@ -9876,7 +10029,7 @@ package body Version.CLI is
          declare
             A : constant String := Arg (I);
          begin
-            if A = "--write-tree" then
+            if A = "--write-tree" or else A = "--trivial-merge" then
                null;
             elsif A = "--name-only" or else A = "--name-status" then
                Name_Only := True;
@@ -9901,6 +10054,16 @@ package body Version.CLI is
             end if;
          end;
       end loop;
+
+      --  Legacy three-operand form: `merge-tree <base> <ours> <theirs>` does a
+      --  trivial per-path 3-way merge and prints a block per path whose merged
+      --  result differs from ours.
+      if Natural (Operands.Length) = 3 then
+         Run_Trivial_Merge_Tree
+           (Repo,
+            Operands.Element (1), Operands.Element (2), Operands.Element (3));
+         return;
+      end if;
 
       if Natural (Operands.Length) /= 2 then
          Error_Line ("merge-tree takes two commits");
@@ -10056,17 +10219,32 @@ package body Version.CLI is
          end loop;
 
          if Messages then
-            Version.Console.Put ("" & ASCII.LF);
+            Version.Console.Put ("" & Sep);
 
             for C of Conflicts loop
                declare
                   Path : constant String := To_String (C.Path);
+
+                  --  git's informational-messages section. In -z each record is
+                  --  "<n-paths>\0<path>\0...<type>\0<message>\n\0"; otherwise it
+                  --  is just the human message on its own line.
+                  procedure Emit_Msg (Msg_Type, Message : String) is
+                  begin
+                     if Use_NUL then
+                        Version.Console.Put
+                          ("1" & ASCII.NUL & Path & ASCII.NUL
+                           & Msg_Type & ASCII.NUL
+                           & Message & ASCII.LF & ASCII.NUL);
+                     else
+                        Version.Console.Put (Message & ASCII.LF);
+                     end if;
+                  end Emit_Msg;
                begin
                   case C.Kind is
                      when Version.Merge.Binary_Conflict =>
-                        Version.Console.Put
-                          ("CONFLICT (binary): Merge conflict in " & Path
-                           & ASCII.LF);
+                        Emit_Msg
+                          ("CONFLICT (binary)",
+                           "CONFLICT (binary): Merge conflict in " & Path);
                      when others =>
                         --  A path that survives on only one side is a
                         --  modify/delete, which git names precisely rather
@@ -10078,25 +10256,25 @@ package body Version.CLI is
                              Has_Path (Theirs_Items, Path);
                         begin
                            if Has_Ours and then not Has_Theirs then
-                              Version.Console.Put
-                                ("CONFLICT (modify/delete): " & Path
-                                 & " deleted in " & Theirs_Name
+                              Emit_Msg
+                                ("CONFLICT (modify/delete)",
+                                 Path & " deleted in " & Theirs_Name
                                  & " and modified in " & Ours_Name
                                  & ".  Version " & Ours_Name & " of " & Path
-                                 & " left in tree." & ASCII.LF);
+                                 & " left in tree.");
                            elsif Has_Theirs and then not Has_Ours then
-                              Version.Console.Put
-                                ("CONFLICT (modify/delete): " & Path
-                                 & " deleted in " & Ours_Name
+                              Emit_Msg
+                                ("CONFLICT (modify/delete)",
+                                 Path & " deleted in " & Ours_Name
                                  & " and modified in " & Theirs_Name
                                  & ".  Version " & Theirs_Name & " of " & Path
-                                 & " left in tree." & ASCII.LF);
+                                 & " left in tree.");
                            else
-                              Version.Console.Put
-                                ("Auto-merging " & Path & ASCII.LF);
-                              Version.Console.Put
-                                ("CONFLICT (content): Merge conflict in "
-                                 & Path & ASCII.LF);
+                              Emit_Msg ("Auto-merging", "Auto-merging " & Path);
+                              Emit_Msg
+                                ("CONFLICT (contents)",
+                                 "CONFLICT (content): Merge conflict in "
+                                 & Path);
                            end if;
                         end;
                   end case;
