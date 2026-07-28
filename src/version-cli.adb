@@ -13805,6 +13805,7 @@ package body Version.CLI is
                Summary  : Boolean := False;
                Raw_Flag : Boolean := False;
                First_Parent : Boolean := False;
+               Combined_M : Boolean := False;   --  -m
                Fmt      : Unbounded_String;
                Fmt_Oneline : Boolean := False;
                Date_Mode : Unbounded_String;
@@ -13828,6 +13829,8 @@ package body Version.CLI is
                      Raw_Flag := True;
                   elsif Arg (I) = "--first-parent" then
                      First_Parent := True;
+                  elsif Arg (I) = "-m" then
+                     Combined_M := True;
                   elsif Arg (I) = "-s" or else Arg (I) = "--no-patch" then
                      No_Patch := True;
                   elsif Arg (I) = "--oneline" then
@@ -13985,7 +13988,8 @@ package body Version.CLI is
                                     Format   => To_String (Fmt),
                                     Format_Oneline => Fmt_Oneline,
                                     Date_Mode => To_String (Date_Mode),
-                                    First_Parent => First_Parent));
+                                    First_Parent => First_Parent,
+                                    Combined_M => Combined_M));
                            end if;
                         end;
                      end loop;

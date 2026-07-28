@@ -1,3 +1,4 @@
+- Git parity: `show -m` shows a merge commit once per parent, each header carrying `(from <parent>)` and followed by the diff against that parent.
 - Git parity: bare `shortlog` reads the commit list from stdin when stdin is not a terminal (git's `log | shortlog` form), so `shortlog < /dev/null` names no commits and prints nothing instead of summarizing HEAD; an interactive terminal still defaults to HEAD.
 - Git parity: `log --first-parent` with `--name-only`/`--stat`/`-p`/`--raw` shows a merge commit's diff against its first parent instead of suppressing it.
 - Git parity: `log --oneline --boundary <a>..<b>` prints the range's excluded boundary commits (each `- `-prefixed) after the shown ones.
