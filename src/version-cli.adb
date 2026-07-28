@@ -11186,6 +11186,28 @@ package body Version.CLI is
          return True;
       end Good_Ancestors_Of_Bad;
 
+      --  git rejects marking a commit that is already in the opposite set:
+      --  marking the bad rev good (or a good rev bad) makes a single commit
+      --  both good and bad, which it reports and refuses.
+      function Both_Good_And_Bad
+        (Is_Bad : Boolean; Id : Version.Objects.Hex_Object_Id) return Boolean
+      is
+         Hex : constant String := Version.Objects.To_String (Id);
+      begin
+         if Is_Bad then
+            for G of Version.Bisect.Good_Ids (Repo) loop
+               if Version.Objects.To_String (G) = Hex then
+                  return True;
+               end if;
+            end loop;
+            return False;
+         else
+            return Version.Bisect.Has_Bad (Repo)
+              and then Version.Objects.To_String
+                         (Version.Bisect.Bad_Id (Repo)) = Hex;
+         end if;
+      end Both_Good_And_Bad;
+
       --  Recompute the bisection and render / act on the result.
       procedure Advance is
       begin
@@ -11230,6 +11252,24 @@ package body Version.CLI is
       is
          Any : Boolean := False;
       begin
+         --  Reject a rev that is already in the opposite set before recording
+         --  anything: git prints "<sha> was both good and bad" and stops.
+         if not Is_Skip then
+            for I in 3 .. (if Head_Only then 2 else Count) loop
+               declare
+                  Id : constant Version.Objects.Hex_Object_Id := Rev (Arg (I));
+               begin
+                  if Both_Good_And_Bad (Is_Bad, Id) then
+                     Success_Line
+                       (Version.Objects.To_String (Id)
+                        & " was both good and bad");
+                     Set_Command_Failure;
+                     return;
+                  end if;
+               end;
+            end loop;
+         end if;
+
          for I in 3 .. (if Head_Only then 2 else Count) loop
             declare
                Id  : constant Version.Objects.Hex_Object_Id := Rev (Arg (I));
@@ -11271,12 +11311,17 @@ package body Version.CLI is
 
       --  Return HEAD to the start branch/commit and drop all session state.
       procedure Do_Reset (Target : String) is
+         Active : constant Boolean := In_Progress (Repo);
       begin
-         if not In_Progress (Repo) then
+         --  Nothing to do with neither a bisect in progress nor a target;
+         --  but an explicit target is checked out regardless of state, just
+         --  as git runs `checkout <target>` even when not bisecting.
+         if not Active and then Target = "" then
             return;
          end if;
          declare
-            Start_R      : constant String := Version.Bisect.Start_Ref (Repo);
+            Start_R      : constant String :=
+              (if Active then Version.Bisect.Start_Ref (Repo) else "");
             Dest         : constant String :=
               (if Target /= "" then Target else Start_R);
             Was_Detached : constant Boolean := Version.Refs.Is_Detached (Repo);
@@ -11284,37 +11329,43 @@ package body Version.CLI is
               (if Was_Detached then ""
                else Version.Refs.Current_Branch_Name (Repo));
          begin
+            --  git writes the checkout narration that ending a bisect
+            --  produces to stderr, as `checkout` itself does.
             if Was_Detached then
                declare
                   P : constant Version.Objects.Hex_Object_Id :=
                     Version.Refs.Detached_Commit_Id (Repo);
                begin
-                  Success_Line
+                  Stderr_Line
                     ("Previous HEAD position was "
                      & Short (Version.Objects.To_String (P)) & " "
                      & Subject (P));
                end;
             end if;
-            if Target = "" and then Version.Branch.Branch_Exists (Dest) then
+            --  A branch destination is switched to (git's checkout of a branch
+            --  name); anything else detaches HEAD at that commit.
+            if Version.Branch.Branch_Exists (Dest) then
                if not Was_Detached and then Cur_Branch = Dest then
-                  Success_Line ("Already on '" & Dest & "'");
+                  Stderr_Line ("Already on '" & Dest & "'");
                else
                   Version.Branch.Switch_Branch (Dest);
-                  Success_Line ("Switched to branch '" & Dest & "'");
+                  Stderr_Line ("Switched to branch '" & Dest & "'");
                end if;
             else
                declare
                   Id : constant Version.Objects.Hex_Object_Id := Rev (Dest);
                begin
                   Version.Checkout.Checkout_Commit (Id);
-                  Success_Line
+                  Stderr_Line
                     ("HEAD is now at "
                      & Short (Version.Objects.To_String (Id)) & " "
                      & Subject (Id));
                end;
             end if;
          end;
-         Version.Bisect.Clear (Repo);
+         if Active then
+            Version.Bisect.Clear (Repo);
+         end if;
       end Do_Reset;
 
       procedure Do_Start is
@@ -11490,8 +11541,8 @@ package body Version.CLI is
          end if;
 
          if not In_Progress (Repo) then
-            Stderr_Line ("You need to start by ""git bisect start""");
-            Stderr_Line ("");
+            --  git's `bisect run` outside a bisect fails silently (exit 1,
+            --  no diagnostic on either stream).
             Set_Command_Failure;
             return;
          end if;
