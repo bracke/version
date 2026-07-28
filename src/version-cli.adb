@@ -9151,6 +9151,7 @@ package body Version.CLI is
    --  from 1; the count goes to stdout.
    procedure Run_Mailsplit_Command is
       Out_Dir    : Unbounded_String := To_Unbounded_String (".");
+      Have_O     : Boolean := False;   --  an -o<dir> was given
       Inputs     : Version.Trailers.String_Vectors.Vector;
       Text       : Unbounded_String;
       Written    : Natural := 0;
@@ -9239,6 +9240,7 @@ package body Version.CLI is
          begin
             if A'Length > 2 and then A (A'First .. A'First + 1) = "-o" then
                Out_Dir := To_Unbounded_String (A (A'First + 2 .. A'Last));
+               Have_O  := True;
             elsif A = "-o" then
                --  git's mailsplit only accepts the attached form (-o<dir>);
                --  a detached "-o dir" is an unknown option, and it dies.
@@ -9274,6 +9276,13 @@ package body Version.CLI is
             end if;
          end;
       end loop;
+
+      --  git only reads the named mailboxes once an -o<dir> is given; without
+      --  it, it reads a single mailbox from standard input and ignores the
+      --  operands (so `mailsplit box.mbox </dev/null` splits nothing).
+      if not Have_O then
+         Inputs.Clear;
+      end if;
 
       --  git refuses to create the output directory; a missing one is fatal.
       if not Ada.Directories.Exists (To_String (Out_Dir)) then

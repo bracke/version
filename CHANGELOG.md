@@ -1,3 +1,4 @@
+- Git parity: `mailsplit` only reads the named mailboxes once `-o<dir>` is given; without it, it reads one mailbox from stdin and ignores the operands (so `mailsplit box.mbox </dev/null` splits nothing, printing `0`), as git does.
 - Git parity: `apply` actually applies the `--directory`/`--include`/`--exclude`-filtered patch (it was filtered only for the summary modes before), so `--directory=<d>` targets the prefixed paths; a patch whose files are all filtered out is a successful no-op, as git treats it.
 - Git parity: `apply -3`/`--3way` reports each file it applied cleanly (`Applied patch to '<file>' cleanly.` on stderr), as git does when the three-way merge was not needed.
 - Git parity: `filter-branch --subdirectory-filter <dir>` scopes the rewrite (and its progress count) to commits whose tree holds that directory, so a directory no commit has (e.g. a nonexistent one) is now `Found nothing to rewrite` (exit 2) rather than a full-range rewrite.
