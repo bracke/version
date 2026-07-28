@@ -1,3 +1,5 @@
+- Git parity: `count-objects -v` reports the real `size-pack` (the packs' `.pack`+`.idx` byte size, in whole KiB; humanised under `-H`) and `prune-packable` (loose objects that also exist in a pack).
+- Git parity: `prune-packed -n`/`--dry-run` lists the `rm -f <path>` it would run for each loose object present in a pack, on stdout, relative to the working directory.
 - Git parity: `update-ref -m <msg>` records the message in the (dereferenced) ref's reflog, for the ref types git logs by default (refs/heads/*, refs/remotes/*, refs/notes/*, HEAD).
 - Git parity: `update-ref` dereferences a symbolic ref and updates the ref it points at (not the symref file) unless `--no-deref`, and `rev-parse` resolves a remote symref (`refs/remotes/*/HEAD`) to its target's commit.
 - Git parity: `branch -a`/`-r` honour `--merged`/`--no-merged [<commit>]`, filtering the all/remote listing to branches whose tip is (or is not) reachable from the commit; a remote symref (origin/HEAD) is filtered by the commit its target resolves to.

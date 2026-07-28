@@ -4203,6 +4203,18 @@ package body Version.CLI is
       Objects_Dir : constant String :=
         Version.Files.Join
           (Version.Repository.Common_Git_Dir (Repo), "objects");
+
+      --  git's `-n` echoes the object path as it names it, relative to the
+      --  working directory; strip the CWD prefix so we do the same.
+      CWD : constant String := Ada.Directories.Current_Directory;
+      Rel_Objects : constant String :=
+        (if Objects_Dir'Length > CWD'Length + 1
+           and then Objects_Dir (Objects_Dir'First
+                                 .. Objects_Dir'First + CWD'Length - 1) = CWD
+           and then Objects_Dir (Objects_Dir'First + CWD'Length) = '/'
+         then Objects_Dir (Objects_Dir'First + CWD'Length + 1
+                           .. Objects_Dir'Last)
+         else Objects_Dir);
    begin
       for I in 2 .. Count loop
          declare
@@ -4256,6 +4268,10 @@ package body Version.CLI is
                               Ada.Directories.Delete_File
                                 (Version.Files.Join (Dir, Simple));
                            else
+                              --  git -n echoes the rm it would run.
+                              Success_Line
+                                ("rm -f " & Rel_Objects & "/" & Name & "/"
+                                 & Simple);
                               Left := Left + 1;
                            end if;
                         else
@@ -31369,6 +31385,7 @@ package body Version.CLI is
                    (Version.Repository.Common_Git_Dir (Repo), "objects");
                Count_N : Natural := 0;
                KiB     : Long_Long_Integer := 0;
+               Loose_Ids : Version.Trailers.String_Vectors.Vector;
 
                function Img (N : Long_Long_Integer) return String is
                   S : constant String := Long_Long_Integer'Image (N);
@@ -31376,9 +31393,38 @@ package body Version.CLI is
                   return S (S'First + 1 .. S'Last);
                end Img;
 
+               --  git's -H rendering of a byte count: "<n> bytes" under 1 KiB,
+               --  otherwise "<x>.<yy> <unit>" scaled to KiB/MiB/GiB/TiB.
+               function Human_Bytes (N : Long_Long_Integer) return String is
+                  Units : constant array (0 .. 3) of String (1 .. 3) :=
+                    ["KiB", "MiB", "GiB", "TiB"];
+                  Div   : Long_Long_Integer := 1024;
+                  U     : Natural := 0;
+               begin
+                  if N < 1024 then
+                     return Img (N) & " bytes";
+                  end if;
+                  while U < Units'Last and then N >= Div * 1024 loop
+                     Div := Div * 1024;
+                     U := U + 1;
+                  end loop;
+                  declare
+                     X100  : constant Long_Long_Integer :=
+                       (N * 100 + Div / 2) / Div;
+                     Whole : constant Long_Long_Integer := X100 / 100;
+                     Frac  : constant Long_Long_Integer := X100 mod 100;
+                     FS    : constant String := Img (Frac);
+                  begin
+                     return Img (Whole) & "."
+                       & (if Frac < 10 then "0" else "") & FS
+                       & " " & Units (U);
+                  end;
+               end Human_Bytes;
+
                procedure Scan_Fanout (Dir : String) is
                   Search : Ada.Directories.Search_Type;
                   E      : Ada.Directories.Directory_Entry_Type;
+                  Prefix : constant String := Ada.Directories.Simple_Name (Dir);
                begin
                   if not Ada.Directories.Exists (Dir) then
                      return;
@@ -31395,6 +31441,8 @@ package body Version.CLI is
                         Count_N := Count_N + 1;
                         --  ceil(size / 4096) * 4 KiB.
                         KiB := KiB + ((Sz + 4095) / 4096) * 4;
+                        Loose_Ids.Append
+                          (Prefix & Ada.Directories.Simple_Name (E));
                      end;
                   end loop;
                   Ada.Directories.End_Search (Search);
@@ -31443,31 +31491,75 @@ package body Version.CLI is
                                 and then Nm (Nm'Last - 3 .. Nm'Last) = ".idx"
                               then
                                  Packs := Packs + 1;
-                              elsif Nm'Length > 5
-                                and then Nm (Nm'Last - 4 .. Nm'Last) = ".pack"
+                              end if;
+                              --  size-pack is the byte size of a pack's data
+                              --  and its index (git counts .pack + .idx, not
+                              --  .rev); non-H prints whole KiB, -H humanises it.
+                              if (Nm'Length > 5
+                                  and then Nm (Nm'Last - 4 .. Nm'Last) = ".pack")
+                                or else (Nm'Length > 4
+                                         and then Nm (Nm'Last - 3 .. Nm'Last)
+                                                  = ".idx")
                               then
                                  Size_Pack := Size_Pack
-                                   + (Long_Long_Integer
-                                        (Ada.Directories.Size (E)) + 1023)
-                                     / 1024;
+                                   + Long_Long_Integer
+                                       (Ada.Directories.Size (E));
                               end if;
                            end;
                         end loop;
                         Ada.Directories.End_Search (Search);
                      end if;
 
-                     In_Pack :=
-                       Long_Long_Integer
-                         (Version.Pack.All_Pack_Objects (Repo).Length);
+                     declare
+                        Packed : constant
+                          Version.Objects.Object_Id_Vectors.Vector :=
+                            Version.Pack.All_Pack_Objects (Repo);
+                        package Hex_Sets is new
+                          Ada.Containers.Indefinite_Ordered_Sets (String);
+                        Pack_Set : Hex_Sets.Set;
+                        Prunable : Natural := 0;
+                     begin
+                        for Id of Packed loop
+                           Pack_Set.Include (Version.Objects.To_String (Id));
+                        end loop;
+                        --  A loose object that is also in a pack could be
+                        --  dropped by prune-packed.
+                        for L of Loose_Ids loop
+                           if Pack_Set.Contains (L) then
+                              Prunable := Prunable + 1;
+                           end if;
+                        end loop;
 
-                     Success_Line ("count: " & Img (Long_Long_Integer (Count_N)));
-                     Success_Line ("size: " & Img (KiB));
-                     Success_Line ("in-pack: " & Img (In_Pack));
-                     Success_Line ("packs: " & Img (Long_Long_Integer (Packs)));
-                     Success_Line ("size-pack: " & Img (Size_Pack));
-                     Success_Line ("prune-packable: 0");
-                     Success_Line ("garbage: 0");
-                     Success_Line ("size-garbage: 0");
+                        In_Pack := Long_Long_Integer (Packed.Length);
+
+                        declare
+                           Human : constant Boolean :=
+                             (for some J in 2 .. Count =>
+                                Arg (J) = "-H"
+                                or else Arg (J) = "--human-readable");
+                        begin
+                           Success_Line
+                             ("count: " & Img (Long_Long_Integer (Count_N)));
+                           Success_Line
+                             ("size: "
+                              & (if Human then Human_Bytes (KiB * 1024)
+                                 else Img (KiB)));
+                           Success_Line ("in-pack: " & Img (In_Pack));
+                           Success_Line
+                             ("packs: " & Img (Long_Long_Integer (Packs)));
+                           Success_Line
+                             ("size-pack: "
+                              & (if Human then Human_Bytes (Size_Pack)
+                                 else Img (Size_Pack / 1024)));
+                           Success_Line
+                             ("prune-packable: "
+                              & Img (Long_Long_Integer (Prunable)));
+                           Success_Line ("garbage: 0");
+                           Success_Line
+                             ("size-garbage: "
+                              & (if Human then "0 bytes" else "0"));
+                        end;
+                     end;
                   end;
                elsif Count >= 2 and then (Arg (2) = "-H"
                                           or else Arg (2) = "--human-readable")
