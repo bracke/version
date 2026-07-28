@@ -69,7 +69,7 @@ transport.fixture       transport.cases       -     0
 auxcmd.fixture          auxcmd.cases          -     0
 mergeback.fixture       mergeback.cases       -     8
 mergeback2.fixture      mergeback2.cases      -     0
-impexp.fixture          impexp.cases          -    8
+impexp.fixture          impexp.cases          -    7
 impexp2.fixture         impexp2.cases         -     0
 rebase.fixture          rebase.cases          -     7
 sparsebr.fixture        sparsebr.cases        -     4

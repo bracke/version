@@ -5765,8 +5765,21 @@ package body Version.CLI is
                             (Repo, Version.Revisions.Resolve (Repo, Ref)))
                        = Version.Objects.Tag_Object;
 
+            --  An annotated tag peels to the object it tags -- usually a
+            --  commit, but possibly a blob or tree (a tag of a blob). Only a
+            --  commit target drives the reachability walk; a non-commit target
+            --  just gets a `tag` command pointing at that object's mark.
             Tip : constant Version.Objects.Hex_Object_Id :=
-              Version.Revisions.Resolve_Commit (Repo, Ref);
+              (if Is_Annotated_Tag
+               then Version.Objects.Tag_Target_Id
+                      (Version.Objects.Read_Object
+                         (Repo, Version.Revisions.Resolve (Repo, Ref)))
+               else Version.Revisions.Resolve_Commit (Repo, Ref));
+
+            Tip_Is_Commit : constant Boolean :=
+              Version.Objects.Kind
+                (Version.Objects.Read_Object (Repo, Tip))
+              = Version.Objects.Commit_Object;
 
             --  The commits this ref brings that no earlier ref did, oldest
             --  first.
@@ -5774,7 +5787,9 @@ package body Version.CLI is
             Pending : Version.Trailers.String_Vectors.Vector;
             Seen    : Version.Trailers.String_Vectors.Vector;
          begin
-            Pending.Append (Version.Objects.To_String (Tip));
+            if Tip_Is_Commit then
+               Pending.Append (Version.Objects.To_String (Tip));
+            end if;
 
             while not Pending.Is_Empty loop
                declare
@@ -5839,71 +5854,13 @@ package body Version.CLI is
                end loop;
             end;
 
-            if Is_Annotated_Tag then
-               declare
-                  Obj : constant Version.Objects.Git_Object :=
-                    Version.Objects.Read_Object
-                      (Repo, Version.Revisions.Resolve (Repo, Ref));
-                  Name : constant String :=
-                    Ref (Ref'First + 10 .. Ref'Last);
-               begin
-                  if Version.Objects.Kind (Obj) = Version.Objects.Tag_Object
-                    and then Marks.Contains (Version.Objects.To_String (Tip))
-                  then
-                     declare
-                        Data : constant String :=
-                          Version.Objects.Content (Obj);
-                        Blank : constant Natural :=
-                          Ada.Strings.Fixed.Index
-                            (Data, ASCII.LF & ASCII.LF);
-                        Tagger : Unbounded_String;
-                        Pos    : Natural := Data'First;
-                     begin
-                        while Pos <= Data'Last loop
-                           declare
-                              Stop : constant Natural :=
-                                Ada.Strings.Fixed.Index
-                                  (Data, "" & ASCII.LF, Pos);
-                              Line : constant String :=
-                                Data (Pos .. (if Stop = 0 then Data'Last
-                                              else Stop - 1));
-                           begin
-                              exit when Line'Length = 0 or else Stop = 0;
-
-                              if Line'Length > 7
-                                and then Line (Line'First .. Line'First + 6)
-                                         = "tagger "
-                              then
-                                 Tagger :=
-                                   To_Unbounded_String
-                                     (Line (Line'First + 7 .. Line'Last));
-                              end if;
-
-                              Pos := Stop + 1;
-                           end;
-                        end loop;
-
-                        Put ("tag " & Name & ASCII.LF);
-                        Put ("from :"
-                             & Mark_Image
-                                 (Marks.Element
-                                    (Version.Objects.To_String (Tip)))
-                             & ASCII.LF);
-
-                        if Tagger /= "" then
-                           Put ("tagger " & To_String (Tagger) & ASCII.LF);
-                        end if;
-
-                        Put_Data
-                          ((if Blank = 0 then ""
-                            else Data (Blank + 2 .. Data'Last)));
-                        Put ("" & ASCII.LF);
-                     end;
-                  end if;
-               end;
-            elsif Order.Is_Empty then
-               --  Nothing new: the ref just points at something we have.
-               if Marks.Contains (Version.Objects.To_String (Tip)) then
+            if Order.Is_Empty then
+               --  Nothing new: the ref just points at something we have. An
+               --  annotated tag still emits its `tag` command below; only a
+               --  branch/lightweight tag needs the `reset` here.
+               if not Is_Annotated_Tag
+                 and then Marks.Contains (Version.Objects.To_String (Tip))
+               then
                   Put ("reset " & Ref & ASCII.LF);
                   Put ("from :"
                        & Mark_Image
@@ -6189,6 +6146,73 @@ package body Version.CLI is
                         Exported.Append (C);
                      end;
                   end loop;
+               end;
+            end if;
+
+            --  git defers an annotated tag's `tag` command until after the
+            --  commits it reaches have been emitted (with their marks), so its
+            --  `from :<mark>` can name one.
+            if Is_Annotated_Tag then
+               declare
+                  Obj : constant Version.Objects.Git_Object :=
+                    Version.Objects.Read_Object
+                      (Repo, Version.Revisions.Resolve (Repo, Ref));
+                  Name : constant String :=
+                    Ref (Ref'First + 10 .. Ref'Last);
+               begin
+                  if Version.Objects.Kind (Obj) = Version.Objects.Tag_Object
+                    and then Marks.Contains (Version.Objects.To_String (Tip))
+                  then
+                     declare
+                        Data : constant String :=
+                          Version.Objects.Content (Obj);
+                        Blank : constant Natural :=
+                          Ada.Strings.Fixed.Index
+                            (Data, ASCII.LF & ASCII.LF);
+                        Tagger : Unbounded_String;
+                        Pos    : Natural := Data'First;
+                     begin
+                        while Pos <= Data'Last loop
+                           declare
+                              Stop : constant Natural :=
+                                Ada.Strings.Fixed.Index
+                                  (Data, "" & ASCII.LF, Pos);
+                              Line : constant String :=
+                                Data (Pos .. (if Stop = 0 then Data'Last
+                                              else Stop - 1));
+                           begin
+                              exit when Line'Length = 0 or else Stop = 0;
+
+                              if Line'Length > 7
+                                and then Line (Line'First .. Line'First + 6)
+                                         = "tagger "
+                              then
+                                 Tagger :=
+                                   To_Unbounded_String
+                                     (Line (Line'First + 7 .. Line'Last));
+                              end if;
+
+                              Pos := Stop + 1;
+                           end;
+                        end loop;
+
+                        Put ("tag " & Name & ASCII.LF);
+                        Put ("from :"
+                             & Mark_Image
+                                 (Marks.Element
+                                    (Version.Objects.To_String (Tip)))
+                             & ASCII.LF);
+
+                        if Tagger /= "" then
+                           Put ("tagger " & To_String (Tagger) & ASCII.LF);
+                        end if;
+
+                        Put_Data
+                          ((if Blank = 0 then ""
+                            else Data (Blank + 2 .. Data'Last)));
+                        Put ("" & ASCII.LF);
+                     end;
+                  end if;
                end;
             end if;
          end;
