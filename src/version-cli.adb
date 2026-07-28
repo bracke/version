@@ -7426,6 +7426,39 @@ package body Version.CLI is
                end loop;
             end;
 
+            --  `--subdirectory-filter` scopes the rewrite (and its progress
+            --  count) to commits whose tree holds that directory, the way git
+            --  restricts the rev-list to it; a directory no commit has -- a
+            --  nonexistent one -- then leaves nothing to rewrite.
+            if Sub_Dir /= "" then
+               declare
+                  Kept : Version.Trailers.String_Vectors.Vector;
+               begin
+                  for C of Order loop
+                     declare
+                        C_Tree : constant Version.Objects.Hex_Object_Id :=
+                          Version.Objects.Commit_Tree_Id
+                            (Version.Objects.Read_Object
+                               (Repo, Version.Objects.To_Object_Id (C)));
+                        Has : Boolean := False;
+                     begin
+                        for E of Version.Objects.Tree_Entries (Repo, C_Tree)
+                        loop
+                           if To_String (E.Path) = To_String (Sub_Dir)
+                             and then E.Kind = Version.Objects.Tree_Directory
+                           then
+                              Has := True;
+                           end if;
+                        end loop;
+                        if Has then
+                           Kept.Append (C);
+                        end if;
+                     end;
+                  end loop;
+                  Order := Kept;
+               end;
+            end if;
+
             Total := Natural (Order.Length);
 
             --  git narrates the whole rewrite on stdout: the warning preamble,
