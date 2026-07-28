@@ -52,7 +52,7 @@ diffplumb.fixture       diffplumb.cases       -    3
 diffplumb2.fixture      diffplumb2.cases      -     6
 wtmutate.fixture        wtmutate.cases        -     2
 wtmutate2.fixture       wtmutate2.cases       -     4
-wtmutate3.fixture       wtmutate3.cases       -     7
+wtmutate3.fixture       wtmutate3.cases       -     0
 
 # --- Second coverage round: multi-repo structure, history tools, repository
 # --- maintenance and local-path transport.

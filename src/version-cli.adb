@@ -927,6 +927,82 @@ package body Version.CLI is
       end if;
    end Require_Clean_Working_Tree_Including_Sparse_Excluded;
 
+   --  Abort a conflicted cherry-pick/revert left by real git: no commit was
+   --  made, so reset the index and working tree back to HEAD and drop git's
+   --  markers (CHERRY_PICK_HEAD / REVERT_HEAD / MERGE_MSG / AUTO_MERGE).
+   procedure Abort_Git_Pick (Repo : Version.Repository.Repository_Handle) is
+      Head : constant String := Version.Refs.Current_Commit_Id (Repo);
+   begin
+      if Head'Length > 0 then
+         declare
+            Id : constant Version.Objects.Hex_Object_Id :=
+              Version.Objects.To_Object_Id (Head);
+         begin
+            Version.Restore.Restore_Working_Tree_For_Commit (Repo, Id);
+            Version.Restore.Write_Index_For_Commit (Repo, Id);
+         end;
+      end if;
+      Version.Merge_State.Clear_State (Repo);
+   end Abort_Git_Pick;
+
+   --  Handle `--continue`/`--abort`/`--skip` when the repository is paused in a
+   --  conflicted cherry-pick or revert that real git wrote (a single pick uses
+   --  CHERRY_PICK_HEAD/REVERT_HEAD with no sequencer directory). Returns True
+   --  when it acted; False lets the caller's own handling run.
+   function Run_Git_Pick_Sequencer (Sub : String) return Boolean is
+      Repo : constant Version.Repository.Repository_Handle :=
+        Version.Repository.Open;
+   begin
+      if not Version.Merge_State.Git_Pick_In_Progress (Repo) then
+         return False;
+      end if;
+
+      if Sub = "--continue" then
+         --  Unmerged entries block the continue: git lists them and refuses,
+         --  exactly as `git commit` would.
+         declare
+            Entries : constant Version.Staging.Index_Entry_Vectors.Vector :=
+              Version.Staging.Load (Repo);
+            Any     : Boolean := False;
+            Last    : Unbounded_String;
+         begin
+            for E of Entries loop
+               if E.Stage /= 0 and then E.Path /= Last then
+                  Last := E.Path;
+                  Any  := True;
+                  Version.Console.Put
+                    ("U" & ASCII.HT & To_String (E.Path) & ASCII.LF);
+               end if;
+            end loop;
+            if Any then
+               Stderr_Line
+                 ("error: Committing is not possible because you have"
+                  & " unmerged files.");
+               Stderr_Line
+                 ("hint: Fix them up in the work tree, and then use"
+                  & " 'git add/rm <file>'");
+               Stderr_Line
+                 ("hint: as appropriate to mark resolution and make a"
+                  & " commit.");
+               Stderr_Line
+                 ("fatal: Exiting because of an unresolved conflict.");
+               Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+               return True;
+            end if;
+            --  No unmerged paths: fall back to the caller's real continue.
+            return False;
+         end;
+
+      elsif Sub = "--abort" or else Sub = "--skip" then
+         --  A single conflicted pick has nothing queued after it, so skipping
+         --  is the same as aborting: reset to HEAD and drop the state.
+         Abort_Git_Pick (Repo);
+         return True;
+      end if;
+
+      return False;
+   end Run_Git_Pick_Sequencer;
+
    procedure Print_Sparse_List is
       Repo : constant Version.Repository.Repository_Handle :=
         Version.Repository.Open;
@@ -18543,7 +18619,14 @@ package body Version.CLI is
                Usage : constant String :=
                  "version cherry-pick [-m PARENT|--mainline PARENT] REV...";
             begin
-               if Count = 2 and then Arg (2) = "--continue" then
+               if Count = 2
+                 and then (Arg (2) = "--continue" or else Arg (2) = "--abort"
+                           or else Arg (2) = "--skip")
+                 and then Run_Git_Pick_Sequencer (Arg (2))
+               then
+                  null;   --  acted on real git's conflicted-pick state
+
+               elsif Count = 2 and then Arg (2) = "--continue" then
                   Version.Cherry_Pick.Continue_Cherry_Pick;
                   Success_Line ("continued cherry-pick");
 
@@ -18710,7 +18793,14 @@ package body Version.CLI is
                Usage : constant String :=
                  "version revert [-m PARENT|--mainline PARENT] REV...";
             begin
-               if Count = 2 and then Arg (2) = "--continue" then
+               if Count = 2
+                 and then (Arg (2) = "--continue" or else Arg (2) = "--abort"
+                           or else Arg (2) = "--skip")
+                 and then Run_Git_Pick_Sequencer (Arg (2))
+               then
+                  null;   --  acted on real git's conflicted-pick state
+
+               elsif Count = 2 and then Arg (2) = "--continue" then
                   Version.Revert.Continue_Revert;
                   Success_Line ("continued revert");
 
@@ -20660,6 +20750,7 @@ package body Version.CLI is
                      Mode       : Version.Reset.Reset_Mode := Version.Reset.Mixed;
                      Quiet      : Boolean := False;
                      Keep_Merge : Boolean := False;   --  --keep / --merge
+                     Merge_Rst  : Boolean := False;   --  --merge specifically
                      Bad_Option : Boolean := False;
                      Bad_Text   : Unbounded_String;
                      N_Revs     : Natural := 0;
@@ -20683,6 +20774,7 @@ package body Version.CLI is
                            --  Reset HEAD/index/worktree but keep local changes;
                            --  refuse if a reset file has any (data-loss guard).
                            Keep_Merge := True;
+                           Merge_Rst  := Merge_Rst or else Arg (I) = "--merge";
                         elsif Arg (I) = "-q" or else Arg (I) = "--quiet" then
                            Quiet := True;
                         else
@@ -20736,7 +20828,20 @@ package body Version.CLI is
                            end Tree_Clean;
                         begin
                            if Keep_Merge then
-                              if Tree_Clean then
+                              if Merge_Rst
+                                and then
+                                  (Version.Merge_State.Git_Pick_In_Progress
+                                     (Repo)
+                                   or else Version.Merge_State.Git_State_Exists
+                                             (Repo))
+                              then
+                                 --  `reset --merge` is git's way to clear a
+                                 --  conflicted merge/cherry-pick: reset hard to
+                                 --  the target and drop the in-progress markers.
+                                 Version.Reset.Reset_To_Commit
+                                   (Repo, Version.Reset.Hard, Target);
+                                 Version.Merge_State.Clear_State (Repo);
+                              elsif Tree_Clean then
                                  --  Nothing to keep: reset fully, silently.
                                  Version.Reset.Reset_To_Commit
                                    (Repo, Version.Reset.Hard, Target);
