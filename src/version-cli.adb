@@ -153,6 +153,20 @@ package body Version.CLI is
 
    function Stdin_Is_A_Tty return Boolean is (C_Isatty (0) /= 0);
 
+   --  time(2): the current time as whole seconds since the Unix epoch, used
+   --  only for the wall-clock stamp in format-patch's --thread Message-IDs.
+   function C_Time (T : System.Address) return Long_Integer
+     with Import, Convention => C, External_Name => "time";
+
+   function Unix_Now return Long_Integer is (C_Time (System.Null_Address));
+
+   --  S up to its first line terminator (chomps a trailing newline, e.g. off a
+   --  config value).
+   function First_Line_Of (S : String) return String is
+     (declare
+        NL : constant Natural := Ada.Strings.Fixed.Index (S, ASCII.LF & "");
+      begin (if NL = 0 then S else S (S'First .. NL - 1)));
+
    procedure Expected (Text : String);
    procedure Error_Line (Text : String);
    procedure Stderr_Line (Text : String);
@@ -22100,6 +22114,7 @@ package body Version.CLI is
                Context   : Natural := 3;   --  -U<n>/--unified=<n>
                Show_Summary : Boolean := True;   --  --stat drops the summary
                Cover     : Boolean := False;   --  --cover-letter
+               Thread    : Boolean := False;   --  --thread[=shallow]
 
                function All_Digits (S : String) return Boolean is
                  (S'Length > 0
@@ -22160,6 +22175,13 @@ package body Version.CLI is
                         end if;
                         Out_Dir := To_Unbounded_String (Arg (I + 1));
                         I := I + 1;
+                     elsif A = "--thread" or else A = "--thread=shallow" then
+                        Thread := True;
+                     elsif A = "--no-thread" or else A = "--thread=deep" then
+                        --  We only implement git's default (shallow) threading;
+                        --  --no-thread disables it, --thread=deep is treated as
+                        --  shallow for now.
+                        Thread := A = "--thread=deep";
                      elsif A = "-n" or else A = "--numbered" then
                         Numbering := Version.Format_Patch.On;
                      elsif A = "-N" or else A = "--no-numbered" then
@@ -22281,6 +22303,32 @@ package body Version.CLI is
                            Total : constant Natural :=
                              Natural (Commits.Length);
                            N     : Natural := 0;
+
+                           --  --thread Message-IDs: "<sha>.<now>.git.<email>"
+                           --  with a wall-clock stamp (non-deterministic in git
+                           --  too; the parity harness normalises it). Shallow
+                           --  threading: every later patch replies to the first.
+                           Thr_Ts : constant String :=
+                             (if Thread
+                              then Ada.Strings.Fixed.Trim
+                                     (Long_Integer'Image (Unix_Now),
+                                      Ada.Strings.Both)
+                              else "");
+                           Thr_Email : constant String :=
+                             (if Thread
+                                and then Version.Config.Has_Key
+                                           (Repo, "user.email")
+                              then First_Line_Of
+                                     (Version.Config.Get_Text
+                                        (Repo, "user.email"))
+                              else "");
+                           function Mid (C : Version.Objects.Hex_Object_Id)
+                             return String
+                           is (Version.Objects.To_String (C) & "." & Thr_Ts
+                               & ".git." & Thr_Email);
+                           Root_Mid : constant String :=
+                             (if Thread and then not Commits.Is_Empty
+                              then Mid (Commits.First_Element) else "");
                         begin
                            --  git's --cover-letter prepends message 0, then the
                            --  usual blank line before the first patch (only the
@@ -22317,7 +22365,16 @@ package body Version.CLI is
                                       Emit_Signature => Emit_Sig,
                                       Signature => To_String (Sig),
                                       Context   => Context,
-                                      Show_Summary => Show_Summary);
+                                      Show_Summary => Show_Summary,
+                                      Message_Id =>
+                                        (if Thread then Mid (C) else ""),
+                                      In_Reply_To =>
+                                        (if Thread
+                                           and then Version.Objects.To_String (C)
+                                                    /= Version.Objects
+                                                         .To_String
+                                                         (Commits.First_Element)
+                                         then Root_Mid else ""));
                               begin
                                  if Stdout then
                                     --  Byte-exact: Ada.Text_IO.Put would leave the

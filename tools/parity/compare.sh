@@ -55,6 +55,12 @@ while IFS= read -r line; do
   # commits are still compared), so collapse the whole line to one token.
   sed -i -E "/Rewrite [0-9a-f]{7,40} \([0-9]+\/[0-9]+\)/ s/.*/<REWRITE-PROGRESS>/" \
     "$WORK/g.out" "$WORK/o.out" 2>/dev/null
+  # format-patch's --thread Message-IDs embed a wall-clock stamp
+  # ("<sha>.<seconds>.git.<email>"), so git and version disagree on the digits
+  # while everything else -- the sha, the threading -- is identical. Normalise
+  # just that stamp, as git's own docs note it is not reproducible.
+  sed -i -E "s/\.[0-9]{9,}\.git\./.<TS>.git./g" \
+    "$WORK/g.out" "$WORK/o.out" 2>/dev/null
   ge=$([ -s "$WORK/g.err" ] && echo 1 || echo 0)
   oe=$([ -s "$WORK/o.err" ] && echo 1 || echo 0)
   if cmp -s "$WORK/g.out" "$WORK/o.out" && [ "$gr" = "$orr" ] && [ "$ge" = "$oe" ]; then

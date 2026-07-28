@@ -1,3 +1,4 @@
+- Git parity: `format-patch --thread` chains the series with `Message-ID:`/`In-Reply-To:`/`References:` headers (shallow threading — every later patch replies to the first), matching git.
 - Git parity: `mailsplit` only reads the named mailboxes once `-o<dir>` is given; without it, it reads one mailbox from stdin and ignores the operands (so `mailsplit box.mbox </dev/null` splits nothing, printing `0`), as git does.
 - Git parity: `apply` actually applies the `--directory`/`--include`/`--exclude`-filtered patch (it was filtered only for the summary modes before), so `--directory=<d>` targets the prefixed paths; a patch whose files are all filtered out is a successful no-op, as git treats it.
 - Git parity: `apply -3`/`--3way` reports each file it applied cleanly (`Applied patch to '<file>' cleanly.` on stderr), as git does when the three-way merge was not needed.
