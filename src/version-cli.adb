@@ -13077,6 +13077,7 @@ package body Version.CLI is
                Negate      : Boolean := False;
                Want_Parents : Boolean := False;   --  --parents
                Want_Children : Boolean := False;  --  --children
+               Want_Boundary : Boolean := False;  --  --boundary
                --  git's symmetric-range marking: --left-right prefixes each
                --  commit with </> for its side, --cherry-mark replaces that
                --  with = for a commit whose patch already exists on the other
@@ -13155,6 +13156,8 @@ package body Version.CLI is
                      Want_Parents := True;
                   elsif Arg (I) = "--children" then
                      Want_Children := True;
+                  elsif Arg (I) = "--boundary" then
+                     Want_Boundary := True;
                   elsif Arg (I) = "--left-right" then
                      Left_Right := True;
                   elsif Arg (I) = "--cherry-mark" then
@@ -13632,6 +13635,7 @@ package body Version.CLI is
                                    (Repo, Commits,
                                     With_Parents => Want_Parents,
                                     With_Children => Want_Children,
+                                    With_Boundary => Want_Boundary,
                                     Decorate => Decorate));
                            else
                               declare
@@ -13732,6 +13736,8 @@ package body Version.CLI is
                                                          Want_Parents,
                                                        With_Children =>
                                                          Want_Children,
+                                                       With_Boundary =>
+                                                         Want_Boundary,
                                                        Decorate => Decorate));
                                           end;
                                           <<Skip>>
@@ -13747,6 +13753,7 @@ package body Version.CLI is
                           (Version.Log.Log_Oneline_List_Text
                              (Repo, Commits, With_Parents => Want_Parents,
                               With_Children => Want_Children,
+                              With_Boundary => Want_Boundary,
                               Decorate => Decorate));
                      else
                         Version.Console.Put
