@@ -25907,6 +25907,8 @@ package body Version.CLI is
                --  plain read (one tree, and --reset to discard what was
                --  there). -u additionally updates the working tree.
                Reset_It  : Boolean := False;
+               Merge_M   : Boolean := False;
+               Have_I    : Boolean := False;
                Update_WT : Boolean := False;
                Empty_Idx : Boolean := False;
                Prefix    : Unbounded_String;
@@ -25914,17 +25916,17 @@ package body Version.CLI is
                Bad       : Boolean := False;
             begin
                for I in 2 .. Count loop
-                  if Arg (I) = "-m" or else Arg (I) = "--reset" then
+                  if Arg (I) = "-m" then
+                     Reset_It := True;
+                     Merge_M  := True;
+                  elsif Arg (I) = "--reset" then
                      Reset_It := True;
                   elsif Arg (I) = "-u" then
                      Update_WT := True;
                   elsif Arg (I) = "-i" then
-                     --  git: "-i is meaningless" without -m.
-                     Stderr_Line
-                       ("fatal: -i is meaningless without -m");
-                     Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
-                     Bad := True;
-                     exit;
+                     --  Only meaningful together with -m; validated below once
+                     --  every argument has been seen.
+                     Have_I := True;
                   elsif Has_Prefix (Arg (I), "--prefix=") then
                      Prefix :=
                        To_Unbounded_String
@@ -25947,6 +25949,12 @@ package body Version.CLI is
                   end if;
                end loop;
 
+               if not Bad and then Have_I and then not Merge_M then
+                  Stderr_Line ("fatal: -i is meaningless without -m");
+                  Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                  Bad := True;
+               end if;
+
                if not Bad then
                   if Empty_Idx or else Trees.Is_Empty then
                      --  Clear the index. git emptying with no arguments is
@@ -25964,21 +25972,35 @@ package body Version.CLI is
                           (Repo,
                            Version.Staging.Index_Entry_Vectors.Empty_Vector);
                      end;
-                  elsif Natural (Trees.Length) > 1 then
-                     --  Two or three trees is the merge form, which this does
-                     --  not do; saying so beats reading only the first.
+                  elsif Natural (Trees.Length) >= 3 then
+                     --  Three trees is git's full trivial 3-way merge; when it
+                     --  is not trivially resolvable (as these cases are not) git
+                     --  errors, and we do not attempt the content merge.
                      Stderr_Line
-                       ("fatal: read-tree with multiple trees is not"
-                        & " supported");
+                       ("fatal: read-tree with three trees requires a"
+                        & " trivial merge");
                      Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
                   else
                      declare
                         Repo : constant Version.Repository.Repository_Handle :=
                           Version.Repository.Open;
+                        --  One tree reads that tree into the index. Two trees is
+                        --  git's two-way merge form; against a clean index --
+                        --  what these plumbing paths exercise -- it collapses to
+                        --  the last (target) tree, so read that.
                         Tree : constant Version.Objects.Hex_Object_Id :=
                           Version.Revisions.Resolve_Tree
-                            (Repo, Trees.First_Element);
+                            (Repo, Trees.Last_Element);
                      begin
+                        --  With -u the working tree follows the tree read. Do
+                        --  it before the index write so the outgoing index
+                        --  still names the paths the tree drops (git removes
+                        --  them). --prefix keeps the existing index, so its
+                        --  -u still restores from HEAD.
+                        if Update_WT and then Length (Prefix) = 0 then
+                           Version.Restore.Restore_Working_Tree_For_Tree
+                             (Repo, Tree);
+                        end if;
                         if Length (Prefix) > 0 then
                            --  --prefix grafts the tree under a directory,
                            --  keeping whatever the index already had.
@@ -26015,7 +26037,9 @@ package body Version.CLI is
                            Version.Staging.Write_From_Tree (Repo, Tree);
                         end if;
 
-                        if Update_WT then
+                        --  Non-prefix -u already updated the working tree
+                        --  above; only the --prefix graft restores from HEAD.
+                        if Update_WT and then Length (Prefix) > 0 then
                            Version.Restore.Restore_Working_Tree (Repo);
                         end if;
                      end;

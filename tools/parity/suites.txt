@@ -43,7 +43,7 @@ merge.fixture           merge.cases           -     0
 mergeconflict.fixture   mergeconflict.cases   -     0
 refs.fixture            refs.cases            -    2
 refs2.fixture           refs2.cases           -     0
-plumbing.fixture        plumbing.cases        -    6
+plumbing.fixture        plumbing.cases        -    1
 histinspect.fixture     histinspect.cases     -     9
 histinspect2.fixture    histinspect2.cases    -     1
 configtext.fixture      configtext.cases      -     1
