@@ -33185,6 +33185,7 @@ package body Version.CLI is
                --  which records show and how their ids are rendered.
                Seen_Sep      : Boolean := False;
                Want_Renames  : Boolean := False;
+               Want_Trees    : Boolean := False;
                Pathspec_Args : Version.Trailers.String_Vectors.Vector;
                Diff_Filter   : Unbounded_String;
                Abbrev        : Natural := 0;
@@ -33249,13 +33250,14 @@ package body Version.CLI is
                     or else Has_Prefix (Arg (I), "--find-renames=")
                   then
                      Want_Renames := True;
-                  elsif Arg (I) = "-t" or else Arg (I) = "--no-commit-id"
+                  elsif Arg (I) = "-t" then
+                     --  Show changed tree objects too; git's -t implies -r.
+                     Want_Trees := True;
+                     Recursive := True;
+                  elsif Arg (I) = "--no-commit-id"
                     or else Arg (I) = "--full-index"
                     or else Arg (I) = "--no-renames"
                   then
-                     --  -t (show tree entries) and --full-index leave the raw
-                     --  record's full ids and status as this renders them;
-                     --  accepted, never refused silently.
                      null;
                   elsif Arg (I)'Length > 0 and then Arg (I) (Arg (I)'First) = '-'
                   then
@@ -33294,7 +33296,8 @@ package body Version.CLI is
                           or else (Want_Renames
                                    and then Format in Render_Name_Only
                                                     | Render_Name_Status
-                                                    | Render_Summary);
+                                                    | Render_Summary
+                                                    | Render_Raw);
                      begin
                         if Use_Engine then
                            Version.Console.Put
@@ -33305,6 +33308,17 @@ package body Version.CLI is
                                   Name_Only   => Format = Render_Name_Only,
                                   Name_Status => Format = Render_Name_Status,
                                   Summary     => Format = Render_Summary,
+                                  Raw         =>
+                                    Format = Render_Raw
+                                    and then not Want_Stat
+                                    and then not Want_Patch,
+                                  --  diff-tree raw shows full ids by default;
+                                  --  only --abbrev shortens them.
+                                  Abbrev      =>
+                                    (if Abbrev = 0
+                                     then Version.Objects.To_String (T1)'Length
+                                     else Abbrev),
+                                  Diff_Filter => Diff_Filter,
                                   Detect_Renames =>
                                     (if Want_Renames
                                      then Version.Diff.Renames_On
@@ -33314,7 +33328,7 @@ package body Version.CLI is
                            Put_Raw_As
                              (Repo,
                               Version.Diff.Raw_Diff_Trees
-                                (Repo, T1, True, T2, Recursive),
+                                (Repo, T1, True, T2, Recursive, Show_Trees => Want_Trees),
                               Format, Specs (Repo),
                               To_String (Diff_Filter), Abbrev);
                         end if;
@@ -33372,7 +33386,7 @@ package body Version.CLI is
                                  Put_Raw_As
                                    (Repo,
                                     Version.Diff.Raw_Diff_Trees
-                                      (Repo, P_Tree, True, Tree, Recursive),
+                                      (Repo, P_Tree, True, Tree, Recursive, Show_Trees => Want_Trees),
                                     Format, Specs (Repo),
                                     To_String (Diff_Filter), Abbrev);
                               end if;
@@ -33382,7 +33396,7 @@ package body Version.CLI is
                            Put_Raw_As
                              (Repo,
                               Version.Diff.Raw_Diff_Trees
-                                (Repo, Tree, False, Tree, Recursive),
+                                (Repo, Tree, False, Tree, Recursive, Show_Trees => Want_Trees),
                               Format, Specs (Repo),
                               To_String (Diff_Filter), Abbrev);
                         end if;
