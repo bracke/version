@@ -147,6 +147,12 @@ package body Version.CLI is
       return Command_Failure_Exit;
    end Command_Failure_Exit_Status;
 
+   --  isatty(3): whether a file descriptor is connected to a terminal.
+   function C_Isatty (Fd : Integer) return Integer
+     with Import, Convention => C, External_Name => "isatty";
+
+   function Stdin_Is_A_Tty return Boolean is (C_Isatty (0) /= 0);
+
    procedure Expected (Text : String);
    procedure Error_Line (Text : String);
    procedure Stderr_Line (Text : String);
@@ -22762,12 +22768,52 @@ package body Version.CLI is
                         end loop;
                      end if;
 
-                     --  Bare shortlog summarizes HEAD; a pathspec restricts the
-                     --  walk to commits that touch those paths.
+                     --  Bare shortlog summarizes HEAD interactively, but git
+                     --  reads the commit list from stdin when stdin is not a
+                     --  terminal (as `git log | git shortlog` does); an empty
+                     --  stdin then names no commits and prints nothing. The
+                     --  leading token of each line carries the id (rev-list
+                     --  form). A pathspec restricts the walk either way.
                      if Include.Is_Empty and then Parsed.Exclude.Is_Empty then
-                        Include.Append
-                          (Version.Objects.To_Object_Id
-                             (Version.Refs.Current_Commit_Id (Repo)));
+                        if Stdin_Is_A_Tty then
+                           Include.Append
+                             (Version.Objects.To_Object_Id
+                                (Version.Refs.Current_Commit_Id (Repo)));
+                        else
+                           declare
+                              Text : constant String := Read_All_Stdin;
+                              Pos  : Natural := Text'First;
+                           begin
+                              while Pos <= Text'Last loop
+                                 declare
+                                    Stop : Natural := Pos;
+                                 begin
+                                    while Stop <= Text'Last
+                                      and then Text (Stop) /= ASCII.LF
+                                    loop
+                                       Stop := Stop + 1;
+                                    end loop;
+                                    declare
+                                       Line : constant String :=
+                                         Text (Pos .. Stop - 1);
+                                       Sp   : constant Natural :=
+                                         Ada.Strings.Fixed.Index (Line, " ");
+                                       Tok  : constant String :=
+                                         (if Sp = 0 then Line
+                                          else Line (Line'First .. Sp - 1));
+                                    begin
+                                       if Version.Objects
+                                            .Is_Valid_Hex_Object_Id (Tok)
+                                       then
+                                          Include.Append
+                                            (Version.Objects.To_Object_Id (Tok));
+                                       end if;
+                                    end;
+                                    Pos := Stop + 1;
+                                 end;
+                              end loop;
+                           end;
+                        end if;
                      end if;
                      for P of Parsed.Paths loop
                         Selection.Paths.Append (New_Item => P);
