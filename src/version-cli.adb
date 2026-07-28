@@ -21897,6 +21897,18 @@ package body Version.CLI is
                              (Version.Diff.Summarize_Patch
                                 (Patch_Text, Version.Diff.Summary_Names));
                         end if;
+                     elsif Ada.Strings.Fixed.Trim
+                             (Patch_Text, Ada.Strings.Both) = ""
+                       and then Ada.Strings.Fixed.Trim
+                                  (Raw_Patch, Ada.Strings.Both) /= ""
+                     then
+                        --  A non-empty patch whose every file was filtered out
+                        --  (e.g. --include/--exclude, --directory) leaves
+                        --  nothing to apply: git parsed the input and then
+                        --  applied nothing, which succeeds silently. Only a
+                        --  genuinely empty input is the "No valid patches"
+                        --  error, which the apply path below still reports.
+                        null;
                      else
                         --  git's --whitespace check: every added line is
                         --  scanned for whitespace errors (trailing blanks,
@@ -21910,7 +21922,7 @@ package body Version.CLI is
                               else "<stdin>");
                            Errors : Natural := 0;
                            Fixed  : Unbounded_String;
-                           P      : Natural := Raw_Patch'First;
+                           P      : Natural := Patch_Text'First;
                            Lineno : Natural := 0;
 
                            function Bad_Tail (S : String) return Boolean is
@@ -21929,19 +21941,19 @@ package body Version.CLI is
                            end Stripped;
                         begin
                            if Ws /= "" and then Ws /= "nowarn" then
-                              while P <= Raw_Patch'Last loop
+                              while P <= Patch_Text'Last loop
                                  declare
                                     Stop : Natural := P;
                                  begin
-                                    while Stop <= Raw_Patch'Last
-                                      and then Raw_Patch (Stop) /= ASCII.LF
+                                    while Stop <= Patch_Text'Last
+                                      and then Patch_Text (Stop) /= ASCII.LF
                                     loop
                                        Stop := Stop + 1;
                                     end loop;
                                     Lineno := Lineno + 1;
                                     declare
                                        Line : constant String :=
-                                         Raw_Patch (P .. Stop - 1);
+                                         Patch_Text (P .. Stop - 1);
                                        Is_Add : constant Boolean :=
                                          Line'Length >= 1
                                          and then Line (Line'First) = '+'
@@ -21998,7 +22010,7 @@ package body Version.CLI is
                            Version.Apply.Apply_Patch
                              (Repo,
                               (if Ws = "fix" and then Errors > 0
-                               then To_String (Fixed) else Raw_Patch),
+                               then To_String (Fixed) else Patch_Text),
                               Opts);
 
                            --  git's -3/--3way reports each file it applied
@@ -22007,7 +22019,7 @@ package body Version.CLI is
                            --  did not fail.
                            if Three_Way then
                               declare
-                                 P   : constant String := Raw_Patch;
+                                 P   : constant String := Patch_Text;
                                  Pos : Natural := P'First;
                               begin
                                  while Pos <= P'Last loop
