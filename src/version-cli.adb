@@ -21589,6 +21589,7 @@ package body Version.CLI is
                Want_Numstat   : Boolean := False;
                Want_Shortstat : Boolean := False;
                Want_Summary   : Boolean := False;
+               Three_Way : Boolean := False;   --  -3/--3way
                Bad_Opt  : Boolean := False;
                Bad_Text : Unbounded_String;
                File_Idx : Natural := 0;
@@ -21787,16 +21788,19 @@ package body Version.CLI is
                   elsif Has_Prefix (Arg (I), "--whitespace=") then
                      Ws_Action := To_Unbounded_String
                        (Arg (I) (Arg (I)'First + 13 .. Arg (I)'Last));
+                  elsif Arg (I) = "--3way" or else Arg (I) = "-3" then
+                     --  We do not run the 3-way merge fallback, so a direct
+                     --  application still fails (exit 1) where git's 3-way
+                     --  would succeed; but a clean direct apply is reported.
+                     Three_Way := True;
+                  elsif Arg (I) = "--no-3way" then
+                     Three_Way := False;
                   elsif Arg (I) = "--recount"
                     or else Arg (I) = "--unidiff-zero"
                     or else Has_Prefix (Arg (I), "-C")
-                    or else Arg (I) = "--3way" or else Arg (I) = "-3"
-                    or else Arg (I) = "--no-3way"
                   then
                      --  These change how a patch is applied, not the record it
-                     --  produces; accepted without effect for a summary. A
-                     --  --3way fallback we do not do simply applies directly,
-                     --  which still fails (exit 1) where git's 3-way would.
+                     --  produces; accepted without effect for a summary.
                      null;
                   elsif Arg (I) = "-R" or else Arg (I) = "--reverse" then
                      Opts.Reverse_Patch := True;
@@ -21996,6 +22000,57 @@ package body Version.CLI is
                               (if Ws = "fix" and then Errors > 0
                                then To_String (Fixed) else Raw_Patch),
                               Opts);
+
+                           --  git's -3/--3way reports each file it applied
+                           --  cleanly (the 3-way merge was not needed) on
+                           --  stderr; reached only when the direct apply above
+                           --  did not fail.
+                           if Three_Way then
+                              declare
+                                 P   : constant String := Raw_Patch;
+                                 Pos : Natural := P'First;
+                              begin
+                                 while Pos <= P'Last loop
+                                    declare
+                                       Stop : Natural := Pos;
+                                    begin
+                                       while Stop <= P'Last
+                                         and then P (Stop) /= ASCII.LF
+                                       loop
+                                          Stop := Stop + 1;
+                                       end loop;
+                                       declare
+                                          Line : constant String :=
+                                            P (Pos .. Stop - 1);
+                                       begin
+                                          if Line'Length > 6
+                                            and then Line
+                                                       (Line'First
+                                                        .. Line'First + 5)
+                                                     = "+++ b/"
+                                          then
+                                             declare
+                                                Rest : constant String :=
+                                                  Line (Line'First + 6
+                                                        .. Line'Last);
+                                                Tab  : constant Natural :=
+                                                  Ada.Strings.Fixed.Index
+                                                    (Rest, "" & ASCII.HT);
+                                             begin
+                                                Stderr_Line
+                                                  ("Applied patch to '"
+                                                   & (if Tab = 0 then Rest
+                                                      else Rest (Rest'First
+                                                                 .. Tab - 1))
+                                                   & "' cleanly.");
+                                             end;
+                                          end if;
+                                       end;
+                                       Pos := Stop + 1;
+                                    end;
+                                 end loop;
+                              end;
+                           end if;
                         end;
                      end if;
                   end;

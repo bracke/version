@@ -1,3 +1,4 @@
+- Git parity: `apply -3`/`--3way` reports each file it applied cleanly (`Applied patch to '<file>' cleanly.` on stderr), as git does when the three-way merge was not needed.
 - Git parity: `filter-branch --subdirectory-filter <dir>` scopes the rewrite (and its progress count) to commits whose tree holds that directory, so a directory no commit has (e.g. a nonexistent one) is now `Found nothing to rewrite` (exit 2) rather than a full-range rewrite.
 - Git parity: `show -m` shows a merge commit once per parent, each header carrying `(from <parent>)` and followed by the diff against that parent.
 - Git parity: bare `shortlog` reads the commit list from stdin when stdin is not a terminal (git's `log | shortlog` form), so `shortlog < /dev/null` names no commits and prints nothing instead of summarizing HEAD; an interactive terminal still defaults to HEAD.
