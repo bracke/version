@@ -11928,6 +11928,7 @@ package body Version.CLI is
                Shortstat : Boolean := False;
                Summary : Boolean := False;
                Raw_Flag : Boolean := False;
+               Abbrev_Val : Natural := 7;
                Patch_With_Raw : Boolean := False;
                Patch_With_Stat : Boolean := False;
                Diff_Filter_V : Unbounded_String := Null_Unbounded_String;
@@ -12149,6 +12150,18 @@ package body Version.CLI is
                      if Rename_Mode = Version.Diff.Renames_Default then
                         Rename_Mode := Version.Diff.Renames_On;
                      end if;
+                  elsif Has_Prefix (Arg (I), "--abbrev=") then
+                     begin
+                        Abbrev_Val := Natural'Max
+                          (Natural'Value
+                             (Arg (I) (Arg (I)'First + 9 .. Arg (I)'Last)), 4);
+                     exception
+                        when others =>
+                           Usage_Error ("--abbrev needs a number", Usage);
+                           return;
+                     end;
+                  elsif Arg (I) = "--abbrev" then
+                     Abbrev_Val := 7;
                   elsif Arg (I) = "--patch-with-raw" then
                      --  The raw records, then the ordinary patch.
                      Patch_With_Raw := True;
@@ -12279,6 +12292,7 @@ package body Version.CLI is
                         Shortstat => Shortstat,
                         Summary => Summary,
                         Raw => Raw_Flag,
+                        Abbrev => Abbrev_Val,
                         Compact_Summary => Compact_Flag,
                         Stat_Width => Stat_Width_V,
                         Diff_Filter => Diff_Filter_V,

@@ -1,3 +1,4 @@
+- Git parity: `diff --abbrev=<n>` sets the abbreviation length of the object ids in the `--raw` format (git's `--abbrev`).
 - Git parity: `count-objects -v` reports the real `size-pack` (the packs' `.pack`+`.idx` byte size, in whole KiB; humanised under `-H`) and `prune-packable` (loose objects that also exist in a pack).
 - Git parity: `prune-packed -n`/`--dry-run` lists the `rm -f <path>` it would run for each loose object present in a pack, on stdout, relative to the working directory.
 - Git parity: `update-ref -m <msg>` records the message in the (dereferenced) ref's reflog, for the ref types git logs by default (refs/heads/*, refs/remotes/*, refs/notes/*, HEAD).
