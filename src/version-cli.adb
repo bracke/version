@@ -18654,6 +18654,25 @@ package body Version.CLI is
                                    (Repo, New_Ones (J), Force_Date => True);
                               end loop;
                            end;
+                        exception
+                           --  A dirty working tree is git's die() (128) with a
+                           --  "would be overwritten" message, not a plain error.
+                           when E : Ada.IO_Exceptions.Data_Error =>
+                              if Ada.Strings.Fixed.Index
+                                   (Ada.Exceptions.Exception_Message (E),
+                                    "clean working tree") > 0
+                              then
+                                 Stderr_Line
+                                   ("error: your local changes would be"
+                                    & " overwritten by cherry-pick.");
+                                 Stderr_Line
+                                   ("hint: commit your changes or stash them"
+                                    & " to proceed.");
+                                 Stderr_Line ("fatal: cherry-pick failed");
+                                 Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                              else
+                                 raise;
+                              end if;
                         end;
                      end;
                   end;
@@ -18804,6 +18823,25 @@ package body Version.CLI is
                                    (Repo, New_Ones (J), Force_Date => True);
                               end loop;
                            end;
+                        exception
+                           --  A dirty working tree is git's die() (128) with a
+                           --  "would be overwritten" message, not a plain error.
+                           when E : Ada.IO_Exceptions.Data_Error =>
+                              if Ada.Strings.Fixed.Index
+                                   (Ada.Exceptions.Exception_Message (E),
+                                    "clean working tree") > 0
+                              then
+                                 Stderr_Line
+                                   ("error: your local changes would be"
+                                    & " overwritten by revert.");
+                                 Stderr_Line
+                                   ("hint: commit your changes or stash them"
+                                    & " to proceed.");
+                                 Stderr_Line ("fatal: revert failed");
+                                 Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                              else
+                                 raise;
+                              end if;
                         end;
                      end;
                   end;
