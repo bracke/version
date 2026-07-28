@@ -25961,12 +25961,11 @@ package body Version.CLI is
                Usage : constant String :=
                  "version read-tree [-m] [--reset] [-u] [--prefix=<dir>/]"
                  & " TREE-ISH";
-               --  This reads a tree into the index wholesale, which is what
-               --  --reset asks for; -m's three-way behaviour is not
-               --  implemented, so it is accepted only where it agrees with a
-               --  plain read (one tree, and --reset to discard what was
-               --  there). -u additionally updates the working tree.
-               Reset_It  : Boolean := False;
+               --  This reads a tree into the index wholesale (what --reset
+               --  asks for); the two-tree -m form collapses to its target
+               --  against a clean index, and -u additionally updates the
+               --  working tree. Merge_M records that -m was given, only to
+               --  validate that -i accompanies it.
                Merge_M   : Boolean := False;
                Have_I    : Boolean := False;
                Update_WT : Boolean := False;
@@ -25977,10 +25976,9 @@ package body Version.CLI is
             begin
                for I in 2 .. Count loop
                   if Arg (I) = "-m" then
-                     Reset_It := True;
-                     Merge_M  := True;
+                     Merge_M := True;
                   elsif Arg (I) = "--reset" then
-                     Reset_It := True;
+                     null;   --  reading the tree already discards the index
                   elsif Arg (I) = "-u" then
                      Update_WT := True;
                   elsif Arg (I) = "-i" then
