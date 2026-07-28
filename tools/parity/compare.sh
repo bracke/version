@@ -47,6 +47,14 @@ while IFS= read -r line; do
   # it, so a wrong committed date is still caught.
   sed -i -E "s/\(Not Committed Yet [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} [+-][0-9]{4}/(Not Committed Yet <NOW>/g" \
     "$WORK/g.out" "$WORK/o.out" 2>/dev/null
+  # `filter-branch`'s carriage-return progress line is wall-clock driven: under
+  # load git stamps a non-zero "N seconds passed" AND its sampler emits fewer
+  # `Rewrite` segments, so the one \r-joined line diverges from version's in
+  # both content and segment count while the rewrite itself is identical. It is
+  # diagnostic, not data (the "Ref was rewritten" line and the rewritten
+  # commits are still compared), so collapse the whole line to one token.
+  sed -i -E "/Rewrite [0-9a-f]{7,40} \([0-9]+\/[0-9]+\)/ s/.*/<REWRITE-PROGRESS>/" \
+    "$WORK/g.out" "$WORK/o.out" 2>/dev/null
   ge=$([ -s "$WORK/g.err" ] && echo 1 || echo 0)
   oe=$([ -s "$WORK/o.err" ] && echo 1 || echo 0)
   if cmp -s "$WORK/g.out" "$WORK/o.out" && [ "$gr" = "$orr" ] && [ "$ge" = "$oe" ]; then
