@@ -1,3 +1,4 @@
+- Git parity: `cat-file --batch-all-objects` works with `--batch`/`--batch-check` given in any position (the flag and its format string are now found wherever they sit), listing every loose and packed object.
 - Git parity: `diff-tree -M` detects renames in the `--raw` format (routing through the rename-aware engine, with full ids by default), and `-t` reports changed subdirectories (`040000` tree lines), implying `-r`.
 - Git parity: `diff --abbrev=<n>` sets the abbreviation length of the object ids in the `--raw` format (git's `--abbrev`).
 - Git parity: `count-objects -v` reports the real `size-pack` (the packs' `.pack`+`.idx` byte size, in whole KiB; humanised under `-H`) and `prune-packable` (loose objects that also exist in a pack).

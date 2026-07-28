@@ -23225,20 +23225,16 @@ package body Version.CLI is
                   return S (S'First + 1 .. S'Last);
                end Img;
 
+               --  git accepts --batch/--batch-check in any position (e.g.
+               --  after --batch-all-objects), so scan every argument.
                Is_Batch : constant Boolean :=
-                 Count >= 2
-                 and then (Arg (2) = "--batch"
-                           or else (Arg (2)'Length >= 8
-                                    and then Arg (2)
-                                      (Arg (2)'First .. Arg (2)'First + 7)
-                                      = "--batch="));
+                 (for some J in 2 .. Count =>
+                    Arg (J) = "--batch"
+                    or else Has_Prefix (Arg (J), "--batch="));
                Is_Batch_Check : constant Boolean :=
-                 Count >= 2
-                 and then (Arg (2) = "--batch-check"
-                           or else (Arg (2)'Length >= 14
-                                    and then Arg (2)
-                                      (Arg (2)'First .. Arg (2)'First + 13)
-                                      = "--batch-check="));
+                 (for some J in 2 .. Count =>
+                    Arg (J) = "--batch-check"
+                    or else Has_Prefix (Arg (J), "--batch-check="));
                All_Objects : constant Boolean :=
                  (for some J in 2 .. Count => Arg (J) = "--batch-all-objects");
                --  -z / -Z read the request list NUL-separated instead of
@@ -23255,12 +23251,29 @@ package body Version.CLI is
                   declare
                      Repo : constant Version.Repository.Repository_Handle :=
                        Version.Repository.Open;
-                     Eq   : constant Natural :=
-                       Ada.Strings.Fixed.Index (Arg (2), "=");
-                     Fmt  : constant String :=
-                       (if Eq = 0
-                        then "%(objectname) %(objecttype) %(objectsize)"
-                        else Arg (2) (Eq + 1 .. Arg (2)'Last));
+
+                     --  The format follows "=" on the --batch/--batch-check
+                     --  argument, wherever it sits; default git's when bare.
+                     function Batch_Format return String is
+                     begin
+                        for J in 2 .. Count loop
+                           if (Has_Prefix (Arg (J), "--batch=")
+                               or else Has_Prefix (Arg (J), "--batch-check="))
+                             and then Ada.Strings.Fixed.Index (Arg (J), "=")
+                                      /= 0
+                           then
+                              declare
+                                 Eq : constant Natural :=
+                                   Ada.Strings.Fixed.Index (Arg (J), "=");
+                              begin
+                                 return Arg (J) (Eq + 1 .. Arg (J)'Last);
+                              end;
+                           end if;
+                        end loop;
+                        return "%(objectname) %(objecttype) %(objectsize)";
+                     end Batch_Format;
+
+                     Fmt  : constant String := Batch_Format;
 
                      function Expand
                        (Token, Rest : String;
