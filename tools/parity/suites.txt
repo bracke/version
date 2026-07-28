@@ -60,7 +60,7 @@ wtmutate3.fixture       wtmutate3.cases       -    10
 multirepo.fixture       multirepo.cases       -    0
 multirepo2.fixture      multirepo2.cases      -    0
 multirepo3.fixture      multirepo3.cases      -    4
-histtools.fixture       histtools.cases       -    15
+histtools.fixture       histtools.cases       -    6
 histtools2.fixture      histtools2.cases      -    12
 histtools3.fixture      histtools3.cases      -     0
 maint.fixture           maint.cases           -     2

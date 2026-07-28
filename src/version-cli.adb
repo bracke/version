@@ -7084,6 +7084,52 @@ package body Version.CLI is
       end Run;
 
       Map : Mark_Id_Maps.Map;   --  old commit -> new commit
+
+      --  git narrates on stdout, opening with a warning preamble unless
+      --  FILTER_BRANCH_SQUELCH_WARNING is set.
+      procedure Emit_Preamble is
+      begin
+         if Ada.Environment_Variables.Exists
+              ("FILTER_BRANCH_SQUELCH_WARNING")
+           and then Ada.Environment_Variables.Value
+                      ("FILTER_BRANCH_SQUELCH_WARNING") /= ""
+         then
+            return;
+         end if;
+         Version.Console.Put
+           ("WARNING: git-filter-branch has a glut of gotchas generating"
+            & " mangled history" & ASCII.LF
+            & ASCII.HT & " rewrites.  Hit Ctrl-C before proceeding to"
+            & " abort, then use an" & ASCII.LF
+            & ASCII.HT & " alternative filtering tool such as 'git"
+            & " filter-repo'" & ASCII.LF
+            & ASCII.HT & " (https://github.com/newren/git-filter-repo/)"
+            & " instead.  See the" & ASCII.LF
+            & ASCII.HT & " filter-branch manual page for more details; to"
+            & " squelch this warning," & ASCII.LF
+            & ASCII.HT & " set FILTER_BRANCH_SQUELCH_WARNING=1." & ASCII.LF
+            & "Proceeding with filter-branch..." & ASCII.LF & ASCII.LF);
+      end Emit_Preamble;
+
+      --  git's filter-branch usage, printed to stderr on an unrecognised
+      --  option (including a rev-list flag like `--all` in option position).
+      procedure Emit_Usage is
+      begin
+         Stderr_Line
+           ("usage: git filter-branch [--setup <command>] "
+            & "[--subdirectory-filter <directory>] [--env-filter <command>]"
+            & ASCII.LF
+            & ASCII.HT & "[--tree-filter <command>] "
+            & "[--index-filter <command>]" & ASCII.LF
+            & ASCII.HT & "[--parent-filter <command>] "
+            & "[--msg-filter <command>]" & ASCII.LF
+            & ASCII.HT & "[--commit-filter <command>] "
+            & "[--tag-name-filter <command>]" & ASCII.LF
+            & ASCII.HT & "[--original <namespace>]" & ASCII.LF
+            & ASCII.HT & "[-d <directory>] [-f | --force] "
+            & "[--state-branch <branch>]" & ASCII.LF
+            & ASCII.HT & "[--] [<rev-list options>...]");
+      end Emit_Usage;
    begin
       while I <= Count loop
          declare
@@ -7113,8 +7159,11 @@ package body Version.CLI is
             elsif A = "--" then
                null;
             elsif A'Length > 0 and then A (A'First) = '-' then
-               Error_Line ("unsupported filter-branch option: " & A);
-               Set_Usage_Failure;
+               --  git prints its warning preamble on stdout even here, then
+               --  the usage on stderr, and exits 1.
+               Emit_Preamble;
+               Emit_Usage;
+               Set_Command_Failure;
                return;
             else
                Revs.Append (A);
@@ -7275,6 +7324,19 @@ package body Version.CLI is
 
             Total := Natural (Order.Length);
 
+            --  git narrates the whole rewrite on stdout: the warning preamble,
+            --  then a single carriage-return-updated progress line per commit.
+            Emit_Preamble;
+
+            --  An empty rev-list (e.g. a --subdirectory-filter that no commit
+            --  touches) is git's "Found nothing to rewrite", exit 2.
+            if Total = 0 then
+               Stderr_Line ("Found nothing to rewrite");
+               Ada.Command_Line.Set_Exit_Status
+                 (Ada.Command_Line.Exit_Status (2));
+               return;
+            end if;
+
             for C of Order loop
                Done := Done + 1;
 
@@ -7291,14 +7353,14 @@ package body Version.CLI is
 
                   New_Tree : Version.Objects.Hex_Object_Id := Old_Tree;
                begin
-                  Stderr_Line
-                    ("Rewrite " & C & " ("
+                  Version.Console.Put
+                    (ASCII.CR & "Rewrite " & C & " ("
                      & Ada.Strings.Fixed.Trim
                          (Natural'Image (Done), Ada.Strings.Both)
                      & "/"
                      & Ada.Strings.Fixed.Trim
                          (Natural'Image (Total), Ada.Strings.Both)
-                     & ")");
+                     & ") (0 seconds passed, remaining 0 predicted)    ");
 
                   --  Pull the commit apart.
                   declare
@@ -7629,36 +7691,52 @@ package body Version.CLI is
                null;
             end loop;
 
-            --  Keep the old tip, then move the ref.
+            --  Close the carriage-return progress line git leaves open.
+            if Total > 0 then
+               Version.Console.Put ("" & ASCII.LF);
+            end if;
+
+            --  Keep the old tip, then move the ref -- but only if the rewrite
+            --  actually changed the tip. A range with no filter reproduces the
+            --  same commits, so git reports the ref as unchanged (on stderr)
+            --  and leaves it in place.
             if Map.Contains (Version.Objects.To_String (Tip)) then
-               Write_Ref_To (Repo, Backup, Tip);
-               Write_Ref_To
-                 (Repo, Ref_Name,
-                  Version.Objects.To_Object_Id
-                    (Map.Element (Version.Objects.To_String (Tip))));
+               if Map.Element (Version.Objects.To_String (Tip))
+                  = Version.Objects.To_String (Tip)
+               then
+                  Stderr_Line
+                    ("WARNING: Ref '" & Ref_Name & "' is unchanged");
+               else
+                  Write_Ref_To (Repo, Backup, Tip);
+                  Write_Ref_To
+                    (Repo, Ref_Name,
+                     Version.Objects.To_Object_Id
+                       (Map.Element (Version.Objects.To_String (Tip))));
 
-               --  git leaves the working tree and index matching the
-               --  rewritten history. Without this the old files stay staged
-               --  against the new tip -- `status` shows the filtered-out
-               --  paths as additions, ready to be committed straight back.
-               declare
-                  Head : constant Version.Refs.Head_Info :=
-                    Version.Refs.Read_Head (Repo);
-                  New_Tip : constant Version.Objects.Hex_Object_Id :=
-                    Version.Objects.To_Object_Id
-                      (Map.Element (Version.Objects.To_String (Tip)));
-               begin
-                  if Version.Refs.Is_Attached (Head)
-                    and then "refs/heads/" & Version.Refs.Branch_Name (Head)
-                             = Ref_Name
-                  then
-                     Version.Restore.Restore_Working_Tree_For_Commit
-                       (Repo, New_Tip);
-                     Version.Restore.Write_Index_For_Commit (Repo, New_Tip);
-                  end if;
-               end;
+                  --  git leaves the working tree and index matching the
+                  --  rewritten history. Without this the old files stay staged
+                  --  against the new tip -- `status` shows the filtered-out
+                  --  paths as additions, ready to be committed straight back.
+                  declare
+                     Head : constant Version.Refs.Head_Info :=
+                       Version.Refs.Read_Head (Repo);
+                     New_Tip : constant Version.Objects.Hex_Object_Id :=
+                       Version.Objects.To_Object_Id
+                         (Map.Element (Version.Objects.To_String (Tip)));
+                  begin
+                     if Version.Refs.Is_Attached (Head)
+                       and then "refs/heads/" & Version.Refs.Branch_Name (Head)
+                                = Ref_Name
+                     then
+                        Version.Restore.Restore_Working_Tree_For_Commit
+                          (Repo, New_Tip);
+                        Version.Restore.Write_Index_For_Commit (Repo, New_Tip);
+                     end if;
+                  end;
 
-               Stderr_Line ("Ref '" & Ref_Name & "' was rewritten");
+                  Version.Console.Put
+                    ("Ref '" & Ref_Name & "' was rewritten" & ASCII.LF);
+               end if;
             end if;
          end;
       end;
