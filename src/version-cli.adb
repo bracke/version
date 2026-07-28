@@ -13566,7 +13566,8 @@ package body Version.CLI is
                               Shortstat   => Shortstat,
                               Raw         => Raw,
                               Context     => Context,
-                              Oneline     => True));
+                              Oneline     => True,
+                              First_Parent => Walk.First_Parent));
                      elsif Oneline
                        and then (Left_Right or else Cherry_Mark
                                  or else Cherry_Pick or else Left_Only
@@ -13768,6 +13769,7 @@ package body Version.CLI is
                               Shortstat      => Shortstat,
                               Raw            => Raw,
                               Context        => Context,
+                              First_Parent   => Walk.First_Parent,
                               Date_Mode      => To_String (Date_Mode)));
                      end if;
                   end;

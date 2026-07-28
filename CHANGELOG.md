@@ -1,3 +1,4 @@
+- Git parity: `log --first-parent` with `--name-only`/`--stat`/`-p`/`--raw` shows a merge commit's diff against its first parent instead of suppressing it.
 - Git parity: `log --oneline --boundary <a>..<b>` prints the range's excluded boundary commits (each `- `-prefixed) after the shown ones.
 - Git parity: `log --oneline --children` lists, after each commit, the abbreviated ids of the shown commits that name it as a parent, in git's order.
 - Git parity: `cherry-pick`/`revert` and `reset` interoperate with a conflicted pick that real git paused — reading git's `CHERRY_PICK_HEAD`/`REVERT_HEAD` rather than a private marker. `status` shows git's "You are currently cherry-picking commit <sha>." block; `--continue` lists the unmerged paths (`U\t<path>`) and refuses (exit 128) with git's message; `--abort`/`--skip` reset to HEAD and clear the markers; and `reset --merge` clears a conflicted merge/pick instead of refusing.
