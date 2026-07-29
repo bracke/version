@@ -163,6 +163,16 @@ log --graph
 log --graph --all
 log --graph --stat
 log --graph -p
+# A summary format and a patch together: --stat leads with "---" then shows the
+# patch too; --numstat/--shortstat show the summary then the patch; but
+# --name-only/--name-status replace the patch rather than preceding it.
+log -p --stat
+log --stat -p
+log -p --numstat
+log -p --shortstat
+log -p --name-only
+log -p --name-status
+log --graph -p --stat
 # Combinations that have to compose rather than override each other.
 log --oneline --no-merges --author=Alice
 log --oneline --reverse --max-count=3
