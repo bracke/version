@@ -7326,6 +7326,7 @@ package body Version.CLI is
       Index_Filter : Unbounded_String;
       Tree_Filter  : Unbounded_String;
       Msg_Filter   : Unbounded_String;
+      Env_Filter   : Unbounded_String;
       Sub_Dir      : Unbounded_String;
       Revs         : Version.Trailers.String_Vectors.Vector;
 
@@ -7409,6 +7410,114 @@ package body Version.CLI is
             & "[--state-branch <branch>]" & ASCII.LF
             & ASCII.HT & "[--] [<rev-list options>...]");
       end Emit_Usage;
+
+      --  `--env-filter`: run the filter with the commit's identity in the
+      --  environment and read back whatever it leaves the GIT_AUTHOR_* /
+      --  GIT_COMMITTER_* variables set to, as git's filter-branch does before
+      --  recommitting.
+      procedure Apply_Env_Filter
+        (Author, Committer : in out Unbounded_String)
+      is
+         function Sh_Quote (S : String) return String is
+            Buf : Unbounded_String;
+         begin
+            Append (Buf, ''');
+            for C of S loop
+               if C = ''' then
+                  Append (Buf, "'\''");
+               else
+                  Append (Buf, C);
+               end if;
+            end loop;
+            Append (Buf, ''');
+            return To_String (Buf);
+         end Sh_Quote;
+
+         procedure Split_Ident
+           (S : String; Name, Email, Date : out Unbounded_String)
+         is
+            LT : constant Natural := Ada.Strings.Fixed.Index (S, "<");
+            GT : constant Natural := Ada.Strings.Fixed.Index (S, ">");
+         begin
+            if LT = 0 or else GT = 0 or else GT < LT then
+               Name  := To_Unbounded_String (S);
+               Email := Null_Unbounded_String;
+               Date  := Null_Unbounded_String;
+               return;
+            end if;
+            Name  := To_Unbounded_String
+              (Ada.Strings.Fixed.Trim
+                 (S (S'First .. LT - 1), Ada.Strings.Both));
+            Email := To_Unbounded_String (S (LT + 1 .. GT - 1));
+            Date  := To_Unbounded_String
+              (Ada.Strings.Fixed.Trim
+                 (S (GT + 1 .. S'Last), Ada.Strings.Both));
+         end Split_Ident;
+
+         A_Name, A_Email, A_Date : Unbounded_String;
+         C_Name, C_Email, C_Date : Unbounded_String;
+         Out_File : constant String :=
+           Version.Files.Join (Git_Dir, "filter-branch-env");
+      begin
+         Split_Ident (To_String (Author), A_Name, A_Email, A_Date);
+         Split_Ident (To_String (Committer), C_Name, C_Email, C_Date);
+
+         declare
+            Cmd : constant String :=
+              "GIT_AUTHOR_NAME="     & Sh_Quote (To_String (A_Name))  & "; "
+              & "GIT_AUTHOR_EMAIL="    & Sh_Quote (To_String (A_Email)) & "; "
+              & "GIT_AUTHOR_DATE="     & Sh_Quote (To_String (A_Date))  & "; "
+              & "GIT_COMMITTER_NAME="  & Sh_Quote (To_String (C_Name))  & "; "
+              & "GIT_COMMITTER_EMAIL=" & Sh_Quote (To_String (C_Email)) & "; "
+              & "GIT_COMMITTER_DATE="  & Sh_Quote (To_String (C_Date))  & "; "
+              & "eval " & Sh_Quote (To_String (Env_Filter)) & "; "
+              & "printf '%s\n%s\n%s\n%s\n%s\n%s\n' "
+              & """$GIT_AUTHOR_NAME"" ""$GIT_AUTHOR_EMAIL"" "
+              & """$GIT_AUTHOR_DATE"" ""$GIT_COMMITTER_NAME"" "
+              & """$GIT_COMMITTER_EMAIL"" ""$GIT_COMMITTER_DATE"" > "
+              & Sh_Quote (Out_File);
+            Args   : GNAT.OS_Lib.Argument_List (1 .. 2);
+            Status : Integer;
+         begin
+            Args (1) := new String'("-c");
+            Args (2) := new String'(Cmd);
+            Status :=
+              GNAT.OS_Lib.Spawn (Program_Name => "/bin/sh", Args => Args);
+            GNAT.OS_Lib.Free (Args (1));
+            GNAT.OS_Lib.Free (Args (2));
+            if Status /= 0 then
+               return;   --  leave identity unchanged on a filter failure
+            end if;
+         end;
+
+         declare
+            Text  : constant String :=
+              Version.Files.Read_Binary_File (Out_File);
+            Lines : Version.Trailers.String_Vectors.Vector;
+            Start : Positive := Text'First;
+         begin
+            for I in Text'Range loop
+               if Text (I) = ASCII.LF then
+                  Lines.Append (Text (Start .. I - 1));
+                  Start := I + 1;
+               end if;
+            end loop;
+            Version.Files.Delete_File_If_Exists (Out_File);
+            if Natural (Lines.Length) >= 6 then
+               Author := To_Unbounded_String
+                 (Lines.Element (Lines.First_Index) & " <"
+                  & Lines.Element (Lines.First_Index + 1) & "> "
+                  & Lines.Element (Lines.First_Index + 2));
+               Committer := To_Unbounded_String
+                 (Lines.Element (Lines.First_Index + 3) & " <"
+                  & Lines.Element (Lines.First_Index + 4) & "> "
+                  & Lines.Element (Lines.First_Index + 5));
+            end if;
+         exception
+            when others =>
+               null;
+         end;
+      end Apply_Env_Filter;
    begin
       while I <= Count loop
          declare
@@ -7426,6 +7535,9 @@ package body Version.CLI is
                I := I + 1;
             elsif A = "--msg-filter" and then I < Count then
                Msg_Filter := To_Unbounded_String (Arg (I + 1));
+               I := I + 1;
+            elsif A = "--env-filter" and then I < Count then
+               Env_Filter := To_Unbounded_String (Arg (I + 1));
                I := I + 1;
             elsif A = "--subdirectory-filter" and then I < Count then
                Sub_Dir := To_Unbounded_String (Arg (I + 1));
@@ -7718,6 +7830,10 @@ package body Version.CLI is
                         end;
                      end loop;
                   end;
+
+                  if Env_Filter /= "" then
+                     Apply_Env_Filter (Author, Committer);
+                  end if;
 
                   --  `--subdirectory-filter`: the subdirectory becomes the
                   --  root.
