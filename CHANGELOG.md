@@ -1,3 +1,4 @@
+- Git parity: `rebase --onto <newbase> <upstream> [<branch>]` replays `<upstream>..<branch>` onto `<newbase>` (checking out `<branch>` first when named), instead of rejecting `--onto` as an unknown option.
 - Git parity: `merge-octopus` narrates a per-remote content merge — "Simple merge did not work, trying automatic merge." then "Auto-merging <path>" — whenever a side needs a real content merge, not only when it conflicts, matching git's clean-octopus output.
 - Git parity: `diff --word-diff[=plain|porcelain]` shows word-level changes (`[-old-]{+new+}` inline, or one token per line for porcelain) instead of rejecting the option.
 - Git parity: `filter-branch --env-filter <command>` rewrites the range with the identity the filter leaves in `GIT_AUTHOR_*`/`GIT_COMMITTER_*` (run per commit with the original identity in the environment), instead of rejecting the option with a usage error.

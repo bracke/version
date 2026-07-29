@@ -5005,8 +5005,8 @@ package body Version.CLI.Tests is
          "too many rebase --abort arguments",
          "rebase abort extra argument");
       Check_Usage_Failure
-        ("rebase --onto main topic",
-         "unknown rebase option: --onto",
+        ("rebase --xyzzy",
+         "unknown rebase option: --xyzzy",
          "rebase unknown option");
       Check_Usage_Failure
         ("rebase main extra",

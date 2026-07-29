@@ -19263,6 +19263,29 @@ package body Version.CLI is
                        ("rebase --root requires --onto NEWBASE", Usage);
                      return;
                   end if;
+               elsif Arg (2) = "--onto"
+                 and then (Count = 4 or else Count = 5)
+               then
+                  --  rebase --onto <newbase> <upstream> [<branch>]: replay
+                  --  <upstream>..<branch> onto <newbase>, checking out <branch>
+                  --  first when it is named.
+                  declare
+                     Repo : constant Version.Repository.Repository_Handle :=
+                       Version.Repository.Open;
+                  begin
+                     if Count = 5 then
+                        Version.Branch.Switch_Branch (Arg (5));
+                     end if;
+                     Version.Rebase.Start_Onto (Arg (3), Arg (4));
+                     declare
+                        Branch : constant String :=
+                          Version.Refs.Current_Branch_Name (Repo);
+                     begin
+                        Stderr_Line
+                          ("Successfully rebased and updated refs/heads/"
+                           & Branch & ".");
+                     end;
+                  end;
                elsif Arg (2) = "--stat" and then Count = 3 then
                   --  git prints the diffstat of what the new base brings
                   --  (diff --stat <merge-base>..<upstream>) before rebasing.
