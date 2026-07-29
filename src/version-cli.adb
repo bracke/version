@@ -14552,6 +14552,11 @@ package body Version.CLI is
                Combined_M : Boolean := False;   --  -m
                Fmt      : Unbounded_String;
                Fmt_Oneline : Boolean := False;
+               Pretty   : Version.Log.Pretty_Kind :=
+                 Version.Log.Pretty_Medium;
+               Pretty_Explicit : Boolean := False;
+               Want_Notes : Boolean := False;
+               No_Notes   : Boolean := False;
                Date_Mode : Unbounded_String;
                Revs     : Version.Trailers.String_Vectors.Vector;
                Bad      : Boolean := False;
@@ -14584,6 +14589,34 @@ package body Version.CLI is
                   then
                      Fmt := To_Unbounded_String ("%H %s");
                      Fmt_Oneline := True;
+                  elsif Arg (I) = "--pretty" or else Arg (I) = "--pretty=medium"
+                    or else Arg (I) = "--format=medium"
+                  then
+                     Pretty_Explicit := True;
+                  elsif Arg (I) = "--pretty=short"
+                    or else Arg (I) = "--format=short"
+                  then
+                     Pretty := Version.Log.Pretty_Short;
+                     Pretty_Explicit := True;
+                  elsif Arg (I) = "--pretty=full"
+                    or else Arg (I) = "--format=full"
+                  then
+                     Pretty := Version.Log.Pretty_Full;
+                     Pretty_Explicit := True;
+                  elsif Arg (I) = "--pretty=fuller"
+                    or else Arg (I) = "--format=fuller"
+                  then
+                     Pretty := Version.Log.Pretty_Fuller;
+                     Pretty_Explicit := True;
+                  elsif Arg (I) = "--pretty=raw"
+                    or else Arg (I) = "--format=raw"
+                  then
+                     Pretty := Version.Log.Pretty_Raw;
+                     Pretty_Explicit := True;
+                  elsif Arg (I) = "--notes" then
+                     Want_Notes := True;
+                  elsif Arg (I) = "--no-notes" then
+                     No_Notes := True;
                   elsif Arg (I)'Length > 9
                     and then Arg (I) (Arg (I)'First .. Arg (I)'First + 8)
                              = "--format="
@@ -14733,7 +14766,12 @@ package body Version.CLI is
                                     Format_Oneline => Fmt_Oneline,
                                     Date_Mode => To_String (Date_Mode),
                                     First_Parent => First_Parent,
-                                    Combined_M => Combined_M));
+                                    Combined_M => Combined_M,
+                                    Kind => Pretty,
+                                    Show_Notes =>
+                                      (if No_Notes then False
+                                       elsif Want_Notes then True
+                                       else not Pretty_Explicit)));
                            end if;
                         end;
                      end loop;

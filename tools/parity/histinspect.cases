@@ -67,6 +67,17 @@ show -s --format=%s
 show --format=%H%n%an%n%s
 show --oneline
 show --pretty=oneline
+# Named header layouts for a commit and, via v1/v2, an annotated tag (whose
+# tagger line and date follow the same per-format rules).
+show -s --pretty=short
+show -s --pretty=full
+show -s --pretty=fuller
+show -s --pretty=raw
+show -s --pretty=short v1
+show -s --pretty=full v1
+show -s --pretty=fuller v1
+show -s --pretty=raw v1
+show -s --pretty=medium v1
 show -s --date=iso --format=%ad
 show -s --date=short --format=%ad
 show -s --date=raw --format=%ad
