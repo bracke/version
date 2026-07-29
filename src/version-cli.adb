@@ -20294,26 +20294,26 @@ package body Version.CLI is
                        (Version.Staging.Load (Version.Repository.Open), Path)
                      /= Natural'Last);
                begin
-                  if All_Changes or else Update_Only then
-                     for C of St.Changes loop
-                        if Version.Status."="
-                             (C.Kind, Version.Status.Deleted_File)
-                        then
-                           declare
-                              P : constant String := To_String (C.Path);
-                              One : Version.Path_Safety.Path_Vector;
-                           begin
-                              One.Append (P);
-                              if Specs.Is_Empty
-                                or else not Matching_Candidates (One, Specs)
-                                             .Is_Empty
-                              then
-                                 Removals.Append (P);
-                              end if;
-                           end;
-                        end if;
-                     end loop;
-                  end if;
+                  --  git's add (2.0+) stages a matching deletion for a plain
+                  --  `add <pathspec>` too, not only under -A/-u.
+                  for C of St.Changes loop
+                     if Version.Status."="
+                          (C.Kind, Version.Status.Deleted_File)
+                     then
+                        declare
+                           P : constant String := To_String (C.Path);
+                           One : Version.Path_Safety.Path_Vector;
+                        begin
+                           One.Append (P);
+                           if Specs.Is_Empty
+                             or else not Matching_Candidates (One, Specs)
+                                          .Is_Empty
+                           then
+                              Removals.Append (P);
+                           end if;
+                        end;
+                     end if;
+                  end loop;
 
                   --  -u never adds a path the index does not already have.
                   if Update_Only then
@@ -20338,30 +20338,95 @@ package body Version.CLI is
                        with Pathspec_No_Files_Text;
                   end if;
 
-                  for I in Matches.First_Index .. Matches.Last_Index loop
-                     if Dry_Run then
-                        Success_Line ("add '" & Matches.Element (I) & "'");
-                     else
-                        Stage_Path (Matches.Element (I));
-                     end if;
-                  end loop;
+                  --  git's add only touches paths whose staging would change
+                  --  the index: new (untracked or forced) files and modified
+                  --  tracked files. An unchanged tracked path is a silent
+                  --  no-op. git reports (and stages) the tracked changes first,
+                  --  by path -- "remove" for a deletion, "add" for a
+                  --  modification -- then the untracked adds by path. The
+                  --  pathspec-matched-nothing check above ran on the unfiltered
+                  --  set.
+                  declare
+                     package Path_Sort is new
+                       Version.Path_Safety.Path_Vectors.Generic_Sorting;
+                     Index : constant
+                       Version.Staging.Index_Entry_Vectors.Vector :=
+                         Version.Staging.Load (Version.Repository.Open);
+                     function Is_Tracked (Path : String) return Boolean is
+                       (Version.Staging.Find_Path (Index, Path) /= Natural'Last);
+                     function Is_Modified (Path : String) return Boolean is
+                     begin
+                        for C of St.Changes loop
+                           if To_String (C.Path) = Path
+                             and then Version.Status."="
+                                        (C.Kind, Version.Status.Modified_File)
+                           then
+                              return True;
+                           end if;
+                        end loop;
+                        return False;
+                     end Is_Modified;
+                     function Is_Removal (Path : String) return Boolean is
+                       (for some R of Removals => R = Path);
 
-                  for P of Removals loop
-                     if Dry_Run then
-                        Success_Line ("remove '" & P & "'");
-                     else
-                        declare
-                           Repo : constant
-                             Version.Repository.Repository_Handle :=
-                               Version.Repository.Open;
-                           Entries : Version.Staging.Index_Entry_Vectors.Vector
-                             := Version.Staging.Load (Repo);
-                        begin
-                           Version.Staging.Remove_Path (Entries, P);
-                           Version.Staging.Write (Repo, Entries);
-                        end;
-                     end if;
-                  end loop;
+                     Tracked_Changes : Version.Path_Safety.Path_Vector;
+                     Untracked_Adds  : Version.Path_Safety.Path_Vector;
+
+                     procedure Emit_Add (Path : String) is
+                     begin
+                        if Dry_Run then
+                           Success_Line ("add '" & Path & "'");
+                        else
+                           Stage_Path (Path);
+                        end if;
+                     end Emit_Add;
+
+                     procedure Emit_Remove (Path : String) is
+                     begin
+                        if Dry_Run then
+                           Success_Line ("remove '" & Path & "'");
+                        else
+                           declare
+                              Repo : constant
+                                Version.Repository.Repository_Handle :=
+                                  Version.Repository.Open;
+                              Entries :
+                                Version.Staging.Index_Entry_Vectors.Vector :=
+                                  Version.Staging.Load (Repo);
+                           begin
+                              Version.Staging.Remove_Path (Entries, Path);
+                              Version.Staging.Write (Repo, Entries);
+                           end;
+                        end if;
+                     end Emit_Remove;
+                  begin
+                     for P of Matches loop
+                        if Is_Tracked (P) then
+                           if Is_Modified (P) then
+                              Tracked_Changes.Append (P);
+                           end if;
+                        else
+                           Untracked_Adds.Append (P);
+                        end if;
+                     end loop;
+                     for P of Removals loop
+                        Tracked_Changes.Append (P);
+                     end loop;
+
+                     Path_Sort.Sort (Tracked_Changes);
+                     Path_Sort.Sort (Untracked_Adds);
+
+                     for P of Tracked_Changes loop
+                        if Is_Removal (P) then
+                           Emit_Remove (P);
+                        else
+                           Emit_Add (P);
+                        end if;
+                     end loop;
+                     for P of Untracked_Adds loop
+                        Emit_Add (P);
+                     end loop;
+                  end;
 
                   --  git's `add`/`stage` prints nothing on success (only the
                   --  dry-run's per-path "add '...'"/"remove '...'" lines).
