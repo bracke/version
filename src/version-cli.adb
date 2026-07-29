@@ -1023,6 +1023,128 @@ package body Version.CLI is
       return False;
    end Run_Git_Pick_Sequencer;
 
+   --  After a cherry-pick/revert pauses on a conflict, git has already
+   --  narrated the merge on stdout: an "Auto-merging <path>" for every file it
+   --  content-merged, each immediately followed by that path's "CONFLICT ..."
+   --  line. Reconstruct it from the recorded merge state (its ours/theirs/base
+   --  trees and the conflict list). Best-effort: never fails the command.
+   procedure Emit_Pick_Conflict_Narration is
+      Repo : constant Version.Repository.Repository_Handle :=
+        Version.Repository.Open;
+      Ours_Id, Theirs_Id, Base_Id : Version.Objects.Hex_Object_Id;
+      Branch    : Unbounded_String;
+      Conflicts : Version.Merge.Conflict_Vectors.Vector;
+
+      function Tree_Of (C : Version.Objects.Hex_Object_Id)
+        return Version.Objects.Tree_Entry_Vectors.Vector
+      is (Version.Objects.Flatten_Tree
+            (Repo,
+             Version.Objects.Commit_Tree_Id
+               (Version.Objects.Read_Object (Repo, C))));
+
+      function Id_At
+        (Items : Version.Objects.Tree_Entry_Vectors.Vector; Path : String)
+         return String is
+      begin
+         for E of Items loop
+            if To_String (E.Path) = Path then
+               return Version.Objects.To_String (E.Id);
+            end if;
+         end loop;
+         return "";
+      end Id_At;
+
+      function Kind_Word (K : Version.Merge.Conflict_Kind) return String is
+        (case K is
+            when Version.Merge.Add_Add_Conflict       => "add/add",
+            when Version.Merge.Binary_Conflict        => "binary",
+            when Version.Merge.Directory_File_Conflict => "file/directory",
+            when others                               => "content");
+   begin
+      if not Version.Merge_State.State_Exists (Repo) then
+         return;
+      end if;
+      Version.Merge_State.Read_State
+        (Repo, Ours_Id, Theirs_Id, Base_Id, Branch, Conflicts);
+
+      --  A revert records the reverted commit as both target and base; the
+      --  three-way merge it actually runs takes that commit as the base and
+      --  the commit's first parent as "theirs". Recover that parent so the
+      --  content-merge detection below sees the real pair of sides.
+      if Version.Merge_State.Git_Pick_Is_Revert (Repo) then
+         declare
+            Parent : constant String :=
+              Version.Objects.Commit_Parent_Id
+                (Version.Objects.Read_Object (Repo, Theirs_Id));
+         begin
+            Base_Id := Theirs_Id;
+            Theirs_Id :=
+              (if Parent = "" then Ours_Id
+               else Version.Objects.To_Object_Id (Parent));
+         end;
+      end if;
+
+      declare
+         Ours_Items   : constant Version.Objects.Tree_Entry_Vectors.Vector :=
+           Tree_Of (Ours_Id);
+         Theirs_Items : constant Version.Objects.Tree_Entry_Vectors.Vector :=
+           Tree_Of (Theirs_Id);
+         Base_Items   : constant Version.Objects.Tree_Entry_Vectors.Vector :=
+           Tree_Of (Base_Id);
+         Needs_Merge  : Version.Trailers.String_Vectors.Vector;
+         NI           : Natural;
+      begin
+         --  A file changed on both sides (relative to the base) is one git
+         --  content-merges and announces with "Auto-merging".
+         for E of Ours_Items loop
+            declare
+               Path : constant String := To_String (E.Path);
+               O    : constant String := Version.Objects.To_String (E.Id);
+               T    : constant String := Id_At (Theirs_Items, Path);
+               B    : constant String := Id_At (Base_Items, Path);
+            begin
+               if T /= "" and then O /= T
+                 and then (B = "" or else (O /= B and then T /= B))
+               then
+                  Needs_Merge.Append (Path);
+               end if;
+            end;
+         end loop;
+
+         --  git narrates a path at a time: its "Auto-merging" line (if any) is
+         --  immediately followed by its "CONFLICT" line.
+         NI := Needs_Merge.First_Index;
+         for C of Conflicts loop
+            declare
+               CP : constant String := To_String (C.Path);
+            begin
+               while NI <= Needs_Merge.Last_Index
+                 and then Needs_Merge.Element (NI) < CP
+               loop
+                  Success_Line ("Auto-merging " & Needs_Merge.Element (NI));
+                  NI := NI + 1;
+               end loop;
+               if NI <= Needs_Merge.Last_Index
+                 and then Needs_Merge.Element (NI) = CP
+               then
+                  Success_Line ("Auto-merging " & CP);
+                  NI := NI + 1;
+               end if;
+               Success_Line
+                 ("CONFLICT (" & Kind_Word (C.Kind)
+                  & "): Merge conflict in " & CP);
+            end;
+         end loop;
+         while NI <= Needs_Merge.Last_Index loop
+            Success_Line ("Auto-merging " & Needs_Merge.Element (NI));
+            NI := NI + 1;
+         end loop;
+      end;
+   exception
+      when others =>
+         null;
+   end Emit_Pick_Conflict_Narration;
+
    procedure Print_Sparse_List is
       Repo : constant Version.Repository.Repository_Handle :=
         Version.Repository.Open;
@@ -18857,6 +18979,30 @@ package body Version.CLI is
                                     & " to proceed.");
                                  Stderr_Line ("fatal: cherry-pick failed");
                                  Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                              elsif Ada.Strings.Fixed.Index
+                                      (Ada.Exceptions.Exception_Message (E),
+                                       "conflicts recorded") > 0
+                              then
+                                 --  git narrates the merge on stdout, then
+                                 --  reports the failure on stderr and exits 1.
+                                 Emit_Pick_Conflict_Narration;
+                                 Stderr_Line
+                                   ("error: could not apply the change:"
+                                    & " conflicts recorded");
+                                 Set_Command_Failure;
+                              elsif Ada.Strings.Fixed.Index
+                                      (Ada.Exceptions.Exception_Message (E),
+                                       "is now empty") > 0
+                              then
+                                 --  A pick whose result is empty pauses like a
+                                 --  conflict: git prints the sequencer status on
+                                 --  stdout, the "now empty" advice on stderr, and
+                                 --  exits 1.
+                                 Version.Status.Print_Status;
+                                 Stderr_Line
+                                   ("The previous cherry-pick is now empty,"
+                                    & " possibly due to conflict resolution.");
+                                 Set_Command_Failure;
                               else
                                  raise;
                               end if;
@@ -19033,6 +19179,17 @@ package body Version.CLI is
                                     & " to proceed.");
                                  Stderr_Line ("fatal: revert failed");
                                  Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                              elsif Ada.Strings.Fixed.Index
+                                      (Ada.Exceptions.Exception_Message (E),
+                                       "conflicts recorded") > 0
+                              then
+                                 --  git narrates the merge on stdout, then
+                                 --  reports the failure on stderr and exits 1.
+                                 Emit_Pick_Conflict_Narration;
+                                 Stderr_Line
+                                   ("error: could not revert the change:"
+                                    & " conflicts recorded");
+                                 Set_Command_Failure;
                               else
                                  raise;
                               end if;
