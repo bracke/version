@@ -13756,6 +13756,7 @@ package body Version.CLI is
                Want_Children : Boolean := False;  --  --children
                Want_Boundary : Boolean := False;  --  --boundary
                Want_Graph : Boolean := False;     --  --graph
+               Want_Follow : Boolean := False;    --  --follow
                --  git's symmetric-range marking: --left-right prefixes each
                --  commit with </> for its side, --cherry-mark replaces that
                --  with = for a commit whose patch already exists on the other
@@ -13838,6 +13839,8 @@ package body Version.CLI is
                      Want_Boundary := True;
                   elsif Arg (I) = "--graph" then
                      Want_Graph := True;
+                  elsif Arg (I) = "--follow" then
+                     Want_Follow := True;
                   elsif Arg (I) = "--left-right" then
                      Left_Right := True;
                   elsif Arg (I) = "--cherry-mark" then
@@ -14261,7 +14264,35 @@ package body Version.CLI is
                         end;
                      end if;
 
-                     if Has_Format then
+                     if Want_Follow then
+                        --  git requires exactly one pathspec with --follow.
+                        if Natural (Parsed.Paths.Length) /= 1 then
+                           raise Ada.IO_Exceptions.Use_Error with
+                             "--follow requires exactly one pathspec";
+                        end if;
+                        Version.Console.Put
+                          (Version.Log.Log_Follow_Text
+                             (Repo,
+                              Start          => Include.First_Element,
+                              Path           => Parsed.Paths.First_Element,
+                              Show_Signature => Show_Sig,
+                              Stat           => Stat,
+                              Patch          => Patch,
+                              Name_Only      => Name_Only,
+                              Name_Status    => Name_Status,
+                              Numstat        => Numstat,
+                              Shortstat      => Shortstat,
+                              Raw            => Raw,
+                              Context        => Context,
+                              Oneline        => Oneline,
+                              Kind           => Pretty,
+                              Show_Notes     =>
+                                (if No_Notes then False
+                                 elsif Want_Notes then True
+                                 else not Pretty_Explicit),
+                              Max_Count      => Max_Count,
+                              Date_Mode      => To_String (Date_Mode)));
+                     elsif Has_Format then
                         Version.Console.Put
                           (Version.Log.Log_Formatted_List_Text
                              (Repo, Commits, To_String (Format),

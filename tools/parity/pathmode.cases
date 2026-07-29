@@ -18,3 +18,14 @@ log --graph --oneline -- a.txt
 log --raw
 log --name-status
 log --raw -- sub/renamed.txt
+
+# --follow tracks the file across the rename (linear history): it shows the
+# earlier commits under the old name and renders each diff limited to the
+# file's name(s) then, so the rename shows as R.
+log --follow --oneline sub/renamed.txt
+log --follow sub/renamed.txt
+log --follow --name-status sub/renamed.txt
+log --follow --stat sub/renamed.txt
+log --follow -p sub/renamed.txt
+log --follow --raw sub/renamed.txt
+log --follow --oneline -2 sub/renamed.txt
