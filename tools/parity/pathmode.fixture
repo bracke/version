@@ -25,3 +25,6 @@ git add -A && c 'c4 edit sub/b' 40
 
 chmod -x a.txt
 git add -A && c 'c5 drop a executable bit' 50
+
+git mv sub/b.txt sub/renamed.txt
+git add -A && c 'c6 rename sub/b to sub/renamed' 60

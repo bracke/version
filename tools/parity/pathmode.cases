@@ -13,3 +13,8 @@ log -p -- sub/b.txt
 # Both paths together, and the graph over a path limit.
 log --oneline -- a.txt sub/b.txt
 log --graph --oneline -- a.txt
+
+# --raw / --name-status detect the rename (R100) by default, like git.
+log --raw
+log --name-status
+log --raw -- sub/renamed.txt
