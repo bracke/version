@@ -19263,6 +19263,24 @@ package body Version.CLI is
                        ("rebase --root requires --onto NEWBASE", Usage);
                      return;
                   end if;
+               elsif (Arg (2) = "--keep-empty"
+                      or else Arg (2) = "--no-keep-empty"
+                      or else Arg (2) = "--empty=keep"
+                      or else Arg (2) = "--empty=drop")
+                 and then Count = 3
+               then
+                  --  version's rebase already replays an already-empty commit;
+                  --  --keep-empty is git's flag for exactly that, so a plain
+                  --  rebase onto the given upstream matches.
+                  Version.Rebase.Start (Arg (3));
+                  declare
+                     Repo : constant Version.Repository.Repository_Handle :=
+                       Version.Repository.Open;
+                  begin
+                     Stderr_Line
+                       ("Successfully rebased and updated refs/heads/"
+                        & Version.Refs.Current_Branch_Name (Repo) & ".");
+                  end;
                elsif Arg (2) = "--onto"
                  and then (Count = 4 or else Count = 5)
                then
