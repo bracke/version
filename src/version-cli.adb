@@ -14438,6 +14438,21 @@ package body Version.CLI is
                               With_Children => Want_Children,
                               With_Boundary => Want_Boundary,
                               Decorate => Decorate));
+                     elsif Want_Graph then
+                        Version.Console.Put
+                          (Version.Log.Log_Graph_List_Text
+                             (Repo, Commits,
+                              Show_Signature => Show_Sig,
+                              Stat           => Stat,
+                              Patch          => Patch,
+                              Name_Only      => Name_Only,
+                              Name_Status    => Name_Status,
+                              Numstat        => Numstat,
+                              Shortstat      => Shortstat,
+                              Raw            => Raw,
+                              Context        => Context,
+                              First_Parent   => Walk.First_Parent,
+                              Date_Mode      => To_String (Date_Mode)));
                      else
                         Version.Console.Put
                           (Version.Log.Log_List_Text

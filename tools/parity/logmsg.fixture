@@ -1,0 +1,49 @@
+# Commit messages with real bodies: a subject alone, a subject with a
+# blank-separated body, a body with an internal blank line, and a multi-line
+# subject with no blank line after it (which git folds into one subject line).
+# Plus a merge, so the full-format graph draws its header, folded/whole message
+# and connector rows. This is the coverage single-line-message fixtures miss:
+# `log` must show the whole message (not just the subject), blank body lines
+# carry git's 4-space indent, and `--oneline`/%s fold a multi-line subject.
+#
+# Dates increase per commit so date ordering is not a tie-break artifact.
+cm () { # $1 = seconds past base, $2 = message (may contain newlines)
+  printf '%s\n' "$2" > .msg
+  GIT_AUTHOR_DATE="$((1700000000 + $1)) +0000" \
+  GIT_COMMITTER_DATE="$((1700000000 + $1)) +0000" \
+  GIT_AUTHOR_NAME=T GIT_AUTHOR_EMAIL=t@e \
+  git commit -q -F .msg
+  rm -f .msg
+}
+
+printf 'a\n' > a.txt
+git add -A && cm 10 'plain subject only'
+
+printf 'b\n' > b.txt
+git add -A && cm 20 'subject with a body
+
+First paragraph of the body.
+Still the first paragraph.
+
+A second paragraph after a blank line.'
+
+git tag v1
+
+git checkout -q -b side
+printf 's\n' > s.txt
+git add -A && cm 30 'a subject that spills
+onto a second line with no blank
+before the body starts
+
+so the subject folds but the body does not.'
+
+git checkout -q main
+printf 'a2\n' >> a.txt
+git add -A && cm 40 'main moves on'
+
+GIT_AUTHOR_DATE="1700000050 +0000" GIT_COMMITTER_DATE="1700000050 +0000" \
+GIT_AUTHOR_NAME=T GIT_AUTHOR_EMAIL=t@e \
+git merge -q --no-ff side -m 'Merge side into main
+
+Bringing the side branch back with its
+folded work.'

@@ -157,6 +157,12 @@ log --oneline main...side
 # A graph is the only output where the log walk order is visible as layout.
 log --graph --oneline
 log --graph --oneline --all
+# The full (multi-line) format draws the graph down the left of every line of
+# each commit -- header, message, and the connector rows around a merge.
+log --graph
+log --graph --all
+log --graph --stat
+log --graph -p
 # Combinations that have to compose rather than override each other.
 log --oneline --no-merges --author=Alice
 log --oneline --reverse --max-count=3

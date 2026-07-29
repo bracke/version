@@ -1,0 +1,25 @@
+# Message rendering across the log/show family, over commits that actually
+# have bodies (see logmsg.fixture).
+#
+# Default (medium) format: the WHOLE message, indented, blank body lines kept
+# as git's 4-space prefix -- not just the subject.
+log
+log --all
+show -s HEAD
+show -s v1
+
+# Oneline / %s: the subject only, but a multi-line subject folded to one line.
+log --oneline
+log --oneline --all
+log --format=%s
+log --format=%s --all
+log --format=%b
+log --format=%B
+
+# The full-format graph draws every one of those lines with its lane prefix,
+# and the folded oneline graph too.
+log --graph
+log --graph --all
+log --graph --oneline
+log --graph --oneline --all
+log --graph --stat
