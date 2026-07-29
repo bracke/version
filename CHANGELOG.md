@@ -1,3 +1,4 @@
+- Git parity: `log --date=rfc2822` (and `rfc`) now renders the RFC 2822 date in the header and %ad/%cd; histinspect covers it.
 - Git parity: `log -p`/`--stat`/`--raw -- <path>` limits each commit's diff to the path (was showing all files), and a mode-only change to a limited path is no longer dropped from the walk; new pathmode parity suite covers both.
 - Git parity: `log -p --stat`/`--numstat`/`--shortstat` show the summary and the patch (was dropping the patch); histinspect parity suite covers the -p + summary matrix.
 - Git parity: `log --pretty=`/`--format=` accept git's named layouts `short`/`full`/`fuller`/`raw` (previously rejected as unknown options), composing with `--graph`/`--date=`/`--all`; `--notes`/`--no-notes` control the note display, which is otherwise auto-hidden under an explicit --pretty/--format. logmsg parity suite extended to cover them.

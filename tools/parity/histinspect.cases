@@ -138,8 +138,11 @@ log --oneline -S nowhere
 log -1 --date=iso
 log -1 --date=short
 log -1 --date=raw
+log -1 --date=rfc2822
 log --format=%ad --date=short
 log --format=%cd --date=unix
+log --format=%ad|%cd --date=rfc2822
+log --format=%aD
 log --format=%at
 log --format=%s%x09%an
 log --format=%p
