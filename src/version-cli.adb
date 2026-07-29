@@ -20008,8 +20008,6 @@ package body Version.CLI is
                         return;
                      end if;
 
-                     Require_Clean_Working_Tree_Including_Sparse_Excluded
-                       ("sparse set");
                      declare
                         Repo : constant Version.Repository.Repository_Handle :=
                           Version.Repository.Open;
@@ -20020,8 +20018,9 @@ package body Version.CLI is
                         else
                            Version.Sparse.Set_From_Strings (Repo, Operands);
                         end if;
-                        Version.Restore.Restore_Working_Tree (Repo);
-                        Version.Restore.Apply_Sparse_Skip_Worktree (Repo);
+                        --  git applies the new sparsity without a clean tree,
+                        --  removing only unmodified excluded files.
+                        Version.Restore.Apply_Sparse_Update (Repo);
                      end;
                   end;
 
@@ -20164,8 +20163,6 @@ package body Version.CLI is
                         return;
                      end if;
 
-                     Require_Clean_Working_Tree_Including_Sparse_Excluded
-                       ("sparse init");
                      declare
                         Repo : constant Version.Repository.Repository_Handle :=
                           Version.Repository.Open;
@@ -20188,8 +20185,8 @@ package body Version.CLI is
                               Version.Sparse.Set_From_Strings (Repo, Items);
                            end;
                         end if;
-                        Version.Restore.Restore_Working_Tree (Repo);
-                        Version.Restore.Apply_Sparse_Skip_Worktree (Repo);
+                        --  git applies the new sparsity without a clean tree.
+                        Version.Restore.Apply_Sparse_Update (Repo);
                      end;
                   end;
 
