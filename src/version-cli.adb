@@ -10234,20 +10234,64 @@ package body Version.CLI is
                          Tree_Of (R_Id);
                      R_Base : constant Version.Objects.Hex_Object_Id :=
                        Version.History.Merge_Base (Repo, Head_Id, R_Id);
+                     R_Base_Items : constant
+                       Version.Objects.Tree_Entry_Vectors.Vector :=
+                         (if Version.Objects.Id_Length (R_Base) > 0
+                          then Tree_Of (R_Base)
+                          else Version.Objects.Tree_Entry_Vectors.Empty_Vector);
                      Merged : Version.Staging.Index_Entry_Vectors.Vector;
                      Conf   : Version.Merge.Conflict_Vectors.Vector;
                      Bhv    : Version.Merge.Merge_Behavior;
+                     --  The paths this side changed that the accumulated tree
+                     --  also changed: git content-merges these, narrating that
+                     --  the trivial read-tree merge "did not work" first.
+                     Needs  : Version.Trailers.String_Vectors.Vector;
                   begin
                      Bhv.Update_Worktree := True;
                      Bhv.Base_Label :=
                        To_Unbounded_String
                          (Version.Merge.Base_Label_For (Repo, R_Base));
 
+                     for E of Acc loop
+                        declare
+                           P : constant String := To_String (E.Path);
+                           In_R, In_B : Boolean;
+                           RE : constant Version.Objects.Tree_Entry :=
+                             Entry_Of (R_Items, P, In_R);
+                           BE : constant Version.Objects.Tree_Entry :=
+                             Entry_Of (R_Base_Items, P, In_B);
+                        begin
+                           if In_R
+                             and then Version.Objects.To_String (E.Id)
+                                      /= Version.Objects.To_String (RE.Id)
+                             and then (not In_B
+                                       or else
+                                         (Version.Objects.To_String (E.Id)
+                                            /= Version.Objects.To_String (BE.Id)
+                                          and then Version.Objects.To_String
+                                                     (RE.Id)
+                                                   /= Version.Objects.To_String
+                                                        (BE.Id)))
+                           then
+                              Needs.Append (P);
+                           end if;
+                        end;
+                     end loop;
+
+                     if not Needs.Is_Empty then
+                        Success_Line
+                          ("Simple merge did not work, trying automatic"
+                           & " merge.");
+                        for P of Needs loop
+                           Success_Line ("Auto-merging " & P);
+                        end loop;
+                     end if;
+
                      Version.Merge.Merge_Trees
                        (Repo          => Repo,
                         Current_Name  => To_String (Head),
                         Target_Name   => R,
-                        Base_Items    => Tree_Of (R_Base),
+                        Base_Items    => R_Base_Items,
                         Current_Items => Acc,
                         Target_Items  => R_Items,
                         Merged_Index  => Merged,
@@ -10255,13 +10299,6 @@ package body Version.CLI is
                         Behavior      => Bhv);
 
                      if not Conf.Is_Empty then
-                        Success_Line
-                          ("Simple merge did not work, trying automatic"
-                           & " merge.");
-                        for C of Conf loop
-                           Success_Line
-                             ("Auto-merging " & To_String (C.Path));
-                        end loop;
                         for C of Conf loop
                            Success_Line
                              ("ERROR: content conflict in "
