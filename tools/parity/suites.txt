@@ -72,4 +72,4 @@ mergeback2.fixture      mergeback2.cases      -     0
 impexp.fixture          impexp.cases          -    7
 impexp2.fixture         impexp2.cases         -     0
 rebase.fixture          rebase.cases          -     6
-sparsebr.fixture        sparsebr.cases        -    2
+sparsebr.fixture        sparsebr.cases        -    1
