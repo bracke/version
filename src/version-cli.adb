@@ -12043,11 +12043,189 @@ package body Version.CLI is
          end if;
       end Do_Run;
 
+      --  git's `bisect replay <log>`: re-run a bisect from a saved log. A
+      --  `git bisect start <bad> <good>` line re-marks and auto-advances; the
+      --  mark lines (good/bad/skip) only record state; a single final
+      --  auto-advance then prints the resulting "Bisecting:"/"status:" line.
+      procedure Do_Replay is
+         Path : constant String := (if Count >= 3 then Arg (3) else "");
+
+         --  Split a log command line into words, unquoting git's single quotes
+         --  (`git bisect start 'main' 'v1'`).
+         function Split_Words (Line : String)
+           return Version.Trailers.String_Vectors.Vector
+         is
+            Result   : Version.Trailers.String_Vectors.Vector;
+            Cur      : Unbounded_String;
+            In_Word  : Boolean := False;
+            In_Quote : Boolean := False;
+
+            procedure Flush is
+            begin
+               if In_Word then
+                  Result.Append (To_String (Cur));
+                  Cur := Null_Unbounded_String;
+                  In_Word := False;
+               end if;
+            end Flush;
+         begin
+            for C of Line loop
+               if In_Quote then
+                  if C = ''' then
+                     In_Quote := False;
+                  else
+                     Append (Cur, C);
+                  end if;
+               elsif C = ''' then
+                  In_Quote := True;
+                  In_Word  := True;
+               elsif C = ' ' or else C = Character'Val (9)
+                 or else C = Character'Val (13)
+               then
+                  Flush;
+               else
+                  Append (Cur, C);
+                  In_Word := True;
+               end if;
+            end loop;
+            Flush;
+            return Result;
+         end Split_Words;
+
+         procedure Replay_Line
+           (Words : Version.Trailers.String_Vectors.Vector)
+         is
+            Verb_Idx : Natural := 0;
+         begin
+            if Natural (Words.Length) = 0 then
+               return;
+            end if;
+            --  Only "git bisect <cmd> ..." / "git-bisect <cmd> ..." lines are
+            --  commands; the "# ..." comments carry no state.
+            if Words.Element (Words.First_Index) = "git"
+              and then Natural (Words.Length) >= 2
+              and then Words.Element (Words.First_Index + 1) = "bisect"
+            then
+               Verb_Idx := Words.First_Index + 2;
+            elsif Words.Element (Words.First_Index) = "git-bisect" then
+               Verb_Idx := Words.First_Index + 1;
+            else
+               return;
+            end if;
+
+            if Verb_Idx > Words.Last_Index then
+               return;
+            end if;
+
+            declare
+               Verb : constant String := Words.Element (Verb_Idx);
+            begin
+               if Verb = "start" then
+                  declare
+                     Start_R : constant String :=
+                       (if Version.Refs.Is_Detached (Repo)
+                        then Version.Objects.To_String
+                               (Version.Refs.Detached_Commit_Id (Repo))
+                        else Version.Refs.Current_Branch_Name (Repo));
+                     First   : Boolean := True;
+                  begin
+                     Version.Bisect.Start (Repo, Start_R, "bad", "good");
+                     for I in Verb_Idx + 1 .. Words.Last_Index loop
+                        declare
+                           Id  : constant Version.Objects.Hex_Object_Id :=
+                             Rev (Words.Element (I));
+                           Hex : constant String :=
+                             Version.Objects.To_String (Id);
+                        begin
+                           if First then
+                              Append_Log
+                                (Repo, "# bad: [" & Hex & "] " & Subject (Id));
+                              Mark_Bad (Repo, Id);
+                              First := False;
+                           else
+                              Append_Log
+                                (Repo, "# good: [" & Hex & "] " & Subject (Id));
+                              Mark_Good (Repo, Id);
+                           end if;
+                        end;
+                     end loop;
+                     Advance;
+                  end;
+               elsif Verb = "reset" then
+                  null;  --  a replay already began from a clean state
+               else
+                  --  A mark verb: record it silently; the final Advance is the
+                  --  only auto-next git does for the replayed marks.
+                  for I in Verb_Idx + 1 .. Words.Last_Index loop
+                     declare
+                        Id  : constant Version.Objects.Hex_Object_Id :=
+                          Rev (Words.Element (I));
+                        Hex : constant String :=
+                          Version.Objects.To_String (Id);
+                     begin
+                        Append_Log
+                          (Repo,
+                           "# " & Verb & ": [" & Hex & "] " & Subject (Id));
+                        Append_Log (Repo, "git bisect " & Verb & " " & Hex);
+                        if Verb = "skip" then
+                           Mark_Skip (Repo, Id);
+                        elsif Verb = "bad" or else Verb = "new" then
+                           Mark_Bad (Repo, Id);
+                        else
+                           Mark_Good (Repo, Id);
+                        end if;
+                     end;
+                  end loop;
+               end if;
+            end;
+         end Replay_Line;
+      begin
+         if Path = "" then
+            Usage_Error
+              ("bisect replay requires a filename",
+               "version bisect replay <logfile>");
+            return;
+         end if;
+         if not Ada.Directories.Exists (Path)
+           or else Ada.Directories.Kind (Path) /= Ada.Directories.Ordinary_File
+         then
+            Stderr_Line ("cannot read file '" & Path & "' for replaying");
+            Set_Command_Failure;
+            return;
+         end if;
+
+         if In_Progress (Repo) then
+            Do_Reset (Target => "");
+         end if;
+
+         declare
+            Text  : constant String := Version.Files.Read_Binary_File (Path);
+            Start : Positive := Text'First;
+         begin
+            if Text'Length > 0 then
+               for I in Text'Range loop
+                  if Text (I) = Character'Val (10) then
+                     Replay_Line (Split_Words (Text (Start .. I - 1)));
+                     Start := I + 1;
+                  end if;
+               end loop;
+               if Start <= Text'Last then
+                  Replay_Line (Split_Words (Text (Start .. Text'Last)));
+               end if;
+            end if;
+         end;
+
+         --  git's final auto-advance after replaying every command.
+         Advance;
+      end Do_Replay;
+
    begin
       if Sub = "" or else Sub = "start" then
          Do_Start;
       elsif Sub = "run" then
          Do_Run;
+      elsif Sub = "replay" then
+         Do_Replay;
       elsif Sub = "reset" then
          Do_Reset (Target => (if Count >= 3 then Arg (3) else ""));
       elsif Sub = "log" then
