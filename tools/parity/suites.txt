@@ -44,14 +44,14 @@ mergeconflict.fixture   mergeconflict.cases   -     0
 refs.fixture            refs.cases            -    2
 refs2.fixture           refs2.cases           -     0
 plumbing.fixture        plumbing.cases        -    0
-histinspect.fixture     histinspect.cases     -     4
+histinspect.fixture     histinspect.cases     -     2
 histinspect2.fixture    histinspect2.cases    -     0
 configtext.fixture      configtext.cases      -     0
 configtext.fixture      configtext2.cases     -     0
 diffplumb.fixture       diffplumb.cases       -    3
 diffplumb2.fixture      diffplumb2.cases      -     3
 wtmutate.fixture        wtmutate.cases        -     0
-wtmutate2.fixture       wtmutate2.cases       -     4
+wtmutate2.fixture       wtmutate2.cases       -     2
 wtmutate3.fixture       wtmutate3.cases       -     0
 
 # --- Second coverage round: multi-repo structure, history tools, repository

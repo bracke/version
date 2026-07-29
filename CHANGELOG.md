@@ -1,3 +1,5 @@
+- Git parity: `cherry-pick -n`/`revert -n` now succeed on a dirty working tree as long as the paths they change are themselves clean (git only blocks the auto-committing forms on a dirty tree).
+- Git parity: `last-modified` attributes a path to the real edit rather than a merge that carried it in unchanged — a merge TREESAME to a parent for that path is skipped, following that parent (even a non-first one), so a file merged in from a side branch is credited to the side commit.
 - Git parity: `update-index --assume-unchanged`/`--no-assume-unchanged` now records the assume-valid index bit (it was silently dropped), so a later `git ls-files -v` shows the lowercase `h` tag.
 - Git parity: `fsck` reports a dangling object that lives in a pack (not just loose ones), and `fsck <object>` traces reachability from that object rather than the refs, so an annotated tag a ref still points at is listed as dangling.
 - Git parity: `pack-objects` rejects an unknown option with git's usage exit (129) and a message, instead of silently accepting it.

@@ -8623,11 +8623,66 @@ package body Version.CLI is
                 Version.Objects.Commit_Tree_Id
                   (Version.Objects.Read_Object (Repo, Commit))));
 
-         --  Walk the history newest first, reporting each path the moment the
-         --  commit that last touched it turns up -- which is the order git
-         --  prints them in.
-         Pending : Version.Objects.Tree_Entry_Vectors.Vector;
-         Current : Version.Objects.Hex_Object_Id := Tip;
+         --  The id of the top-level entry named Path in Commit's tree, or ""
+         --  when the entry is absent. A directory is one entry, keyed by its
+         --  subtree id, so this works uniformly for files and directories.
+         function Entry_Id
+           (Commit : Version.Objects.Hex_Object_Id; Path : String)
+            return String is
+         begin
+            for E of Items (Commit) loop
+               if To_String (E.Path) = Path then
+                  return Version.Objects.To_String (E.Id);
+               end if;
+            end loop;
+            return "";
+         end Entry_Id;
+
+         --  git's history simplification: a commit last-modified Path when its
+         --  entry differs from *every* parent's. Where the entry matches some
+         --  parent (a merge that took that side unchanged, say) the commit is
+         --  TREESAME to it, so follow that parent -- even a non-first one, so a
+         --  path introduced by a merge's second parent is attributed to the
+         --  real edit rather than the merge.
+         function Last_Modifier (Path : String)
+           return Version.Objects.Hex_Object_Id
+         is
+            Current : Version.Objects.Hex_Object_Id := Tip;
+         begin
+            loop
+               declare
+                  Cur     : constant String := Entry_Id (Current, Path);
+                  Parents : constant Version.History.Commit_Id_Vectors.Vector :=
+                    Version.History.Parent_Commits (Repo, Current);
+                  Follow  : Version.Objects.Hex_Object_Id;
+                  Found   : Boolean := False;
+               begin
+                  exit when Parents.Is_Empty;
+                  for Par of Parents loop
+                     if Entry_Id (Par, Path) = Cur then
+                        Follow := Par;
+                        Found  := True;
+                        exit;
+                     end if;
+                  end loop;
+                  exit when not Found;
+                  Current := Follow;
+               end;
+            end loop;
+            return Current;
+         end Last_Modifier;
+
+         type Answer is record
+            Path   : Unbounded_String;
+            Commit : Version.Objects.Hex_Object_Id;
+            Time   : Long_Long_Integer;
+            Order  : Natural;
+         end record;
+
+         package Answer_Vectors is new Ada.Containers.Vectors
+           (Index_Type => Natural, Element_Type => Answer);
+         Answers : Answer_Vectors.Vector;
+         Order_N : Natural := 0;
       begin
          for E of Items (Tip) loop
             declare
@@ -8641,64 +8696,53 @@ package body Version.CLI is
                end loop;
 
                if Take then
-                  Pending.Append (E);
+                  declare
+                     C : constant Version.Objects.Hex_Object_Id :=
+                       Last_Modifier (Path);
+                  begin
+                     Answers.Append
+                       (Answer'
+                          (Path   => To_Unbounded_String (Path),
+                           Commit => C,
+                           Time   => Version.Objects.Commit_Committer_Time
+                                       (Version.Objects.Read_Object (Repo, C)),
+                           Order  => Order_N));
+                  end;
+                  Order_N := Order_N + 1;
                end if;
             end;
          end loop;
 
-         loop
-            exit when Pending.Is_Empty;
-
-            declare
-               Parents : constant Version.History.Commit_Id_Vectors.Vector :=
-                 Version.History.Parent_Commits (Repo, Current);
-
-               Parent_Items :
-                 constant Version.Objects.Tree_Entry_Vectors.Vector :=
-                   (if Parents.Is_Empty
-                    then Version.Objects.Tree_Entry_Vectors.Empty_Vector
-                    else Items (Parents.First_Element));
-
-               Kept : Version.Objects.Tree_Entry_Vectors.Vector;
-            begin
-               --  In reverse: git emits a commit's paths back to front.
-               for I in reverse Pending.First_Index .. Pending.Last_Index loop
-                  declare
-                     E    : constant Version.Objects.Tree_Entry :=
-                       Pending.Element (I);
-                     Path : constant String := To_String (E.Path);
-                     Same : Boolean := False;
-                  begin
-                     for P of Parent_Items loop
-                        if To_String (P.Path) = Path
-                          and then Version.Objects.To_String (P.Id)
-                                   = Version.Objects.To_String (E.Id)
-                        then
-                           Same := True;
-                        end if;
-                     end loop;
-
-                     if Same then
-                        Kept.Append (E);
-                     else
-                        Success_Line
-                          (Version.Objects.To_String (Current) & ASCII.HT
-                           & Path);
+         --  git emits newest-modified first; within one commit it lists the
+         --  paths back to front (later tree entries first).
+         declare
+            Tmp : Answer_Vectors.Vector := Answers;
+         begin
+            Answers.Clear;
+            while not Tmp.Is_Empty loop
+               declare
+                  Best : Natural := Tmp.First_Index;
+               begin
+                  for I in Tmp.First_Index .. Tmp.Last_Index loop
+                     if Tmp.Element (I).Time > Tmp.Element (Best).Time
+                       or else
+                         (Tmp.Element (I).Time = Tmp.Element (Best).Time
+                          and then Tmp.Element (I).Order
+                                   > Tmp.Element (Best).Order)
+                     then
+                        Best := I;
                      end if;
-                  end;
-               end loop;
+                  end loop;
+                  Answers.Append (Tmp.Element (Best));
+                  Tmp.Delete (Best);
+               end;
+            end loop;
+         end;
 
-               exit when Parents.Is_Empty;
-
-               --  Kept came out reversed; put it back the way it was.
-               Pending.Clear;
-
-               for I in reverse Kept.First_Index .. Kept.Last_Index loop
-                  Pending.Append (Kept.Element (I));
-               end loop;
-
-               Current := Parents.First_Element;
-            end;
+         for A of Answers loop
+            Success_Line
+              (Version.Objects.To_String (A.Commit) & ASCII.HT
+               & To_String (A.Path));
          end loop;
       end;
    exception
