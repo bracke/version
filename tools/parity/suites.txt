@@ -48,7 +48,7 @@ histinspect.fixture     histinspect.cases     -     2
 histinspect2.fixture    histinspect2.cases    -     0
 configtext.fixture      configtext.cases      -     0
 configtext.fixture      configtext2.cases     -     0
-diffplumb.fixture       diffplumb.cases       -    3
+diffplumb.fixture       diffplumb.cases       -    1
 diffplumb2.fixture      diffplumb2.cases      -     3
 wtmutate.fixture        wtmutate.cases        -     0
 wtmutate2.fixture       wtmutate2.cases       -     0

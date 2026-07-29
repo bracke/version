@@ -12960,6 +12960,8 @@ package body Version.CLI is
                No_Index_Flag : Boolean := False;
                Compact_Flag : Boolean := False;
                Stat_Width_V : Natural := 0;
+               Word_Diff_Mode : Version.Diff.Word_Diff_Kind :=
+                 Version.Diff.WD_None;
                Dirstat_On   : Boolean := False;
                Dirstat_File : Boolean := False;
                Dirstat_Line : Boolean := False;
@@ -13210,6 +13212,13 @@ package body Version.CLI is
                      end if;
                   elsif Arg (I) = "--numstat" then
                      Numstat := True;
+                  elsif Arg (I) = "--word-diff"
+                    or else Arg (I) = "--word-diff=plain"
+                    or else Arg (I) = "--word-diff=color"
+                  then
+                     Word_Diff_Mode := Version.Diff.WD_Plain;
+                  elsif Arg (I) = "--word-diff=porcelain" then
+                     Word_Diff_Mode := Version.Diff.WD_Porcelain;
                   elsif Arg (I) = "--shortstat" then
                      Shortstat := True;
                   elsif Arg (I) = "--summary" then
@@ -13329,6 +13338,7 @@ package body Version.CLI is
                         Binary_Patch => Binary_Patch,
                         Src_Prefix => Src_Prefix_V,
                         Dst_Prefix => Dst_Prefix_V,
+                        Word_Diff => Word_Diff_Mode,
                         others => <>);
 
                --  `--no-index <old> <new>`: diff two files outside the repo.
