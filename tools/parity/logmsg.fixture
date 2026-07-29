@@ -47,3 +47,7 @@ git merge -q --no-ff side -m 'Merge side into main
 
 Bringing the side branch back with its
 folded work.'
+
+# A note so the notes-suppression rule is exercised: the default format shows
+# it, but an explicit --pretty/--format hides it unless --notes is given.
+git notes add -m 'a note on the merge' >/dev/null 2>&1 || true

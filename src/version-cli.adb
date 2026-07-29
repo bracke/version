@@ -13711,6 +13711,14 @@ package body Version.CLI is
                No_Walk_Unsorted : Boolean := False;
                Format     : Unbounded_String;
                Has_Format : Boolean := False;
+               Pretty     : Version.Log.Pretty_Kind :=
+                 Version.Log.Pretty_Medium;   --  --pretty=short/full/fuller/raw
+               --  git shows notes by default but suppresses them once an
+               --  explicit --pretty/--format is given; --notes/--no-notes
+               --  override that either way.
+               Pretty_Explicit : Boolean := False;
+               Want_Notes : Boolean := False;
+               No_Notes   : Boolean := False;
                Date_Mode  : Unbounded_String;   --  --date=<mode>
                Terminator : Boolean := True;
                Stat       : Boolean := False;
@@ -13885,7 +13893,34 @@ package body Version.CLI is
                   elsif Arg (I) = "--pretty" or else Arg (I) = "--pretty=medium"
                     or else Arg (I) = "--format=medium"
                   then
-                     null;   --  the default layout
+                     Pretty_Explicit := True;   --  the default layout
+                  --  git's other named header layouts. These must precede the
+                  --  general `--format=<fmt>` catch-all below, which would
+                  --  otherwise treat "short"/"full"/... as a custom format.
+                  elsif Arg (I) = "--pretty=short"
+                    or else Arg (I) = "--format=short"
+                  then
+                     Pretty := Version.Log.Pretty_Short;
+                     Pretty_Explicit := True;
+                  elsif Arg (I) = "--pretty=full"
+                    or else Arg (I) = "--format=full"
+                  then
+                     Pretty := Version.Log.Pretty_Full;
+                     Pretty_Explicit := True;
+                  elsif Arg (I) = "--pretty=fuller"
+                    or else Arg (I) = "--format=fuller"
+                  then
+                     Pretty := Version.Log.Pretty_Fuller;
+                     Pretty_Explicit := True;
+                  elsif Arg (I) = "--pretty=raw"
+                    or else Arg (I) = "--format=raw"
+                  then
+                     Pretty := Version.Log.Pretty_Raw;
+                     Pretty_Explicit := True;
+                  elsif Arg (I) = "--notes" then
+                     Want_Notes := True;
+                  elsif Arg (I) = "--no-notes" then
+                     No_Notes := True;
 
                   elsif Arg (I) = "--show-signature" then
                      Show_Sig := True;
@@ -14452,6 +14487,11 @@ package body Version.CLI is
                               Raw            => Raw,
                               Context        => Context,
                               First_Parent   => Walk.First_Parent,
+                              Kind           => Pretty,
+                              Show_Notes     =>
+                                (if No_Notes then False
+                                 elsif Want_Notes then True
+                                 else not Pretty_Explicit),
                               Date_Mode      => To_String (Date_Mode)));
                      else
                         Version.Console.Put
@@ -14467,6 +14507,11 @@ package body Version.CLI is
                               Raw            => Raw,
                               Context        => Context,
                               First_Parent   => Walk.First_Parent,
+                              Kind           => Pretty,
+                              Show_Notes     =>
+                                (if No_Notes then False
+                                 elsif Want_Notes then True
+                                 else not Pretty_Explicit),
                               Date_Mode      => To_String (Date_Mode)));
                      end if;
                   end;

@@ -23,3 +23,30 @@ log --graph --all
 log --graph --oneline
 log --graph --oneline --all
 log --graph --stat
+
+# git's named header layouts. short shows the (unfolded) title only; full adds
+# the committer; fuller adds both dates; raw prints the object's own headers.
+log --pretty=short
+log --pretty=short --all
+log --pretty=full
+log --pretty=full --all
+log --pretty=fuller
+log --pretty=fuller --all
+log --pretty=raw
+log --pretty=raw --all
+log --format=short
+log --format=fuller
+log --pretty=fuller --date=short
+log --graph --pretty=full
+log --graph --pretty=full --all
+log --graph --pretty=fuller
+log --graph --pretty=short
+log --graph --pretty=raw
+
+# Notes are shown by default, suppressed by an explicit --pretty/--format, and
+# forced back on by --notes.
+log -1
+log -1 --pretty=medium
+log -1 --pretty=full
+log -1 --pretty=medium --notes
+log -1 --no-notes
