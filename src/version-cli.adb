@@ -18797,18 +18797,68 @@ package body Version.CLI is
                   Usage_Error ("missing rebase target or action", Usage);
                   return;
                elsif Arg (2) = "-i" or else Arg (2) = "--interactive" then
-                  if Count /= 3 then
+                  if Count > 3 then
                      Usage_Error ("rebase -i requires an upstream", Usage);
                      return;
                   end if;
-                  Version.Rebase.Start_Interactive (Arg (3));
-                  if Version.Rebase.In_Progress then
-                     Success_Line
-                       ("stopped for edit; amend as needed, then run "
-                        & "version rebase --continue");
-                  else
-                     Success_Line ("rebased onto " & Arg (3));
-                  end if;
+
+                  declare
+                     Upstream : Unbounded_String;
+                     Have_Up  : Boolean := Count = 3;
+                  begin
+                     if Have_Up then
+                        Upstream := To_Unbounded_String (Arg (3));
+                     else
+                        --  No upstream given: git falls back to the branch's
+                        --  configured upstream, or prints the no-tracking
+                        --  message on stdout and exits 1.
+                        declare
+                           Repo : constant
+                             Version.Repository.Repository_Handle :=
+                               Version.Repository.Open;
+                           Branch : constant String :=
+                             Version.Refs.Current_Branch_Name (Repo);
+                        begin
+                           if Version.Tracking.Has_Upstream (Repo, Branch) then
+                              Upstream := To_Unbounded_String
+                                (Version.Tracking.Remote_Tracking_Ref
+                                   (Version.Tracking.Upstream (Repo, Branch)));
+                              Have_Up := True;
+                           else
+                              Success_Line
+                                ("There is no tracking information for the"
+                                 & " current branch.");
+                              Success_Line
+                                ("Please specify which branch you want to"
+                                 & " rebase against.");
+                              Success_Line ("See git-rebase(1) for details.");
+                              Success_Line ("");
+                              Success_Line ("    git rebase '<branch>'");
+                              Success_Line ("");
+                              Success_Line
+                                ("If you wish to set tracking information for"
+                                 & " this branch you can do so with:");
+                              Success_Line ("");
+                              Success_Line
+                                ("    git branch"
+                                 & " --set-upstream-to=<remote>/<branch> "
+                                 & Branch);
+                              Success_Line ("");
+                              Set_Command_Failure;
+                              return;
+                           end if;
+                        end;
+                     end if;
+
+                     Version.Rebase.Start_Interactive (To_String (Upstream));
+                     if Version.Rebase.In_Progress then
+                        Success_Line
+                          ("stopped for edit; amend as needed, then run "
+                           & "version rebase --continue");
+                     else
+                        Success_Line ("rebased onto " & To_String (Upstream));
+                     end if;
+                  end;
                elsif Arg (2) = "--rebase-merges" then
                   if Count /= 3 then
                      Usage_Error
