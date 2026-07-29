@@ -46,6 +46,7 @@ refs2.fixture           refs2.cases           -     0
 plumbing.fixture        plumbing.cases        -    0
 histinspect.fixture     histinspect.cases     -     0
 logmsg.fixture          logmsg.cases          -     0
+pathmode.fixture        pathmode.cases        -     0
 histinspect2.fixture    histinspect2.cases    -     0
 configtext.fixture      configtext.cases      -     0
 configtext.fixture      configtext2.cases     -     0

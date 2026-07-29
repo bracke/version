@@ -1,0 +1,27 @@
+# Path-limited history where one commit changes ONLY a file's mode (chmod +x,
+# same blob). git's history simplification keeps such a commit for that path --
+# a mode change is a change it shows -- so `log -- <path>` must not drop it.
+# Also an unrelated file in a subdirectory, so a directory limit is exercised.
+#
+# Increasing timestamps keep the ids reproducible across the two runs.
+c () { # $1 = message, $2 = seconds past base
+  GIT_AUTHOR_DATE="$((1700000000 + $2)) +0000" \
+  GIT_COMMITTER_DATE="$((1700000000 + $2)) +0000" \
+  GIT_AUTHOR_NAME=T GIT_AUTHOR_EMAIL=t@e git commit -qm "$1"
+}
+
+printf 'a\n' > a.txt
+mkdir -p sub && printf 'b\n' > sub/b.txt
+git add -A && c 'c1 add a and sub/b' 10
+
+chmod +x a.txt
+git add -A && c 'c2 make a executable' 20
+
+printf 'a2\n' >> a.txt
+git add -A && c 'c3 edit a content' 30
+
+printf 'b2\n' >> sub/b.txt
+git add -A && c 'c4 edit sub/b' 40
+
+chmod -x a.txt
+git add -A && c 'c5 drop a executable bit' 50

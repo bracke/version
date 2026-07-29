@@ -13719,6 +13719,9 @@ package body Version.CLI is
                Pretty_Explicit : Boolean := False;
                Want_Notes : Boolean := False;
                No_Notes   : Boolean := False;
+               --  Pathspecs for limiting each shown commit's diff to the path
+               --  operands, as git's `log -p -- <path>` does.
+               Log_Paths  : Version.Pathspec.Pathspec_Vectors.Vector;
                Date_Mode  : Unbounded_String;   --  --date=<mode>
                Terminator : Boolean := True;
                Stat       : Boolean := False;
@@ -14138,6 +14141,9 @@ package body Version.CLI is
 
                      for P of Parsed.Paths loop
                         Selection.Paths.Append (New_Item => P);
+                        --  The operands are already repo-relative here, so no
+                        --  prefix is prepended when compiling the pathspec.
+                        Version.Pathspec.Append_Parse (Log_Paths, P, "");
                      end loop;
 
                      --  git draws the graph over a topological walk, so
@@ -14492,6 +14498,7 @@ package body Version.CLI is
                                 (if No_Notes then False
                                  elsif Want_Notes then True
                                  else not Pretty_Explicit),
+                              Paths          => Log_Paths,
                               Date_Mode      => To_String (Date_Mode)));
                      else
                         Version.Console.Put
@@ -14512,6 +14519,7 @@ package body Version.CLI is
                                 (if No_Notes then False
                                  elsif Want_Notes then True
                                  else not Pretty_Explicit),
+                              Paths          => Log_Paths,
                               Date_Mode      => To_String (Date_Mode)));
                      end if;
                   end;

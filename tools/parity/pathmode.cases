@@ -1,0 +1,15 @@
+# A path limit must keep a commit that only changed the file's mode.
+log --oneline -- a.txt
+log -- a.txt
+log -p -- a.txt
+log --stat -- a.txt
+log --name-status -- a.txt
+log --raw -- a.txt
+
+# A directory limit over the unrelated file.
+log --oneline -- sub
+log -p -- sub/b.txt
+
+# Both paths together, and the graph over a path limit.
+log --oneline -- a.txt sub/b.txt
+log --graph --oneline -- a.txt
