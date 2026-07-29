@@ -1,3 +1,4 @@
+- Git parity: `rebase -i --autosquash <upstream>` reorders `fixup!`/`squash!` commits under the commits they name and folds them, matching git (completes the rebase parity suite).
 - Git parity: `rebase --keep-empty`/`--empty=keep`/`--empty=drop` are accepted (version's rebase already replays an already-empty commit, which is what the flag asks for), instead of being rejected as unknown options.
 - Git parity: `rebase --onto <newbase> <upstream> [<branch>]` replays `<upstream>..<branch>` onto `<newbase>` (checking out `<branch>` first when named), instead of rejecting `--onto` as an unknown option.
 - Git parity: `merge-octopus` narrates a per-remote content merge — "Simple merge did not work, trying automatic merge." then "Auto-merging <path>" — whenever a side needs a real content merge, not only when it conflicts, matching git's clean-octopus output.

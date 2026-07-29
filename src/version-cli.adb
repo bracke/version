@@ -19138,18 +19138,34 @@ package body Version.CLI is
                   Usage_Error ("missing rebase target or action", Usage);
                   return;
                elsif Arg (2) = "-i" or else Arg (2) = "--interactive" then
-                  if Count > 3 then
-                     Usage_Error ("rebase -i requires an upstream", Usage);
-                     return;
-                  end if;
-
                   declare
-                     Upstream : Unbounded_String;
-                     Have_Up  : Boolean := Count = 3;
+                     Upstream   : Unbounded_String;
+                     Have_Up    : Boolean := False;
+                     Autosquash : Boolean := False;
+                     Bad_Arg    : Boolean := False;
                   begin
-                     if Have_Up then
-                        Upstream := To_Unbounded_String (Arg (3));
-                     else
+                     for J in 3 .. Count loop
+                        if Arg (J) = "--autosquash" then
+                           Autosquash := True;
+                        elsif Arg (J) = "--no-autosquash" then
+                           Autosquash := False;
+                        elsif not Have_Up
+                          and then (Arg (J)'Length = 0
+                                    or else Arg (J) (Arg (J)'First) /= '-')
+                        then
+                           Upstream := To_Unbounded_String (Arg (J));
+                           Have_Up  := True;
+                        else
+                           Usage_Error
+                             ("rebase -i requires an upstream", Usage);
+                           Bad_Arg := True;
+                        end if;
+                     end loop;
+                     if Bad_Arg then
+                        return;
+                     end if;
+
+                     if not Have_Up then
                         --  No upstream given: git falls back to the branch's
                         --  configured upstream, or prints the no-tracking
                         --  message on stdout and exits 1.
@@ -19191,7 +19207,8 @@ package body Version.CLI is
                         end;
                      end if;
 
-                     Version.Rebase.Start_Interactive (To_String (Upstream));
+                     Version.Rebase.Start_Interactive
+                       (To_String (Upstream), Autosquash => Autosquash);
                      if Version.Rebase.In_Progress then
                         Success_Line
                           ("stopped for edit; amend as needed, then run "
