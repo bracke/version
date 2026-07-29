@@ -1,3 +1,6 @@
+- Git parity: `update-index --assume-unchanged`/`--no-assume-unchanged` now records the assume-valid index bit (it was silently dropped), so a later `git ls-files -v` shows the lowercase `h` tag.
+- Git parity: `fsck` reports a dangling object that lives in a pack (not just loose ones), and `fsck <object>` traces reachability from that object rather than the refs, so an annotated tag a ref still points at is listed as dangling.
+- Git parity: `pack-objects` rejects an unknown option with git's usage exit (129) and a message, instead of silently accepting it.
 - Git parity: a conflicting `cherry-pick`/`revert` narrates the merge on stdout (`Auto-merging <path>` then `CONFLICT (<kind>): Merge conflict in <path>`, interleaved per path) before its stderr error, reconstructing the reverted commit's parent as the merge's other side; and a `cherry-pick` whose result is empty prints the sequencer `status` block on stdout and exits 1, as git does.
 - Git parity: `format-patch --thread` chains the series with `Message-ID:`/`In-Reply-To:`/`References:` headers (shallow threading — every later patch replies to the first), matching git.
 - Git parity: `mailsplit` only reads the named mailboxes once `-o<dir>` is given; without it, it reads one mailbox from stdin and ignores the operands (so `mailsplit box.mbox </dev/null` splits nothing, printing `0`), as git does.

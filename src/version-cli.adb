@@ -3903,13 +3903,24 @@ package body Version.CLI is
    --  label gives fsck's "<label> <type> <id>" form.
    procedure Emit_Unreachable_Objects
      (All_Unreachable : Boolean;
-      Label           : String)
+      Label           : String;
+      Include_Packed  : Boolean := False;
+      Roots           : Version.Objects.Object_Id_Vectors.Vector :=
+        Version.Objects.Object_Id_Vectors.Empty_Vector)
    is
       Dangling_Only : constant Boolean := not All_Unreachable;
       Repo : constant Version.Repository.Repository_Handle :=
         Version.Repository.Open;
+      --  fsck reports dangling objects from packs too; prune only ever removes
+      --  loose files, so it stays with the loose-only set. Explicit roots (a
+      --  `fsck <object>` argument) replace the repository's refs as the
+      --  connectivity heads, matching git.
       Unreach : constant Version.Objects.Object_Id_Vectors.Vector :=
-        Version.Maintenance.Unreachable_Loose_Objects (Repo);
+        (if not Include_Packed
+         then Version.Maintenance.Unreachable_Loose_Objects (Repo)
+         elsif Roots.Is_Empty
+         then Version.Maintenance.Unreachable_Objects (Repo)
+         else Version.Maintenance.Unreachable_Objects (Repo, Roots));
 
       function Type_Str (Id_Hex : String) return String is
         (case Version.Objects.Kind
@@ -4544,7 +4555,7 @@ package body Version.CLI is
                Id    => Version.Objects.To_Object_Id (Id),
                Mode  => To_Unbounded_String (Mode),
                Stage => 0,
-               Skip_Worktree => False));
+               Skip_Worktree => False, Assume_Valid => False));
       end Stage_Zero;
 
       function Blob (Id : String) return String is
@@ -5268,11 +5279,39 @@ package body Version.CLI is
       for I in 2 .. Count loop
          declare
             A : constant String := Arg (I);
+            Eq : constant Natural := Ada.Strings.Fixed.Index (A, "=");
+            Opt : constant String :=
+              (if Eq > 0 then A (A'First .. Eq - 1) else A);
          begin
             if A = "--stdout" then
                To_Stdout := True;
-            elsif A'Length > 0 and then A (A'First) = '-' then
-               null;   --  --non-empty, --delta-base-offset, -q, ... : accepted
+            elsif Opt'Length > 0 and then Opt (Opt'First) = '-' then
+               --  git accepts a fixed set of options and rejects the rest with
+               --  its usage exit (129); accept that set (values ignored, as the
+               --  pack we write is content-equivalent) and reject anything else.
+               if Opt not in
+                    "--stdout" | "--revs" | "--unpacked" | "--all" | "--reflog"
+                  | "--indexed-objects" | "--stdin-packs" | "--include-tag"
+                  | "--window" | "--window-memory" | "--depth" | "--threads"
+                  | "--compression" | "--max-pack-size" | "--delta-base-offset"
+                  | "--no-delta-base-offset" | "--non-empty" | "--local"
+                  | "--incremental" | "--thin" | "--shallow"
+                  | "--honor-pack-keep" | "--keep-pack" | "--keep-true-parents"
+                  | "--sparse" | "--no-sparse" | "--progress" | "--all-progress"
+                  | "--all-progress-implied" | "--no-reuse-delta"
+                  | "--no-reuse-object" | "--quiet" | "-q" | "--cruft"
+                  | "--cruft-expiration" | "--filter" | "--no-filter"
+                  | "--missing" | "--exclude-promisor-objects"
+                  | "--keep-unreachable" | "--pack-loose-unreachable"
+                  | "--unpack-unreachable" | "--delta-islands"
+                  | "--uri-protocol" | "--write-bitmap-index"
+                  | "--no-write-bitmap-index"
+               then
+                  Usage_Error
+                    ("unknown pack-objects option: " & A,
+                     "version pack-objects [--stdout] [--revs] BASE-NAME");
+                  return;
+               end if;
             else
                Base_Name := To_Unbounded_String (A);
             end if;
@@ -6651,7 +6690,7 @@ package body Version.CLI is
                Id    => Version.Objects.To_Object_Id (Id),
                Mode  => To_Unbounded_String (Mode),
                Stage => 0,
-               Skip_Worktree => False));
+               Skip_Worktree => False, Assume_Valid => False));
          Files := Kept;
       end Set_File;
 
@@ -6694,7 +6733,7 @@ package body Version.CLI is
                      Id    => E.Id,
                      Mode  => E.Mode,
                      Stage => 0,
-                     Skip_Worktree => False));
+                     Skip_Worktree => False, Assume_Valid => False));
             end if;
          end loop;
       end Load_Files;
@@ -7720,7 +7759,7 @@ package body Version.CLI is
                                     Id    => E.Id,
                                     Mode  => E.Mode,
                                     Stage => 0,
-                                    Skip_Worktree => False));
+                                    Skip_Worktree => False, Assume_Valid => False));
                            end if;
                         end loop;
 
@@ -7806,7 +7845,7 @@ package body Version.CLI is
                                                   then "100755"
                                                   else "100644"),
                                              Stage => 0,
-                                             Skip_Worktree => False));
+                                             Skip_Worktree => False, Assume_Valid => False));
                                     end if;
                                  end if;
                               end;
@@ -26579,7 +26618,7 @@ package body Version.CLI is
                                                     & To_String (E.Path)),
                                         Id    => E.Id,
                                         Mode  => E.Mode,
-                                        Stage => 0, Skip_Worktree => False));
+                                        Stage => 0, Skip_Worktree => False, Assume_Valid => False));
                                  end if;
                               end loop;
                               Version.Staging.Sort_By_Path (Entries);
@@ -26786,6 +26825,8 @@ package body Version.CLI is
                Chmod_Exec   : Boolean := False;
                Skip_WT      : Boolean := False;
                Clear_Skip_WT : Boolean := False;
+               Set_Assume   : Boolean := False;
+               Clear_Assume : Boolean := False;
                End_Opts     : Boolean := False;
                Use_Stdin    : Boolean := False;
                Index_Info   : Boolean := False;
@@ -26818,7 +26859,7 @@ package body Version.CLI is
                      (Path  => To_Unbounded_String (Path),
                       Id    => Version.Objects.To_Object_Id (Sha),
                       Mode  => To_Unbounded_String (Mode),
-                      Stage => 0, Skip_Worktree => False));
+                      Stage => 0, Skip_Worktree => False, Assume_Valid => False));
                   Version.Staging.Write (Repo, E);
                end Insert_Cacheinfo;
 
@@ -26882,6 +26923,29 @@ package body Version.CLI is
                         end if;
                      end;
                   end if;
+
+                  --  assume-valid is likewise a real index bit: git's
+                  --  ls-files -v lowercases the tag for it and other readers
+                  --  honour it, so it has to be recorded.
+                  if Set_Assume or else Clear_Assume then
+                     declare
+                        E : Version.Staging.Index_Entry_Vectors.Vector :=
+                          Version.Staging.Load (Repo);
+                        Pos : constant Natural :=
+                          Version.Staging.Find_Path (E, Path);
+                     begin
+                        if Pos /= Natural'Last then
+                           declare
+                              Item : Version.Staging.Index_Entry :=
+                                E.Element (Pos);
+                           begin
+                              Item.Assume_Valid := Set_Assume;
+                              E.Replace_Element (Pos, Item);
+                              Version.Staging.Write (Repo, E);
+                           end;
+                        end if;
+                     end;
+                  end if;
                end Process_Path;
             begin
                if Count < 2 then
@@ -26903,14 +26967,10 @@ package body Version.CLI is
                        and then (A = "--refresh" or else A = "--really-refresh")
                      then
                         null;  --  up-to-date index: nothing to surface
-                     elsif not End_Opts
-                       and then (A = "--assume-unchanged"
-                                 or else A = "--no-assume-unchanged")
-                     then
-                        --  The bit only tells git not to bother stat-ing the
-                        --  file; nothing here consults it, so recording it
-                        --  would claim an effect it does not have.
-                        null;
+                     elsif not End_Opts and then A = "--assume-unchanged" then
+                        Set_Assume := True;
+                     elsif not End_Opts and then A = "--no-assume-unchanged" then
+                        Clear_Assume := True;
                      elsif not End_Opts and then A = "--stdin" then
                         Use_Stdin := True;
                      elsif not End_Opts and then A = "--index-info" then
@@ -29880,6 +29940,9 @@ package body Version.CLI is
                Show_Unreach   : Boolean := False;
                Want_Root      : Boolean := False;
                Want_Tags      : Boolean := False;
+               --  Explicit `fsck <object>...` heads: when present they replace
+               --  the repository's refs as the connectivity roots.
+               Fsck_Roots     : Version.Objects.Object_Id_Vectors.Vector;
             begin
                if As_Fsck then
                   for I in 2 .. Count loop
@@ -29913,9 +29976,20 @@ package body Version.CLI is
                               exit;
                            end if;
                         else
-                           --  An object to check; git still lists the
-                           --  dangling objects alongside it.
-                           null;
+                           --  An object to check: it becomes a connectivity
+                           --  root, and git still lists the dangling objects
+                           --  (those unreachable from it) alongside.
+                           declare
+                              Repo :
+                                constant Version.Repository.Repository_Handle :=
+                                  Version.Repository.Open;
+                           begin
+                              Fsck_Roots.Append
+                                (Version.Revisions.Resolve_Commit (Repo, A));
+                           exception
+                              when others =>
+                                 null;
+                           end;
                         end if;
                      end;
                   end loop;
@@ -30028,10 +30102,12 @@ package body Version.CLI is
                      --  git reports the dangling ones (unreachable roots).
                      if Show_Unreach then
                         Emit_Unreachable_Objects
-                          (All_Unreachable => True, Label => "unreachable");
+                          (All_Unreachable => True, Label => "unreachable",
+                           Include_Packed  => True, Roots => Fsck_Roots);
                      elsif Show_Dangling then
                         Emit_Unreachable_Objects
-                          (All_Unreachable => False, Label => "dangling");
+                          (All_Unreachable => False, Label => "dangling",
+                           Include_Packed  => True, Roots => Fsck_Roots);
                      end if;
                   end if;
                elsif Count /= 1 then
