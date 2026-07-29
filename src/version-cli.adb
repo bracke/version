@@ -9772,6 +9772,12 @@ package body Version.CLI is
       Head    : Unbounded_String;
       Remotes : Version.Trailers.String_Vectors.Vector;
       Sep     : Boolean := False;
+      --  git's merge-recursive accepts its strategy options ahead of the
+      --  bases: `--ours`/`--theirs` favour a side on a content conflict (like
+      --  -Xours/-Xtheirs), and the diff/whitespace options change the merge
+      --  but not the record it leaves. Only the option form favours; the
+      --  `merge-recursive-ours` command name deliberately does not.
+      Opt_Favor : Version.Merge.Conflict_Favor := Version.Merge.Favor_Neither;
 
       function Tree_Of (Commit : Version.Objects.Hex_Object_Id)
         return Version.Objects.Tree_Entry_Vectors.Vector
@@ -9786,6 +9792,17 @@ package body Version.CLI is
          begin
             if A = "--" then
                Sep := True;
+            elsif not Sep and then A'Length >= 2
+              and then A (A'First .. A'First + 1) = "--"
+            then
+               --  A strategy option, not a base (bases are commit-ish).
+               if A = "--ours" then
+                  Opt_Favor := Version.Merge.Favor_Current;
+               elsif A = "--theirs" then
+                  Opt_Favor := Version.Merge.Favor_Target;
+               else
+                  null;  --  --diff-algorithm=, --patience, --ignore-*, ...
+               end if;
             elsif not Sep then
                Bases.Append (A);
             elsif Head = "" then
@@ -9859,6 +9876,47 @@ package body Version.CLI is
             end if;
          end;
       end if;
+
+      --  git parses every named revision up front and dies (128) on one it
+      --  cannot resolve, before attempting any merge.
+      declare
+         Bad : Unbounded_String;
+         function Resolves (Rev : String) return Boolean is
+            Ignore : Version.Objects.Hex_Object_Id;
+         begin
+            Ignore := Version.Revisions.Resolve_Commit (Repo, Rev);
+            return True;
+         exception
+            when others =>
+               return False;
+         end Resolves;
+      begin
+         if not Resolves (To_String (Head)) then
+            Bad := Head;
+         end if;
+         if Bad = "" then
+            for R of Remotes loop
+               if not Resolves (R) then
+                  Bad := To_Unbounded_String (R);
+                  exit;
+               end if;
+            end loop;
+         end if;
+         if Bad = "" then
+            for B of Bases loop
+               if not Resolves (B) then
+                  Bad := To_Unbounded_String (B);
+                  exit;
+               end if;
+            end loop;
+         end if;
+         if Bad /= "" then
+            Stderr_Line
+              ("fatal: Could not parse object '" & To_String (Bad) & "'.");
+            Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+            return;
+         end if;
+      end;
 
       declare
          Head_Id : constant Version.Objects.Hex_Object_Id :=
@@ -10133,11 +10191,11 @@ package body Version.CLI is
               To_Unbounded_String
                 (Version.Merge.Base_Label_For (Repo, Base_Id));
 
-            --  git's `merge-recursive-ours`/`-theirs` do NOT favour a side:
-            --  cmd_merge_recursive only reads a `-subtree` suffix off argv[0],
-            --  so both behave as plain recursive.  (`-Xours` is what favours.)
-            --  Verified against git -- do not "fix" this into a favoured merge.
-            null;
+            --  git's `merge-recursive-ours`/`-theirs` command names do NOT
+            --  favour a side (cmd_merge_recursive only reads a `-subtree`
+            --  suffix off argv[0]); the `--ours`/`--theirs` *options* do, which
+            --  Opt_Favor carries. Verified against git -- keep the two apart.
+            Behavior.Favor := Opt_Favor;
 
             Version.Merge.Merge_Trees
               (Repo          => Repo,
