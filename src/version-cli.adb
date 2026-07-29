@@ -13744,6 +13744,7 @@ package body Version.CLI is
                Want_Parents : Boolean := False;   --  --parents
                Want_Children : Boolean := False;  --  --children
                Want_Boundary : Boolean := False;  --  --boundary
+               Want_Graph : Boolean := False;     --  --graph
                --  git's symmetric-range marking: --left-right prefixes each
                --  commit with </> for its side, --cherry-mark replaces that
                --  with = for a commit whose patch already exists on the other
@@ -13824,6 +13825,8 @@ package body Version.CLI is
                      Want_Children := True;
                   elsif Arg (I) = "--boundary" then
                      Want_Boundary := True;
+                  elsif Arg (I) = "--graph" then
+                     Want_Graph := True;
                   elsif Arg (I) = "--left-right" then
                      Left_Right := True;
                   elsif Arg (I) = "--cherry-mark" then
@@ -14101,6 +14104,13 @@ package body Version.CLI is
                      for P of Parsed.Paths loop
                         Selection.Paths.Append (New_Item => P);
                      end loop;
+
+                     --  git draws the graph over a topological walk, so
+                     --  `--graph` turns on topo ordering the same way an
+                     --  explicit --topo-order would.
+                     if Want_Graph then
+                        Topo_Order := True;
+                     end if;
 
                      --  Reordering acts on the whole selection, so the caps
                      --  have to wait until after it.
@@ -14415,6 +14425,12 @@ package body Version.CLI is
                               end;
                            end if;
                         end;
+                     elsif Oneline and then Want_Graph then
+                        Version.Console.Put
+                          (Version.Log.Log_Graph_Oneline_List_Text
+                             (Repo, Commits, With_Parents => Want_Parents,
+                              With_Children => Want_Children,
+                              Decorate => Decorate));
                      elsif Oneline then
                         Version.Console.Put
                           (Version.Log.Log_Oneline_List_Text

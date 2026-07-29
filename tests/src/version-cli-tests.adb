@@ -2023,9 +2023,10 @@ package body Version.CLI.Tests is
             "fatal: ambiguous argument",
             "log unresolvable operand diagnostic");
       end;
+      --  --graph is now implemented; a genuinely unknown option stands in.
       Check_Usage_Failure
-        ("log --oneline --graph",
-         "unknown log option: --graph",
+        ("log --oneline --nonsense-flag",
+         "unknown log option: --nonsense-flag",
          Log_Usage,
          "log oneline unknown option");
 
