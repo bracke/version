@@ -15,26 +15,26 @@ blame nosuch.txt
 # Annotation-shaping options: -s drops author/date, -l/--abbrev set the id
 # width, -e shows the email, -t the raw time, -f the filename, -L a line range.
 blame -s f.txt
-blame -l f.txt
-blame -e f.txt
-blame -t f.txt
-blame -f f.txt
-blame --abbrev=10 f.txt
-blame -L 2,3 f.txt
-blame -L 2 f.txt
-blame -L 1,+2 f.txt
+blame -l HEAD f.txt
+blame -e HEAD f.txt
+blame -t HEAD f.txt
+blame -f HEAD f.txt
+blame --abbrev=10 HEAD f.txt
+blame -L 2,3 HEAD f.txt
+blame -L 2 HEAD f.txt
+blame -L 1,+2 HEAD f.txt
 blame -s -l f.txt
-blame -f -e f.txt
+blame -f -e HEAD f.txt
 blame -l -f HEAD f.txt
 blame -e -t HEAD~1 f.txt
 blame HEAD~1 -- f.txt
 blame -s g.txt
 # -n adds the original line number; --porcelain/--line-porcelain are the
 # machine formats (per-commit block, group counts, boundary/previous).
-blame -n f.txt
+blame -n HEAD f.txt
 blame -s -n f.txt
-blame -f -n f.txt
-blame -n -l f.txt
+blame -f -n HEAD f.txt
+blame -n -l HEAD f.txt
 # Blamed at a committed revision so the porcelain timestamps are deterministic
 # (the working-tree form times uncommitted lines at "now").
 blame --porcelain HEAD f.txt
