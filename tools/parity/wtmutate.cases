@@ -80,6 +80,9 @@ notes show HEAD~1
 notes
 notes list
 notes remove HEAD
+# remove --stdin takes the objects (one per whitespace-separated token) from
+# stdin; the note list is empty afterwards.
+--version|grep -q '^version' && T=$V || T=git; git notes add -f -m z HEAD >/dev/null 2>&1; git notes add -f -m z2 HEAD~1 >/dev/null 2>&1; printf '%s\n%s\n' $(git rev-parse HEAD) $(git rev-parse HEAD~1) | "$T" notes remove --stdin >/dev/null 2>&1; echo "rc=$?"; "$T" notes list
 notes append -m z HEAD
 notes copy HEAD HEAD~1
 notes prune

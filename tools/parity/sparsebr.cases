@@ -51,6 +51,9 @@ sparse-checkout list
 --version|grep -q '^version' && T=$V || T=git; git checkout -q -- .; rm -f notes.txt; "$T" sparse-checkout set src >/dev/null 2>&1; echo rc=$?; "$T" sparse-checkout list; find . -path ./.git -prune -o -type f -print | sort
 # add is set's incremental sibling: docs comes back, src stays.
 --version|grep -q '^version' && T=$V || T=git; git checkout -q -- .; rm -f notes.txt; "$T" sparse-checkout set src >/dev/null 2>&1; "$T" sparse-checkout add docs >/dev/null 2>&1; echo rc=$?; "$T" sparse-checkout list; find . -path ./.git -prune -o -type f -print | sort
+# set/add also read the directories from stdin, one per line, with --stdin.
+--version|grep -q '^version' && T=$V || T=git; git checkout -q -- .; rm -f notes.txt; printf 'src\n' | "$T" sparse-checkout set --stdin >/dev/null 2>&1; echo rc=$?; "$T" sparse-checkout list; find . -path ./.git -prune -o -type f -print | sort
+--version|grep -q '^version' && T=$V || T=git; git checkout -q -- .; rm -f notes.txt; "$T" sparse-checkout set src >/dev/null 2>&1; printf 'docs\n' | "$T" sparse-checkout add --stdin >/dev/null 2>&1; echo rc=$?; "$T" sparse-checkout list; find . -path ./.git -prune -o -type f -print | sort
 # reapply re-runs the current specification over a working tree that has drifted
 # back to full.
 --version|grep -q '^version' && T=$V || T=git; git checkout -q -- .; rm -f notes.txt; "$T" sparse-checkout set src >/dev/null 2>&1; git checkout -q main -- tools; "$T" sparse-checkout reapply >/dev/null 2>&1; echo rc=$?; find . -path ./.git -prune -o -type f -print | sort

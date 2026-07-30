@@ -376,7 +376,7 @@ Purpose: name REV (default HEAD) relative to the nearest reachable tag — the t
 
 ### notes
 
-Syntax: `version notes [--ref=REF] (list [REV] | show [REV] | add [-f|--force] -m MSG [REV] | append -m MSG [REV] | copy [-f] FROM TO | remove [REV] | prune)`.
+Syntax: `version notes [--ref=REF] (list [REV] | show [REV] | add [-f|--force] -m MSG [REV] | append -m MSG [REV] | copy [-f] FROM TO | remove [--ignore-missing] [--stdin] [REV...] | prune)`. `remove --stdin` reads the objects to remove (one per whitespace-separated token) from standard input, in addition to any operands; a full object id names its target directly.
 
 Purpose: attach, show and manage text notes on commits (default HEAD), stored in a notes ref -- `refs/notes/commits` unless `--ref=<name>` selects another, where a bare name means `refs/notes/<name>`. Notes are written flat (one entry per commit id), which git reads.
 
@@ -625,7 +625,7 @@ Common failures: no LFS server configured, path already locked by another user (
 
 ### sparse / sparse-checkout
 
-Syntax: `version sparse-checkout set [--cone|--no-cone] DIR...`, `version sparse-checkout add [--cone|--no-cone] DIR...`, `version sparse-checkout list`, `version sparse-checkout status`, `version sparse-checkout reapply`, `version sparse-checkout init [--cone|--no-cone]`, `version sparse-checkout disable`. `version sparse` is accepted as an alias for git's `sparse-checkout`.
+Syntax: `version sparse-checkout set [--cone|--no-cone] [--stdin] DIR...`, `version sparse-checkout add [--cone|--no-cone] [--stdin] DIR...`, `version sparse-checkout list`, `version sparse-checkout status`, `version sparse-checkout reapply`, `version sparse-checkout init [--cone|--no-cone]`, `version sparse-checkout disable`. `version sparse` is accepted as an alias for git's `sparse-checkout`.
 
 Purpose: keep only selected tracked paths materialized in the working tree, matching git's `sparse-checkout`. `set`/`add` default to **cone mode** (arguments are directories): they write git's cone patterns (`/*`, `!/*/`, `/dir/`, plus `!/dir/*/` ancestor entries for nested directories) to `.git/info/sparse-checkout`, set `core.sparseCheckout` and `core.sparseCheckoutCone`, materialize the working tree, and set git skip-worktree bits on the excluded index entries (writing a version-3 index) so `git status`/`ls-files -t` round-trip correctly. `--no-cone` writes raw gitignore-style patterns instead. `list` prints the recursive directory names (cone) or the raw patterns; it fails with `this worktree is not sparse` when disabled. `reapply` re-materializes from the current patterns. `disable` clears the config flag and restores the full working tree while keeping the pattern file (git parity).
 

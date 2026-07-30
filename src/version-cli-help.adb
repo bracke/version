@@ -394,8 +394,8 @@ package body Version.CLI.Help is
             "Manage linked worktrees with shared objects and refs but isolated HEAD and index.");
       elsif Name = "sparse" or else Name = "sparse-checkout" then
          Append_Line (Text, "Usage:");
-         Append_Line (Text, "  version sparse-checkout set [--cone|--no-cone] DIR...");
-         Append_Line (Text, "  version sparse-checkout add [--cone|--no-cone] DIR...");
+         Append_Line (Text, "  version sparse-checkout set [--cone|--no-cone] [--stdin] DIR...");
+         Append_Line (Text, "  version sparse-checkout add [--cone|--no-cone] [--stdin] DIR...");
          Append_Line (Text, "  version sparse-checkout list");
          Append_Line (Text, "  version sparse-checkout status");
          Append_Line (Text, "  version sparse-checkout reapply");

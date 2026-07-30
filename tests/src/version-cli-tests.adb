@@ -1021,7 +1021,7 @@ package body Version.CLI.Tests is
          "worktree current help");
       Assert_Contains
         (Version.CLI.Help.Command_Text ("sparse"),
-         "  version sparse-checkout set [--cone|--no-cone] DIR...",
+         "  version sparse-checkout set [--cone|--no-cone] [--stdin] DIR...",
          "sparse help");
       Assert_Contains
         (Version.CLI.Help.Command_Text ("sparse-checkout"),
@@ -3743,22 +3743,22 @@ package body Version.CLI.Tests is
       Check_Usage_Failure
         ("sparse set --no-cone",
          "missing sparse pathspec",
-         "version sparse set [--cone|--no-cone] DIR...",
+         "version sparse set [--cone|--no-cone] [--stdin] DIR...",
          "sparse set --no-cone missing pathspec");
       Check_Usage_Failure
         ("sparse set --bogus src",
          "unknown sparse set option: --bogus",
-         "version sparse set [--cone|--no-cone] DIR...",
+         "version sparse set [--cone|--no-cone] [--stdin] DIR...",
          "sparse set unknown option");
       Check_Usage_Failure
         ("sparse add",
          "missing sparse pathspec",
-         "version sparse add [--cone|--no-cone] DIR...",
+         "version sparse add [--cone|--no-cone] [--stdin] DIR...",
          "sparse add missing pathspec");
       Check_Usage_Failure
         ("sparse add --sparse docs",
          "unknown sparse add option: --sparse",
-         "version sparse add [--cone|--no-cone] DIR...",
+         "version sparse add [--cone|--no-cone] [--stdin] DIR...",
          "sparse add unknown option");
 
       Version.Init.Init (Root);

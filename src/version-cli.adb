@@ -20771,6 +20771,34 @@ package body Version.CLI is
                         elsif not After_Separator and then A = "--no-cone" then
                            Cone := False;
                            Cone_Explicit := True;
+                        elsif not After_Separator and then A = "--stdin" then
+                           --  git reads the patterns (one per line) from stdin.
+                           declare
+                              Data  : constant String := Read_All_Stdin;
+                              First : Natural := Data'First;
+                              procedure Emit (Last : Natural) is
+                                 Stop : Natural := Last;
+                              begin
+                                 if Stop >= First
+                                   and then Data (Stop) = ASCII.CR
+                                 then
+                                    Stop := Stop - 1;
+                                 end if;
+                                 if Stop >= First then
+                                    Operands.Append (Data (First .. Stop));
+                                 end if;
+                              end Emit;
+                           begin
+                              for K in Data'Range loop
+                                 if Data (K) = ASCII.LF then
+                                    Emit (K - 1);
+                                    First := K + 1;
+                                 end if;
+                              end loop;
+                              if Data'Last >= First then
+                                 Emit (Data'Last);
+                              end if;
+                           end;
                         elsif not After_Separator and then Is_Option (A) then
                            Usage_Error
                              ("unknown sparse " & Context & " option: " & A,
@@ -20829,7 +20857,7 @@ package body Version.CLI is
                   declare
                      Usage : constant String :=
                        "version " & Cmd_Name
-                       & " set [--cone|--no-cone] DIR...";
+                       & " set [--cone|--no-cone] [--stdin] DIR...";
                      Cone     : Boolean := True;
                      Explicit : Boolean := False;
                      Operands : Version.Sparse.String_Vectors.Vector;
@@ -20865,7 +20893,7 @@ package body Version.CLI is
                   declare
                      Usage : constant String :=
                        "version " & Cmd_Name
-                       & " add [--cone|--no-cone] DIR...";
+                       & " add [--cone|--no-cone] [--stdin] DIR...";
                      Cone     : Boolean := True;
                      Explicit : Boolean := False;
                      Added    : Version.Sparse.String_Vectors.Vector;
@@ -24704,7 +24732,7 @@ package body Version.CLI is
                Usage : constant String :=
                  "version notes [--ref=REF] (list [REV] | show [REV]"
                  & " | add [-f] -m MSG [REV] | append -m MSG [REV]"
-                 & " | copy [-f] FROM TO | remove [REV] | prune)";
+                 & " | copy [-f] FROM TO | remove [--stdin] [REV...] | prune)";
 
                --  `--ref=<name>` precedes the subcommand, so the operands are
                --  collected rather than read at fixed positions.
@@ -24716,6 +24744,7 @@ package body Version.CLI is
                Force     : Boolean := False;
                Ignore_Missing : Boolean := False;
                Dry_Run   : Boolean := False;
+               Stdin     : Boolean := False;
                Ops       : Version.Trailers.String_Vectors.Vector;
                Bad       : Boolean := False;
                Bad_Text  : Unbounded_String;
@@ -24730,6 +24759,8 @@ package body Version.CLI is
                      then
                         Notes_Ref := To_Unbounded_String
                           (A (A'First + 6 .. A'Last));
+                     elsif A = "--stdin" then
+                        Stdin := True;
                      elsif A = "-m" then
                         if I = Count then
                            Bad := True;
@@ -24912,30 +24943,78 @@ package body Version.CLI is
 
                      elsif Name = "remove" then
                         declare
-                           C : constant Version.Objects.Hex_Object_Id :=
-                             Rev_Or_Head (Operand (1));
-                        begin
-                           --  Announce only what is actually removed: git
-                           --  reports the absence instead, and says nothing
-                           --  about removing.
-                           if not Version.Notes.Has_Note (Repo, C, Ref) then
-                              --  git reports the absence either way; with
-                              --  --ignore-missing it is no longer an error.
-                              Stderr_Line
-                                ("Object "
-                                 & (if Operand (1) /= "" then Operand (1)
-                                    else Version.Objects.To_String (C))
-                                 & " has no note");
-                              if not Ignore_Missing then
-                                 Set_Command_Failure;
+                           --  git's `remove` takes the object from the operand
+                           --  (default HEAD), or -- with --stdin -- one per
+                           --  whitespace-separated token on stdin, in addition
+                           --  to any operands.
+                           Specs : Version.Trailers.String_Vectors.Vector;
+
+                           procedure Remove_One (Spec : String) is
+                              --  A full object id names its target directly
+                              --  (git does not require it to exist -- a note
+                              --  can sit on any id); anything else is resolved.
+                              C : constant Version.Objects.Hex_Object_Id :=
+                                (if Spec'Length in 40 | 64
+                                   and then (for all Ch of Spec =>
+                                               Ch in '0' .. '9' | 'a' .. 'f'
+                                                   | 'A' .. 'F')
+                                 then Version.Objects.To_Object_Id (Spec)
+                                 else Rev_Or_Head (Spec));
+                           begin
+                              if not Version.Notes.Has_Note (Repo, C, Ref) then
+                                 --  git reports the absence either way; with
+                                 --  --ignore-missing it is no longer an error.
+                                 Stderr_Line
+                                   ("Object "
+                                    & (if Spec /= "" then Spec
+                                       else Version.Objects.To_String (C))
+                                    & " has no note");
+                                 if not Ignore_Missing then
+                                    Set_Command_Failure;
+                                 end if;
+                              else
+                                 --  git names the object as the caller wrote it.
+                                 Stderr_Line
+                                   ("Removing note for object "
+                                    & (if Spec /= "" then Spec
+                                       else Version.Objects.To_String (C)));
+                                 Version.Notes.Remove (Repo, C, Ref);
                               end if;
+                           end Remove_One;
+                        begin
+                           for Op of Ops loop
+                              Specs.Append (Op);
+                           end loop;
+
+                           if Stdin then
+                              declare
+                                 Data  : constant String := Read_All_Stdin;
+                                 First : Natural := Data'First;
+                              begin
+                                 for K in Data'Range loop
+                                    if Data (K) in ' ' | ASCII.HT | ASCII.LF
+                                                 | ASCII.CR
+                                    then
+                                       if K > First then
+                                          Specs.Append (Data (First .. K - 1));
+                                       end if;
+                                       First := K + 1;
+                                    end if;
+                                 end loop;
+                                 if Data'Last >= First then
+                                    Specs.Append (Data (First .. Data'Last));
+                                 end if;
+                              end;
+                           end if;
+
+                           if Specs.Is_Empty and then not Stdin then
+                              Remove_One ("");   --  default HEAD
                            else
-                              --  git names the object as the caller wrote it.
-                              Stderr_Line
-                                ("Removing note for object "
-                                 & (if Operand (1) /= "" then Operand (1)
-                                    else Version.Objects.To_String (C)));
-                              Version.Notes.Remove (Repo, C, Ref);
+                              --  With --stdin the operands are exactly what was
+                              --  read (empty stdin removes nothing).
+                              for S of Specs loop
+                                 Remove_One (S);
+                              end loop;
                            end if;
                         end;
 
