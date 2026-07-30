@@ -34,3 +34,8 @@ rev-list --pretty=oneline --reverse HEAD
 rev-list --format=oneline HEAD
 rev-list --missing=allow-any HEAD
 rev-list --parents --children HEAD
+rev-list --disk-usage HEAD
+rev-list --disk-usage --objects HEAD
+rev-list --disk-usage --all
+rev-list --disk-usage=human HEAD
+rev-list --disk-usage --objects HEAD~2..HEAD

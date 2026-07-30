@@ -279,6 +279,11 @@ count-objects -H
 count-objects -v -H
 count-objects --verbose
 count-objects --human-readable
+# rev-list --disk-usage sums on-disk object sizes; here the store is packed
+# (with loose copies left by repack), so both size paths are exercised.
+rev-list --disk-usage HEAD
+rev-list --disk-usage --objects HEAD
+rev-list --disk-usage=human --objects HEAD
 
 # ------------------------------------------------------------- unpack-file --
 # unpack-file prints a temporary name that is random by design, so the case

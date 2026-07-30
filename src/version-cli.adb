@@ -26,6 +26,7 @@ with Version.CLI.Help;
 with Version.Multi_Pack_Index;
 with Version.Objects; use Version.Objects;
 with Version.Pack;
+with Version.Pack_Index_Cache;
 with Version.Pack_Write;
 with Version.Reachability;
 with Version.LFS;
@@ -29023,7 +29024,9 @@ package body Version.CLI is
                  & " [--merges|--no-merges] [--min-parents=<n>]"
                  & " [--max-parents=<n>] [--first-parent] [--parents]"
                  & " [--children] [--timestamp] [--pretty=oneline]"
-                 & " [--missing=<mode>] [--oneline] [--objects]"
+                 & " [--missing=<mode>] [--left-right] [--cherry-mark]"
+                 & " [--cherry-pick] [--left-only|--right-only] [--cherry]"
+                 & " [--disk-usage[=human]] [--oneline] [--objects]"
                  & " [--topo-order|--date-order] <REV>... [--] [PATH...]";
 
                function Starts (S, P : String) return Boolean is
@@ -29047,6 +29050,8 @@ package body Version.CLI is
                Oneline    : Boolean := False;
                Topo_Order : Boolean := False;
                Show_Objects : Boolean := False;
+               Disk_Usage : Boolean := False;
+               Disk_Human : Boolean := False;
                Left_Right : Boolean := False;
                Cherry_Mark : Boolean := False;
                Cherry_Pick : Boolean := False;
@@ -29177,6 +29182,15 @@ package body Version.CLI is
 
                      elsif A = "--objects" then
                         Show_Objects := True;
+                        I := I + 1;
+
+                     elsif A = "--disk-usage" then
+                        Disk_Usage := True;
+                        I := I + 1;
+
+                     elsif A = "--disk-usage=human" then
+                        Disk_Usage := True;
+                        Disk_Human := True;
                         I := I + 1;
 
                      elsif A = "--oneline" then
@@ -29439,7 +29453,87 @@ package body Version.CLI is
                         Compute_Sides;
                      end if;
 
-                     if Count_Only then
+                     if Disk_Usage then
+                        --  git's --disk-usage sums the on-disk size of each
+                        --  object: the loose file's size, or a packed entry's
+                        --  span (next offset minus this one). Without --objects
+                        --  only the commits are summed; with it, every tree and
+                        --  blob they reach too.
+                        declare
+                           Packs : Version.Pack_Index_Cache.Cache;
+                           Total : Long_Long_Integer := 0;
+
+                           procedure Add
+                             (Id : Version.Objects.Hex_Object_Id)
+                           is
+                           begin
+                              if Version.Pack_Index_Cache.Contains
+                                   (Packs, Id)
+                              then
+                                 declare
+                                    Loc : constant Version.Pack.Pack_Location
+                                      := Version.Pack_Index_Cache.Locate
+                                           (Packs, Id);
+                                 begin
+                                    Total := Total
+                                      + Long_Long_Integer (Loc.End_Offset)
+                                      - Long_Long_Integer (Loc.Offset);
+                                 end;
+                              else
+                                 Total := Total + Long_Long_Integer
+                                   (Ada.Directories.Size
+                                      (Version.Objects.Loose_Object_Path
+                                         (Repo, Id)));
+                              end if;
+                           end Add;
+
+                           --  git renders --disk-usage=human like count-objects
+                           --  -H: "<n> bytes" under 1 KiB, else a scaled unit.
+                           function Human (N : Long_Long_Integer) return String
+                           is
+                              Units : constant array (0 .. 3) of String (1 .. 3)
+                                := ["KiB", "MiB", "GiB", "TiB"];
+                              Div : Long_Long_Integer := 1024;
+                              U   : Natural := 0;
+                           begin
+                              if N < 1024 then
+                                 return Img (Natural (N)) & " bytes";
+                              end if;
+                              while U < Units'Last and then N >= Div * 1024 loop
+                                 Div := Div * 1024;
+                                 U := U + 1;
+                              end loop;
+                              declare
+                                 X100  : constant Long_Long_Integer :=
+                                   (N * 100 + Div / 2) / Div;
+                                 Whole : constant Long_Long_Integer := X100 / 100;
+                                 Frac  : constant Long_Long_Integer :=
+                                   X100 mod 100;
+                              begin
+                                 return Img (Natural (Whole)) & "."
+                                   & (if Frac < 10 then "0" else "")
+                                   & Img (Natural (Frac)) & " " & Units (U);
+                              end;
+                           end Human;
+                        begin
+                           Version.Pack_Index_Cache.Load
+                             (Repo => Repo, Item => Packs);
+                           if Show_Objects then
+                              for O of Version.History.Object_List
+                                (Repo, Commits, Parsed.Exclude)
+                              loop
+                                 Add (O.Id);
+                              end loop;
+                           else
+                              for C of Commits loop
+                                 Add (C);
+                              end loop;
+                           end if;
+                           Success_Line
+                             (if Disk_Human then Human (Total)
+                              else Img (Natural (Total)));
+                        end;
+                     elsif Count_Only then
                         if Symmetric then
                            --  git counts a patch-equivalent commit as "same"
                            --  rather than left or right; the output shape is
