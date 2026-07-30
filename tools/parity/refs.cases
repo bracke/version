@@ -340,6 +340,12 @@ merge-base --independent main topic dup feature merged-br
 merge-base --independent topic topic
 merge-base --is-ancestor merged-br main
 merge-base --is-ancestor main topic
+# --fork-point uses main's reflog to find where a branch diverged; the fixture
+# builds main up through several commits so the reflog has real positions.
+merge-base --fork-point main topic
+merge-base --fork-point main dup
+merge-base --fork-point main feature
+merge-base --fork-point main
 
 ## rev-list symmetric range (dup carries a patch-equivalent of a main commit,
 ## so the cherry marks and the "same" count have real input)

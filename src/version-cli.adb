@@ -34758,11 +34758,12 @@ package body Version.CLI is
             declare
                Usage : constant String :=
                  "version merge-base [--all|--octopus|--independent"
-                 & "|--is-ancestor] COMMIT COMMIT...";
+                 & "|--is-ancestor|--fork-point] COMMIT COMMIT...";
                All_Bases   : Boolean := False;
                Is_Ancestor : Boolean := False;
                Octopus     : Boolean := False;
                Independent : Boolean := False;
+               Fork_Point  : Boolean := False;
                Ops : Version.Trailers.String_Vectors.Vector;
                Bad : Boolean := False;
             begin
@@ -34775,6 +34776,8 @@ package body Version.CLI is
                      Octopus := True;
                   elsif Arg (I) = "--independent" then
                      Independent := True;
+                  elsif Arg (I) = "--fork-point" then
+                     Fork_Point := True;
                   elsif Arg (I)'Length > 0 and then Arg (I) (Arg (I)'First) = '-'
                   then
                      Usage_Error
@@ -34787,10 +34790,12 @@ package body Version.CLI is
                end loop;
 
                if not Bad then
-                  --  --octopus and --independent accept one or more commits;
-                  --  the pairwise modes need two, and --is-ancestor exactly.
+                  --  --octopus/--independent take one or more commits and
+                  --  --fork-point one ref plus an optional commit; the pairwise
+                  --  modes need two, and --is-ancestor exactly.
                   if Natural (Ops.Length)
-                       < (if Octopus or else Independent then 1 else 2)
+                       < (if Octopus or else Independent or else Fork_Point
+                          then 1 else 2)
                   then
                      Usage_Error ("merge-base requires a commit", Usage);
                   elsif Is_Ancestor and then Natural (Ops.Length) /= 2 then
@@ -34819,6 +34824,96 @@ package body Version.CLI is
                               then
                                  Set_Command_Failure;
                               end if;
+                           elsif Fork_Point then
+                              --  git's --fork-point: the most recent commit the
+                              --  base ref ever pointed to (per its reflog) that
+                              --  is a merge base with the derived commit. There
+                              --  must be exactly one such base, and it must be
+                              --  one of the reflog positions.
+                              declare
+                                 --  The reflog lives at logs/<full-ref>, so
+                                 --  dwim the operand to its full ref name.
+                                 function Full_Ref (Name : String)
+                                   return String
+                                 is
+                                   (if Name = "HEAD"
+                                       or else Has_Prefix (Name, "refs/")
+                                    then Name
+                                    elsif Version.Refs.Ref_Exists
+                                            (Repo, "refs/heads/" & Name)
+                                    then "refs/heads/" & Name
+                                    elsif Version.Refs.Ref_Exists
+                                            (Repo, "refs/remotes/" & Name)
+                                    then "refs/remotes/" & Name
+                                    elsif Version.Refs.Ref_Exists
+                                            (Repo, "refs/tags/" & Name)
+                                    then "refs/tags/" & Name
+                                    else Name);
+
+                                 Ref_Name : constant String :=
+                                   Full_Ref (Ops.First_Element);
+                                 Derived : constant
+                                   Version.Objects.Hex_Object_Id :=
+                                     (if Natural (Ops.Length) >= 2
+                                      then Ids (Ids.First_Index + 1)
+                                      else Version.Revisions.Resolve_Commit
+                                             (Repo, "HEAD"));
+                                 Entries : constant
+                                   Version.Reflog.Log_Entry_Vectors.Vector :=
+                                     Version.Reflog.Read_Entries
+                                       (Repo, Ref_Name);
+                                 Reflog_Oids :
+                                   Version.History.Commit_Id_Vectors.Vector;
+
+                                 procedure Add_Oid (S : String) is
+                                 begin
+                                    if S'Length in 40 | 64
+                                      and then (for all C of S =>
+                                                  C in '0' .. '9' | 'a' .. 'f'
+                                                    | 'A' .. 'F')
+                                      and then (for some C of S => C /= '0')
+                                    then
+                                       declare
+                                          Id : constant
+                                            Version.Objects.Hex_Object_Id :=
+                                              Version.Objects.To_Object_Id (S);
+                                       begin
+                                          if not Reflog_Oids.Contains (Id) then
+                                             Reflog_Oids.Append (Id);
+                                          end if;
+                                       end;
+                                    end if;
+                                 end Add_Oid;
+                              begin
+                                 if Entries.Is_Empty then
+                                    Reflog_Oids.Append (Ids (Ids.First_Index));
+                                 else
+                                    Add_Oid
+                                      (To_String
+                                         (Entries.First_Element.Old_Id));
+                                    for E of Entries loop
+                                       Add_Oid (To_String (E.New_Id));
+                                    end loop;
+                                 end if;
+
+                                 declare
+                                    Bases : constant
+                                      Version.History.Commit_Id_Vectors.Vector
+                                        :=
+                                          Version.History.Merge_Bases_Many
+                                            (Repo, Derived, Reflog_Oids);
+                                 begin
+                                    if Natural (Bases.Length) = 1
+                                      and then Reflog_Oids.Contains
+                                                 (Bases.First_Element)
+                                    then
+                                       Success_Line
+                                         (To_String (Bases.First_Element));
+                                    else
+                                       Set_Command_Failure;
+                                    end if;
+                                 end;
+                              end;
                            elsif Independent then
                               --  git's --independent: the minimal subset of the
                               --  inputs where none is an ancestor of another.
