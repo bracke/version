@@ -11,3 +11,21 @@ blame s.txt
 # Untracked, or absent entirely: a die(), not a file of uncommitted lines.
 blame u.txt
 blame nosuch.txt
+
+# Annotation-shaping options: -s drops author/date, -l/--abbrev set the id
+# width, -e shows the email, -t the raw time, -f the filename, -L a line range.
+blame -s f.txt
+blame -l f.txt
+blame -e f.txt
+blame -t f.txt
+blame -f f.txt
+blame --abbrev=10 f.txt
+blame -L 2,3 f.txt
+blame -L 2 f.txt
+blame -L 1,+2 f.txt
+blame -s -l f.txt
+blame -f -e f.txt
+blame -l -f HEAD f.txt
+blame -e -t HEAD~1 f.txt
+blame HEAD~1 -- f.txt
+blame -s g.txt

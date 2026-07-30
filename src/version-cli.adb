@@ -24728,7 +24728,9 @@ package body Version.CLI is
 
          elsif Command = "blame" then
             declare
-               Usage : constant String := "version blame [REV] FILE";
+               Usage : constant String :=
+                 "version blame [-s] [-l] [-e] [-t] [-f] [-L <range>]"
+                 & " [--abbrev=<n>] [REV] [--] FILE";
                LF    : constant Character := Character'Val (10);
 
                function Img (N : Natural) return String is
@@ -24743,25 +24745,143 @@ package body Version.CLI is
                  (S & Spaces (W - S'Length));
                function Pad_Left (S : String; W : Natural) return String is
                  (Spaces (W - S'Length) & S);
+
+               --  git's blame options that only shape the annotation (not the
+               --  line-attribution algorithm): -s drops the author/date, -l/
+               --  --abbrev set the id width, -e shows the email, -t the raw
+               --  time, -f the filename, -L limits the line range.
+               Short      : Boolean := False;   --  -s
+               Long_Sha   : Boolean := False;   --  -l
+               Show_Email : Boolean := False;   --  -e/--show-email
+               Raw_Time   : Boolean := False;   --  -t
+               Show_Name  : Boolean := False;   --  -f/--show-name
+               Abbrev_Val : Natural := 7;       --  --abbrev=<n> (width is +1)
+               L_Set      : Boolean := False;   --  -L given
+               L_First    : Positive := 1;
+               L_Last     : Natural := 0;       --  0 = to end of file
+               Bad        : Boolean := False;
+               Sep_Seen   : Boolean := False;   --  -- separator seen
+               Sep_At     : Natural := 0;       --  positionals before --
+               Positionals : Version.Trailers.String_Vectors.Vector;
+               Unknown    : Unbounded_String;   --  first unrecognised option
+
+               procedure Parse_Range (S : String) is
+                  Comma : constant Natural :=
+                    Ada.Strings.Fixed.Index (S, ",");
+               begin
+                  L_Set := True;
+                  if Comma = 0 then
+                     L_First := Positive'Value (S);
+                     L_Last := 0;
+                  else
+                     declare
+                        Start_S : constant String := S (S'First .. Comma - 1);
+                        End_S   : constant String := S (Comma + 1 .. S'Last);
+                     begin
+                        L_First :=
+                          (if Start_S = "" then 1
+                           else Positive'Value (Start_S));
+                        if End_S = "" then
+                           L_Last := 0;
+                        elsif End_S (End_S'First) = '+' then
+                           L_Last :=
+                             L_First
+                             + Natural'Value
+                                 (End_S (End_S'First + 1 .. End_S'Last)) - 1;
+                        else
+                           L_Last := Natural'Value (End_S);
+                        end if;
+                     end;
+                  end if;
+               exception
+                  when others =>
+                     Bad := True;
+               end Parse_Range;
             begin
-               if Count < 2 then
+               declare
+                  I : Natural := 2;
+               begin
+                  while I <= Count loop
+                     declare
+                        A : constant String := Arg (I);
+                     begin
+                        if not Sep_Seen and then A = "--" then
+                           Sep_Seen := True;
+                           Sep_At := Natural (Positionals.Length);
+                        elsif not Sep_Seen and then A = "-s" then
+                           Short := True;
+                        elsif not Sep_Seen and then A = "-l" then
+                           Long_Sha := True;
+                        elsif not Sep_Seen
+                          and then (A = "-e" or else A = "--show-email")
+                        then
+                           Show_Email := True;
+                        elsif not Sep_Seen and then A = "-t" then
+                           Raw_Time := True;
+                        elsif not Sep_Seen
+                          and then (A = "-f" or else A = "--show-name")
+                        then
+                           Show_Name := True;
+                        elsif not Sep_Seen and then A = "-L" then
+                           if I < Count then
+                              I := I + 1;
+                              Parse_Range (Arg (I));
+                           else
+                              Bad := True;
+                           end if;
+                        elsif not Sep_Seen and then Has_Prefix (A, "-L") then
+                           Parse_Range (A (A'First + 2 .. A'Last));
+                        elsif not Sep_Seen
+                          and then Has_Prefix (A, "--abbrev=")
+                        then
+                           begin
+                              Abbrev_Val :=
+                                Natural'Value (A (A'First + 9 .. A'Last));
+                           exception
+                              when others => Bad := True;
+                           end;
+                        elsif not Sep_Seen and then A'Length > 1
+                          and then A (A'First) = '-'
+                        then
+                           Unknown := To_Unbounded_String (A);
+                           Bad := True;
+                           exit;
+                        else
+                           Positionals.Append (A);
+                        end if;
+                     end;
+                     I := I + 1;
+                  end loop;
+               end;
+
+               if Bad then
+                  if Length (Unknown) > 0 then
+                     Usage_Error
+                       ("unknown blame option: " & To_String (Unknown), Usage);
+                  else
+                     Usage_Error ("blame: invalid -L range", Usage);
+                  end if;
+               elsif Positionals.Is_Empty then
                   Usage_Error ("blame requires a file", Usage);
                else
                   declare
                      Repo : constant Version.Repository.Repository_Handle :=
                        Version.Repository.Open;
-                     Two  : constant Boolean := Count >= 3;
+                     Have_Rev : constant Boolean :=
+                       (if Sep_Seen then Sep_At >= 1
+                        else Natural (Positionals.Length) >= 2);
+                     Rev_Str : constant String :=
+                       (if Have_Rev then Positionals.First_Element else "");
                      Tip  : constant Version.Objects.Hex_Object_Id :=
-                       (if Two
-                        then Version.Revisions.Resolve_Commit (Repo, Arg (2))
+                       (if Have_Rev
+                        then Version.Revisions.Resolve_Commit (Repo, Rev_Str)
                         else Version.Objects.To_Object_Id
                                (Version.Refs.Current_Commit_Id (Repo)));
                      --  blame names its file from the directory it was run
                      --  in, like every other path operand -- so ".." reaches
                      --  above it. git reads the magic prefixes literally
                      --  here, so resolve the path without parsing them.
-                     Typed : constant String :=
-                       (if Two then Arg (3) else Arg (2));
+                     Typed : constant String := Positionals.Last_Element;
                      File : constant String :=
                        Version.Pathspec.Resolve_Against_Prefix
                          (Repo_Prefix, Typed);
@@ -24804,7 +24924,7 @@ package body Version.CLI is
                           Version.Files.Join
                             (Version.Repository.Root_Path (Repo), File);
                         Use_Working : constant Boolean :=
-                          not Two
+                          not Have_Rev
                           and then Version.Files.Is_Ordinary_File (Working);
                         Lines : constant Version.Blame.Blame_Vectors.Vector :=
                           (if Use_Working
@@ -24818,7 +24938,9 @@ package body Version.CLI is
                         type Meta is record
                            Hex      : Unbounded_String;
                            Author   : Unbounded_String;
-                           Date     : Unbounded_String;
+                           Email    : Unbounded_String;   --  "<addr>"
+                           Date     : Unbounded_String;   --  iso
+                           Raw_Date : Unbounded_String;   --  "<sec> <tz>"
                            Boundary : Boolean := False;
                         end record;
                         package Meta_Vectors is new Ada.Containers.Vectors
@@ -24841,18 +24963,21 @@ package body Version.CLI is
                            if Is_Zero (Hex) then
                               declare
                                  Result : Meta;
+                                 Raw_Now : constant String :=
+                                   Ada.Strings.Fixed.Trim
+                                     (Long_Long_Integer'Image
+                                        (Version.Timestamps.Unix_Now),
+                                      Ada.Strings.Left)
+                                   & " " & Version.Timestamps.Local_Zone;
                               begin
                                  Result.Hex := To_Unbounded_String (Hex);
                                  Result.Author :=
                                    To_Unbounded_String ("Not Committed Yet");
+                                 Result.Email :=
+                                   To_Unbounded_String ("<not.committed.yet>");
+                                 Result.Raw_Date := To_Unbounded_String (Raw_Now);
                                  Result.Date := To_Unbounded_String
-                                   (Version.Ref_Format.Git_Date
-                                      (Ada.Strings.Fixed.Trim
-                                         (Long_Long_Integer'Image
-                                            (Version.Timestamps.Unix_Now),
-                                          Ada.Strings.Left)
-                                       & " " & Version.Timestamps.Local_Zone,
-                                       "iso"));
+                                   (Version.Ref_Format.Git_Date (Raw_Now, "iso"));
                                  Cache.Append (Result);
                                  return Result;
                               end;
@@ -24889,7 +25014,15 @@ package body Version.CLI is
                                       (if Lt > 0
                                        then Ident (Ident'First .. Lt - 1)
                                        else Ident);
+                                    --  "<addr>" spans the "<" (at Lt+1) to the
+                                    --  ">" (at Gt); the raw "<sec> <tz>" follows.
+                                    if Lt > 0 and then Gt > 0 then
+                                       Result.Email := To_Unbounded_String
+                                         (Ident (Lt + 1 .. Gt));
+                                    end if;
                                     if Gt > 0 then
+                                       Result.Raw_Date := To_Unbounded_String
+                                         (Ident (Gt + 2 .. Ident'Last));
                                        Result.Date := To_Unbounded_String
                                          (Version.Ref_Format.Git_Date
                                             (Ident (Gt + 2 .. Ident'Last), "iso"));
@@ -24901,40 +25034,68 @@ package body Version.CLI is
                            end;
                         end Meta_For;
 
-                        Author_W : Natural := 0;
-                        Line_W   : constant Natural := Img (Natural (Lines.Length))'Length;
+                        Ident_W : Natural := 0;
+                        --  Displayed id width: -l shows the full id, --abbrev=<n>
+                        --  shows n+1 hex, and the default is 8; the boundary "^"
+                        --  takes the place of one hex digit.
+                        Sha_W : constant Natural :=
+                          (if Long_Sha then 40
+                           else Natural'Min (Abbrev_Val + 1, 40));
+                        --  git blames the whole file, then shows only -L's range.
+                        First : constant Positive := (if L_Set then L_First else 1);
+                        Last  : constant Natural :=
+                          (if not L_Set or else L_Last = 0
+                           then Natural (Lines.Length) else L_Last);
+                        --  The line-number column is sized from the largest
+                        --  number actually shown, not the whole file.
+                        Line_W : constant Natural := Img (Last)'Length;
+
+                        function Ident_Of (M : Meta) return String is
+                          (if Show_Email then To_String (M.Email)
+                           else To_String (M.Author));
                      begin
-                        --  Pass 1: resolve metadata and size the author column.
+                        --  Size the ident column over every line (git sizes it
+                        --  from the whole file, not just the shown range).
                         for L of Lines loop
-                           declare
-                              M : constant Meta := Meta_For (To_String (L.Commit));
-                           begin
-                              Author_W :=
-                                Natural'Max (Author_W, Length (M.Author));
-                           end;
+                           Ident_W :=
+                             Natural'Max
+                               (Ident_W,
+                                Ident_Of (Meta_For (To_String (L.Commit)))'Length);
                         end loop;
 
-                        --  Pass 2: emit git's default annotation format.
                         declare
                            N : Natural := 0;
                         begin
                            for L of Lines loop
                               N := N + 1;
-                              declare
-                                 M   : constant Meta :=
-                                   Meta_For (To_String (L.Commit));
-                                 Hex : constant String := To_String (L.Commit);
-                                 Sha : constant String :=
-                                   (if M.Boundary then "^" & Hex (1 .. 7)
-                                    else Hex (1 .. 8));
-                              begin
-                                 Success_Line
-                                   (Sha & " ("
-                                    & Pad_Right (To_String (M.Author), Author_W)
-                                    & " " & To_String (M.Date)
-                                    & " " & Pad_Left (Img (N), Line_W)
-                                    & ") " & To_String (L.Text));
-                              end;
+                              if N >= First and then N <= Last then
+                                 declare
+                                    M   : constant Meta :=
+                                      Meta_For (To_String (L.Commit));
+                                    Hex : constant String :=
+                                      To_String (L.Commit);
+                                    Sha : constant String :=
+                                      (if M.Boundary
+                                       then "^" & Hex (1 .. Sha_W - 1)
+                                       else Hex (1 .. Sha_W));
+                                    Name_Col : constant String :=
+                                      (if Show_Name then " " & File else "");
+                                    Attrib : constant String :=
+                                      (if Short then ""
+                                       else " ("
+                                         & Pad_Right (Ident_Of (M), Ident_W)
+                                         & " "
+                                         & (if Raw_Time then To_String (M.Raw_Date)
+                                            else To_String (M.Date))
+                                         & " ");
+                                 begin
+                                    Success_Line
+                                      (Sha & Name_Col & Attrib
+                                       & (if Short then " " else "")
+                                       & Pad_Left (Img (N), Line_W)
+                                       & ") " & To_String (L.Text));
+                                 end;
+                              end if;
                            end loop;
                         end;
                      end;
