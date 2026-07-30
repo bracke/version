@@ -3852,6 +3852,14 @@ package body Version.CLI is
    --  `git branch --points-at <object>`: the branches whose tip is exactly
    --  <object>. git compares the ref's own id (no peeling of the argument),
    --  so `--points-at <annotated-tag>` lists nothing -- a branch id is a
+   --  git's local-branch marker: "* " for the current branch, "+ " for a
+   --  branch checked out in another worktree, "  " otherwise.
+   function Local_Branch_Marker (Name : String; Current : String) return String
+   is
+     (if Name = Current then "* "
+      elsif Version.Worktrees.Branch_Checked_Out_Elsewhere (Name) then "+ "
+      else "  ");
+
    --  commit, never the tag object.
    procedure Print_Points_At
      (Object      : String;
@@ -3882,7 +3890,8 @@ package body Version.CLI is
             begin
                if Sha = Target then
                   Ada.Text_IO.Put_Line
-                    ((if Locals and then Nm = Current then "* " else "  ")
+                    ((if Locals then Local_Branch_Marker (Nm, Current)
+                      else "  ")
                      & Disp_Pre & Nm);
                end if;
             end;
@@ -4079,11 +4088,8 @@ package body Version.CLI is
                Name : constant String := Names_Text (First .. Last - 1);
             begin
                if Name'Length > 0 then
-                  if Name = Current then
-                     Ada.Text_IO.Put_Line ("* " & Name);
-                  else
-                     Ada.Text_IO.Put_Line ("  " & Name);
-                  end if;
+                  Ada.Text_IO.Put_Line
+                    (Local_Branch_Marker (Name, Current) & Name);
                end if;
             end;
 
@@ -4157,7 +4163,7 @@ package body Version.CLI is
                     and then Merged_Ok ("refs/heads/" & Name)
                   then
                      Ada.Text_IO.Put_Line
-                       ((if Name = Current then "* " else "  ") & Name);
+                       (Local_Branch_Marker (Name, Current) & Name);
                   end if;
                end;
             end loop;

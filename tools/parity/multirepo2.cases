@@ -14,6 +14,13 @@ worktree list
 worktree list --porcelain
 worktree list -v
 worktree list --porcelain -z
+# `side` is checked out in the wt/live worktree, so branch listings mark it
+# "+ " (as the current branch is marked "* "), not "  ".
+branch
+branch -v
+branch --list
+branch --contains HEAD
+branch --format=%(refname:short)
 
 # --- worktree prune ----------------------------------------------------
 # `wt/gone` has an administrative directory pointing at a path that no
