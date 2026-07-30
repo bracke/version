@@ -39,3 +39,7 @@ rev-list --disk-usage --objects HEAD
 rev-list --disk-usage --all
 rev-list --disk-usage=human HEAD
 rev-list --disk-usage --objects HEAD~2..HEAD
+rev-list --bisect-all HEAD
+rev-list --bisect-all HEAD ^HEAD~3
+rev-list --bisect-all --all
+rev-list --bisect-all v1..v2

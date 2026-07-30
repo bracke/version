@@ -29026,8 +29026,9 @@ package body Version.CLI is
                  & " [--children] [--timestamp] [--pretty=oneline]"
                  & " [--missing=<mode>] [--left-right] [--cherry-mark]"
                  & " [--cherry-pick] [--left-only|--right-only] [--cherry]"
-                 & " [--disk-usage[=human]] [--oneline] [--objects]"
-                 & " [--topo-order|--date-order] <REV>... [--] [PATH...]";
+                 & " [--disk-usage[=human]] [--bisect-all] [--oneline]"
+                 & " [--objects] [--topo-order|--date-order]"
+                 & " <REV>... [--] [PATH...]";
 
                function Starts (S, P : String) return Boolean is
                  (S'Length >= P'Length
@@ -29052,6 +29053,7 @@ package body Version.CLI is
                Show_Objects : Boolean := False;
                Disk_Usage : Boolean := False;
                Disk_Human : Boolean := False;
+               Bisect_All : Boolean := False;
                Left_Right : Boolean := False;
                Cherry_Mark : Boolean := False;
                Cherry_Pick : Boolean := False;
@@ -29191,6 +29193,10 @@ package body Version.CLI is
                      elsif A = "--disk-usage=human" then
                         Disk_Usage := True;
                         Disk_Human := True;
+                        I := I + 1;
+
+                     elsif A = "--bisect-all" then
+                        Bisect_All := True;
                         I := I + 1;
 
                      elsif A = "--oneline" then
@@ -29453,7 +29459,115 @@ package body Version.CLI is
                         Compute_Sides;
                      end if;
 
-                     if Disk_Usage then
+                     if Bisect_All then
+                        --  git's --bisect-all: every candidate with its bisect
+                        --  distance, min(ancestors-in-set, all - ancestors),
+                        --  sorted by distance descending then object id, each
+                        --  carrying its --decorate refs.
+                        declare
+                           N : constant Natural := Natural (Commits.Length);
+
+                           package Idx_Maps is new
+                             Ada.Containers.Indefinite_Hashed_Maps
+                               (Key_Type        => String,
+                                Element_Type    => Positive,
+                                Hash            => Ada.Strings.Hash,
+                                Equivalent_Keys => "=");
+                           In_Set : Idx_Maps.Map;
+
+                           Decor : constant
+                             Version.Log.Decoration_Maps.Map :=
+                               Version.Log.Decorations
+                                 (Repo, Version.Log.Short_Decorate);
+
+                           type Cand is record
+                              Hex  : Unbounded_String;
+                              Dist : Natural;
+                           end record;
+                           package Cand_Vectors is new
+                             Ada.Containers.Vectors (Positive, Cand);
+                           function Before (L, R : Cand) return Boolean is
+                             (L.Dist > R.Dist
+                              or else (L.Dist = R.Dist
+                                       and then L.Hex < R.Hex));
+                           package Cand_Sorting is new
+                             Cand_Vectors.Generic_Sorting (Before);
+                           Cands : Cand_Vectors.Vector;
+
+                           --  Ancestors of Start within the candidate set,
+                           --  Start included.
+                           function Weight
+                             (Start : Version.Objects.Hex_Object_Id)
+                              return Natural
+                           is
+                              Seen  : Idx_Maps.Map;
+                              Queue :
+                                Version.History.Commit_Id_Vectors.Vector;
+                              Count : Natural := 0;
+                           begin
+                              Queue.Append (Start);
+                              Seen.Insert (To_String (Start), 1);
+                              while not Queue.Is_Empty loop
+                                 declare
+                                    C : constant
+                                      Version.Objects.Hex_Object_Id :=
+                                        Queue.Last_Element;
+                                 begin
+                                    Queue.Delete_Last;
+                                    Count := Count + 1;
+                                    for P of Version.History.Parent_Commits
+                                      (Repo, C)
+                                    loop
+                                       declare
+                                          PH : constant String :=
+                                            To_String (P);
+                                       begin
+                                          if In_Set.Contains (PH)
+                                            and then not Seen.Contains (PH)
+                                          then
+                                             Seen.Insert (PH, 1);
+                                             Queue.Append (P);
+                                          end if;
+                                       end;
+                                    end loop;
+                                 end;
+                              end loop;
+                              return Count;
+                           end Weight;
+                        begin
+                           for C of Commits loop
+                              In_Set.Insert (To_String (C), 1);
+                           end loop;
+
+                           for C of Commits loop
+                              declare
+                                 W : constant Natural := Weight (C);
+                              begin
+                                 Cands.Append
+                                   (Cand'(Hex  => To_Unbounded_String
+                                                    (To_String (C)),
+                                          Dist => Natural'Min (W, N - W)));
+                              end;
+                           end loop;
+
+                           Cand_Sorting.Sort (Cands);
+
+                           for K in Cands.First_Index .. Cands.Last_Index loop
+                              declare
+                                 Hx : constant String :=
+                                   To_String (Cands (K).Hex);
+                                 Deco : constant String :=
+                                   (if Decor.Contains (Hx)
+                                    then Decor.Element (Hx) else "");
+                              begin
+                                 Success_Line
+                                   (Hx & " ("
+                                    & (if Deco /= "" then Deco & ", " else "")
+                                    & "dist=" & Img (Cands (K).Dist) & ")");
+                              end;
+                           end loop;
+                        end;
+                     elsif Disk_Usage then
                         --  git's --disk-usage sums the on-disk size of each
                         --  object: the loose file's size, or a packed entry's
                         --  span (next offset minus this one). Without --objects
