@@ -21,6 +21,15 @@ branch -a
 branch -av
 branch -avv
 branch -rv
+# The scope and verbosity flags combine in any order and spelling.
+branch -a -v
+branch --all -v
+branch -v -a
+branch --verbose --all
+branch -r -v
+branch --remotes -v
+branch -a --verbose
+branch -a -vv
 # The default listing must ignore refs outside refs/heads, so refs/custom/odd
 # may appear in none of these.
 branch --list 'f*'

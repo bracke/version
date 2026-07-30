@@ -15387,22 +15387,31 @@ package body Version.CLI is
                         Merge_Filter   => To_String (Rev),
                         Merge_Negate   => Negate);
                   end;
-               elsif (for some I in 2 .. Count =>
-                        Arg (I) = "--list" or else Arg (I) = "--ignore-case"
-                        or else Arg (I) = "-i")
-                 and then (for all I in 2 .. Count =>
-                             Arg (I) /= "--merged"
-                             and then Arg (I) /= "--no-merged"
-                             and then Arg (I) /= "--contains"
-                             and then Arg (I) /= "--no-contains")
+               elsif
+                 --  Any combination of the listing flags -- scope (-a/--all,
+                 --  -r/--remotes), verbosity (-v/-vv/--verbose), --ignore-case
+                 --  and --list -- in any order and position. A glob is a
+                 --  listing operand only under --list; without it a positional
+                 --  means create (handled below). The --merged/--contains/
+                 --  --points-at/--format filters were handled above.
+                 (for some I in 2 .. Count =>
+                    Arg (I) in "-a" | "--all" | "-r" | "--remotes"
+                             | "-v" | "-vv" | "--verbose" | "--list")
+                 and then
+                 (for all I in 2 .. Count =>
+                    Arg (I) in "-a" | "--all" | "-r" | "--remotes"
+                             | "-v" | "-vv" | "--verbose" | "--list"
+                             | "-i" | "--ignore-case"
+                    or else
+                      ((for some J in 2 .. Count => Arg (J) = "--list")
+                       and then Arg (I)'Length > 0
+                       and then Arg (I) (Arg (I)'First) /= '-'))
                then
-                  --  `branch [-a|-r] [--ignore-case] [--list] [<glob>]`: the
-                  --  plain listing, optionally scoped to remotes/all and
-                  --  narrowed by a shell glob on the short branch name.
                   declare
                      Want_A : Boolean := False;
                      Want_R : Boolean := False;
                      Icase  : Boolean := False;
+                     Verb   : Natural := 0;
                      Pat    : Unbounded_String;
                   begin
                      for I in 2 .. Count loop
@@ -15410,7 +15419,12 @@ package body Version.CLI is
                            Want_A := True;
                         elsif Arg (I) = "-r" or else Arg (I) = "--remotes" then
                            Want_R := True;
-                        elsif Arg (I) = "--ignore-case" or else Arg (I) = "-i"
+                        elsif Arg (I) = "-v" or else Arg (I) = "--verbose" then
+                           Verb := Natural'Min (2, Verb + 1);
+                        elsif Arg (I) = "-vv" then
+                           Verb := 2;
+                        elsif Arg (I) = "-i"
+                          or else Arg (I) = "--ignore-case"
                         then
                            Icase := True;
                         elsif Arg (I) = "--list" then
@@ -15421,33 +15435,55 @@ package body Version.CLI is
                            Pat := To_Unbounded_String (Arg (I));
                         end if;
                      end loop;
-                     Print_Branch_List
-                       (Pattern       => To_String (Pat),
-                        Show_Local    => not Want_R or else Want_A,
-                        Show_Remote   => Want_R or else Want_A,
-                        Remote_Prefix => Want_A,
-                        Ignore_Case   => Icase);
+
+                     declare
+                        Show_Local  : constant Boolean :=
+                          not Want_R or else Want_A;
+                        Show_Remote : constant Boolean := Want_R or else Want_A;
+                     begin
+                        if Verb > 0 and then Length (Pat) = 0 then
+                           Version.Console.Put
+                             (Version.Branch.List_Branches_Verbose_Text
+                                (With_Upstream => Verb >= 2,
+                                 Show_Local    => Show_Local,
+                                 Show_Remote   => Show_Remote,
+                                 Remote_Prefix => Want_A));
+                        else
+                           --  A glob (or the plain form) goes through the
+                           --  non-verbose lister, which filters by pattern.
+                           Print_Branch_List
+                             (Pattern       => To_String (Pat),
+                              Show_Local    => Show_Local,
+                              Show_Remote   => Show_Remote,
+                              Remote_Prefix => Want_A,
+                              Ignore_Case   => Icase);
+                        end if;
+                     end;
                   end;
-               elsif Count = 2
-                 and then (Arg (2) = "-v" or else Arg (2) = "-vv"
-                           or else Arg (2) = "--verbose")
+               elsif
+                 --  git rejects a branch name alongside -a/-r (which only
+                 --  scope a listing): "the -a, and -r, options ... do not take
+                 --  a branch name." Only when nothing but scope flags and the
+                 --  name are present -- `-d -r <name>` is a remote delete, and
+                 --  a name with --list is a listing (both handled elsewhere).
+                 (for some I in 2 .. Count =>
+                    Arg (I) in "-a" | "--all" | "-r" | "--remotes")
+                 and then
+                 (for some I in 2 .. Count =>
+                    Arg (I)'Length > 0 and then Arg (I) (Arg (I)'First) /= '-')
+                 and then
+                 (for all I in 2 .. Count =>
+                    Arg (I) in "-a" | "--all" | "-r" | "--remotes"
+                             | "-v" | "-vv" | "--verbose"
+                             | "-i" | "--ignore-case"
+                    or else (Arg (I)'Length > 0
+                             and then Arg (I) (Arg (I)'First) /= '-'))
                then
-                  Version.Console.Put
-                    (Version.Branch.List_Branches_Verbose_Text
-                       (With_Upstream => Arg (2) = "-vv"));
-               elsif Count = 2
-                 and then (Arg (2) = "-r" or else Arg (2) = "--remotes")
-               then
-                  --  -r lists the remote-tracking branches INSTEAD of the
-                  --  local ones. Printing the local list here answered a
-                  --  different question entirely.
-                  Print_Remote_Branch_List (With_Prefix => False);
-               elsif Count = 2
-                 and then (Arg (2) = "-a" or else Arg (2) = "--all")
-               then
-                  --  -a lists both, remote-tracking ones under "remotes/".
-                  Print_Branch_List;
-                  Print_Remote_Branch_List (With_Prefix => True);
+                  Ada.Text_IO.Put_Line
+                    (Ada.Text_IO.Standard_Error,
+                     "fatal: the -a, and -r, options to 'git branch' do not"
+                     & " take a branch name.");
+                  Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
                --  git's own spellings for the operations this command already
                --  had under long names: -d/-D delete, and -r scopes the
                --  deletion to remote-tracking refs.
