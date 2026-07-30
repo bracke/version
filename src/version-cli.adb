@@ -25781,7 +25781,8 @@ package body Version.CLI is
                  & " [--git-dir] [--absolute-git-dir] [--show-prefix]"
                  & " [--is-inside-work-tree] [--is-bare-repository]"
                  & " [--symbolic-full-name] [--verify] [--quiet] [--all]"
-                 & " REV...";
+                 & " [--branches] [--tags] [--remotes] [--glob=<pat>]"
+                 & " [--exclude=<pat>] [--sq-quote] [--default <rev>] REV...";
                Abbrev  : Boolean := False;
                Short   : Boolean := False;
                Short_Len : Natural := 7;   --  --short=<n> length (min)
@@ -25792,22 +25793,145 @@ package body Version.CLI is
                Done    : Boolean := False;
                I       : Positive := 2;
 
+               Default_Rev : Unbounded_String;   --  --default <rev>
+               Has_Default : Boolean := False;
+               --  --exclude=<pat> patterns accumulate and apply to the next
+               --  ref-enumeration option, then reset (git's behaviour).
+               Excludes    : Version.Ref_Format.String_Vectors.Vector;
+
+               --  git single-quotes each remaining argument for --sq-quote:
+               --  wrapped in '...', an embedded ' written as '\'', space-led.
+               function Sq_Quote (S : String) return String is
+                  R : Unbounded_String;
+               begin
+                  Append (R, ''');
+                  for C of S loop
+                     if C = ''' then
+                        Append (R, "'\''");
+                     else
+                        Append (R, C);
+                     end if;
+                  end loop;
+                  Append (R, ''');
+                  return To_String (R);
+               end Sq_Quote;
+
                --  git's --branches/--tags/--remotes/--glob/--all print the
-               --  resolved id of every ref matching a pattern.
-               procedure Print_Ref_Ids (Pattern : String) is
+               --  resolved id of every ref matching a pattern, minus any the
+               --  pending --exclude patterns cover.  For --branches/--tags/
+               --  --remotes the excludes match the name with Strip removed
+               --  (the short name); for --all/--glob (Strip = "") the full
+               --  ref name.  The pending excludes are consumed here.
+               procedure Print_Ref_Ids (Pattern : String; Strip : String := "")
+               is
                   Repo : constant Version.Repository.Repository_Handle :=
                     Version.Repository.Open;
                   Patterns : Version.Ref_Format.String_Vectors.Vector;
+
+                  function Excluded (Name : String) return Boolean is
+                     Short : constant String :=
+                       (if Strip /= "" and then Has_Prefix (Name, Strip)
+                        then Name (Name'First + Strip'Length .. Name'Last)
+                        else Name);
+                  begin
+                     for Pat of Excludes loop
+                        if Version.Ignore.Wildcard_Matches (Pat, Short) then
+                           return True;
+                        end if;
+                     end loop;
+                     return False;
+                  end Excluded;
                begin
                   Patterns.Append (Pattern);
                   for Name of Version.Ref_Format.For_Each_Ref
                     (Repo, Patterns, Format => "%(refname)")
                   loop
-                     Success_Line
-                       (Version.Objects.To_String
-                          (Version.Refs.Resolve_Ref (Repo, Name)));
+                     if not Excluded (Name) then
+                        Success_Line
+                          (Version.Objects.To_String
+                             (Version.Refs.Resolve_Ref (Repo, Name)));
+                     end if;
                   end loop;
+                  Excludes.Clear;
                end Print_Ref_Ids;
+
+               --  Resolve one revision operand, honouring --symbolic-full-name,
+               --  --abbrev-ref, --verify --quiet, and --short.  Shared by the
+               --  positional operands and the --default fallback.
+               procedure Emit_Rev (Rev : String) is
+                  Repo : constant Version.Repository.Repository_Handle :=
+                    Version.Repository.Open;
+               begin
+                  if Symbolic then
+                     --  git prints the fully qualified ref a name stands for,
+                     --  and nothing at all when it is not a ref.
+                     declare
+                        H : constant Version.Refs.Head_Info :=
+                          Version.Refs.Read_Head (Repo);
+                     begin
+                        if Rev = "HEAD"
+                          and then Version.Refs.Is_Attached (H)
+                        then
+                           Success_Line
+                             ("refs/heads/" & Version.Refs.Branch_Name (H));
+                        elsif Version.Refs.Ref_Exists
+                                (Repo, "refs/heads/" & Rev)
+                        then
+                           Success_Line ("refs/heads/" & Rev);
+                        elsif Version.Refs.Ref_Exists
+                                (Repo, "refs/tags/" & Rev)
+                        then
+                           Success_Line ("refs/tags/" & Rev);
+                        end if;
+                     end;
+                  elsif Abbrev and then Rev = "HEAD" then
+                     declare
+                        H : constant Version.Refs.Head_Info :=
+                          Version.Refs.Read_Head (Repo);
+                     begin
+                        if Version.Refs.Is_Attached (H) then
+                           Success_Line (Version.Refs.Branch_Name (H));
+                        else
+                           Success_Line ("HEAD");
+                        end if;
+                     end;
+                  elsif Abbrev then
+                     Success_Line (Rev);
+                  elsif Verify and then Quiet then
+                     --  git reports an unresolvable rev with exit 1 and no
+                     --  message under --quiet.
+                     begin
+                        Success_Line
+                          (To_String (Version.Revisions.Resolve (Repo, Rev)));
+                     exception
+                        when others =>
+                           Set_Command_Failure;
+                     end;
+                  else
+                     declare
+                        Id : constant Version.Objects.Object_Id_Storage :=
+                          Version.Revisions.Resolve (Repo, Rev);
+                        Full : constant String := To_String (Id);
+                     begin
+                        --  --short abbreviates to the shortest unique length,
+                        --  at least Short_Len hex (default 7).
+                        if Short then
+                           declare
+                              Len : constant Positive :=
+                                Version.Revisions.Unique_Abbrev_Length
+                                  (Repo, Id, Positive'Max (1, Short_Len));
+                           begin
+                              Success_Line
+                                (if Full'Length >= Len
+                                 then Full (Full'First .. Full'First + Len - 1)
+                                 else Full);
+                           end;
+                        else
+                           Success_Line (Full);
+                        end if;
+                     end;
+                  end if;
+               end Emit_Rev;
             begin
                while I <= Count
                  and then ((Arg (I)'Length >= 2
@@ -25912,18 +26036,44 @@ package body Version.CLI is
                      Print_Ref_Ids ("refs/");
                      Done := True;
                   elsif Arg (I) = "--branches" then
-                     Print_Ref_Ids ("refs/heads/");
+                     Print_Ref_Ids ("refs/heads/", Strip => "refs/heads/");
                      Done := True;
                   elsif Arg (I) = "--tags" then
-                     Print_Ref_Ids ("refs/tags/");
+                     Print_Ref_Ids ("refs/tags/", Strip => "refs/tags/");
                      Done := True;
                   elsif Arg (I) = "--remotes" then
-                     Print_Ref_Ids ("refs/remotes/");
+                     Print_Ref_Ids ("refs/remotes/", Strip => "refs/remotes/");
                      Done := True;
                   elsif Has_Prefix (Arg (I), "--glob=") then
                      Print_Ref_Ids
                        (Arg (I) (Arg (I)'First + 7 .. Arg (I)'Last));
                      Done := True;
+                  elsif Has_Prefix (Arg (I), "--exclude=") then
+                     Excludes.Append
+                       (Arg (I) (Arg (I)'First + 10 .. Arg (I)'Last));
+                  elsif Arg (I) = "--sq-quote" then
+                     --  Quote every remaining argument, space-separated.
+                     declare
+                        Line : Unbounded_String;
+                     begin
+                        for K in I + 1 .. Count loop
+                           Append (Line, " " & Sq_Quote (Arg (K)));
+                        end loop;
+                        Success_Line (To_String (Line));
+                     end;
+                     Done := True;
+                     I := Count + 1;   --  every remaining arg is consumed
+                     exit;
+                  elsif Arg (I) = "--default" then
+                     if I >= Count then
+                        Usage_Error ("--default requires a revision", Usage);
+                        Bad_Opt := True;
+                        exit;
+                     end if;
+                     Has_Default := True;
+                     Default_Rev := To_Unbounded_String (Arg (I + 1));
+                     I := I + 2;
+                     goto Continue_Rev_Parse_Options;
                   elsif Arg (I) = "--show-cdup" then
                      --  The relative path up from the working directory to the
                      --  repository root: "../" per level, empty at the root.
@@ -25970,93 +26120,15 @@ package body Version.CLI is
 
                if Bad_Opt then
                   null;
-               elsif I > Count then
-                  if not Done then
-                     Usage_Error ("rev-parse requires a revision", Usage);
-                  end if;
-               else
-                  declare
-                     Repo : constant Version.Repository.Repository_Handle :=
-                       Version.Repository.Open;
-                  begin
-                     for J in I .. Count loop
-                        if Symbolic then
-                           --  git prints the fully qualified ref a name
-                           --  stands for, and nothing at all when it is not
-                           --  a ref.
-                           declare
-                              H : constant Version.Refs.Head_Info :=
-                                Version.Refs.Read_Head (Repo);
-                           begin
-                              if Arg (J) = "HEAD"
-                                and then Version.Refs.Is_Attached (H)
-                              then
-                                 Success_Line
-                                   ("refs/heads/"
-                                    & Version.Refs.Branch_Name (H));
-                              elsif Version.Refs.Ref_Exists
-                                      (Repo, "refs/heads/" & Arg (J))
-                              then
-                                 Success_Line ("refs/heads/" & Arg (J));
-                              elsif Version.Refs.Ref_Exists
-                                      (Repo, "refs/tags/" & Arg (J))
-                              then
-                                 Success_Line ("refs/tags/" & Arg (J));
-                              end if;
-                           end;
-                        elsif Abbrev and then Arg (J) = "HEAD" then
-                           declare
-                              H : constant Version.Refs.Head_Info :=
-                                Version.Refs.Read_Head (Repo);
-                           begin
-                              if Version.Refs.Is_Attached (H) then
-                                 Success_Line (Version.Refs.Branch_Name (H));
-                              else
-                                 Success_Line ("HEAD");
-                              end if;
-                           end;
-                        elsif Abbrev then
-                           Success_Line (Arg (J));
-                        elsif Verify and then Quiet then
-                           --  git reports an unresolvable rev with exit 1 and
-                           --  no message under --quiet.
-                           begin
-                              Success_Line
-                                (To_String
-                                   (Version.Revisions.Resolve (Repo, Arg (J))));
-                           exception
-                              when others =>
-                                 Set_Command_Failure;
-                           end;
-                        else
-                           declare
-                              Id : constant Version.Objects.Object_Id_Storage :=
-                                Version.Revisions.Resolve (Repo, Arg (J));
-                              Full : constant String :=
-                                To_String (Id);
-                           begin
-                              --  --short abbreviates to the shortest unique
-                              --  length, at least Short_Len hex (default 7).
-                              if Short then
-                                 declare
-                                    Len : constant Positive :=
-                                      Version.Revisions.Unique_Abbrev_Length
-                                        (Repo, Id,
-                                         Positive'Max (1, Short_Len));
-                                 begin
-                                    Success_Line
-                                      (if Full'Length >= Len
-                                       then Full (Full'First
-                                                  .. Full'First + Len - 1)
-                                       else Full);
-                                 end;
-                              else
-                                 Success_Line (Full);
-                              end if;
-                           end;
-                        end if;
-                     end loop;
-                  end;
+               elsif I <= Count then
+                  for J in I .. Count loop
+                     Emit_Rev (Arg (J));
+                  end loop;
+               elsif Has_Default and then not Done then
+                  --  No operand was given, so the --default revision stands in.
+                  Emit_Rev (To_String (Default_Rev));
+               elsif not Done then
+                  Usage_Error ("rev-parse requires a revision", Usage);
                end if;
             end;
 

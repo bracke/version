@@ -26,3 +26,9 @@ rev-parse --tags
 rev-parse --glob=refs/heads/*
 rev-parse --glob=refs/tags/*
 rev-parse --show-cdup
+rev-parse --sq-quote a b c
+rev-parse --sq-quote one
+rev-parse --default HEAD
+rev-parse --verify --default HEAD
+rev-parse --exclude=v1 --tags
+rev-parse --exclude=refs/tags/* --all
