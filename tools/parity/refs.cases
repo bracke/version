@@ -324,6 +324,19 @@ describe --tags --match 'nomatch*'
 describe --always --match 'nomatch*'
 describe --all --always --match 'nomatch*'
 
+## merge-base
+# topic, dup and main are three divergent tips (all forked from c1), so the
+# octopus reduction and the independent-set filter both have real work.
+merge-base main topic
+merge-base --all main topic
+merge-base --octopus main topic dup
+merge-base --octopus main topic
+merge-base --independent main topic dup
+merge-base --independent main topic dup feature merged-br
+merge-base --independent topic topic
+merge-base --is-ancestor merged-br main
+merge-base --is-ancestor main topic
+
 ## cherry
 cherry main dup
 cherry -v main dup

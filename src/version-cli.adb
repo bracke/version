@@ -34481,9 +34481,12 @@ package body Version.CLI is
          elsif Command = "merge-base" then
             declare
                Usage : constant String :=
-                 "version merge-base [--all|--is-ancestor] COMMIT COMMIT";
+                 "version merge-base [--all|--octopus|--independent"
+                 & "|--is-ancestor] COMMIT COMMIT...";
                All_Bases   : Boolean := False;
                Is_Ancestor : Boolean := False;
+               Octopus     : Boolean := False;
+               Independent : Boolean := False;
                Ops : Version.Trailers.String_Vectors.Vector;
                Bad : Boolean := False;
             begin
@@ -34492,6 +34495,10 @@ package body Version.CLI is
                      All_Bases := True;
                   elsif Arg (I) = "--is-ancestor" then
                      Is_Ancestor := True;
+                  elsif Arg (I) = "--octopus" then
+                     Octopus := True;
+                  elsif Arg (I) = "--independent" then
+                     Independent := True;
                   elsif Arg (I)'Length > 0 and then Arg (I) (Arg (I)'First) = '-'
                   then
                      Usage_Error
@@ -34504,8 +34511,12 @@ package body Version.CLI is
                end loop;
 
                if not Bad then
-                  if Natural (Ops.Length) < 2 then
-                     Usage_Error ("merge-base requires two commits", Usage);
+                  --  --octopus and --independent accept one or more commits;
+                  --  the pairwise modes need two, and --is-ancestor exactly.
+                  if Natural (Ops.Length)
+                       < (if Octopus or else Independent then 1 else 2)
+                  then
+                     Usage_Error ("merge-base requires a commit", Usage);
                   elsif Is_Ancestor and then Natural (Ops.Length) /= 2 then
                      Usage_Error
                        ("--is-ancestor takes exactly two commits", Usage);
@@ -34532,6 +34543,76 @@ package body Version.CLI is
                               then
                                  Set_Command_Failure;
                               end if;
+                           elsif Independent then
+                              --  git's --independent: the minimal subset of the
+                              --  inputs where none is an ancestor of another.
+                              --  Duplicates collapse to the first occurrence and
+                              --  input order is kept.
+                              declare
+                                 Uniq : Version.History.Commit_Id_Vectors.Vector;
+                              begin
+                                 for X of Ids loop
+                                    if not Uniq.Contains (X) then
+                                       Uniq.Append (X);
+                                    end if;
+                                 end loop;
+                                 for X of Uniq loop
+                                    declare
+                                       Keep : Boolean := True;
+                                    begin
+                                       for Y of Uniq loop
+                                          if Y /= X
+                                            and then Version.History.Is_Ancestor
+                                                       (Repo,
+                                                        Base_Id    => X,
+                                                        Derived_Id => Y)
+                                          then
+                                             Keep := False;
+                                          end if;
+                                       end loop;
+                                       if Keep then
+                                          Success_Line (To_String (X));
+                                       end if;
+                                    end;
+                                 end loop;
+                              end;
+                           elsif Octopus then
+                              --  git's --octopus: the merge base for an octopus
+                              --  merge -- reduce the inputs pairwise, replacing
+                              --  the running set with the merge bases of it and
+                              --  each next commit.
+                              declare
+                                 Result :
+                                   Version.History.Commit_Id_Vectors.Vector;
+                              begin
+                                 Result.Append (Ids (Ids.First_Index));
+                                 for K in Ids.First_Index + 1 .. Ids.Last_Index
+                                 loop
+                                    declare
+                                       Next :
+                                         Version.History.Commit_Id_Vectors
+                                           .Vector;
+                                    begin
+                                       for R of Result loop
+                                          for B of Version.History.Merge_Bases
+                                            (Repo, Ids (K), R)
+                                          loop
+                                             if not Next.Contains (B) then
+                                                Next.Append (B);
+                                             end if;
+                                          end loop;
+                                       end loop;
+                                       Result := Next;
+                                    end;
+                                 end loop;
+                                 if Result.Is_Empty then
+                                    Set_Command_Failure;
+                                 else
+                                    for B of Result loop
+                                       Success_Line (To_String (B));
+                                    end loop;
+                                 end if;
+                              end;
                            elsif All_Bases then
                               declare
                                  Bases : constant
