@@ -47,3 +47,11 @@ blame -w HEAD f.txt
 blame -w -s HEAD f.txt
 blame -w -n HEAD f.txt
 blame -w --porcelain HEAD f.txt
+# -c is git's annotate-compat format: tab-separated, no "^" boundary, the
+# ident right-aligned to a minimum width; -s/-n do not apply to it.
+blame -c HEAD f.txt
+blame -c -l HEAD f.txt
+blame -c -e HEAD f.txt
+blame -c -t HEAD f.txt
+blame -c -s HEAD f.txt
+blame -c -L 1,2 HEAD f.txt

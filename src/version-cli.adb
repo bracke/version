@@ -24756,6 +24756,7 @@ package body Version.CLI is
                Raw_Time   : Boolean := False;   --  -t
                Show_Name  : Boolean := False;   --  -f/--show-name
                Show_Num   : Boolean := False;   --  -n/--show-number
+               Compat     : Boolean := False;   --  -c (git-annotate format)
                Ignore_WS  : Boolean := False;   --  -w (ignore whitespace)
                Porcelain  : Boolean := False;   --  --porcelain
                Line_Porc  : Boolean := False;   --  --line-porcelain
@@ -24832,6 +24833,8 @@ package body Version.CLI is
                            Show_Num := True;
                         elsif not Sep_Seen and then A = "-w" then
                            Ignore_WS := True;
+                        elsif not Sep_Seen and then A = "-c" then
+                           Compat := True;
                         elsif not Sep_Seen and then A = "--porcelain" then
                            Porcelain := True;
                         elsif not Sep_Seen and then A = "--line-porcelain" then
@@ -25321,6 +25324,36 @@ package body Version.CLI is
                                     end if;
                                     I := GE + 1;
                                  end;
+                              end loop;
+                           end;
+                        elsif Compat then
+                           --  git's -c (annotate-compat) format: tab-separated,
+                           --  the id at its plain width (no "^" boundary), the
+                           --  ident right-aligned to a minimum of 10, then the
+                           --  date and final line number; -s/-n do not apply.
+                           declare
+                              HT : constant Character := Character'Val (9);
+                              N  : Natural := 0;
+                           begin
+                              for L of Lines loop
+                                 N := N + 1;
+                                 if N >= First and then N <= Last then
+                                    declare
+                                       M   : constant Meta :=
+                                         Meta_For (To_String (L.Commit));
+                                       Hex : constant String :=
+                                         To_String (L.Commit);
+                                    begin
+                                       Success_Line
+                                         (Hex (1 .. Sha_W) & HT
+                                          & "(" & Pad_Left (Ident_Of (M), 10)
+                                          & HT
+                                          & (if Raw_Time then To_String (M.Raw_Date)
+                                             else To_String (M.Date))
+                                          & HT & Img (N) & ")"
+                                          & To_String (L.Text));
+                                    end;
+                                 end if;
                               end loop;
                            end;
                         else
