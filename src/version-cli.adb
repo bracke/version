@@ -25784,12 +25784,30 @@ package body Version.CLI is
                  & " REV...";
                Abbrev  : Boolean := False;
                Short   : Boolean := False;
+               Short_Len : Natural := 7;   --  --short=<n> length (min)
                Symbolic : Boolean := False;
                Verify   : Boolean := False;
                Quiet    : Boolean := False;
                Bad_Opt : Boolean := False;
                Done    : Boolean := False;
                I       : Positive := 2;
+
+               --  git's --branches/--tags/--remotes/--glob/--all print the
+               --  resolved id of every ref matching a pattern.
+               procedure Print_Ref_Ids (Pattern : String) is
+                  Repo : constant Version.Repository.Repository_Handle :=
+                    Version.Repository.Open;
+                  Patterns : Version.Ref_Format.String_Vectors.Vector;
+               begin
+                  Patterns.Append (Pattern);
+                  for Name of Version.Ref_Format.For_Each_Ref
+                    (Repo, Patterns, Format => "%(refname)")
+                  loop
+                     Success_Line
+                       (Version.Objects.To_String
+                          (Version.Refs.Resolve_Ref (Repo, Name)));
+                  end loop;
+               end Print_Ref_Ids;
             begin
                while I <= Count
                  and then ((Arg (I)'Length >= 2
@@ -25802,10 +25820,24 @@ package body Version.CLI is
                      I := I + 1;
                      goto Continue_Rev_Parse_Options;
                   end if;
-                  if Arg (I) = "--abbrev-ref" then
+                  if Arg (I) = "--abbrev-ref"
+                    or else Has_Prefix (Arg (I), "--abbrev-ref=")
+                  then
                      Abbrev := True;
                   elsif Arg (I) = "--short" then
                      Short := True;
+                  elsif Has_Prefix (Arg (I), "--short=") then
+                     Short := True;
+                     begin
+                        Short_Len := Natural'Value
+                          (Arg (I) (Arg (I)'First + 8 .. Arg (I)'Last));
+                     exception
+                        when others =>
+                           Usage_Error
+                             ("unknown rev-parse option: " & Arg (I), Usage);
+                           Bad_Opt := True;
+                           exit;
+                     end;
                   elsif Arg (I) = "--show-toplevel" then
                      Success_Line
                        (Version.Repository.Root_Path
@@ -25877,20 +25909,45 @@ package body Version.CLI is
                      end;
                      Done := True;
                   elsif Arg (I) = "--all" then
+                     Print_Ref_Ids ("refs/");
+                     Done := True;
+                  elsif Arg (I) = "--branches" then
+                     Print_Ref_Ids ("refs/heads/");
+                     Done := True;
+                  elsif Arg (I) = "--tags" then
+                     Print_Ref_Ids ("refs/tags/");
+                     Done := True;
+                  elsif Arg (I) = "--remotes" then
+                     Print_Ref_Ids ("refs/remotes/");
+                     Done := True;
+                  elsif Has_Prefix (Arg (I), "--glob=") then
+                     Print_Ref_Ids
+                       (Arg (I) (Arg (I)'First + 7 .. Arg (I)'Last));
+                     Done := True;
+                  elsif Arg (I) = "--show-cdup" then
+                     --  The relative path up from the working directory to the
+                     --  repository root: "../" per level, empty at the root.
                      declare
-                        Repo : constant Version.Repository.Repository_Handle :=
-                          Version.Repository.Open;
-                        Patterns :
-                          Version.Ref_Format.String_Vectors.Vector;
+                        Root : constant String :=
+                          Version.Files.Normalize_Separators
+                            (Version.Repository.Root_Path
+                               (Version.Repository.Open));
+                        Here : constant String :=
+                          Version.Files.Normalize_Separators
+                            (Ada.Directories.Current_Directory);
+                        Ups  : Unbounded_String;
                      begin
-                        Patterns.Append ("refs/");
-                        for Name of Version.Ref_Format.For_Each_Ref
-                          (Repo, Patterns, Format => "%(refname)")
-                        loop
-                           Success_Line
-                             (Version.Objects.To_String
-                                (Version.Refs.Resolve_Ref (Repo, Name)));
-                        end loop;
+                        if Here'Length > Root'Length then
+                           for C of Here
+                             (Here'First + Root'Length + 1 .. Here'Last)
+                           loop
+                              if C = '/' then
+                                 Append (Ups, "../");
+                              end if;
+                           end loop;
+                           Append (Ups, "../");
+                        end if;
+                        Success_Line (To_String (Ups));
                      end;
                      Done := True;
                   elsif Arg (I) = "--symbolic-full-name" then
@@ -25973,15 +26030,29 @@ package body Version.CLI is
                            end;
                         else
                            declare
+                              Id : constant Version.Objects.Object_Id_Storage :=
+                                Version.Revisions.Resolve (Repo, Arg (J));
                               Full : constant String :=
-                                To_String
-                                  (Version.Revisions.Resolve (Repo, Arg (J)));
+                                To_String (Id);
                            begin
-                              --  git's --short defaults to a 7-hex abbreviation.
-                              Success_Line
-                                (if Short and then Full'Length >= 7
-                                 then Full (Full'First .. Full'First + 6)
-                                 else Full);
+                              --  --short abbreviates to the shortest unique
+                              --  length, at least Short_Len hex (default 7).
+                              if Short then
+                                 declare
+                                    Len : constant Positive :=
+                                      Version.Revisions.Unique_Abbrev_Length
+                                        (Repo, Id,
+                                         Positive'Max (1, Short_Len));
+                                 begin
+                                    Success_Line
+                                      (if Full'Length >= Len
+                                       then Full (Full'First
+                                                  .. Full'First + Len - 1)
+                                       else Full);
+                                 end;
+                              else
+                                 Success_Line (Full);
+                              end if;
                            end;
                         end if;
                      end loop;

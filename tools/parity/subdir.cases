@@ -21,3 +21,5 @@ show --stat HEAD
 blame nested.txt
 rm --cached nested.txt
 rm -f nested.txt
+rev-parse --show-cdup
+rev-parse --show-prefix

@@ -18,3 +18,11 @@ rev-parse --quiet --verify nonexistent
 rev-parse HEAD feature
 rev-parse --show-prefix
 rev-parse --absolute-git-dir
+rev-parse --short=8 HEAD
+rev-parse --short=12 HEAD
+rev-parse --short=40 HEAD
+rev-parse --branches
+rev-parse --tags
+rev-parse --glob=refs/heads/*
+rev-parse --glob=refs/tags/*
+rev-parse --show-cdup
