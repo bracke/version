@@ -29432,8 +29432,12 @@ package body Version.CLI is
                   Message     : Unbounded_String;
                   Sort_Key    : Unbounded_String;
                   Contains    : Unbounded_String;
+                  No_Contains : Unbounded_String;
                   Merged      : Unbounded_String;
+                  No_Merged   : Unbounded_String;
                   Points_At   : Unbounded_String;
+                  Format_Str  : Unbounded_String;
+                  Has_Format  : Boolean := False;
                   Operands    : Version.Ref_Format.String_Vectors.Vector;
                   I           : Positive := 2;
                   OK          : Boolean := True;
@@ -29521,6 +29525,29 @@ package body Version.CLI is
                         OK := False;
                      end if;
                   end Take_Value;
+
+                  --  git's --merged/--no-merged take an optional commit: bare
+                  --  (or followed by an option) defaults to HEAD; a following
+                  --  non-option word is consumed as the commit.
+                  procedure Take_Optional
+                    (Flag : String;
+                     Into : out Unbounded_String)
+                  is
+                  begin
+                     if Starts (Arg (I), Flag & "=") then
+                        Into :=
+                          To_Unbounded_String (After (Arg (I), Flag & "="));
+                        I := I + 1;
+                     elsif I < Count and then Arg (I + 1)'Length > 0
+                       and then Arg (I + 1) (Arg (I + 1)'First) /= '-'
+                     then
+                        Into := To_Unbounded_String (Arg (I + 1));
+                        I := I + 2;
+                     else
+                        Into := To_Unbounded_String ("HEAD");
+                        I := I + 1;
+                     end if;
+                  end Take_Optional;
                begin
                   while OK and then I <= Count loop
                      declare
@@ -29566,9 +29593,30 @@ package body Version.CLI is
                            Mode := Listing;
                            Chose_Mode := True;
 
+                        elsif A = "--no-contains"
+                          or else Starts (A, "--no-contains=")
+                        then
+                           Take_Value ("--no-contains", No_Contains);
+                           Mode := Listing;
+                           Chose_Mode := True;
+
                         elsif A = "--merged" or else Starts (A, "--merged=")
                         then
-                           Take_Value ("--merged", Merged);
+                           Take_Optional ("--merged", Merged);
+                           Mode := Listing;
+                           Chose_Mode := True;
+
+                        elsif A = "--no-merged"
+                          or else Starts (A, "--no-merged=")
+                        then
+                           Take_Optional ("--no-merged", No_Merged);
+                           Mode := Listing;
+                           Chose_Mode := True;
+
+                        elsif A = "--format" or else Starts (A, "--format=")
+                        then
+                           Take_Value ("--format", Format_Str);
+                           Has_Format := True;
                            Mode := Listing;
                            Chose_Mode := True;
 
@@ -29650,9 +29698,15 @@ package body Version.CLI is
                              Contains /= Null_Unbounded_String;
                            Use_Merged : constant Boolean :=
                              Merged /= Null_Unbounded_String;
-                           Pointed : Version.Tags.Tag_Name_Vectors.Vector;
-                           Held    : Version.Tags.Tag_Name_Vectors.Vector;
-                           Target  : Version.Objects.Hex_Object_Id;
+                           Use_No_Contains : constant Boolean :=
+                             No_Contains /= Null_Unbounded_String;
+                           Use_No_Merged : constant Boolean :=
+                             No_Merged /= Null_Unbounded_String;
+                           Pointed  : Version.Tags.Tag_Name_Vectors.Vector;
+                           Held     : Version.Tags.Tag_Name_Vectors.Vector;
+                           Held_No  : Version.Tags.Tag_Name_Vectors.Vector;
+                           Target   : Version.Objects.Hex_Object_Id;
+                           Target_N : Version.Objects.Hex_Object_Id;
                         begin
                            --  Ordering is for-each-ref's job; without --sort,
                            --  git lists in refname order, which List_Tags
@@ -29691,6 +29745,16 @@ package body Version.CLI is
                                 (Repo, To_String (Merged));
                            end if;
 
+                           if Use_No_Contains then
+                              Held_No := Version.Tags.List_Tags_Containing
+                                (To_String (No_Contains));
+                           end if;
+
+                           if Use_No_Merged then
+                              Target_N := Version.Revisions.Resolve_Commit
+                                (Repo, To_String (No_Merged));
+                           end if;
+
                            for T of Names loop
                               declare
                                  Name : constant String := To_String (T);
@@ -29704,6 +29768,10 @@ package body Version.CLI is
                                     Keep := Holds (Held, Name);
                                  end if;
 
+                                 if Keep and then Use_No_Contains then
+                                    Keep := not Holds (Held_No, Name);
+                                 end if;
+
                                  if Keep and then Use_Merged then
                                     --  --merged REV: tags reachable from REV.
                                     Keep := Version.History.Is_Ancestor
@@ -29713,7 +29781,32 @@ package body Version.CLI is
                                        Target);
                                  end if;
 
-                                 if Keep and then Lines = 0 then
+                                 if Keep and then Use_No_Merged then
+                                    Keep := not Version.History.Is_Ancestor
+                                      (Repo,
+                                       Version.Revisions.Resolve_Commit
+                                         (Repo, Name),
+                                       Target_N);
+                                 end if;
+
+                                 if Keep and then Has_Format then
+                                    --  Expand git's --format template for this
+                                    --  tag through the ref-format engine.
+                                    declare
+                                       Pat :
+                                         Version.Ref_Format.String_Vectors
+                                           .Vector;
+                                    begin
+                                       Pat.Append ("refs/tags/" & Name);
+                                       for Line of
+                                         Version.Ref_Format.For_Each_Ref
+                                           (Repo, Pat,
+                                            Format => To_String (Format_Str))
+                                       loop
+                                          Success_Line (Line);
+                                       end loop;
+                                    end;
+                                 elsif Keep and then Lines = 0 then
                                     Success_Line (Name);
                                  elsif Keep then
                                     --  git aligns the name in 15 columns and

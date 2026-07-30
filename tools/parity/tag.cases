@@ -11,6 +11,19 @@ tag --contains HEAD
 tag --contains HEAD~1
 tag --points-at HEAD
 tag --merged HEAD
+tag --merged
+tag --merged HEAD~1
+tag --no-merged
+tag --no-merged HEAD~1
+tag --no-contains HEAD~1
+tag --format=%(refname)
+tag --format=%(refname:short)
+tag --format=%(objectname:short)
+tag --format=%(objecttype)
+tag --format=%(subject)
+tag -l "annot*" --format=%(refname:short)
+tag --sort=version:refname --format=%(refname:short)
+tag --sort=-version:refname
 tag -d light1
 tag newtag
 tag newtag HEAD~1
