@@ -313,6 +313,10 @@ describe --first-parent
 # A clean worktree makes --dirty a no-op; the suffix must not appear.
 describe --dirty
 describe --dirty=-DIRTY
+# --broken behaves like --dirty on a healthy repository; its own mark only
+# appears when the dirtiness diff itself fails.
+describe --broken
+describe --broken=-BROKEN
 describe --always
 describe --always $(git rev-parse main^{tree})
 describe --contains HEAD

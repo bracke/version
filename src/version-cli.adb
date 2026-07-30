@@ -24265,7 +24265,8 @@ package body Version.CLI is
             declare
                Usage    : constant String :=
                  "version describe [--tags] [--all] [--long] [--always]"
-                 & " [--abbrev=<n>] [--dirty[=<mark>]] [--match=<pat>] [REV]";
+                 & " [--abbrev=<n>] [--dirty[=<mark>]] [--broken[=<mark>]]"
+                 & " [--match=<pat>] [REV]";
                All_Tags : Boolean := False;
                Long     : Boolean := False;
                Always   : Boolean := False;
@@ -24301,6 +24302,14 @@ package body Version.CLI is
                         Dirty := True;
                         Dirty_Mark :=
                           To_Unbounded_String (A (A'First + 8 .. A'Last));
+                     elsif A = "--broken" or else Has_Prefix (A, "--broken=")
+                     then
+                        --  Like --dirty, but tolerant of a diff that fails on a
+                        --  broken repository. A healthy worktree still gets the
+                        --  plain "-dirty" mark; the --broken=<mark> spelling
+                        --  only replaces the suffix used when the diff itself
+                        --  cannot run, which does not arise here.
+                        Dirty := True;
                      elsif A = "--abbrev" then
                         Abbrev := 7;
                      elsif Has_Prefix (A, "--abbrev=") then
@@ -25408,7 +25417,8 @@ package body Version.CLI is
             declare
                Usage : constant String :=
                  "version cat-file (-t|-s|-e|-p|blob|tree|commit|tag"
-                 & "|--batch|--batch-check) OBJECT";
+                 & "|--batch|--batch-check|--textconv"
+                 & "|[-t|-s] --allow-unknown-type) OBJECT";
                function Img (N : Natural) return String is
                   S : constant String := Natural'Image (N);
                begin
@@ -25629,6 +25639,92 @@ package body Version.CLI is
                         end;
                      end if;
                   end;
+               elsif (for some J in 2 .. Count => Arg (J) = "--textconv") then
+                  --  git's --textconv streams a blob through the textconv
+                  --  driver configured for its path, so it needs the
+                  --  <object>:<path> form (a bare object is a die()). With no
+                  --  driver configured it emits the raw blob content, which is
+                  --  what version does -- it has no textconv drivers.
+                  declare
+                     Repo : constant Version.Repository.Repository_Handle :=
+                       Version.Repository.Open;
+                     Operand : Unbounded_String;
+                  begin
+                     for J in 2 .. Count loop
+                        if Arg (J) /= "--textconv" then
+                           Operand := To_Unbounded_String (Arg (J));
+                        end if;
+                     end loop;
+
+                     if Ada.Strings.Fixed.Index
+                          (To_String (Operand), ":") = 0
+                     then
+                        Stderr_Line
+                          ("fatal: <object>:<path> required, only <object> '"
+                           & To_String (Operand) & "' given");
+                        Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                     else
+                        declare
+                           Id : constant Version.Objects.Hex_Object_Id :=
+                             Version.Revisions.Resolve
+                               (Repo, To_String (Operand));
+                        begin
+                           Version.Console.Put
+                             (Version.Objects.Content
+                                (Version.Objects.Read_Object (Repo, Id)));
+                        end;
+                     end if;
+                  end;
+
+               elsif (for some J in 2 .. Count =>
+                        Arg (J) = "--allow-unknown-type")
+               then
+                  --  A no-op modifier for well-formed objects: it only lets
+                  --  -t/-s read an object whose type header is not one of the
+                  --  four known types, which version never writes. Dispatch
+                  --  -t/-s on the object as usual.
+                  declare
+                     Repo : constant Version.Repository.Repository_Handle :=
+                       Version.Repository.Open;
+                     Mode, Operand : Unbounded_String;
+                  begin
+                     for J in 2 .. Count loop
+                        if Arg (J) = "--allow-unknown-type" then
+                           null;
+                        elsif Arg (J)'Length > 0
+                          and then Arg (J) (Arg (J)'First) = '-'
+                        then
+                           Mode := To_Unbounded_String (Arg (J));
+                        else
+                           Operand := To_Unbounded_String (Arg (J));
+                        end if;
+                     end loop;
+
+                     declare
+                        Id : constant Version.Objects.Hex_Object_Id :=
+                          Version.Revisions.Resolve (Repo, To_String (Operand));
+                        Obj : constant Version.Objects.Git_Object :=
+                          Version.Objects.Read_Object (Repo, Id);
+                     begin
+                        if Mode = "-s" then
+                           Success_Line
+                             (Img (Version.Objects.Content (Obj)'Length));
+                        elsif Mode = "-t" then
+                           Success_Line
+                             (case Version.Objects.Kind (Obj) is
+                                 when Blob_Object   => "blob",
+                                 when Tree_Object   => "tree",
+                                 when Commit_Object => "commit",
+                                 when Tag_Object    => "tag",
+                                 when others        => "unknown");
+                        else
+                           Usage_Error
+                             ("--allow-unknown-type is only valid with -t/-s",
+                              Usage);
+                        end if;
+                     end;
+                  end;
+
                elsif Count = 3 and then Arg (2) = "-e" then
                   --  `-e` is an existence test. A name that does not resolve
                   --  to any object is git's die() (128, "Not a valid object

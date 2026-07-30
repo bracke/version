@@ -27,6 +27,18 @@ cat-file blob 14be0d41c639d701e0fe23e835b5fe9524b4459d
 cat-file commit e35167e92e266b0a42889fdebf5adbfb7701fa86
 cat-file tag 2c94ca4525e63906b18c98b0724186195a5f6fe4
 cat-file tree d25c4cbbeaa3a867628fb71fef3e398feb526c7e
+# --textconv streams a blob through its path's textconv driver; with none
+# configured it is the raw content, and it needs the <object>:<path> form (a
+# bare object is a die()). --allow-unknown-type is a no-op modifier on -t/-s
+# for a well-formed object.
+cat-file --textconv HEAD:hello.txt
+cat-file --textconv HEAD:multi.txt
+cat-file --textconv 14be0d41c639d701e0fe23e835b5fe9524b4459d
+cat-file --textconv HEAD
+cat-file -t --allow-unknown-type 14be0d41c639d701e0fe23e835b5fe9524b4459d
+cat-file -s --allow-unknown-type 14be0d41c639d701e0fe23e835b5fe9524b4459d
+cat-file --allow-unknown-type -t e35167e92e266b0a42889fdebf5adbfb7701fa86
+cat-file -s --allow-unknown-type d25c4cbbeaa3a867628fb71fef3e398feb526c7e
 # A type that does not match the object must be refused, except that asking for
 # a commit's tree via a peeling type is not what this form means.
 cat-file blob d25c4cbbeaa3a867628fb71fef3e398feb526c7e
