@@ -24739,8 +24739,13 @@ package body Version.CLI is
                Notes_Ref : Unbounded_String :=
                  To_Unbounded_String (Version.Notes.Default_Ref);
                Sub       : Unbounded_String;
-               Msg       : Unbounded_String;
-               Has_Msg   : Boolean := False;
+               --  git builds the note from the -m/-C/-c/-F pieces in the order
+               --  given (see Build_Message for the exact join). Each entry is a
+               --  kind char followed by its value: 'm' a literal, 'C' a reused
+               --  object's content (verbatim), 'c' a reedited object's content
+               --  (stripspaced, as git's editor path leaves it), 'F' a file.
+               Msg_Pieces : Version.Trailers.String_Vectors.Vector;
+               Allow_Empty : Boolean := False;
                Force     : Boolean := False;
                Ignore_Missing : Boolean := False;
                Dry_Run   : Boolean := False;
@@ -24761,20 +24766,50 @@ package body Version.CLI is
                           (A (A'First + 6 .. A'Last));
                      elsif A = "--stdin" then
                         Stdin := True;
+                     elsif A = "--allow-empty" then
+                        Allow_Empty := True;
                      elsif A = "-m" then
                         if I = Count then
                            Bad := True;
                            Bad_Text := To_Unbounded_String ("-m");
                            exit;
                         end if;
-                        --  git joins repeated -m with a blank line.
-                        if Has_Msg then
-                           Append (Msg, Character'Val (10));
-                           Append (Msg, Character'Val (10));
-                        end if;
-                        Append (Msg, Arg (I + 1));
-                        Has_Msg := True;
+                        Msg_Pieces.Append ("m" & Arg (I + 1));
                         I := I + 1;
+                     elsif Has_Prefix (A, "--message=") then
+                        Msg_Pieces.Append
+                          ("m" & A (A'First + 10 .. A'Last));
+                     elsif A = "-C" or else A = "-c" then
+                        --  Reuse (-C, verbatim) or reedit (-c, stripspaced) a
+                        --  note object's content. version has no editor, so a
+                        --  reedit yields the seed content cleaned up, which is
+                        --  what git's editor leaves when it makes no change.
+                        if I = Count then
+                           Bad := True;
+                           Bad_Text := To_Unbounded_String (A);
+                           exit;
+                        end if;
+                        Msg_Pieces.Append
+                          ((if A = "-C" then "C" else "c") & Arg (I + 1));
+                        I := I + 1;
+                     elsif Has_Prefix (A, "--reuse-message=") then
+                        Msg_Pieces.Append
+                          ("C" & A (Ada.Strings.Fixed.Index (A, "=") + 1
+                                    .. A'Last));
+                     elsif Has_Prefix (A, "--reedit-message=") then
+                        Msg_Pieces.Append
+                          ("c" & A (Ada.Strings.Fixed.Index (A, "=") + 1
+                                    .. A'Last));
+                     elsif A = "-F" or else A = "--file" then
+                        if I = Count then
+                           Bad := True;
+                           Bad_Text := To_Unbounded_String (A);
+                           exit;
+                        end if;
+                        Msg_Pieces.Append ("F" & Arg (I + 1));
+                        I := I + 1;
+                     elsif Has_Prefix (A, "--file=") then
+                        Msg_Pieces.Append ("F" & A (A'First + 7 .. A'Last));
                      elsif A = "-f" or else A = "--force" then
                         Force := True;
                      elsif A = "--ignore-missing" then
@@ -24823,6 +24858,77 @@ package body Version.CLI is
                         then Version.Revisions.Resolve (Repo, Text)
                         else Version.Objects.To_Object_Id
                                (Version.Refs.Current_Commit_Id (Repo)));
+
+                     Have_Message : constant Boolean :=
+                       (not Msg_Pieces.Is_Empty) or else Allow_Empty;
+
+                     --  git dies (128) when -C/-c names a non-blob object.
+                     Note_Fatal : exception;
+
+                     --  Assemble the note from the pieces in order, exactly as
+                     --  git does: an -m/-F/-c piece is run through stripspace
+                     --  (which trims each line, collapses blank runs and
+                     --  newline-terminates a non-empty piece), a -C piece is
+                     --  kept verbatim. Pieces are joined by a single LF inserted
+                     --  before every piece after the first -- so a stripspaced
+                     --  piece (already LF-terminated) is followed by a blank
+                     --  line, but a verbatim -C piece is not. The result is the
+                     --  exact note blob and is written without further cleanup.
+                     function Build_Message return String is
+                        Result : Unbounded_String;
+
+                        procedure Add_Piece (Text : String; Clean : Boolean) is
+                           Piece : constant String :=
+                             (if Clean then Version.Stripspace.Clean (Text)
+                              else Text);
+                        begin
+                           if Length (Result) > 0 then
+                              Append (Result, ASCII.LF);
+                           end if;
+                           Append (Result, Piece);
+                        end Add_Piece;
+
+                        --  The blob content of a -C/-c object; git refuses any
+                        --  other object type here.
+                        function Reuse_Content (Spec : String) return String is
+                           Obj : constant Version.Objects.Git_Object :=
+                             Version.Objects.Read_Object
+                               (Repo, Version.Revisions.Resolve (Repo, Spec));
+                        begin
+                           if Version.Objects.Kind (Obj)
+                              /= Version.Objects.Blob_Object
+                           then
+                              raise Note_Fatal with
+                                "cannot read note data from non-blob object '"
+                                & Spec & "'.";
+                           end if;
+                           return Version.Objects.Content (Obj);
+                        end Reuse_Content;
+                     begin
+                        for P of Msg_Pieces loop
+                           declare
+                              Value : constant String := P (P'First + 1 .. P'Last);
+                           begin
+                              case P (P'First) is
+                                 when 'm' =>
+                                    Add_Piece (Value, Clean => True);
+                                 when 'C' =>
+                                    Add_Piece (Reuse_Content (Value),
+                                               Clean => False);
+                                 when 'c' =>
+                                    Add_Piece (Reuse_Content (Value),
+                                               Clean => True);
+                                 when others =>   --  'F': a file, "-" is stdin
+                                    Add_Piece
+                                      ((if Value = "-" then Read_All_Stdin
+                                        else Version.Files.Read_Binary_File
+                                               (Value)),
+                                       Clean => True);
+                              end case;
+                           end;
+                        end loop;
+                        return To_String (Result);
+                     end Build_Message;
                   begin
                      --  Bare `notes` lists, as git does.
                      if Name = "" or else Name = "list" then
@@ -24860,10 +24966,11 @@ package body Version.CLI is
                         declare
                            C : constant Version.Objects.Hex_Object_Id :=
                              Rev_Or_Head (Operand (1));
-                           Note : constant String :=
-                             Version.Notes.Show (Repo, C, Ref);
                         begin
-                           if Note = "" then
+                           --  An empty note is still a note: git prints nothing
+                           --  and succeeds, so the presence test is Has_Note,
+                           --  not a non-empty blob (which --allow-empty defeats).
+                           if not Version.Notes.Has_Note (Repo, C, Ref) then
                               Error_Line
                                 ("no note found for "
                                  & Version.Objects.To_String (C));
@@ -24872,12 +24979,13 @@ package body Version.CLI is
                               --  Emit the blob verbatim, like git. Console.Put
                               --  avoids GNAT Text_IO's spurious terminator,
                               --  which doubled the note's own final newline.
-                              Version.Console.Put (Note);
+                              Version.Console.Put
+                                (Version.Notes.Show (Repo, C, Ref));
                            end if;
                         end;
 
                      elsif Name = "add" then
-                        if not Has_Msg then
+                        if not Have_Message then
                            Usage_Error ("notes add requires -m", Usage);
                         else
                            declare
@@ -24900,18 +25008,19 @@ package body Version.CLI is
                                        & Version.Objects.To_String (C));
                                  end if;
                                  Version.Notes.Add
-                                   (Repo, C, To_String (Msg), Ref);
+                                   (Repo, C, Build_Message, Ref,
+                                    Cleanup_Message => False);
                               end if;
                            end;
                         end if;
 
                      elsif Name = "append" then
-                        if not Has_Msg then
+                        if not Have_Message then
                            Usage_Error ("notes append requires -m", Usage);
                         else
                            Version.Notes.Append
                              (Repo, Rev_Or_Head (Operand (1)),
-                              To_String (Msg), Ref);
+                              Build_Message, Ref, Cleanup_Message => False);
                         end if;
 
                      elsif Name = "copy" then
@@ -25033,6 +25142,12 @@ package body Version.CLI is
                         Usage_Error
                           ("unknown notes subcommand: " & Name, Usage);
                      end if;
+                  exception
+                     when E : Note_Fatal =>
+                        Ada.Text_IO.Put_Line
+                          (Ada.Text_IO.Standard_Error,
+                           "fatal: " & Ada.Exceptions.Exception_Message (E));
+                        Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
                   end;
                end if;
             end;

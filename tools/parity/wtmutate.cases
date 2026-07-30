@@ -86,6 +86,26 @@ notes remove HEAD
 notes append -m z HEAD
 notes copy HEAD HEAD~1
 notes prune
+# add -C/-c/-F build the note from a reused object or a file instead of -m.
+# The reuse source is a standalone blob with no trailing newline, so a tool
+# that "cleans up" a -C note (git does not) is caught by the byte it adds. The
+# blob is written with real `git hash-object` in whichever repo is under test.
+--version|grep -q '^version' && T=$V || T=git; B=$(printf 'reused' | git hash-object -w --stdin); "$T" notes add -C "$B" HEAD~1 >/dev/null 2>&1; echo rc=$?; "$T" notes show HEAD~1
+--version|grep -q '^version' && T=$V || T=git; B=$(printf 'reused' | git hash-object -w --stdin); "$T" notes add --reuse-message="$B" HEAD~1 >/dev/null 2>&1; echo rc=$?; "$T" notes show HEAD~1
+# -c reedits: with core.editor=true the seed is left cleaned up (newline-added).
+--version|grep -q '^version' && T=$V || T=git; B=$(printf 'reused' | git hash-object -w --stdin); "$T" notes add -c "$B" HEAD~1 >/dev/null 2>&1; echo rc=$?; "$T" notes show HEAD~1
+# Piece order matters: a -C piece is verbatim, an -m piece is newline-added, so
+# C-then-m joins with one newline and m-then-C leaves a blank line and no tail.
+--version|grep -q '^version' && T=$V || T=git; B=$(printf 'reused' | git hash-object -w --stdin); "$T" notes add -C "$B" -m extra HEAD~1 >/dev/null 2>&1; echo rc=$?; "$T" notes show HEAD~1
+--version|grep -q '^version' && T=$V || T=git; B=$(printf 'reused' | git hash-object -w --stdin); "$T" notes add -m first -C "$B" HEAD~1 >/dev/null 2>&1; echo rc=$?; "$T" notes show HEAD~1
+# -F reads the note from a file.
+--version|grep -q '^version' && T=$V || T=git; printf 'from a file\n' > nf.txt; "$T" notes add -F nf.txt HEAD~1 >/dev/null 2>&1; echo rc=$?; "$T" notes show HEAD~1
+# --allow-empty writes an empty note (HEAD already has one, so the list is two).
+--version|grep -q '^version' && T=$V || T=git; "$T" notes add --allow-empty HEAD~1 >/dev/null 2>&1; echo rc=$?; "$T" notes show HEAD~1 | wc -c; "$T" notes list | wc -l
+# A -C source that is not a blob is fatal (exit 128), as git dies on it.
+--version|grep -q '^version' && T=$V || T=git; "$T" notes add -C HEAD~1 HEAD~1
+# append -C adds the reused blob as a fresh paragraph under the existing note.
+--version|grep -q '^version' && T=$V || T=git; B=$(printf 'reused' | git hash-object -w --stdin); "$T" notes append -C "$B" HEAD >/dev/null 2>&1; echo rc=$?; "$T" notes show HEAD
 
 # sparse-checkout on a worktree that is not yet sparse: list and reapply have
 # nothing to read, and add has nothing to add to.
