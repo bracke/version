@@ -26051,6 +26051,20 @@ package body Version.CLI is
                   elsif Has_Prefix (Arg (I), "--exclude=") then
                      Excludes.Append
                        (Arg (I) (Arg (I)'First + 10 .. Arg (I)'Last));
+                  elsif Has_Prefix (Arg (I), "--disambiguate=") then
+                     --  List every object id sharing the given hex prefix.
+                     declare
+                        Repo : constant Version.Repository.Repository_Handle :=
+                          Version.Repository.Open;
+                     begin
+                        for Id of Version.Revisions.Objects_With_Prefix
+                          (Repo,
+                           Arg (I) (Arg (I)'First + 15 .. Arg (I)'Last))
+                        loop
+                           Success_Line (Version.Objects.To_String (Id));
+                        end loop;
+                     end;
+                     Done := True;
                   elsif Arg (I) = "--sq-quote" then
                      --  Quote every remaining argument, space-separated.
                      declare
