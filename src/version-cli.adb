@@ -33495,46 +33495,6 @@ package body Version.CLI is
             declare
                Usage : constant String :=
                  "version var (GIT_AUTHOR_IDENT|GIT_COMMITTER_IDENT|GIT_EDITOR)";
-
-               function Now_Stamp return String is
-                  T : constant Long_Long_Integer :=
-                    Version.Timestamps.Unix_Now;
-                  S : constant String := Long_Long_Integer'Image (T);
-               begin
-                  return S (S'First + 1 .. S'Last) & " +0000";
-               end Now_Stamp;
-
-               --  git honours GIT_AUTHOR_DATE / GIT_COMMITTER_DATE. The raw
-               --  "<unix> <tz>" (and "@<unix> <tz>") form is used verbatim;
-               --  other forms fall back to the current time.
-               function Ident_Date (Env : String) return String is
-               begin
-                  if not Ada.Environment_Variables.Exists (Env) then
-                     return Now_Stamp;
-                  end if;
-                  declare
-                     V : constant String := Ada.Environment_Variables.Value (Env);
-                     S : constant String :=
-                       (if V'Length > 0 and then V (V'First) = '@'
-                        then V (V'First + 1 .. V'Last) else V);
-                     Sp : constant Natural :=
-                       Ada.Strings.Fixed.Index (S, " ");
-                     Digits_Ok : Boolean := Sp > S'First;
-                  begin
-                     for K in S'First .. (if Sp = 0 then S'Last else Sp - 1) loop
-                        if S (K) not in '0' .. '9' then
-                           Digits_Ok := False;
-                        end if;
-                     end loop;
-                     if not Digits_Ok then
-                        return Now_Stamp;
-                     elsif Sp = 0 then
-                        return S & " +0000";
-                     else
-                        return S;
-                     end if;
-                  end;
-               end Ident_Date;
             begin
                if Count /= 2 then
                   Usage_Error ("var requires a variable name", Usage);
@@ -33543,15 +33503,16 @@ package body Version.CLI is
                      Name : constant String := Arg (2);
                      Repo : constant Version.Repository.Repository_Handle :=
                        Version.Repository.Open;
-                     Id   : constant Version.Config.Identity :=
-                       Version.Config.User_Identity (Repo);
-                     Who  : constant String :=
-                       To_String (Id.Name) & " <" & To_String (Id.Email) & "> ";
                   begin
+                     --  The author/committer idents honour GIT_AUTHOR_*/
+                     --  GIT_COMMITTER_* env (name, email and date) and fall
+                     --  back to the configured identity at the current time in
+                     --  the local timezone, exactly as a new commit would.
                      if Name = "GIT_AUTHOR_IDENT" then
-                        Success_Line (Who & Ident_Date ("GIT_AUTHOR_DATE"));
+                        Success_Line (Version.Config.Author_Signature (Repo));
                      elsif Name = "GIT_COMMITTER_IDENT" then
-                        Success_Line (Who & Ident_Date ("GIT_COMMITTER_DATE"));
+                        Success_Line
+                          (Version.Config.Committer_Signature (Repo));
                      elsif Name = "GIT_EDITOR" then
                         Success_Line
                           (if Ada.Environment_Variables.Exists ("EDITOR")

@@ -21,6 +21,7 @@ name-rev $(git rev-parse topic)
 name-rev --refs='refs/heads/*' $(git rev-parse HEAD)
 describe
 describe --all
+describe --all HEAD
 describe --all topic
 pack-refs --all && git show-ref
 pack-refs --all && cat .git/packed-refs
