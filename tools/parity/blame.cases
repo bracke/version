@@ -29,3 +29,15 @@ blame -l -f HEAD f.txt
 blame -e -t HEAD~1 f.txt
 blame HEAD~1 -- f.txt
 blame -s g.txt
+# -n adds the original line number; --porcelain/--line-porcelain are the
+# machine formats (per-commit block, group counts, boundary/previous).
+blame -n f.txt
+blame -s -n f.txt
+blame -f -n f.txt
+blame -n -l f.txt
+# Blamed at a committed revision so the porcelain timestamps are deterministic
+# (the working-tree form times uncommitted lines at "now").
+blame --porcelain HEAD f.txt
+blame --line-porcelain HEAD f.txt
+blame --porcelain HEAD~1 f.txt
+blame --porcelain g.txt

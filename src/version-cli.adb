@@ -24755,6 +24755,9 @@ package body Version.CLI is
                Show_Email : Boolean := False;   --  -e/--show-email
                Raw_Time   : Boolean := False;   --  -t
                Show_Name  : Boolean := False;   --  -f/--show-name
+               Show_Num   : Boolean := False;   --  -n/--show-number
+               Porcelain  : Boolean := False;   --  --porcelain
+               Line_Porc  : Boolean := False;   --  --line-porcelain
                Abbrev_Val : Natural := 7;       --  --abbrev=<n> (width is +1)
                L_Set      : Boolean := False;   --  -L given
                L_First    : Positive := 1;
@@ -24822,6 +24825,14 @@ package body Version.CLI is
                           and then (A = "-f" or else A = "--show-name")
                         then
                            Show_Name := True;
+                        elsif not Sep_Seen
+                          and then (A = "-n" or else A = "--show-number")
+                        then
+                           Show_Num := True;
+                        elsif not Sep_Seen and then A = "--porcelain" then
+                           Porcelain := True;
+                        elsif not Sep_Seen and then A = "--line-porcelain" then
+                           Line_Porc := True;
                         elsif not Sep_Seen and then A = "-L" then
                            if I < Count then
                               I := I + 1;
@@ -25050,54 +25061,305 @@ package body Version.CLI is
                         --  number actually shown, not the whole file.
                         Line_W : constant Natural := Img (Last)'Length;
 
+                        Orig_W : Natural := 0;
+
                         function Ident_Of (M : Meta) return String is
                           (if Show_Email then To_String (M.Email)
                            else To_String (M.Author));
+
+                        --  The value of a "<key> ..." header line of Content.
+                        function Hdr (Content, Key : String) return String is
+                           Pat : constant String := LF & Key;
+                           P   : constant Natural :=
+                             Ada.Strings.Fixed.Index (Content, Pat);
+                        begin
+                           if P = 0 then
+                              return "";
+                           end if;
+                           declare
+                              VS : constant Natural := P + Pat'Length;
+                              VE : Natural :=
+                                Ada.Strings.Fixed.Index
+                                  (Content (VS .. Content'Last), "" & LF);
+                           begin
+                              if VE = 0 then
+                                 VE := Content'Last + 1;
+                              end if;
+                              return Content (VS .. VE - 1);
+                           end;
+                        end Hdr;
+
+                        --  Split "Name <mail> <sec> <tz>" into its parts.
+                        procedure Split_Ident
+                          (Ident               : String;
+                           Name, Mail, Sec, Tz : out Unbounded_String)
+                        is
+                           Lt : constant Natural :=
+                             Ada.Strings.Fixed.Index (Ident, " <");
+                           Gt : Natural := 0;
+                        begin
+                           Name := Null_Unbounded_String;
+                           Mail := Null_Unbounded_String;
+                           Sec  := Null_Unbounded_String;
+                           Tz   := Null_Unbounded_String;
+                           for K in reverse Ident'Range loop
+                              if Ident (K) = '>' then
+                                 Gt := K;
+                                 exit;
+                              end if;
+                           end loop;
+                           if Lt = 0 or else Gt = 0 then
+                              Name := To_Unbounded_String (Ident);
+                              return;
+                           end if;
+                           Name :=
+                             To_Unbounded_String (Ident (Ident'First .. Lt - 1));
+                           Mail := To_Unbounded_String (Ident (Lt + 1 .. Gt));
+                           declare
+                              Rest : constant String :=
+                                (if Gt + 2 <= Ident'Last
+                                 then Ident (Gt + 2 .. Ident'Last) else "");
+                              Sp : constant Natural :=
+                                Ada.Strings.Fixed.Index (Rest, " ");
+                           begin
+                              if Sp = 0 then
+                                 Sec := To_Unbounded_String (Rest);
+                              else
+                                 Sec := To_Unbounded_String
+                                   (Rest (Rest'First .. Sp - 1));
+                                 Tz := To_Unbounded_String
+                                   (Rest (Sp + 1 .. Rest'Last));
+                              end if;
+                           end;
+                        end Split_Ident;
+
+                        --  git's porcelain per-commit block: identities, times,
+                        --  summary, and either "boundary" (a root) or "previous"
+                        --  (the first parent that still has the file).
+                        function Porc_Block (Hex : String) return String is
+                           R : Unbounded_String;
+                        begin
+                           if Is_Zero (Hex) then
+                              declare
+                                 Now : constant String :=
+                                   Ada.Strings.Fixed.Trim
+                                     (Long_Long_Integer'Image
+                                        (Version.Timestamps.Unix_Now),
+                                      Ada.Strings.Left);
+                                 Tz  : constant String :=
+                                   Version.Timestamps.Local_Zone;
+                              begin
+                                 Append (R, "author Not Committed Yet" & LF);
+                                 Append
+                                   (R, "author-mail <not.committed.yet>" & LF);
+                                 Append (R, "author-time " & Now & LF);
+                                 Append (R, "author-tz " & Tz & LF);
+                                 Append (R, "committer Not Committed Yet" & LF);
+                                 Append
+                                   (R,
+                                    "committer-mail <not.committed.yet>" & LF);
+                                 Append (R, "committer-time " & Now & LF);
+                                 Append (R, "committer-tz " & Tz & LF);
+                                 Append (R, "summary Version of " & File
+                                            & " from " & File & LF);
+                                 --  An uncommitted line would blame next to the
+                                 --  tip, if the file is there.
+                                 declare
+                                    Has : Boolean := False;
+                                 begin
+                                    for P of Tree_Candidates (Tip) loop
+                                       if P = File then
+                                          Has := True;
+                                          exit;
+                                       end if;
+                                    end loop;
+                                    if Has then
+                                       Append (R, "previous "
+                                                  & Version.Objects.To_String
+                                                      (Tip)
+                                                  & " " & File & LF);
+                                    end if;
+                                 end;
+                                 Append (R, "filename " & File & LF);
+                              end;
+                           else
+                              declare
+                                 Obj : constant Version.Objects.Git_Object :=
+                                   Version.Objects.Read_Object
+                                     (Repo, Version.Objects.To_Object_Id (Hex));
+                                 Content : constant String :=
+                                   Version.Objects.Content (Obj);
+                                 A_Name, A_Mail, A_Sec, A_Tz : Unbounded_String;
+                                 C_Name, C_Mail, C_Sec, C_Tz : Unbounded_String;
+                                 Blank : constant Natural :=
+                                   Ada.Strings.Fixed.Index (Content, LF & LF);
+                                 Msg : constant String :=
+                                   (if Blank = 0 then ""
+                                    else Content (Blank + 2 .. Content'Last));
+                                 Nl : constant Natural :=
+                                   Ada.Strings.Fixed.Index (Msg, "" & LF);
+                                 Summary : constant String :=
+                                   (if Msg'Length = 0 then ""
+                                    elsif Nl = 0 then Msg
+                                    else Msg (Msg'First .. Nl - 1));
+                                 Parents :
+                                   constant Version.Objects.Object_Id_Vectors
+                                     .Vector :=
+                                   Version.Objects.Commit_Parent_Ids (Obj);
+                              begin
+                                 Split_Ident
+                                   (Hdr (Content, "author "),
+                                    A_Name, A_Mail, A_Sec, A_Tz);
+                                 Split_Ident
+                                   (Hdr (Content, "committer "),
+                                    C_Name, C_Mail, C_Sec, C_Tz);
+                                 Append (R, "author " & To_String (A_Name) & LF);
+                                 Append (R, "author-mail " & To_String (A_Mail)
+                                            & LF);
+                                 Append (R, "author-time " & To_String (A_Sec)
+                                            & LF);
+                                 Append (R, "author-tz " & To_String (A_Tz) & LF);
+                                 Append (R, "committer " & To_String (C_Name)
+                                            & LF);
+                                 Append (R, "committer-mail "
+                                            & To_String (C_Mail) & LF);
+                                 Append (R, "committer-time "
+                                            & To_String (C_Sec) & LF);
+                                 Append (R, "committer-tz " & To_String (C_Tz)
+                                            & LF);
+                                 Append (R, "summary " & Summary & LF);
+                                 if Parents.Is_Empty then
+                                    Append (R, "boundary" & LF);
+                                 else
+                                    declare
+                                       Par : constant String :=
+                                         Version.Objects.To_String
+                                           (Parents.First_Element);
+                                       Has : Boolean := False;
+                                    begin
+                                       for P of
+                                         Tree_Candidates (Parents.First_Element)
+                                       loop
+                                          if P = File then
+                                             Has := True;
+                                             exit;
+                                          end if;
+                                       end loop;
+                                       if Has then
+                                          Append (R, "previous " & Par & " "
+                                                     & File & LF);
+                                       end if;
+                                    end;
+                                 end if;
+                                 Append (R, "filename " & File & LF);
+                              end;
+                           end if;
+                           return To_String (R);
+                        end Porc_Block;
                      begin
-                        --  Size the ident column over every line (git sizes it
-                        --  from the whole file, not just the shown range).
+                        --  Size the ident/orig columns over every line (git
+                        --  sizes them from the whole file, not the shown range).
                         for L of Lines loop
                            Ident_W :=
                              Natural'Max
                                (Ident_W,
                                 Ident_Of (Meta_For (To_String (L.Commit)))'Length);
+                           Orig_W :=
+                             Natural'Max (Orig_W, Img (L.Orig_Line)'Length);
                         end loop;
 
-                        declare
-                           N : Natural := 0;
-                        begin
-                           for L of Lines loop
-                              N := N + 1;
-                              if N >= First and then N <= Last then
+                        if Porcelain or else Line_Porc then
+                           declare
+                              Emitted : Version.Trailers.String_Vectors.Vector;
+                              function Seen (H : String) return Boolean is
+                                (for some X of Emitted => X = H);
+                              I  : Natural := 1;
+                              NN : constant Natural := Natural (Lines.Length);
+                           begin
+                              while I <= NN loop
                                  declare
-                                    M   : constant Meta :=
-                                      Meta_For (To_String (L.Commit));
-                                    Hex : constant String :=
-                                      To_String (L.Commit);
-                                    Sha : constant String :=
-                                      (if M.Boundary
-                                       then "^" & Hex (1 .. Sha_W - 1)
-                                       else Hex (1 .. Sha_W));
-                                    Name_Col : constant String :=
-                                      (if Show_Name then " " & File else "");
-                                    Attrib : constant String :=
-                                      (if Short then ""
-                                       else " ("
-                                         & Pad_Right (Ident_Of (M), Ident_W)
-                                         & " "
-                                         & (if Raw_Time then To_String (M.Raw_Date)
-                                            else To_String (M.Date))
-                                         & " ");
+                                    Hex_I : constant String :=
+                                      To_String (Lines (I).Commit);
+                                    GE : Natural := I;
                                  begin
-                                    Success_Line
-                                      (Sha & Name_Col & Attrib
-                                       & (if Short then " " else "")
-                                       & Pad_Left (Img (N), Line_W)
-                                       & ") " & To_String (L.Text));
+                                    while GE < NN
+                                      and then To_String (Lines (GE + 1).Commit)
+                                               = Hex_I
+                                      and then Lines (GE + 1).Orig_Line
+                                               = Lines (GE).Orig_Line + 1
+                                    loop
+                                       GE := GE + 1;
+                                    end loop;
+
+                                    for K in I .. GE loop
+                                       Version.Console.Put
+                                         (Hex_I & " "
+                                          & Img (Lines (K).Orig_Line) & " "
+                                          & Img (K)
+                                          & (if K = I
+                                             then " " & Img (GE - I + 1)
+                                             else "")
+                                          & LF);
+                                       if Line_Porc
+                                         or else (K = I and then not Seen (Hex_I))
+                                       then
+                                          Version.Console.Put (Porc_Block (Hex_I));
+                                       end if;
+                                       Version.Console.Put
+                                         (Character'Val (9)
+                                          & To_String (Lines (K).Text) & LF);
+                                    end loop;
+
+                                    if not Seen (Hex_I) then
+                                       Emitted.Append (Hex_I);
+                                    end if;
+                                    I := GE + 1;
                                  end;
-                              end if;
-                           end loop;
-                        end;
+                              end loop;
+                           end;
+                        else
+                           declare
+                              N : Natural := 0;
+                           begin
+                              for L of Lines loop
+                                 N := N + 1;
+                                 if N >= First and then N <= Last then
+                                    declare
+                                       M   : constant Meta :=
+                                         Meta_For (To_String (L.Commit));
+                                       Hex : constant String :=
+                                         To_String (L.Commit);
+                                       Sha : constant String :=
+                                         (if M.Boundary
+                                          then "^" & Hex (1 .. Sha_W - 1)
+                                          else Hex (1 .. Sha_W));
+                                       Name_Col : constant String :=
+                                         (if Show_Name then " " & File else "");
+                                       Orig_Col : constant String :=
+                                         (if Show_Num
+                                          then " "
+                                             & Pad_Left (Img (L.Orig_Line), Orig_W)
+                                          else "");
+                                       Attrib : constant String :=
+                                         (if Short then ""
+                                          else " ("
+                                            & Pad_Right (Ident_Of (M), Ident_W)
+                                            & " "
+                                            & (if Raw_Time
+                                               then To_String (M.Raw_Date)
+                                               else To_String (M.Date))
+                                            & " ");
+                                    begin
+                                       Success_Line
+                                         (Sha & Name_Col & Orig_Col & Attrib
+                                          & (if Short then " " else "")
+                                          & Pad_Left (Img (N), Line_W)
+                                          & ") " & To_String (L.Text));
+                                    end;
+                                 end if;
+                              end loop;
+                           end;
+                        end if;
                      end;
                   end;
                end if;
