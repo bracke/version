@@ -20012,7 +20012,9 @@ package body Version.CLI is
          elsif Command = "stash" then
             declare
                Usage : constant String :=
-                 "version stash [push [--include-untracked|--include-ignored] [--] [PATH...]] | "
+                 "version stash [push [-m MSG] [-u|--include-untracked"
+                 & "|-a|--include-ignored] [--] [PATH...]] | "
+                 & "version stash save [-m MSG] [-u|-a] [MESSAGE] | "
                  & "version stash create [--include-untracked|--include-ignored] [--] [PATH...] | "
                  & "version stash store [-m MESSAGE] COMMIT | "
                  & "version stash list | version stash show"
@@ -20038,6 +20040,7 @@ package body Version.CLI is
                   First_Index       : Positive;
                   Include_Untracked : out Boolean;
                   Include_Ignored   : out Boolean;
+                  Message           : out Unbounded_String;
                   Path_First        : out Natural;
                   OK                : out Boolean)
                is
@@ -20048,6 +20051,7 @@ package body Version.CLI is
                begin
                   Include_Untracked := False;
                   Include_Ignored := False;
+                  Message := Null_Unbounded_String;
                   Path_First := First_Index;
                   OK := False;
 
@@ -20059,7 +20063,8 @@ package body Version.CLI is
                         return;
 
                      elsif not After_Separator
-                       and then Arg (I) = "--include-untracked"
+                       and then (Arg (I) = "--include-untracked"
+                                 or else Arg (I) = "-u")
                      then
                         if Saw_Untracked then
                            Usage_Error
@@ -20080,7 +20085,9 @@ package body Version.CLI is
                         I := I + 1;
 
                      elsif not After_Separator
-                       and then Arg (I) = "--include-ignored"
+                       and then (Arg (I) = "--include-ignored"
+                                 or else Arg (I) = "-a"
+                                 or else Arg (I) = "--all")
                      then
                         if Saw_Ignored then
                            Usage_Error
@@ -20101,6 +20108,41 @@ package body Version.CLI is
                         Include_Ignored := True;
                         I := I + 1;
 
+                     elsif not After_Separator and then Arg (I) = "-m" then
+                        if I >= Count then
+                           Usage_Error
+                             ("stash " & Subcommand & " -m requires a message",
+                              Usage);
+                           return;
+                        end if;
+                        Message := To_Unbounded_String (Arg (I + 1));
+                        I := I + 2;
+
+                     elsif not After_Separator and then Arg (I) = "--message"
+                     then
+                        if I >= Count then
+                           Usage_Error
+                             ("stash " & Subcommand
+                              & " --message requires a message", Usage);
+                           return;
+                        end if;
+                        Message := To_Unbounded_String (Arg (I + 1));
+                        I := I + 2;
+
+                     elsif not After_Separator
+                       and then Has_Prefix (Arg (I), "--message=")
+                     then
+                        Message := To_Unbounded_String
+                          (Arg (I) (Arg (I)'First + 10 .. Arg (I)'Last));
+                        I := I + 1;
+
+                     elsif not After_Separator
+                       and then Has_Prefix (Arg (I), "-m")
+                     then
+                        Message := To_Unbounded_String
+                          (Arg (I) (Arg (I)'First + 2 .. Arg (I)'Last));
+                        I := I + 1;
+
                      elsif not After_Separator and then Is_Option (Arg (I)) then
                         Usage_Error
                           ("unknown stash " & Subcommand & " option: " & Arg (I),
@@ -20118,18 +20160,73 @@ package body Version.CLI is
                   OK := True;
                end Parse_Stash_Path_Command;
 
+               procedure Perform_Stash_Push
+                 (Include_Untracked : Boolean;
+                  Include_Ignored   : Boolean;
+                  Specs             :
+                    Version.Pathspec.Pathspec_Vectors.Vector;
+                  Message           : String)
+               is
+               begin
+                  if Has_Stashable_Changes
+                       (Include_Untracked => Include_Untracked,
+                        Include_Ignored   => Include_Ignored,
+                        Pathspecs         => Specs)
+                  then
+                     Version.Stash.Push
+                       (Include_Untracked => Include_Untracked,
+                        Include_Ignored   => Include_Ignored,
+                        Pathspecs         => Specs,
+                        Message           => Message);
+
+                     --  git names the commit the stash was taken against.
+                     --  HEAD does not move, so it still reads correctly here;
+                     --  a detached HEAD is spelled "(no branch)". With a
+                     --  message the title is "On <branch>: <msg>", otherwise
+                     --  "WIP on <branch>: <short> <subject>".
+                     declare
+                        Repo : constant Version.Repository.Repository_Handle :=
+                          Version.Repository.Open;
+                        Head : constant Version.Refs.Head_Info :=
+                          Version.Refs.Read_Head (Repo);
+                        Where : constant String :=
+                          (if Version.Refs.Is_Attached (Head)
+                           then Version.Refs.Branch_Name (Head)
+                           else "(no branch)");
+                        Hex : constant String :=
+                          Version.Refs.Current_Commit_Id (Repo);
+                        Obj : constant Version.Objects.Git_Object :=
+                          Version.Objects.Read_Object
+                            (Repo, Version.Objects.To_Object_Id (Hex));
+                        Title : constant String :=
+                          (if Message /= ""
+                           then "On " & Where & ": " & Message
+                           else "WIP on " & Where & ": "
+                                & Hex (Hex'First .. Hex'First + 6) & " "
+                                & Version.Objects.Commit_Message_First_Line
+                                    (Obj));
+                     begin
+                        Success_Line
+                          ("Saved working directory and index state " & Title);
+                     end;
+                  else
+                     Success_Line ("No local changes to save");
+                  end if;
+               end Perform_Stash_Push;
+
                procedure Run_Stash_Push
                  (First_Index : Positive; Subcommand_Present : Boolean)
                is
                   Include_Untracked : Boolean;
                   Include_Ignored   : Boolean;
+                  Message           : Unbounded_String;
                   Path_First        : Natural;
                   OK                : Boolean;
                begin
                   if Subcommand_Present then
                      Parse_Stash_Path_Command
-                       ("push", First_Index, Include_Untracked, Include_Ignored,
-                        Path_First, OK);
+                       ("push", First_Index, Include_Untracked,
+                        Include_Ignored, Message, Path_First, OK);
                      if not OK then
                         return;
                      end if;
@@ -20139,61 +20236,93 @@ package body Version.CLI is
                      Path_First := Count + 1;
                   end if;
 
-                  declare
-                     Specs : constant Version.Pathspec.Pathspec_Vectors.Vector :=
-                       Pathspecs_From_Args (Positive (Path_First));
-                  begin
-                     if Has_Stashable_Changes
-                          (Include_Untracked => Include_Untracked,
-                           Include_Ignored   => Include_Ignored,
-                           Pathspecs         => Specs)
-                     then
-                        Version.Stash.Push
-                          (Include_Untracked => Include_Untracked,
-                           Include_Ignored   => Include_Ignored,
-                           Pathspecs         => Specs);
-
-                        --  git names the commit the stash was taken against.
-                        --  HEAD does not move, so it still reads correctly
-                        --  here; a detached HEAD is spelled "(no branch)".
-                        declare
-                           Repo : constant
-                             Version.Repository.Repository_Handle :=
-                               Version.Repository.Open;
-                           Head : constant Version.Refs.Head_Info :=
-                             Version.Refs.Read_Head (Repo);
-                           Where : constant String :=
-                             (if Version.Refs.Is_Attached (Head)
-                              then Version.Refs.Branch_Name (Head)
-                              else "(no branch)");
-                           Hex : constant String :=
-                             Version.Refs.Current_Commit_Id (Repo);
-                           Obj : constant Version.Objects.Git_Object :=
-                             Version.Objects.Read_Object
-                               (Repo, Version.Objects.To_Object_Id (Hex));
-                        begin
-                           Success_Line
-                             ("Saved working directory and index state WIP on "
-                              & Where & ": "
-                              & Hex (Hex'First .. Hex'First + 6) & " "
-                              & Version.Objects.Commit_Message_First_Line
-                                  (Obj));
-                        end;
-                     else
-                        Success_Line ("No local changes to save");
-                     end if;
-                  end;
+                  Perform_Stash_Push
+                    (Include_Untracked => Include_Untracked,
+                     Include_Ignored   => Include_Ignored,
+                     Specs             =>
+                       Pathspecs_From_Args (Positive (Path_First)),
+                     Message           => To_String (Message));
                end Run_Stash_Push;
+
+               --  git's legacy `stash save [options] [<message>]`: the message
+               --  is the remaining non-option arguments joined with spaces, and
+               --  there are no pathspecs.
+               procedure Run_Stash_Save is
+                  Include_Untracked : Boolean := False;
+                  Include_Ignored   : Boolean := False;
+                  Message           : Unbounded_String;
+                  I                 : Natural := 3;
+               begin
+                  while I <= Count loop
+                     if Arg (I) = "-m" or else Arg (I) = "--message" then
+                        if I >= Count then
+                           Usage_Error
+                             ("stash save -m requires a message", Usage);
+                           return;
+                        end if;
+                        Message := To_Unbounded_String (Arg (I + 1));
+                        I := I + 2;
+                     elsif Has_Prefix (Arg (I), "--message=") then
+                        Message := To_Unbounded_String
+                          (Arg (I) (Arg (I)'First + 10 .. Arg (I)'Last));
+                        I := I + 1;
+                     elsif Has_Prefix (Arg (I), "-m") then
+                        Message := To_Unbounded_String
+                          (Arg (I) (Arg (I)'First + 2 .. Arg (I)'Last));
+                        I := I + 1;
+                     elsif Arg (I) = "-u"
+                       or else Arg (I) = "--include-untracked"
+                     then
+                        Include_Untracked := True;
+                        I := I + 1;
+                     elsif Arg (I) = "-a" or else Arg (I) = "--all"
+                       or else Arg (I) = "--include-ignored"
+                     then
+                        Include_Untracked := True;
+                        Include_Ignored := True;
+                        I := I + 1;
+                     elsif Arg (I) = "-k" or else Arg (I) = "--keep-index"
+                       or else Arg (I) = "--no-keep-index"
+                       or else Arg (I) = "-q" or else Arg (I) = "--quiet"
+                     then
+                        --  Accepted; version's stash is non-interactive and
+                        --  always resets the worktree.
+                        I := I + 1;
+                     elsif Arg (I) = "--" then
+                        I := I + 1;
+                     elsif Is_Option (Arg (I)) then
+                        Usage_Error
+                          ("unknown stash save option: " & Arg (I), Usage);
+                        return;
+                     else
+                        --  A positional word: the message (all remaining words
+                        --  joined with a single space).
+                        if Length (Message) > 0 then
+                           Append (Message, " ");
+                        end if;
+                        Append (Message, Arg (I));
+                        I := I + 1;
+                     end if;
+                  end loop;
+
+                  Perform_Stash_Push
+                    (Include_Untracked => Include_Untracked,
+                     Include_Ignored   => Include_Ignored,
+                     Specs             =>
+                       Version.Pathspec.Pathspec_Vectors.Empty_Vector,
+                     Message           => To_String (Message));
+               end Run_Stash_Save;
 
                procedure Run_Stash_Create (First_Index : Positive) is
                   Include_Untracked : Boolean;
                   Include_Ignored   : Boolean;
+                  Message           : Unbounded_String;
                   Path_First        : Natural;
                   OK                : Boolean;
                begin
                   Parse_Stash_Path_Command
                     ("create", First_Index, Include_Untracked, Include_Ignored,
-                     Path_First, OK);
+                     Message, Path_First, OK);
                   if not OK then
                      return;
                   end if;
@@ -20469,6 +20598,9 @@ package body Version.CLI is
 
                elsif Subcommand = "push" then
                   Run_Stash_Push (3, Subcommand_Present => True);
+
+               elsif Subcommand = "save" then
+                  Run_Stash_Save;
 
                elsif Subcommand = "create" then
                   Run_Stash_Create (3);

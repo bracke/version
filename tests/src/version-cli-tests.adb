@@ -4860,7 +4860,9 @@ package body Version.CLI.Tests is
       Root : constant String :=
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Usage : constant String :=
-        "version stash [push [--include-untracked|--include-ignored] [--] [PATH...]] | "
+        "version stash [push [-m MSG] [-u|--include-untracked"
+        & "|-a|--include-ignored] [--] [PATH...]] | "
+        & "version stash save [-m MSG] [-u|-a] [MESSAGE] | "
         & "version stash create [--include-untracked|--include-ignored] [--] [PATH...] | "
         & "version stash store [-m MESSAGE] COMMIT | "
         & "version stash list | version stash show"

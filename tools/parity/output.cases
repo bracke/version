@@ -13,6 +13,13 @@ switch --detach HEAD
 # stash speaks on stdout, and names the commit it was taken against.
 stash push
 stash list
+# -m/--message (and the legacy `save`) title the stash "On <branch>: <msg>"
+# instead of the default "WIP on <branch>: <short> <subject>".
+stash push -m gatemsg
+stash push --message two-words
+stash save savemsg
+stash save -m savemmsg
+stash save -u utrmsg
 # stash show defaults to a diffstat and shows only tracked changes (the
 # untracked u.txt is omitted); the diff-format flags select other renderings.
 stash show
