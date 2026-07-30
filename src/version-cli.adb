@@ -25769,11 +25769,13 @@ package body Version.CLI is
                         Sha_W : constant Natural :=
                           (if Long_Sha then 40
                            else Natural'Min (Abbrev_Val + 1, 40));
-                        --  git blames the whole file, then shows only -L's range.
+                        --  git blames the whole file, then shows only -L's
+                        --  range, clamping an over-long end to the last line.
                         First : constant Positive := (if L_Set then L_First else 1);
                         Last  : constant Natural :=
                           (if not L_Set or else L_Last = 0
-                           then Natural (Lines.Length) else L_Last);
+                           then Natural (Lines.Length)
+                           else Natural'Min (L_Last, Natural (Lines.Length)));
                         --  The line-number column is sized from the largest
                         --  number actually shown, not the whole file.
                         Line_W : constant Natural := Img (Last)'Length;
@@ -25990,16 +25992,18 @@ package body Version.CLI is
                               Emitted : Version.Trailers.String_Vectors.Vector;
                               function Seen (H : String) return Boolean is
                                 (for some X of Emitted => X = H);
-                              I  : Natural := 1;
-                              NN : constant Natural := Natural (Lines.Length);
+                              --  git limits porcelain output to -L's range too,
+                              --  so iterate only First .. Last and clamp each
+                              --  group (and its line count) to Last.
+                              I  : Natural := First;
                            begin
-                              while I <= NN loop
+                              while I <= Last loop
                                  declare
                                     Hex_I : constant String :=
                                       To_String (Lines (I).Commit);
                                     GE : Natural := I;
                                  begin
-                                    while GE < NN
+                                    while GE < Last
                                       and then To_String (Lines (GE + 1).Commit)
                                                = Hex_I
                                       and then Lines (GE + 1).Orig_Line
