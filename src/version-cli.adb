@@ -29047,6 +29047,11 @@ package body Version.CLI is
                Oneline    : Boolean := False;
                Topo_Order : Boolean := False;
                Show_Objects : Boolean := False;
+               Left_Right : Boolean := False;
+               Cherry_Mark : Boolean := False;
+               Cherry_Pick : Boolean := False;
+               Left_Only  : Boolean := False;
+               Right_Only : Boolean := False;
                Seed_All   : Boolean := False;
                Seed_Heads : Boolean := False;
                Seed_Tags  : Boolean := False;
@@ -29178,6 +29183,34 @@ package body Version.CLI is
                         Oneline := True;
                         I := I + 1;
 
+                     elsif A = "--left-right" then
+                        Left_Right := True;
+                        I := I + 1;
+
+                     elsif A = "--cherry-mark" then
+                        Cherry_Mark := True;
+                        I := I + 1;
+
+                     elsif A = "--cherry-pick" then
+                        Cherry_Pick := True;
+                        I := I + 1;
+
+                     elsif A = "--left-only" then
+                        Left_Only := True;
+                        I := I + 1;
+
+                     elsif A = "--right-only" then
+                        Right_Only := True;
+                        I := I + 1;
+
+                     elsif A = "--cherry" then
+                        --  git defines --cherry as
+                        --  --right-only --cherry-mark --no-merges.
+                        Right_Only := True;
+                        Cherry_Mark := True;
+                        Options.No_Merges := True;
+                        I := I + 1;
+
                      elsif A = "--children" then
                         Show_Children := True;
                         I := I + 1;
@@ -29280,6 +29313,106 @@ package body Version.CLI is
                        Options;
 
                      Commits : Version.History.Commit_Id_Vectors.Vector;
+
+                     --  git's symmetric-range family (--left-right,
+                     --  --cherry-mark/-pick, --left-only/--right-only,
+                     --  --cherry). Left is the SYMMETRIC_LEFT side of an
+                     --  `A...B` range (reachable from A but not B); without a
+                     --  `...` operand nothing is left, as in git. Equiv holds
+                     --  the commits with a patch-equivalent on the other side.
+                     Symmetric : constant Boolean :=
+                       Left_Right or else Cherry_Mark or else Cherry_Pick
+                       or else Left_Only or else Right_Only;
+                     Left_Set  : Version.History.Commit_Id_Vectors.Vector;
+                     Equiv_Set : Version.History.Commit_Id_Vectors.Vector;
+
+                     function Is_Left
+                       (C : Version.Objects.Hex_Object_Id) return Boolean
+                     is (Left_Set.Contains (C));
+                     function Is_Equiv
+                       (C : Version.Objects.Hex_Object_Id) return Boolean
+                     is (Equiv_Set.Contains (C));
+
+                     --  The left/right and cherry filters that drop commits.
+                     function Shown
+                       (C : Version.Objects.Hex_Object_Id) return Boolean
+                     is (not ((Left_Only and then not Is_Left (C))
+                              or else (Right_Only and then Is_Left (C))
+                              or else (Cherry_Pick and then Is_Equiv (C))));
+
+                     --  The one-character prefix git stamps: `=` for an
+                     --  equivalent under --cherry-mark, otherwise the
+                     --  left/right symbol, otherwise `+` under --cherry-mark.
+                     function Mark
+                       (C : Version.Objects.Hex_Object_Id) return String
+                     is (if Cherry_Mark and then Is_Equiv (C) then "="
+                         elsif Left_Right then
+                           (if Is_Left (C) then "<" else ">")
+                         elsif Cherry_Mark then "+"
+                         else "");
+
+                     procedure Compute_Sides is
+                        Found : Boolean := False;
+                        A_Str, B_Str : Unbounded_String;
+                     begin
+                        for Op of Operands loop
+                           declare
+                              S   : constant String := Op;
+                              Idx : constant Natural :=
+                                Ada.Strings.Fixed.Index (S, "...");
+                           begin
+                              if Idx /= 0 then
+                                 A_Str := To_Unbounded_String
+                                   (if Idx > S'First
+                                    then S (S'First .. Idx - 1) else "HEAD");
+                                 B_Str := To_Unbounded_String
+                                   (if Idx + 3 <= S'Last
+                                    then S (Idx + 3 .. S'Last) else "HEAD");
+                                 Found := True;
+                                 exit;
+                              end if;
+                           end;
+                        end loop;
+
+                        if not Found then
+                           return;   --  no `...`: every commit is right
+                        end if;
+
+                        declare
+                           A_Id : constant Version.Objects.Hex_Object_Id :=
+                             Version.Revisions.Resolve_Commit
+                               (Repo, To_String (A_Str));
+                           B_Id : constant Version.Objects.Hex_Object_Id :=
+                             Version.Revisions.Resolve_Commit
+                               (Repo, To_String (B_Str));
+                           Inc_A, Exc_A : Version.History.Commit_Id_Vectors
+                             .Vector;
+                           Set_Opts : Version.History.Rev_List_Options;
+                        begin
+                           Inc_A.Append (A_Id);
+                           Exc_A.Append (B_Id);
+                           Left_Set :=
+                             Version.History.Rev_List
+                               (Repo, Inc_A, Exc_A, Set_Opts);
+
+                           if Cherry_Mark or else Cherry_Pick then
+                              for E of Version.Cherry.Status
+                                (Repo, Upstream => B_Id, Head => A_Id)
+                              loop
+                                 if E.Equivalent_Upstream then
+                                    Equiv_Set.Append (E.Id);
+                                 end if;
+                              end loop;
+                              for E of Version.Cherry.Status
+                                (Repo, Upstream => A_Id, Head => B_Id)
+                              loop
+                                 if E.Equivalent_Upstream then
+                                    Equiv_Set.Append (E.Id);
+                                 end if;
+                              end loop;
+                           end if;
+                        end;
+                     end Compute_Sides;
                   begin
                      for P of Parsed.Paths loop
                         Walk_Options.Paths.Append (New_Item => P);
@@ -29302,8 +29435,47 @@ package body Version.CLI is
                           Version.History.Apply_Limits (Commits, Options);
                      end if;
 
+                     if Symmetric then
+                        Compute_Sides;
+                     end if;
+
                      if Count_Only then
-                        Success_Line (Img (Natural (Commits.Length)));
+                        if Symmetric then
+                           --  git counts a patch-equivalent commit as "same"
+                           --  rather than left or right; the output shape is
+                           --  left/right/same, left/right, (left+right)/same
+                           --  or a single total per the active flags.
+                           declare
+                              CL, CR, CS : Natural := 0;
+                           begin
+                              for C of Commits loop
+                                 if Shown (C) then
+                                    if Is_Equiv (C) then
+                                       CS := CS + 1;
+                                    elsif Is_Left (C) then
+                                       CL := CL + 1;
+                                    else
+                                       CR := CR + 1;
+                                    end if;
+                                 end if;
+                              end loop;
+                              if Left_Right and then Cherry_Mark then
+                                 Success_Line
+                                   (Img (CL) & ASCII.HT & Img (CR)
+                                    & ASCII.HT & Img (CS));
+                              elsif Left_Right then
+                                 Success_Line
+                                   (Img (CL) & ASCII.HT & Img (CR));
+                              elsif Cherry_Mark then
+                                 Success_Line
+                                   (Img (CL + CR) & ASCII.HT & Img (CS));
+                              else
+                                 Success_Line (Img (CL + CR + CS));
+                              end if;
+                           end;
+                        else
+                           Success_Line (Img (Natural (Commits.Length)));
+                        end if;
                      elsif Show_Objects then
                         for O of Version.History.Object_List
                           (Repo, Commits, Parsed.Exclude)
@@ -29384,6 +29556,12 @@ package body Version.CLI is
                                  Sha  : constant String := To_String (C);
                                  Line : Unbounded_String;
                               begin
+                                 if Symmetric and then not Shown (C) then
+                                    goto Continue_Rev_List;
+                                 end if;
+                                 if Symmetric then
+                                    Append (Line, Mark (C));
+                                 end if;
                                  if Timestamp then
                                     Append
                                       (Line,
@@ -29437,6 +29615,8 @@ package body Version.CLI is
 
                                  Success_Line (To_String (Line));
                               end;
+                              <<Continue_Rev_List>>
+                              null;
                            end loop;
                         end;
                      end if;

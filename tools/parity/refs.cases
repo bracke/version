@@ -341,6 +341,21 @@ merge-base --independent topic topic
 merge-base --is-ancestor merged-br main
 merge-base --is-ancestor main topic
 
+## rev-list symmetric range (dup carries a patch-equivalent of a main commit,
+## so the cherry marks and the "same" count have real input)
+rev-list --left-right main...dup
+rev-list --cherry-mark main...dup
+rev-list --left-right --cherry-mark main...dup
+rev-list --cherry-pick main...dup
+rev-list --cherry-pick --left-right main...dup
+rev-list --left-only main...dup
+rev-list --right-only main...dup
+rev-list --cherry main...dup
+rev-list --count --left-right main...dup
+rev-list --count --cherry-mark main...dup
+rev-list --count --left-right --cherry-mark main...dup
+rev-list --count --left-right --cherry-pick main...dup
+
 ## cherry
 cherry main dup
 cherry -v main dup
