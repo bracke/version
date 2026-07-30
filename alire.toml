@@ -7,6 +7,7 @@ maintainers = ["Bent Bracke <bent@bracke.dk>"]
 maintainers-logins = ["bracke"]
 licenses = "MIT OR Apache-2.0 WITH LLVM-exception"
 website = "https://github.com/bracke/version"
+long-description = "version is an Ada command-line version-control tool that stores data in an ordinary Git-compatible .git directory. The command interface is deliberately simpler and more explicit than Git, while the on-disk objects, refs, packs, index, reflogs, worktrees, submodules, and common repository layouts remain compatible within the documented scope."
 tags = ["version", "vcs", "git"]
 
 executables = ["version"]
