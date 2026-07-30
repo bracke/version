@@ -5,3 +5,23 @@ grep -c match
 grep match -- nested.txt
 grep match nested.txt
 grep -n match deep
+# Bundled short flags (-ni == -n -i), which git accepts.
+grep -ni ALPHA
+grep -nl match
+# grep <tree-ish>: search a commit's tree, each hit prefixed with the rev the
+# caller named. Every tracked file carries "match", so the whole tree is hit.
+grep -n match HEAD
+grep match HEAD
+grep -l match HEAD
+grep -c match HEAD
+grep -h -n match HEAD
+grep -ni ALPHA HEAD
+grep -nE 'alpha|beta' HEAD
+grep -nF match HEAD
+grep -n match HEAD -- sub
+grep -n match HEAD sub
+grep -n match HEAD deep
+grep -n nomatch HEAD
+# git refuses to grep the index and a tree together.
+grep --cached match HEAD
+grep --cached -n match

@@ -364,9 +364,11 @@ Purpose: summarize history reachable from REV (default HEAD), grouped by author.
 
 ### grep
 
-Syntax: `version grep [-n] [-i] [-w] [-v] [-E|-F|-G|-P] PATTERN [--] [PATH...]`.
+Syntax: `version grep [-n] [-c] [-l] [-h] [-i] [-w] [-v] [-E|-F|-G|-P] [--cached] PATTERN [<tree-ish>...] [--] [PATH...]`.
 
-Purpose: search the working-tree content of tracked files for PATTERN, printing `path:text` (or `path:line:text` with `-n`). PATTERN is a **regular expression** — basic (`-G`, the default), extended (`-E`), fixed string (`-F`), or perl-style (`-P`, treated as extended). `-i` ignores case, `-w` matches whole words, `-v` inverts (lines that do not match). Trailing `PATH` arguments (pathspecs, after an optional `--`) limit the search. Exits non-zero when nothing matches. (The basic/extended distinction follows POSIX: in the default basic mode `+ ? | ( ) { }` are literal unless backslash-escaped.)
+Purpose: search for PATTERN, printing `path:text` (or `path:line:text` with `-n`). PATTERN is a **regular expression** — basic (`-G`, the default), extended (`-E`), fixed string (`-F`), or perl-style (`-P`, treated as extended). `-i` ignores case, `-w` matches whole words, `-v` inverts (lines that do not match), `-c` prints `path:count` per file, `-l` lists matching file names only, `-h` drops the path prefix from each line. Short flags bundle (`-ni` == `-n -i`). Trailing `PATH` arguments (pathspecs, after an optional `--`) limit the search. Exits non-zero when nothing matches. (The basic/extended distinction follows POSIX: in the default basic mode `+ ? | ( ) { }` are literal unless backslash-escaped.)
+
+By default the search is over the working-tree content of tracked files. One or more `<tree-ish>` operands (a commit, tag or tree) instead search those committed trees, and every hit is prefixed with the revision as you named it — `HEAD:path:line:text` — with each named tree searched in turn; `-h` drops that prefix. `--cached` searches the tracked (indexed) content and, like git, is refused together with a `<tree-ish>`.
 
 ### describe
 

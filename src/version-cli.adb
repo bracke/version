@@ -24303,11 +24303,14 @@ package body Version.CLI is
          elsif Command = "grep" then
             declare
                Usage      : constant String :=
-                 "version grep [-n] [-c] [-l] [-i] [-w] [-v] [-E|-F|-G|-P]"
-                 & " PATTERN [--] [PATH...]";
+                 "version grep [-n] [-c] [-l] [-h] [-i] [-w] [-v]"
+                 & " [-E|-F|-G|-P] [--cached] PATTERN [<tree-ish>...]"
+                 & " [--] [PATH...]";
                Show_Lines : Boolean := False;
                Count_Mode : Boolean := False;
                Files_Mode : Boolean := False;
+               H_Suppress : Boolean := False;   --  -h: drop the path prefix
+               Cached     : Boolean := False;   --  --cached: grep the index
                Opts       : Version.Grep.Options;
                Bad_Opt    : Boolean := False;
                Bad_Text   : Unbounded_String;
@@ -24323,34 +24326,45 @@ package body Version.CLI is
                while I <= Count and then Arg (I)'Length >= 1
                  and then Arg (I) (Arg (I)'First) = '-'
                loop
-                  if Arg (I) = "-n" then
-                     Show_Lines := True;
-                  elsif Arg (I) = "-c" then
-                     Count_Mode := True;
-                  elsif Arg (I) = "-l" then
-                     Files_Mode := True;
-                  elsif Arg (I) = "-i" then
-                     Opts.Ignore_Case := True;
-                  elsif Arg (I) = "-w" then
-                     Opts.Word_Match := True;
-                  elsif Arg (I) = "-v" then
-                     Opts.Invert := True;
-                  elsif Arg (I) = "-E" then
-                     Opts.Kind := Version.Grep.Extended_Regex;
-                  elsif Arg (I) = "-F" then
-                     Opts.Kind := Version.Grep.Fixed_String;
-                  elsif Arg (I) = "-G" then
-                     Opts.Kind := Version.Grep.Basic_Regex;
-                  elsif Arg (I) = "-P" then
-                     Opts.Kind := Version.Grep.Perl_Regex;
-                  elsif Arg (I) = "--" then
-                     I := I + 1;
-                     exit;
-                  else
-                     Bad_Opt := True;
-                     Bad_Text := To_Unbounded_String (Arg (I));
-                     exit;
-                  end if;
+                  declare
+                     A : constant String := Arg (I);
+                  begin
+                     if A = "--" then
+                        I := I + 1;
+                        exit;
+                     elsif A = "--cached" then
+                        Cached := True;
+                     elsif A'Length >= 2 and then A (A'First + 1) = '-' then
+                        --  Any other long option is unknown.
+                        Bad_Opt := True;
+                        Bad_Text := To_Unbounded_String (A);
+                        exit;
+                     else
+                        --  A cluster of single-letter flags -- git bundles them
+                        --  (`-niw` == `-n -i -w`); every grep flag version knows
+                        --  is a boolean toggle, so a cluster never takes a value.
+                        for K in A'First + 1 .. A'Last loop
+                           case A (K) is
+                              when 'n' => Show_Lines := True;
+                              when 'c' => Count_Mode := True;
+                              when 'l' => Files_Mode := True;
+                              when 'h' => H_Suppress := True;
+                              when 'i' => Opts.Ignore_Case := True;
+                              when 'w' => Opts.Word_Match := True;
+                              when 'v' => Opts.Invert := True;
+                              when 'E' => Opts.Kind := Version.Grep.Extended_Regex;
+                              when 'F' => Opts.Kind := Version.Grep.Fixed_String;
+                              when 'G' => Opts.Kind := Version.Grep.Basic_Regex;
+                              when 'P' => Opts.Kind := Version.Grep.Perl_Regex;
+                              when others =>
+                                 Bad_Opt := True;
+                                 Bad_Text := To_Unbounded_String (A);
+                           end case;
+                           exit when Bad_Opt;
+                        end loop;
+                        exit when Bad_Opt;
+                     end if;
+                  end;
                   I := I + 1;
                end loop;
 
@@ -24369,18 +24383,16 @@ package body Version.CLI is
                      Repo : constant Version.Repository.Repository_Handle :=
                        Version.Repository.Open;
 
-                     --  Without a "--" separator an operand has to be a
-                     --  revision or a path that exists; git dies otherwise
-                     --  rather than reporting no matches, which is what a
-                     --  typo'd path would look like.
-                     Unresolvable : Natural := 0;
-
-                     Pathspecs :
-                       constant Version.Pathspec.Pathspec_Vectors.Vector :=
-                         Pathspecs_From_Args (Pat_Idx + 1);
-                     Matches_Raw : constant Version.Grep.Match_Vectors.Vector
-                       := Version.Grep.Search
-                            (Repo, Arg (Pat_Idx), Opts, Pathspecs);
+                     --  A "--"-free operand is a revision (`grep PAT <tree>`),
+                     --  an existing path, or -- if neither -- an error git dies
+                     --  on rather than reporting the no-match a typo would look
+                     --  like. Revisions come first and are grepped in the
+                     --  object store; the rest are pathspecs.
+                     Rev_Names : Version.Trailers.String_Vectors.Vector;
+                     Rev_Trees : Version.Trailers.String_Vectors.Vector;
+                     Pathspec_Start : Positive := Count + 1;
+                     Unresolvable   : Natural := 0;
+                     Any_Match      : Boolean := False;
 
                      --  grep searches the current directory's subtree and
                      --  names the files from there, as ls-files does.
@@ -24390,35 +24402,149 @@ package body Version.CLI is
                        (Version.Files.Relative_To_Prefix
                           (To_String (Path), GR_Prefix));
 
-                     function Matches
-                       return Version.Grep.Match_Vectors.Vector
+                     --  Emit one search's matches. Rev_Prefix is "" for the
+                     --  working tree and "<rev>:" for a tree grep, prepended to
+                     --  every path git-style (-h drops the whole line prefix).
+                     --  Matches outside the cwd subtree are filtered out first.
+                     procedure Emit_Group
+                       (Rev_Prefix : String;
+                        Ms         : Version.Grep.Match_Vectors.Vector)
                      is
+                        function In_Prefix (P : String) return Boolean is
+                          (GR_Prefix = ""
+                           or else (P'Length > GR_Prefix'Length
+                                    and then P (P'First
+                                                .. P'First + GR_Prefix'Length - 1)
+                                             = GR_Prefix));
+                        function Loc (Path : Unbounded_String) return String is
+                          (if H_Suppress then ""
+                           else Rev_Prefix & Shown (Path) & ":");
                         Kept : Version.Grep.Match_Vectors.Vector;
                      begin
-                        if GR_Prefix = "" then
-                           return Matches_Raw;
+                        for M of Ms loop
+                           if In_Prefix (To_String (M.Path)) then
+                              Kept.Append (M);
+                           end if;
+                        end loop;
+                        if Kept.Is_Empty then
+                           return;
                         end if;
+                        Any_Match := True;
 
-                        for M of Matches_Raw loop
+                        if Files_Mode then
+                           --  git -l: each matching file once, in match order.
                            declare
-                              P : constant String := To_String (M.Path);
+                              Prev : Unbounded_String;
+                              Seen : Boolean := False;
                            begin
-                              if P'Length > GR_Prefix'Length
-                                and then P (P'First
-                                            .. P'First + GR_Prefix'Length - 1)
-                                         = GR_Prefix
-                              then
-                                 Kept.Append (M);
+                              for M of Kept loop
+                                 if not Seen or else M.Path /= Prev then
+                                    Success_Line
+                                      (Rev_Prefix & Shown (M.Path));
+                                    Prev := M.Path;
+                                    Seen := True;
+                                 end if;
+                              end loop;
+                           end;
+                        elsif Count_Mode then
+                           --  git -c: "<path>:<count>" per file with matches.
+                           declare
+                              Prev  : Unbounded_String;
+                              Cnt   : Natural := 0;
+                              Seen  : Boolean := False;
+                              procedure Flush is
+                              begin
+                                 if Seen then
+                                    Success_Line
+                                      (Rev_Prefix & Shown (Prev) & ":"
+                                       & Img (Cnt));
+                                 end if;
+                              end Flush;
+                           begin
+                              for M of Kept loop
+                                 if not Seen or else M.Path /= Prev then
+                                    Flush;
+                                    Prev := M.Path;
+                                    Cnt := 0;
+                                    Seen := True;
+                                 end if;
+                                 Cnt := Cnt + 1;
+                              end loop;
+                              Flush;
+                           end;
+                        else
+                           declare
+                              Prev_Bin : Unbounded_String;
+                              Bin_Seen : Boolean := False;
+                           begin
+                              for M of Kept loop
+                                 if M.Binary then
+                                    --  git prints one "Binary file <p> matches"
+                                    --  per binary file, never the line content.
+                                    if not Bin_Seen
+                                      or else M.Path /= Prev_Bin
+                                    then
+                                       Success_Line
+                                         ("Binary file " & Rev_Prefix
+                                          & Shown (M.Path) & " matches");
+                                       Prev_Bin := M.Path;
+                                       Bin_Seen := True;
+                                    end if;
+                                 elsif Show_Lines then
+                                    Success_Line
+                                      (Loc (M.Path) & Img (M.Line_No)
+                                       & ":" & To_String (M.Text));
+                                 else
+                                    Success_Line
+                                      (Loc (M.Path) & To_String (M.Text));
+                                 end if;
+                              end loop;
+                           end;
+                        end if;
+                     end Emit_Group;
+                  begin
+                     --  Classify the trailing operands: leading revisions (each
+                     --  resolving to a tree) until the first non-revision, which
+                     --  and everything after it is a pathspec.
+                     declare
+                        J : Positive := Pat_Idx + 1;
+                     begin
+                        while J <= Count loop
+                           exit when Arg (J) = "--";
+                           declare
+                              Tree : Version.Objects.Hex_Object_Id;
+                              Is_Rev : Boolean := True;
+                           begin
+                              begin
+                                 Tree := Version.Revisions.Resolve_Tree
+                                           (Repo, Arg (J));
+                              exception
+                                 when others => Is_Rev := False;
+                              end;
+                              if Is_Rev then
+                                 Rev_Names.Append (Arg (J));
+                                 Rev_Trees.Append
+                                   (Version.Objects.To_String (Tree));
+                                 J := J + 1;
+                              else
+                                 exit;
                               end if;
                            end;
                         end loop;
+                        Pathspec_Start := J;
+                     end;
 
-                        return Kept;
-                     end Matches;
-                  begin
-                     for J in Pat_Idx + 1 .. Count loop
+                     --  git refuses to grep the index and a tree at once.
+                     if Cached and then not Rev_Names.Is_Empty then
+                        Ada.Text_IO.Put_Line
+                          (Ada.Text_IO.Standard_Error,
+                           "fatal: both --cached and trees are given");
+                        Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                        return;
+                     end if;
+
+                     for J in Pathspec_Start .. Count loop
                         exit when Arg (J) = "--";
-
                         if Arg (J)'Length > 0
                           and then Arg (J) (Arg (J)'First) /= ':'
                           and then not Ada.Directories.Exists (Arg (J))
@@ -24439,73 +24565,33 @@ package body Version.CLI is
                         return;
                      end if;
 
-                     if Files_Mode then
-                        --  git -l: each matching file once, in match order.
-                        declare
-                           Prev : Unbounded_String;
-                           Seen : Boolean := False;
-                        begin
-                           for M of Matches loop
-                              if not Seen or else M.Path /= Prev then
-                                 Success_Line (Shown (M.Path));
-                                 Prev := M.Path;
-                                 Seen := True;
-                              end if;
+                     declare
+                        Pathspecs :
+                          constant Version.Pathspec.Pathspec_Vectors.Vector :=
+                            Pathspecs_From_Args (Pathspec_Start);
+                     begin
+                        if Rev_Names.Is_Empty then
+                           --  Working tree (or, with --cached, the tracked
+                           --  content), named without a rev prefix.
+                           Emit_Group
+                             ("",
+                              Version.Grep.Search
+                                (Repo, Arg (Pat_Idx), Opts, Pathspecs));
+                        else
+                           for K in Rev_Names.First_Index
+                                      .. Rev_Names.Last_Index
+                           loop
+                              Emit_Group
+                                (Rev_Names (K) & ":",
+                                 Version.Grep.Search_Tree
+                                   (Repo,
+                                    Version.Objects.To_Object_Id (Rev_Trees (K)),
+                                    Arg (Pat_Idx), Opts, Pathspecs));
                            end loop;
-                        end;
-                     elsif Count_Mode then
-                        --  git -c: "<path>:<count>" per file with matches.
-                        declare
-                           Prev  : Unbounded_String;
-                           Cnt   : Natural := 0;
-                           Seen  : Boolean := False;
-                           procedure Flush is
-                           begin
-                              if Seen then
-                                 Success_Line (Shown (Prev) & ":" & Img (Cnt));
-                              end if;
-                           end Flush;
-                        begin
-                           for M of Matches loop
-                              if not Seen or else M.Path /= Prev then
-                                 Flush;
-                                 Prev := M.Path;
-                                 Cnt := 0;
-                                 Seen := True;
-                              end if;
-                              Cnt := Cnt + 1;
-                           end loop;
-                           Flush;
-                        end;
-                     else
-                        declare
-                           Prev_Bin : Unbounded_String;
-                           Bin_Seen : Boolean := False;
-                        begin
-                           for M of Matches loop
-                              if M.Binary then
-                                 --  git prints one "Binary file <p> matches"
-                                 --  per binary file, never the line content.
-                                 if not Bin_Seen or else M.Path /= Prev_Bin then
-                                    Success_Line
-                                      ("Binary file " & Shown (M.Path)
-                                       & " matches");
-                                    Prev_Bin := M.Path;
-                                    Bin_Seen := True;
-                                 end if;
-                              elsif Show_Lines then
-                                 Success_Line
-                                   (Shown (M.Path) & ":" & Img (M.Line_No)
-                                    & ":" & To_String (M.Text));
-                              else
-                                 Success_Line
-                                   (Shown (M.Path) & ":"
-                                    & To_String (M.Text));
-                              end if;
-                           end loop;
-                        end;
-                     end if;
-                     if Matches.Is_Empty then
+                        end if;
+                     end;
+
+                     if not Any_Match then
                         Set_Command_Failure;
                      end if;
                   end;
