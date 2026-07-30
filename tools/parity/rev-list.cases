@@ -23,3 +23,14 @@ rev-list --max-parents=1 HEAD
 rev-list --min-parents=2 HEAD
 rev-list v1..v2
 rev-list --oneline HEAD
+rev-list --timestamp HEAD
+rev-list --timestamp --reverse HEAD
+rev-list --children HEAD
+rev-list --children --all
+rev-list --children --reverse HEAD
+rev-list --children --topo-order HEAD
+rev-list --pretty=oneline HEAD
+rev-list --pretty=oneline --reverse HEAD
+rev-list --format=oneline HEAD
+rev-list --missing=allow-any HEAD
+rev-list --parents --children HEAD

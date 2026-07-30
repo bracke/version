@@ -28926,8 +28926,9 @@ package body Version.CLI is
                  & " [--max-count=<n>|-n <n>] [--skip=<n>] [--reverse]"
                  & " [--merges|--no-merges] [--min-parents=<n>]"
                  & " [--max-parents=<n>] [--first-parent] [--parents]"
-                 & " [--oneline] [--objects] [--topo-order|--date-order]"
-                 & " <REV>... [--] [PATH...]";
+                 & " [--children] [--timestamp] [--pretty=oneline]"
+                 & " [--missing=<mode>] [--oneline] [--objects]"
+                 & " [--topo-order|--date-order] <REV>... [--] [PATH...]";
 
                function Starts (S, P : String) return Boolean is
                  (S'Length >= P'Length
@@ -28944,6 +28945,9 @@ package body Version.CLI is
                Options    : Version.History.Rev_List_Options;
                Count_Only : Boolean := False;
                Show_Parents : Boolean := False;
+               Show_Children : Boolean := False;
+               Timestamp  : Boolean := False;
+               Pretty_Oneline : Boolean := False;
                Oneline    : Boolean := False;
                Topo_Order : Boolean := False;
                Show_Objects : Boolean := False;
@@ -29078,6 +29082,25 @@ package body Version.CLI is
                         Oneline := True;
                         I := I + 1;
 
+                     elsif A = "--children" then
+                        Show_Children := True;
+                        I := I + 1;
+
+                     elsif A = "--timestamp" then
+                        Timestamp := True;
+                        I := I + 1;
+
+                     elsif A = "--pretty=oneline" or else A = "--format=oneline"
+                     then
+                        Pretty_Oneline := True;
+                        I := I + 1;
+
+                     elsif Starts (A, "--missing=") then
+                        --  Partial-clone missing-object policy. A complete
+                        --  repository has nothing missing, so every mode lists
+                        --  the same commits; accept the flag and proceed.
+                        I := I + 1;
+
                      elsif A = "--topo-order" then
                         Topo_Order := True;
                         I := I + 1;
@@ -29110,6 +29133,16 @@ package body Version.CLI is
                end loop;
 
                if not OK then
+                  return;
+               end if;
+
+               if Show_Parents and then Show_Children then
+                  --  git dies on this combination rather than merging them.
+                  Ada.Text_IO.Put_Line
+                    (Ada.Text_IO.Standard_Error,
+                     "fatal: options '--parents' and '--children' cannot be"
+                     & " used together");
+                  Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
                   return;
                end if;
 
@@ -29190,40 +29223,126 @@ package body Version.CLI is
                                  else " " & To_String (O.Name)));
                         end loop;
                      else
-                        for C of Commits loop
-                           declare
-                              Line : Unbounded_String;
+                        declare
+                           package Child_Maps is new
+                             Ada.Containers.Indefinite_Ordered_Maps
+                               (String, Unbounded_String);
+                           Children : Child_Maps.Map;
+
+                           function LL_Img
+                             (N : Long_Long_Integer) return String
+                           is
+                              S : constant String := Long_Long_Integer'Image (N);
                            begin
-                              if Oneline then
+                              return (if N < 0 then S
+                                      else S (S'First + 1 .. S'Last));
+                           end LL_Img;
+                        begin
+                           --  git's --children lists, after each commit, the
+                           --  commits it is a parent of, newest-processed
+                           --  first (commit_list_insert prepends), among the
+                           --  commits actually walked. git builds this during
+                           --  the newest-first walk, so --reverse (which only
+                           --  flips the output) must not change the order:
+                           --  iterate the selection newest-first regardless.
+                           if Show_Children then
+                              for K in Commits.First_Index .. Commits.Last_Index
+                              loop
                                  declare
-                                    Text : constant String :=
-                                      Version.Log.Log_Oneline_From_Commit
-                                        (Repo, C, Max_Count => 1);
-                                    Stop : Natural := Text'Last;
+                                    C : constant Version.Objects.Hex_Object_Id
+                                      :=
+                                        (if Options.Oldest_First
+                                         then Commits
+                                                (Commits.Last_Index
+                                                 - (K - Commits.First_Index))
+                                         else Commits (K));
                                  begin
-                                    while Stop >= Text'First
-                                      and then Text (Stop) = ASCII.LF
-                                    loop
-                                       Stop := Stop - 1;
-                                    end loop;
-
-                                    Append (Line, Text (Text'First .. Stop));
-                                 end;
-                              else
-                                 Append (Line, To_String (C));
-
-                                 if Show_Parents then
                                     for P of Version.History.Parent_Commits
                                       (Repo, C)
                                     loop
-                                       Append (Line, " " & To_String (P));
+                                       declare
+                                          Key : constant String :=
+                                            To_String (P);
+                                          Kid : constant String :=
+                                            To_String (C);
+                                       begin
+                                          if Children.Contains (Key) then
+                                             Children (Key) :=
+                                               To_Unbounded_String
+                                                 (Kid & " "
+                                                  & To_String
+                                                      (Children (Key)));
+                                          else
+                                             Children.Insert
+                                               (Key,
+                                                To_Unbounded_String (Kid));
+                                          end if;
+                                       end;
                                     end loop;
-                                 end if;
-                              end if;
+                                 end;
+                              end loop;
+                           end if;
 
-                              Success_Line (To_String (Line));
-                           end;
-                        end loop;
+                           for C of Commits loop
+                              declare
+                                 Sha  : constant String := To_String (C);
+                                 Line : Unbounded_String;
+                              begin
+                                 if Timestamp then
+                                    Append
+                                      (Line,
+                                       LL_Img
+                                         (Version.Objects.Commit_Committer_Time
+                                            (Version.Objects.Read_Object
+                                               (Repo, C)))
+                                       & " ");
+                                 end if;
+
+                                 if Oneline then
+                                    declare
+                                       Text : constant String :=
+                                         Version.Log.Log_Oneline_From_Commit
+                                           (Repo, C, Max_Count => 1);
+                                       Stop : Natural := Text'Last;
+                                    begin
+                                       while Stop >= Text'First
+                                         and then Text (Stop) = ASCII.LF
+                                       loop
+                                          Stop := Stop - 1;
+                                       end loop;
+                                       Append (Line, Text (Text'First .. Stop));
+                                    end;
+                                 elsif Pretty_Oneline then
+                                    Append
+                                      (Line,
+                                       Sha & " "
+                                       & Version.Objects.Commit_Message_First_Line
+                                           (Version.Objects.Read_Object
+                                              (Repo, C)));
+                                 else
+                                    Append (Line, Sha);
+
+                                    if Show_Parents then
+                                       for P of Version.History.Parent_Commits
+                                         (Repo, C)
+                                       loop
+                                          Append (Line, " " & To_String (P));
+                                       end loop;
+                                    end if;
+
+                                    if Show_Children
+                                      and then Children.Contains (Sha)
+                                    then
+                                       Append
+                                         (Line,
+                                          " " & To_String (Children (Sha)));
+                                    end if;
+                                 end if;
+
+                                 Success_Line (To_String (Line));
+                              end;
+                           end loop;
+                        end;
                      end if;
                   end;
                end;
