@@ -24756,6 +24756,7 @@ package body Version.CLI is
                Raw_Time   : Boolean := False;   --  -t
                Show_Name  : Boolean := False;   --  -f/--show-name
                Show_Num   : Boolean := False;   --  -n/--show-number
+               Ignore_WS  : Boolean := False;   --  -w (ignore whitespace)
                Porcelain  : Boolean := False;   --  --porcelain
                Line_Porc  : Boolean := False;   --  --line-porcelain
                Abbrev_Val : Natural := 7;       --  --abbrev=<n> (width is +1)
@@ -24829,6 +24830,8 @@ package body Version.CLI is
                           and then (A = "-n" or else A = "--show-number")
                         then
                            Show_Num := True;
+                        elsif not Sep_Seen and then A = "-w" then
+                           Ignore_WS := True;
                         elsif not Sep_Seen and then A = "--porcelain" then
                            Porcelain := True;
                         elsif not Sep_Seen and then A = "--line-porcelain" then
@@ -24941,8 +24944,11 @@ package body Version.CLI is
                           (if Use_Working
                            then Version.Blame.Blame_Working_File
                                   (Repo, Tip, File,
-                                   Version.Files.Read_Binary_File (Working))
-                           else Version.Blame.Blame_File (Repo, Tip, File));
+                                   Version.Files.Read_Binary_File (Working),
+                                   Ignore_Whitespace => Ignore_WS)
+                           else Version.Blame.Blame_File
+                                  (Repo, Tip, File,
+                                   Ignore_Whitespace => Ignore_WS));
 
                         --  Per-commit metadata (author name, iso date, boundary),
                         --  cached so each distinct commit is read once.

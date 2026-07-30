@@ -5,6 +5,10 @@ printf 'once\n' > g.txt
 git add -A && git commit -qm first
 printf 'alpha\nbeta\ngamma\n' > f.txt
 git add -A && git commit -qm second
-printf 'alpha\nEDITED\ngamma\nAPPENDED\n' > f.txt
+# A whitespace-only reindent of a line, so `blame -w` attributes it to the
+# original commit while a plain blame credits this one.
+printf '  alpha\nbeta\ngamma\n' > f.txt
+git add -A && git commit -qm reindent
+printf '  alpha\nEDITED\ngamma\nAPPENDED\n' > f.txt
 printf 'untracked\n' > u.txt
 printf 'staged\n' > s.txt && git add s.txt

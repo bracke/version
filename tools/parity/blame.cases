@@ -41,3 +41,9 @@ blame --porcelain HEAD f.txt
 blame --line-porcelain HEAD f.txt
 blame --porcelain HEAD~1 f.txt
 blame --porcelain g.txt
+# -w ignores whitespace, so the reindented line is credited to its original
+# commit rather than the reindent.
+blame -w HEAD f.txt
+blame -w -s HEAD f.txt
+blame -w -n HEAD f.txt
+blame -w --porcelain HEAD f.txt
