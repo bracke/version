@@ -5,4 +5,10 @@ mkdir -p sub && printf 'n\n' > sub/nested.txt
 git add -A && git commit -qm first
 printf 'two\n' > a.txt && git add -A && git commit -qm second
 git branch other
+# A stash carrying a tracked change plus an untracked file, so `stash show`
+# (which shows only the tracked changes) has something to render, then a fresh
+# dirty change so `stash push` still has something to save.
+printf 'stashed\n' > a.txt
+printf 'untracked\n' > u.txt
+git stash push -u -q -m wip
 printf 'dirty\n' > a.txt

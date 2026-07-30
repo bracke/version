@@ -13,6 +13,20 @@ switch --detach HEAD
 # stash speaks on stdout, and names the commit it was taken against.
 stash push
 stash list
+# stash show defaults to a diffstat and shows only tracked changes (the
+# untracked u.txt is omitted); the diff-format flags select other renderings.
+stash show
+stash show -p
+stash show --patch
+stash show --stat
+stash show --name-only
+stash show --name-status
+stash show --numstat
+stash show --shortstat
+stash show stash@{0}
+stash show --stat stash@{0}
+# clear prints nothing.
+stash clear
 # A local change the target commit would write over must still be refused.
 checkout HEAD~1
 switch --detach HEAD~1

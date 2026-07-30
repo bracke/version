@@ -20015,7 +20015,9 @@ package body Version.CLI is
                  "version stash [push [--include-untracked|--include-ignored] [--] [PATH...]] | "
                  & "version stash create [--include-untracked|--include-ignored] [--] [PATH...] | "
                  & "version stash store [-m MESSAGE] COMMIT | "
-                 & "version stash list | version stash show [--patch] [stash@{N}] [--] [PATH...] | "
+                 & "version stash list | version stash show"
+                 & " [-p|--patch|--stat|--name-only|--name-status|--numstat"
+                 & "|--shortstat|-U<n>] [stash@{N}] [--] [PATH...] | "
                  & "version stash apply [stash@{N}] [--] [PATH...] | "
                  & "version stash pop [stash@{N}] [--] [PATH...] | "
                  & "version stash branch NAME [stash@{N}] | "
@@ -20212,7 +20214,8 @@ package body Version.CLI is
                end Run_Stash_Create;
 
                procedure Run_Stash_Show is
-                  Patch           : Boolean := False;
+                  Opts            : Version.Diff.Diff_Options;
+                  Fmt_Set         : Boolean := False;
                   Spec            : Unbounded_String;
                   Has_Spec        : Boolean := False;
                   Path_First      : Natural := Count + 1;
@@ -20225,15 +20228,53 @@ package body Version.CLI is
                         Path_First := I;
                         exit;
 
-                     elsif not After_Separator and then Arg (I) = "--patch" then
-                        if Patch then
-                           Usage_Error
-                             ("duplicate stash show option: --patch", Usage);
-                           return;
-                        end if;
-                        Patch := True;
+                     elsif not After_Separator
+                       and then (Arg (I) = "--patch" or else Arg (I) = "-p")
+                     then
+                        --  Patch is the all-false Diff_Options.
+                        Fmt_Set := True;
+                     elsif not After_Separator and then Arg (I) = "--stat" then
+                        Opts.Stat := True;
+                        Fmt_Set := True;
+                     elsif not After_Separator
+                       and then Arg (I) = "--name-only"
+                     then
+                        Opts.Name_Only := True;
+                        Fmt_Set := True;
+                     elsif not After_Separator
+                       and then Arg (I) = "--name-status"
+                     then
+                        Opts.Name_Status := True;
+                        Fmt_Set := True;
+                     elsif not After_Separator and then Arg (I) = "--numstat"
+                     then
+                        Opts.Numstat := True;
+                        Fmt_Set := True;
+                     elsif not After_Separator and then Arg (I) = "--shortstat"
+                     then
+                        Opts.Shortstat := True;
+                        Fmt_Set := True;
+                     elsif not After_Separator
+                       and then (Has_Prefix (Arg (I), "-U")
+                                 or else Has_Prefix (Arg (I), "--unified="))
+                     then
+                        --  A context count implies the patch format.
+                        Fmt_Set := True;
+                        begin
+                           Opts.Context_Lines := Natural'Value
+                             (if Has_Prefix (Arg (I), "-U")
+                              then Arg (I) (Arg (I)'First + 2 .. Arg (I)'Last)
+                              else Arg (I) (Arg (I)'First + 10 .. Arg (I)'Last));
+                        exception
+                           when others =>
+                              Usage_Error
+                                ("stash show: bad context count " & Arg (I),
+                                 Usage);
+                              return;
+                        end;
 
-                     elsif not After_Separator and then Is_Stash_Spec (Arg (I)) then
+                     elsif not After_Separator and then Is_Stash_Spec (Arg (I))
+                     then
                         if Has_Spec then
                            Usage_Error ("too many stash show stash specs", Usage);
                            return;
@@ -20254,17 +20295,24 @@ package body Version.CLI is
                      I := I + 1;
                   end loop;
 
+                  --  git's `stash show` defaults to `--stat`.
+                  if not Fmt_Set then
+                     Opts.Stat := True;
+                  end if;
+
+                  --  Byte-exact output (Ada.Text_IO.Put would append a
+                  --  spurious trailing newline at program exit).
                   if Has_Spec then
-                     Ada.Text_IO.Put
+                     Version.Console.Put
                        (Version.Stash.Show
                           (Spec      => To_String (Spec),
-                           Patch     => Patch,
+                           Options   => Opts,
                            Pathspecs => Pathspecs_From_Args
                                           (Positive (Path_First))));
                   else
-                     Ada.Text_IO.Put
+                     Version.Console.Put
                        (Version.Stash.Show
-                          (Patch     => Patch,
+                          (Options   => Opts,
                            Pathspecs => Pathspecs_From_Args
                                           (Positive (Path_First))));
                   end if;
@@ -20487,7 +20535,7 @@ package body Version.CLI is
                      return;
                   end if;
                   Version.Stash.Clear;
-                  Success_Line ("cleared stash");
+                  --  git's `stash clear` prints nothing.
 
                elsif Is_Option (Subcommand) then
                   Usage_Error ("unknown stash option: " & Subcommand, Usage);

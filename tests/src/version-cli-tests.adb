@@ -4656,10 +4656,14 @@ package body Version.CLI.Tests is
       end;
 
       declare
-         Text : constant String := Run_CLI (Root, "stash show stash@{0} a.txt");
+         Text : constant String :=
+           Run_CLI (Root, "stash show --name-status stash@{0} a.txt");
       begin
-         Assert_Contains (Text, "M a.txt", "stash show pathspec CLI output");
-         Assert_Not_Contains (Text, "M b.txt", "stash show pathspec CLI output");
+         Assert_Contains
+           (Text, "M" & Character'Val (9) & "a.txt",
+            "stash show pathspec CLI output");
+         Assert_Not_Contains
+           (Text, "b.txt", "stash show pathspec CLI output");
       end;
       Ada.Directories.Set_Directory (Old_Dir);
    exception
@@ -4859,7 +4863,9 @@ package body Version.CLI.Tests is
         "version stash [push [--include-untracked|--include-ignored] [--] [PATH...]] | "
         & "version stash create [--include-untracked|--include-ignored] [--] [PATH...] | "
         & "version stash store [-m MESSAGE] COMMIT | "
-        & "version stash list | version stash show [--patch] [stash@{N}] [--] [PATH...] | "
+        & "version stash list | version stash show"
+        & " [-p|--patch|--stat|--name-only|--name-status|--numstat"
+        & "|--shortstat|-U<n>] [stash@{N}] [--] [PATH...] | "
         & "version stash apply [stash@{N}] [--] [PATH...] | "
         & "version stash pop [stash@{N}] [--] [PATH...] | "
         & "version stash branch NAME [stash@{N}] | "
@@ -4922,10 +4928,6 @@ package body Version.CLI.Tests is
         ("stash list extra",
          "stash list takes no arguments",
          "stash list extra argument");
-      Check_Usage_Failure
-        ("stash show --patch --patch",
-         "duplicate stash show option: --patch",
-         "stash show duplicate patch");
       Check_Usage_Failure
         ("stash show --bad",
          "unknown stash show option: --bad",
