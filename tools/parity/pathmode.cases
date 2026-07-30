@@ -29,3 +29,10 @@ log --follow --stat sub/renamed.txt
 log --follow -p sub/renamed.txt
 log --follow --raw sub/renamed.txt
 log --follow --oneline -2 sub/renamed.txt
+
+# The -M<n>/--find-renames rename-threshold flags are accepted (detection is
+# on by default; the threshold only changes which near-matches count).
+log -M --raw
+log -M90 --raw
+log --find-renames=50 --name-status
+log -M100 --name-status

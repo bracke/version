@@ -1,3 +1,4 @@
+- Git parity: `log -M`/`-M<n>`/`-C`/`-B`/`--find-renames=<n>` are accepted (were rejected, so `log -M90` emitted nothing); the threshold applies to the shown diff. pathmode suite covers them.
 - Git parity: `log --follow <path>` follows a file across renames (exactly one pathspec required, else git's "--follow requires exactly one pathspec"); pathmode suite covers it on linear history across all formats.
 - Git parity: `log --raw`/`--name-status` report renames as `R100` by default like git; pathmode suite gains a rename commit to cover it.
 - Git parity: `show --pretty=short/full/fuller/raw` (previously rejected) render git's named layouts for commits and annotated tags; histinspect covers them.

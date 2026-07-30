@@ -13757,6 +13757,7 @@ package body Version.CLI is
                Want_Boundary : Boolean := False;  --  --boundary
                Want_Graph : Boolean := False;     --  --graph
                Want_Follow : Boolean := False;    --  --follow
+               Rename_Score : Natural := 0;       --  -M<n>/-C<n> threshold
                --  git's symmetric-range marking: --left-right prefixes each
                --  commit with </> for its side, --cherry-mark replaces that
                --  with = for a commit whose patch already exists on the other
@@ -13794,6 +13795,37 @@ package body Version.CLI is
                   end loop;
                   return True;
                end All_Digits;
+
+               --  git's -M<n>/-C<n> similarity, a percentage (optionally
+               --  fractional or with a trailing %) on the 0 .. Max_Score scale.
+               function Parse_Score (Text : String) return Natural is
+                  Num   : Natural := 0;
+                  Scale : Natural := 1;
+                  Dot   : Boolean := False;
+                  Score : constant Natural := Version.Rename_Detect.Max_Score;
+               begin
+                  for C of Text loop
+                     if not Dot and then C = '.' then
+                        Scale := 1;
+                        Dot := True;
+                     elsif C = '%' then
+                        Scale := (if Dot then Scale * 100 else 100);
+                        exit;
+                     elsif C in '0' .. '9' then
+                        if Scale < 100_000 then
+                           Scale := Scale * 10;
+                           Num := Num * 10
+                             + (Character'Pos (C) - Character'Pos ('0'));
+                        end if;
+                     else
+                        exit;
+                     end if;
+                  end loop;
+                  if Num >= Scale then
+                     return Score;
+                  end if;
+                  return Score * Num / Scale;
+               end Parse_Score;
             begin
                for I in 2 .. Count loop
                   if Want_Count then
@@ -13841,6 +13873,32 @@ package body Version.CLI is
                      Want_Graph := True;
                   elsif Arg (I) = "--follow" then
                      Want_Follow := True;
+                  --  Rename/copy detection is already on for the file changes;
+                  --  the bare flags are accepted as no-ops and the -M<n>/-C<n>
+                  --  forms set the similarity threshold.
+                  elsif Arg (I) = "-M" or else Arg (I) = "--find-renames"
+                    or else Arg (I) = "-C" or else Arg (I) = "--find-copies"
+                    or else Arg (I) = "--find-copies-harder"
+                    or else Arg (I) = "-B" or else Arg (I) = "--break-rewrites"
+                  then
+                     null;
+                  elsif Has_Prefix (Arg (I), "-M")
+                    or else Has_Prefix (Arg (I), "--find-renames=")
+                    or else Has_Prefix (Arg (I), "-C")
+                    or else Has_Prefix (Arg (I), "--find-copies=")
+                    or else Has_Prefix (Arg (I), "-B")
+                    or else Has_Prefix (Arg (I), "--break-rewrites=")
+                  then
+                     declare
+                        A  : constant String := Arg (I);
+                        Eq : constant Natural :=
+                          Ada.Strings.Fixed.Index (A, "=");
+                        Val : constant String :=
+                          (if Eq /= 0 then A (Eq + 1 .. A'Last)
+                           else A (A'First + 2 .. A'Last));
+                     begin
+                        Rename_Score := Parse_Score (Val);
+                     end;
                   elsif Arg (I) = "--left-right" then
                      Left_Right := True;
                   elsif Arg (I) = "--cherry-mark" then
@@ -14291,6 +14349,7 @@ package body Version.CLI is
                                  elsif Want_Notes then True
                                  else not Pretty_Explicit),
                               Max_Count      => Max_Count,
+                              Rename_Score   => Rename_Score,
                               Date_Mode      => To_String (Date_Mode)));
                      elsif Has_Format then
                         Version.Console.Put
@@ -14315,7 +14374,8 @@ package body Version.CLI is
                               Raw         => Raw,
                               Context     => Context,
                               Oneline     => True,
-                              First_Parent => Walk.First_Parent));
+                              First_Parent => Walk.First_Parent,
+                              Rename_Score => Rename_Score));
                      elsif Oneline
                        and then (Left_Right or else Cherry_Mark
                                  or else Cherry_Pick or else Left_Only
@@ -14530,6 +14590,7 @@ package body Version.CLI is
                                  elsif Want_Notes then True
                                  else not Pretty_Explicit),
                               Paths          => Log_Paths,
+                              Rename_Score   => Rename_Score,
                               Date_Mode      => To_String (Date_Mode)));
                      else
                         Version.Console.Put
@@ -14551,6 +14612,7 @@ package body Version.CLI is
                                  elsif Want_Notes then True
                                  else not Pretty_Explicit),
                               Paths          => Log_Paths,
+                              Rename_Score   => Rename_Score,
                               Date_Mode      => To_String (Date_Mode)));
                      end if;
                   end;
