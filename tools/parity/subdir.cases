@@ -14,6 +14,11 @@ check-ignore -v skip.log
 archive --format=tar HEAD -o /dev/null
 ls-tree --name-only HEAD
 ls-tree --name-only -r HEAD
+ls-tree HEAD
+ls-tree --full-name HEAD
+ls-tree --full-tree HEAD
+ls-tree --full-tree -r HEAD
+ls-tree --full-name -r HEAD
 diff --stat
 diff HEAD
 diff --name-only HEAD

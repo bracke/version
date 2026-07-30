@@ -26310,18 +26310,28 @@ package body Version.CLI is
          elsif Command = "ls-tree" then
             declare
                Usage : constant String :=
-                 "version ls-tree [-r] [--name-only] TREE-ISH [--] [PATH...]";
-               Name_Only : Boolean := False;
-               Recursive : Boolean := False;
-               Bad_Opt   : Boolean := False;
-               Bad_Text  : Unbounded_String;
-               Tree_Idx  : Natural := 0;
-               Sep       : Boolean := False;
-               Specs     : Version.Pathspec.Pathspec_Vectors.Vector;
+                 "version ls-tree [-d] [-r] [-t] [-l] [-z]"
+                 & " [--name-only|--name-status] [--object-only]"
+                 & " [--full-name] [--full-tree] [--abbrev[=<n>]]"
+                 & " TREE-ISH [--] [PATH...]";
+               Name_Only   : Boolean := False;
+               Object_Only : Boolean := False;
+               Recursive   : Boolean := False;
+               Show_Trees  : Boolean := False;   --  -t
+               Trees_Only  : Boolean := False;   --  -d
+               Long        : Boolean := False;   --  -l / --long
+               Zero        : Boolean := False;   --  -z
+               Full_Name   : Boolean := False;
+               Full_Tree   : Boolean := False;
+               Abbrev_Len  : Natural := 0;       --  0 = full id
+               Bad_Opt     : Boolean := False;
+               Bad_Text    : Unbounded_String;
+               Tree_Idx    : Natural := 0;
+               Sep         : Boolean := False;
                --  git's ls-tree matches path operands literally, not as
-               --  globs, so keep the raw text alongside the parsed specs.
-               Raw_Specs : Version.Trailers.String_Vectors.Vector;
-               I         : Positive := 2;
+               --  globs, so keep the raw text.
+               Raw_Specs   : Version.Trailers.String_Vectors.Vector;
+               I           : Positive := 2;
 
                --  git renders modes as six zero-padded octal digits.
                function Mode6 (M : String) return String is
@@ -26331,12 +26341,39 @@ package body Version.CLI is
                   if not Sep and then Arg (I) = "--" then
                      Sep := True;
                   elsif Sep then
-                     Version.Pathspec.Append_Parse (Specs, Arg (I), Repo_Prefix);
                      Raw_Specs.Append (Arg (I));
                   elsif Arg (I) = "-r" then
                      Recursive := True;
-                  elsif Arg (I) = "--name-only" then
+                  elsif Arg (I) = "-t" then
+                     Show_Trees := True;
+                  elsif Arg (I) = "-d" then
+                     Trees_Only := True;
+                  elsif Arg (I) = "-l" or else Arg (I) = "--long" then
+                     Long := True;
+                  elsif Arg (I) = "-z" then
+                     Zero := True;
+                  elsif Arg (I) = "--name-only"
+                    or else Arg (I) = "--name-status"
+                  then
                      Name_Only := True;
+                  elsif Arg (I) = "--object-only" then
+                     Object_Only := True;
+                  elsif Arg (I) = "--full-name" then
+                     Full_Name := True;
+                  elsif Arg (I) = "--full-tree" then
+                     Full_Tree := True;
+                  elsif Arg (I) = "--abbrev" then
+                     Abbrev_Len := 7;
+                  elsif Has_Prefix (Arg (I), "--abbrev=") then
+                     begin
+                        Abbrev_Len := Natural'Value
+                          (Arg (I) (Arg (I)'First + 9 .. Arg (I)'Last));
+                     exception
+                        when others =>
+                           Bad_Opt := True;
+                           Bad_Text := To_Unbounded_String (Arg (I));
+                           exit;
+                     end;
                   elsif Arg (I)'Length >= 1 and then Arg (I) (Arg (I)'First) = '-'
                   then
                      Bad_Opt := True;
@@ -26346,7 +26383,6 @@ package body Version.CLI is
                      Tree_Idx := I;
                   else
                      --  git also takes bare paths after the tree-ish.
-                     Version.Pathspec.Append_Parse (Specs, Arg (I), Repo_Prefix);
                      Raw_Specs.Append (Arg (I));
                   end if;
                   I := I + 1;
@@ -26355,6 +26391,14 @@ package body Version.CLI is
                if Bad_Opt then
                   Usage_Error ("unknown ls-tree argument: "
                                & To_String (Bad_Text), Usage);
+               elsif Boolean'Pos (Name_Only) + Boolean'Pos (Object_Only)
+                       + Boolean'Pos (Long) > 1
+               then
+                  --  git: --name-only, --object-only and -l are three mutually
+                  --  exclusive output formats.
+                  Usage_Error
+                    ("ls-tree: --name-only, --object-only and -l cannot be"
+                     & " used together", Usage);
                elsif Tree_Idx = 0 then
                   Usage_Error ("ls-tree requires a tree-ish", Usage);
                else
@@ -26364,9 +26408,9 @@ package body Version.CLI is
 
                      --  ls-tree reads the tree from the directory it was run
                      --  in, so inside sub/ it lists sub's own entries, named
-                     --  from there. Descending to that subtree gives both at
-                     --  once -- filtering the top-level listing would not,
-                     --  since without -r the entry for sub/ is a single tree.
+                     --  from there. --full-tree ignores that scoping (acts as
+                     --  if run at the root); --full-name keeps the scoping but
+                     --  shows repo-relative paths.
                      LT_Prefix : constant String := Repo_Prefix;
 
                      function Scoped
@@ -26400,145 +26444,206 @@ package body Version.CLI is
                         return Current;
                      exception
                         when others =>
-                           --  The directory is not in this tree; git lists
-                           --  nothing rather than falling back to the root.
                            return Root;
                      end Scoped;
 
-                     Tree : constant Version.Objects.Hex_Object_Id :=
-                       Scoped
-                         (Version.Revisions.Resolve_Tree
-                            (Repo, Arg (Tree_Idx)));
-                     --  Without -r git still resolves a nested path operand
-                     --  ("d/sub") by walking down the tree; a plain top-level
-                     --  listing would never contain it.
-                     function Listing
-                       return Version.Objects.Tree_Entry_Vectors.Vector
-                     is
-                        Result : Version.Objects.Tree_Entry_Vectors.Vector :=
-                          Version.Objects.Tree_Entries (Repo, Tree);
+                     Root_Tree : constant Version.Objects.Hex_Object_Id :=
+                       Version.Revisions.Resolve_Tree (Repo, Arg (Tree_Idx));
+                     Walk_Root : constant Version.Objects.Hex_Object_Id :=
+                       (if Full_Tree then Root_Tree else Scoped (Root_Tree));
+                     Disp_Prefix : constant String :=
+                       (if Full_Name and then not Full_Tree
+                        then LT_Prefix else "");
+
+                     procedure Emit_Record (Text : String) is
                      begin
-                        for Spec of Raw_Specs loop
-                           if (for some C of Spec => C = '/') then
-                              declare
-                                 Sub : Version.Objects.Hex_Object_Id := Tree;
-                                 From : Positive := Spec'First;
-                              begin
-                                 --  Descend one component at a time, adding
-                                 --  each level's entries so the named one is
-                                 --  present to be matched below.
-                                 for K in Spec'Range loop
-                                    if Spec (K) = '/' then
-                                       declare
-                                          Part : constant String :=
-                                            Spec (From .. K - 1);
-                                       begin
-                                          for E of Version.Objects.Tree_Entries
-                                                     (Repo, Sub)
-                                          loop
-                                             if To_String (E.Path) = Part
-                                               and then E.Kind
-                                                        = Tree_Directory
-                                             then
-                                                Sub := E.Id;
-                                             end if;
-                                          end loop;
-                                          From := K + 1;
-                                       end;
-                                    end if;
-                                 end loop;
+                        Version.Console.Put
+                          (Text & (if Zero then ASCII.NUL else ASCII.LF));
+                     end Emit_Record;
 
-                                 declare
-                                    Prefix : constant String :=
-                                      Spec (Spec'First .. From - 1);
-                                 begin
-                                    for E of Version.Objects.Tree_Entries
-                                               (Repo, Sub)
-                                    loop
-                                       Result.Append
-                                         (Version.Objects.Tree_Entry'
-                                            (Path =>
-                                               To_Unbounded_String
-                                                 (Prefix & To_String (E.Path)),
-                                             Id   => E.Id,
-                                             Mode => E.Mode,
-                                             Kind => E.Kind));
-                                    end loop;
-                                 end;
-                              exception
-                                 when others =>
-                                    null;   --  no such path in this tree
-                              end;
-                           end if;
-                        end loop;
-                        return Result;
-                     end Listing;
+                     --  git's --abbrev truncates to the shortest unique length
+                     --  of at least the requested width (find_unique_abbrev).
+                     function Abbr
+                       (Id : Version.Objects.Hex_Object_Id) return String
+                     is
+                        Full : constant String := To_String (Id);
+                     begin
+                        if Abbrev_Len = 0 then
+                           return Full;
+                        end if;
+                        declare
+                           Len : constant Positive :=
+                             Version.Revisions.Unique_Abbrev_Length
+                               (Repo, Id, Positive'Max (1, Abbrev_Len));
+                        begin
+                           return (if Full'Length >= Len
+                                   then Full (Full'First .. Full'First + Len - 1)
+                                   else Full);
+                        end;
+                     end Abbr;
 
-                     Entries : constant
-                       Version.Objects.Tree_Entry_Vectors.Vector :=
-                         (if Recursive
-                          then Version.Objects.Flatten_Tree (Repo, Tree)
-                          else Listing);
+                     function Type_Name
+                       (K : Version.Objects.Tree_Entry_Kind) return String
+                     is
+                       (case K is
+                           when Tree_Directory => "tree",
+                           when Tree_Gitlink   => "commit",
+                           when Tree_Blob      => "blob");
 
-                     --  Literal match: the path itself, or -- for a spec
-                     --  naming a directory -- something below it. Without -r
-                     --  only the directory's immediate children count.
-                     function Selected (Path : String) return Boolean is
+                     --  -l shows the blob byte size right-justified to width 7;
+                     --  trees and gitlinks show a bare "-".
+                     function Size7
+                       (E : Version.Objects.Tree_Entry) return String
+                     is
+                     begin
+                        if E.Kind = Tree_Blob then
+                           declare
+                              N : constant Natural :=
+                                Version.Objects.Content
+                                  (Version.Objects.Read_Object
+                                     (Repo, E.Id))'Length;
+                              Img : constant String := Natural'Image (N);
+                              Num : constant String :=
+                                Img (Img'First + 1 .. Img'Last);
+                           begin
+                              return
+                                [1 .. Integer'Max (0, 7 - Num'Length) => ' ']
+                                & Num;
+                           end;
+                        else
+                           return "      -";
+                        end if;
+                     end Size7;
+
+                     --  A path is interesting when it matches a pathspec
+                     --  exactly, lies under one, or is a leading directory of
+                     --  one (so the walk descends to reach it).
+                     function Interesting (Full : String) return Boolean is
                      begin
                         if Raw_Specs.Is_Empty then
                            return True;
                         end if;
-
                         for Spec of Raw_Specs loop
                            declare
-                              Slashed : constant Boolean :=
+                              Dir  : constant Boolean :=
                                 Spec'Length > 0
                                 and then Spec (Spec'Last) = '/';
                               Base : constant String :=
-                                (if Slashed
+                                (if Dir
                                  then Spec (Spec'First .. Spec'Last - 1)
                                  else Spec);
-                              Under : constant String := Base & "/";
                            begin
-                              if not Slashed and then Path = Base then
+                              if Base = "" or else Full = Base then
+                                 return True;
+                              elsif Full'Length > Base'Length
+                                and then Full (Full'First
+                                               .. Full'First + Base'Length)
+                                         = Base & "/"
+                              then
+                                 return True;   --  Full under Base
+                              elsif Base'Length > Full'Length
+                                and then Base (Base'First
+                                               .. Base'First + Full'Length)
+                                         = Full & "/"
+                              then
+                                 return True;   --  Full is a leading dir
+                              end if;
+                           end;
+                        end loop;
+                        return False;
+                     end Interesting;
+
+                     --  git's show_recursive: descend into this directory when
+                     --  -r is set, or when a pathspec reaches below it (a
+                     --  proper leading dir, or an exact "dir/" match).
+                     function Descend (Full : String) return Boolean is
+                     begin
+                        if Recursive then
+                           return True;
+                        end if;
+                        for Spec of Raw_Specs loop
+                           declare
+                              Dir  : constant Boolean :=
+                                Spec'Length > 0
+                                and then Spec (Spec'Last) = '/';
+                              Base : constant String :=
+                                (if Dir
+                                 then Spec (Spec'First .. Spec'Last - 1)
+                                 else Spec);
+                           begin
+                              if Dir and then Full = Base then
+                                 return True;
+                              elsif Base'Length > Full'Length
+                                and then Base (Base'First
+                                               .. Base'First + Full'Length)
+                                         = Full & "/"
+                              then
                                  return True;
                               end if;
+                           end;
+                        end loop;
+                        return False;
+                     end Descend;
 
-                              if Path'Length > Under'Length
-                                and then Path (Path'First
-                                               .. Path'First + Under'Length - 1)
-                                         = Under
-                              then
-                                 if Recursive then
-                                    return True;
+                     procedure Emit_Entry
+                       (E : Version.Objects.Tree_Entry; Full : String)
+                     is
+                        Shown  : constant String := Disp_Prefix & Full;
+                        Path   : constant String :=
+                          (if Zero then Shown
+                           else Version.Path_Quoting.Quote_C_Style (Shown));
+                     begin
+                        if Name_Only then
+                           Emit_Record (Path);
+                        elsif Object_Only then
+                           Emit_Record (Abbr (E.Id));
+                        else
+                           Emit_Record
+                             (Mode6 (To_String (E.Mode)) & " "
+                              & Type_Name (E.Kind) & " " & Abbr (E.Id)
+                              & (if Long then " " & Size7 (E) else "")
+                              & ASCII.HT & Path);
+                        end if;
+                     end Emit_Entry;
+
+                     procedure Walk
+                       (Tree_Id : Version.Objects.Hex_Object_Id;
+                        Base    : String)
+                     is
+                        Entries : constant
+                          Version.Objects.Tree_Entry_Vectors.Vector :=
+                            Version.Objects.Tree_Entries (Repo, Tree_Id);
+                     begin
+                        for E of Entries loop
+                           declare
+                              Full : constant String :=
+                                Base & To_String (E.Path);
+                              Is_Tree : constant Boolean :=
+                                E.Kind = Tree_Directory;
+                              Rec : constant Boolean := Descend (Full);
+                           begin
+                              if Interesting (Full) then
+                                 --  A recursed-into (passthrough) tree is
+                                 --  printed only with -t, or with -d together
+                                 --  with -r; -d also drops every non-tree.
+                                 if not (Is_Tree and then Rec
+                                         and then not
+                                           (Show_Trees
+                                            or else (Trees_Only and then
+                                                     Recursive)))
+                                   and then not (Trees_Only and then not Is_Tree)
+                                 then
+                                    Emit_Entry (E, Full);
+                                 end if;
+                                 if Is_Tree and then Rec then
+                                    Walk (E.Id, Full & "/");
                                  end if;
                               end if;
                            end;
                         end loop;
-
-                        return False;
-                     end Selected;
+                     end Walk;
                   begin
-                     for E of Entries loop
-                        if Selected (To_String (E.Path)) then
-                           declare
-                              Shown : constant String := To_String (E.Path);
-                           begin
-                              if Name_Only then
-                                 Success_Line (Shown);
-                              else
-                                 Success_Line
-                                   (Mode6 (To_String (E.Mode)) & " "
-                                    & (case E.Kind is
-                                          when Tree_Directory => "tree",
-                                          when Tree_Gitlink   => "commit",
-                                          when Tree_Blob      => "blob")
-                                    & " " & To_String (E.Id)
-                                    & Character'Val (9) & Shown);
-                              end if;
-                           end;
-                        end if;
-                     end loop;
+                     Walk (Walk_Root, "");
                   end;
                end if;
             end;

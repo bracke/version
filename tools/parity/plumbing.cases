@@ -197,6 +197,47 @@ checkout-index nosuchfile.txt
 checkout-index -f nosuchfile.txt
 checkout-index untracked.txt
 
+# ----------------------------------------------------------------- ls-tree --
+# Recursion (-r), tree entries (-t), trees-only (-d) and their combinations
+# select which entries appear; the passthrough-tree suppression rule (a
+# recursed tree is shown only with -t, or -d together with -r) is subtle.
+ls-tree HEAD
+ls-tree -r HEAD
+ls-tree -t HEAD
+ls-tree -d HEAD
+ls-tree -r -t HEAD
+ls-tree -d -r HEAD
+ls-tree -d -r -t HEAD
+# -l adds a right-justified size column ("-" for trees); --abbrev truncates the
+# id; --object-only and --name-only/--name-status are the id/name-only formats.
+ls-tree -l HEAD
+ls-tree -l -r HEAD
+ls-tree --abbrev=6 HEAD
+ls-tree --abbrev -r HEAD
+ls-tree --object-only HEAD
+ls-tree --object-only -r HEAD
+ls-tree --object-only --abbrev=8 HEAD
+ls-tree --name-only HEAD
+ls-tree --name-status HEAD
+ls-tree --name-only -r HEAD
+# -z terminates each record with NUL and does not C-quote the path.
+ls-tree -z HEAD
+ls-tree -z --name-only HEAD
+ls-tree -z -r HEAD
+# Pathspecs: a bare directory names its own entry, a trailing slash lists the
+# directory's contents, and a nested path resolves through the tree.
+ls-tree HEAD sub
+ls-tree HEAD sub/
+ls-tree HEAD sub/nested.txt
+ls-tree -r HEAD sub
+ls-tree -d HEAD sub/
+ls-tree HEAD hello.txt added.txt
+ls-tree HEAD nosuchpath
+# The three output formats are mutually exclusive.
+ls-tree -l --name-only HEAD
+ls-tree -l --object-only HEAD
+ls-tree --name-only --object-only HEAD
+
 # ------------------------------------------------------------------ mktree --
 # Feeding ls-tree output back in must reproduce the very tree it came from.
 mktree < tree.txt
