@@ -13004,6 +13004,8 @@ package body Version.CLI is
                No_Index_Flag : Boolean := False;
                Compact_Flag : Boolean := False;
                Stat_Width_V : Natural := 0;
+               Stat_Name_Width_V : Natural := 0;
+               Stat_Count_V : Natural := 0;
                Word_Diff_Mode : Version.Diff.Word_Diff_Kind :=
                  Version.Diff.WD_None;
                Dirstat_On   : Boolean := False;
@@ -13113,20 +13115,71 @@ package body Version.CLI is
                   if Arg (I) = "--stat" then
                      Stat := True;
                   elsif Has_Prefix (Arg (I), "--stat=") then
-                     --  --stat=<width>[,<name-width>[,<count>]]: the leading
-                     --  number fixes the total line width.
+                     --  --stat=<width>[,<name-width>[,<count>]]: the total line
+                     --  width, then the name column, then the file-count cap.
                      Stat := True;
                      declare
                         V : constant String :=
                           Arg (I) (Arg (I)'First + 7 .. Arg (I)'Last);
-                        Comma : constant Natural :=
+                        C1 : constant Natural :=
                           Ada.Strings.Fixed.Index (V, ",");
                      begin
-                        Stat_Width_V := Natural'Value
-                          (if Comma = 0 then V else V (V'First .. Comma - 1));
+                        if C1 = 0 then
+                           Stat_Width_V := Natural'Value (V);
+                        else
+                           Stat_Width_V :=
+                             Natural'Value (V (V'First .. C1 - 1));
+                           declare
+                              R  : constant String := V (C1 + 1 .. V'Last);
+                              C2 : constant Natural :=
+                                Ada.Strings.Fixed.Index (R, ",");
+                           begin
+                              if C2 = 0 then
+                                 Stat_Name_Width_V := Natural'Value (R);
+                              else
+                                 Stat_Name_Width_V :=
+                                   Natural'Value (R (R'First .. C2 - 1));
+                                 Stat_Count_V :=
+                                   Natural'Value (R (C2 + 1 .. R'Last));
+                              end if;
+                           end;
+                        end if;
                      exception
                         when others =>
                            Usage_Error ("invalid --stat width: " & Arg (I),
+                                        Usage);
+                           return;
+                     end;
+                  elsif Has_Prefix (Arg (I), "--stat-width=") then
+                     Stat := True;
+                     begin
+                        Stat_Width_V := Natural'Value
+                          (Arg (I) (Arg (I)'First + 13 .. Arg (I)'Last));
+                     exception
+                        when others =>
+                           Usage_Error ("invalid --stat-width: " & Arg (I),
+                                        Usage);
+                           return;
+                     end;
+                  elsif Has_Prefix (Arg (I), "--stat-name-width=") then
+                     Stat := True;
+                     begin
+                        Stat_Name_Width_V := Natural'Value
+                          (Arg (I) (Arg (I)'First + 18 .. Arg (I)'Last));
+                     exception
+                        when others =>
+                           Usage_Error
+                             ("invalid --stat-name-width: " & Arg (I), Usage);
+                           return;
+                     end;
+                  elsif Has_Prefix (Arg (I), "--stat-count=") then
+                     Stat := True;
+                     begin
+                        Stat_Count_V := Natural'Value
+                          (Arg (I) (Arg (I)'First + 13 .. Arg (I)'Last));
+                     exception
+                        when others =>
+                           Usage_Error ("invalid --stat-count: " & Arg (I),
                                         Usage);
                            return;
                      end;
@@ -13372,6 +13425,8 @@ package body Version.CLI is
                         Abbrev => Abbrev_Val,
                         Compact_Summary => Compact_Flag,
                         Stat_Width => Stat_Width_V,
+                        Stat_Name_Width => Stat_Name_Width_V,
+                        Stat_Count => Stat_Count_V,
                         Diff_Filter => Diff_Filter_V,
                         Diff_Text => Diff_Text_Flag,
                         Name_Only => Name_Only,
@@ -13739,6 +13794,9 @@ package body Version.CLI is
                Shortstat  : Boolean := False;
                Raw        : Boolean := False;
                Context    : Natural := 3;
+               Stat_W     : Natural := 0;   --  --stat=<w>/--stat-width
+               Stat_NW    : Natural := 0;   --  --stat=,<n>/--stat-name-width
+               Stat_C     : Natural := 0;   --  --stat=,,<c>/--stat-count
                Walk       : Version.History.Rev_List_Options;
                Operands   : Version.Rev_Args.String_Vectors.Vector;
                Only_Paths : Boolean := False;
@@ -13943,6 +14001,72 @@ package body Version.CLI is
                      Oneline := True;
                   elsif Arg (I) = "--stat" then
                      Stat := True;
+                  elsif Has_Prefix (Arg (I), "--stat=") then
+                     --  --stat=<width>[,<name-width>[,<count>]].
+                     Stat := True;
+                     declare
+                        V : constant String :=
+                          Arg (I) (Arg (I)'First + 7 .. Arg (I)'Last);
+                        C1 : constant Natural :=
+                          Ada.Strings.Fixed.Index (V, ",");
+                     begin
+                        if C1 = 0 then
+                           Stat_W := Natural'Value (V);
+                        else
+                           Stat_W := Natural'Value (V (V'First .. C1 - 1));
+                           declare
+                              R  : constant String := V (C1 + 1 .. V'Last);
+                              C2 : constant Natural :=
+                                Ada.Strings.Fixed.Index (R, ",");
+                           begin
+                              if C2 = 0 then
+                                 Stat_NW := Natural'Value (R);
+                              else
+                                 Stat_NW :=
+                                   Natural'Value (R (R'First .. C2 - 1));
+                                 Stat_C := Natural'Value (R (C2 + 1 .. R'Last));
+                              end if;
+                           end;
+                        end if;
+                     exception
+                        when others =>
+                           Usage_Error ("invalid --stat width: " & Arg (I),
+                                        Usage);
+                           return;
+                     end;
+                  elsif Has_Prefix (Arg (I), "--stat-width=") then
+                     Stat := True;
+                     begin
+                        Stat_W := Natural'Value
+                          (Arg (I) (Arg (I)'First + 13 .. Arg (I)'Last));
+                     exception
+                        when others =>
+                           Usage_Error ("invalid --stat-width: " & Arg (I),
+                                        Usage);
+                           return;
+                     end;
+                  elsif Has_Prefix (Arg (I), "--stat-name-width=") then
+                     Stat := True;
+                     begin
+                        Stat_NW := Natural'Value
+                          (Arg (I) (Arg (I)'First + 18 .. Arg (I)'Last));
+                     exception
+                        when others =>
+                           Usage_Error
+                             ("invalid --stat-name-width: " & Arg (I), Usage);
+                           return;
+                     end;
+                  elsif Has_Prefix (Arg (I), "--stat-count=") then
+                     Stat := True;
+                     begin
+                        Stat_C := Natural'Value
+                          (Arg (I) (Arg (I)'First + 13 .. Arg (I)'Last));
+                     exception
+                        when others =>
+                           Usage_Error ("invalid --stat-count: " & Arg (I),
+                                        Usage);
+                           return;
+                     end;
                   elsif Arg (I) = "--name-only" then
                      Name_Only := True;
                   elsif Arg (I) = "--name-status" then
@@ -14357,7 +14481,10 @@ package body Version.CLI is
                                  else not Pretty_Explicit),
                               Max_Count      => Max_Count,
                               Rename_Score   => Rename_Score,
-                              Date_Mode      => To_String (Date_Mode)));
+                              Date_Mode      => To_String (Date_Mode),
+                              Stat_Width      => Stat_W,
+                              Stat_Name_Width => Stat_NW,
+                              Stat_Count      => Stat_C));
                      elsif Has_Format then
                         Version.Console.Put
                           (Version.Log.Log_Formatted_List_Text
@@ -14382,7 +14509,10 @@ package body Version.CLI is
                               Context     => Context,
                               Oneline     => True,
                               First_Parent => Walk.First_Parent,
-                              Rename_Score => Rename_Score));
+                              Rename_Score => Rename_Score,
+                              Stat_Width      => Stat_W,
+                              Stat_Name_Width => Stat_NW,
+                              Stat_Count      => Stat_C));
                      elsif Oneline
                        and then (Left_Right or else Cherry_Mark
                                  or else Cherry_Pick or else Left_Only
@@ -14598,7 +14728,10 @@ package body Version.CLI is
                                  else not Pretty_Explicit),
                               Paths          => Log_Paths,
                               Rename_Score   => Rename_Score,
-                              Date_Mode      => To_String (Date_Mode)));
+                              Date_Mode      => To_String (Date_Mode),
+                              Stat_Width      => Stat_W,
+                              Stat_Name_Width => Stat_NW,
+                              Stat_Count      => Stat_C));
                      else
                         Version.Console.Put
                           (Version.Log.Log_List_Text
@@ -14620,7 +14753,10 @@ package body Version.CLI is
                                  else not Pretty_Explicit),
                               Paths          => Log_Paths,
                               Rename_Score   => Rename_Score,
-                              Date_Mode      => To_String (Date_Mode)));
+                              Date_Mode      => To_String (Date_Mode),
+                              Stat_Width      => Stat_W,
+                              Stat_Name_Width => Stat_NW,
+                              Stat_Count      => Stat_C));
                      end if;
                   end;
                end if;
@@ -14640,6 +14776,9 @@ package body Version.CLI is
                  "version show [--stat] [-s] [--oneline] [--format=<fmt>]"
                  & " [REV]";
                Stat     : Boolean := False;
+               Stat_W   : Natural := 0;
+               Stat_NW  : Natural := 0;
+               Stat_C   : Natural := 0;
                No_Patch : Boolean := False;
                Oneline  : Boolean := False;
                Name_Only : Boolean := False;
@@ -14664,6 +14803,60 @@ package body Version.CLI is
                for I in 2 .. Count loop
                   if Arg (I) = "--stat" then
                      Stat := True;
+                  elsif Has_Prefix (Arg (I), "--stat=") then
+                     Stat := True;
+                     declare
+                        V : constant String :=
+                          Arg (I) (Arg (I)'First + 7 .. Arg (I)'Last);
+                        C1 : constant Natural :=
+                          Ada.Strings.Fixed.Index (V, ",");
+                     begin
+                        if C1 = 0 then
+                           Stat_W := Natural'Value (V);
+                        else
+                           Stat_W := Natural'Value (V (V'First .. C1 - 1));
+                           declare
+                              R  : constant String := V (C1 + 1 .. V'Last);
+                              C2 : constant Natural :=
+                                Ada.Strings.Fixed.Index (R, ",");
+                           begin
+                              if C2 = 0 then
+                                 Stat_NW := Natural'Value (R);
+                              else
+                                 Stat_NW :=
+                                   Natural'Value (R (R'First .. C2 - 1));
+                                 Stat_C := Natural'Value (R (C2 + 1 .. R'Last));
+                              end if;
+                           end;
+                        end if;
+                     exception
+                        when others =>
+                           Bad := True;
+                     end;
+                  elsif Has_Prefix (Arg (I), "--stat-width=") then
+                     Stat := True;
+                     begin
+                        Stat_W := Natural'Value
+                          (Arg (I) (Arg (I)'First + 13 .. Arg (I)'Last));
+                     exception
+                        when others => Bad := True;
+                     end;
+                  elsif Has_Prefix (Arg (I), "--stat-name-width=") then
+                     Stat := True;
+                     begin
+                        Stat_NW := Natural'Value
+                          (Arg (I) (Arg (I)'First + 18 .. Arg (I)'Last));
+                     exception
+                        when others => Bad := True;
+                     end;
+                  elsif Has_Prefix (Arg (I), "--stat-count=") then
+                     Stat := True;
+                     begin
+                        Stat_C := Natural'Value
+                          (Arg (I) (Arg (I)'First + 13 .. Arg (I)'Last));
+                     exception
+                        when others => Bad := True;
+                     end;
                   elsif Arg (I) = "--name-only" then
                      Name_Only := True;
                   elsif Arg (I) = "--name-status" then
@@ -14753,6 +14946,9 @@ package body Version.CLI is
                         Shortstat   => Shortstat,
                         Summary     => Summary,
                         Raw         => Raw_Flag,
+                        Stat_Width      => Stat_W,
+                        Stat_Name_Width => Stat_NW,
+                        Stat_Count      => Stat_C,
                         others      => <>);
                   begin
                      for R_Idx in Revs.First_Index .. Revs.Last_Index loop

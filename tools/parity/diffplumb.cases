@@ -220,6 +220,15 @@ diff --raw base tip
 diff --patch-with-raw base tip
 diff --stat base tip
 diff --stat=40 base tip
+# --stat width family: name-width (second field) elides names, count caps the
+# per-file lines with a " ..." marker while the footer still counts every file.
+diff --stat=40,8 base tip
+diff --stat=60,10,2 base tip
+diff --stat-width=40 base tip
+diff --stat-name-width=8 base tip
+diff --stat-count=1 base tip
+diff --stat-count=2 base tip
+diff --stat-count=99 base tip
 diff --shortstat base tip
 diff --numstat base tip
 diff --dirstat base tip

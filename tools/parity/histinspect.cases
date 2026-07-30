@@ -57,6 +57,8 @@ show
 show HEAD
 show --stat
 show --stat --oneline
+show --stat=40,8
+show --stat-count=1
 show --name-only
 show --name-status
 show --numstat

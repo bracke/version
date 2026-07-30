@@ -15,6 +15,12 @@ log --oneline v1..v2
 log
 log -2
 log --stat -2
+# log threads git's --stat width family through to the same diffstat renderer.
+log --stat=40,8 -2
+log --stat=60,10,1 -2
+log --stat-width=40 -2
+log --stat-name-width=8 -2
+log --stat-count=1 -2
 log --format=%H
 log --format=%h%x20%s
 log --pretty=format:%an

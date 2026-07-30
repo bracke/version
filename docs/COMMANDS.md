@@ -234,7 +234,7 @@ Syntax: `version diff [OPTIONS] [--] [PATHSPEC...]`, `version diff [OPTIONS] --s
 
 Options: `--stat`, `--name-only`, `--name-status`, `-U<n>`/`--unified=<n>`, `-M`/`-M<n>`/`--find-renames[=<n>]`, `--no-renames`.
 
-Purpose: show working-tree, staged, or commit-to-commit differences. The output is a minimal git-format unified diff (Myers/LCS hunks with context, a `diff --git` header, and an `index <old>..<new> <mode>` line; new/deleted/binary files and no-newline-at-EOF are rendered as git does). `--cached` is a byte-identical alias for `--staged`. `--stat` replaces the patch with git's per-file change-bar summary and a `N files changed, ...` footer.
+Purpose: show working-tree, staged, or commit-to-commit differences. The output is a minimal git-format unified diff (Myers/LCS hunks with context, a `diff --git` header, and an `index <old>..<new> <mode>` line; new/deleted/binary files and no-newline-at-EOF are rendered as git does). `--cached` is a byte-identical alias for `--staged`. `--stat` replaces the patch with git's per-file change-bar summary and a `N files changed, ...` footer; its size is tunable with `--stat=<width>[,<name-width>[,<count>]]` (or the long forms `--stat-width=`, `--stat-name-width=`, `--stat-count=`), where the name column elides over-long names to `...`, and `--stat-count` caps the per-file lines with a trailing ` ...` while the footer still counts every file.
 
 Renames are detected by default, as in git: a deleted path and a created path with similar enough content are reported as one rename (`similarity index NN%` plus `rename from`/`rename to` in the patch, `a => b` or the brace-compressed `d/{a => b}` in `--stat`, `R<nnn>` with both paths in `--name-status`). The similarity threshold defaults to 50% and is set with `-M<n>` (`-M75%`, or git's fractional spelling where `-M9` means 90%); `--no-renames` turns detection off, and the `diff.renames` configuration selects the default.
 
@@ -503,13 +503,13 @@ These are convenience aliases for the command *name*. How closely the aliased co
 
 ### log
 
-Syntax: `version log [--all|--branches|--tags] [--author=<pat>] [--grep=<pat>] [-s|--no-patch] [--oneline] [--graph] [--stat] [-p|--patch] [-U<n>|--unified=<n>] [--show-signature] [--format=<fmt>] [-<n>|-n <count>|--max-count=<n>] [--skip=<n>] [--reverse] [--merges|--no-merges] [--first-parent] [--topo-order|--date-order] [<REV>...] [--] [PATH...]`.
+Syntax: `version log [--all|--branches|--tags] [--author=<pat>] [--grep=<pat>] [-s|--no-patch] [--oneline] [--graph] [--stat[=<width>[,<name-width>[,<count>]]]] [--stat-width=<n>] [--stat-name-width=<n>] [--stat-count=<n>] [-p|--patch] [-U<n>|--unified=<n>] [--show-signature] [--format=<fmt>] [-<n>|-n <count>|--max-count=<n>] [--skip=<n>] [--reverse] [--merges|--no-merges] [--first-parent] [--topo-order|--date-order] [<REV>...] [--] [PATH...]`.
 
 Purpose: show commit history from HEAD or a revision. Author dates render in git's default format (`Www Mmm D HH:MM:SS YYYY ±HHMM`, in the commit's timezone). `--oneline` prints one compact `<short-id> <subject>` line per commit (short id abbreviated to git's shortest-unique length, 7-char floor). `--graph` draws git's ASCII commit graph to the left of the output (down every line of each commit in the default format, or one line per commit with `--oneline`) and, like git, walks in topological order. `--pretty=<layout>`/`--format=<layout>` selects git's named header layouts — `oneline`, `short`, `medium` (the default), `full` (adds the committer identity), `fuller` (both identities and dates), and `raw` (the commit object's own headers) — or a custom `--format=<placeholders>`. A commit note is shown by default but suppressed once an explicit `--pretty`/`--format` is given, unless `--notes` forces it back on (`--no-notes` always hides it). `--follow <path>` (exactly one pathspec) continues the history of a single file across renames, walking first-parent and switching to the old name at each rename; like git it is a heuristic and is most reliable on linear history. `-<n>`, `-n <count>`, or `--max-count=<n>` limits the number of commits shown. Revision selection is the same as `rev-list`'s and shares its implementation: several revisions list their union, ranges (`A..B`, `A...B`) and exclusions (`^X`) work, `--skip`, `--reverse`, `--merges`/`--no-merges`, `--first-parent` and `--topo-order` apply, and paths after `--` limit the history with git's default simplification. The walk follows every parent by default, not only the first.
 
 ### show
 
-Syntax: `version show [--stat] [-s|--no-patch] [--oneline] [--format=<fmt>] [REV | REV:PATH]`.
+Syntax: `version show [--stat[=<width>[,<name-width>[,<count>]]]] [--stat-width=<n>] [--stat-name-width=<n>] [--stat-count=<n>] [-s|--no-patch] [--oneline] [--format=<fmt>] [REV | REV:PATH]`.
 
 `REV:PATH` prints the object at that path: a blob's contents verbatim, or git's `tree <spec>` listing for a directory.
 
