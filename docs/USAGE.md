@@ -56,14 +56,11 @@ version restore --staged [--] PATHSPEC...
 version restore --source REV [--] PATHSPEC...
 version restore --source REV --staged [--] PATHSPEC...
 version restore --staged --source REV [--] PATHSPEC...
-version save MESSAGE
-version save -m MESSAGE
-version save --no-verify MESSAGE
-version save --no-verify -m MESSAGE
-version save --amend MESSAGE
-version save --amend -m MESSAGE
-version save --amend --no-verify MESSAGE
-version save --amend --no-verify -m MESSAGE
+version commit [-a] [-q] [-n] [-s] [-e] [-v] [-m MESSAGE]... [-F FILE] [-C|-c REV] [-t FILE]
+               [--amend] [--allow-empty] [--author=AUTHOR] [--date=DATE] [--reset-author]
+               [--fixup=REV] [--squash=REV] [--trailer=TOKEN[=VALUE]]... [--cleanup=MODE]
+               [-S[KEY]|--no-gpg-sign] [--dry-run] [-o|-i] [--] [PATHSPEC...]
+version save ...                    (alias of commit)
 version status [--porcelain|--short|--branch] [--ignored[=MODE]] [--] [PATHSPEC...]
 version check-ignore [-q|--quiet] [-v|--verbose] [--stdin] [-z] [-n|--non-matching] [--index|--no-index] [--] PATH...
 version diff [--] [PATHSPEC...]
@@ -160,8 +157,12 @@ version log [<REV>...] [--] [PATH...]
 version log --oneline [<REV>...]
 version log [--skip=<n>] [--reverse] [--merges|--no-merges] [--first-parent]
 version show [REV]
-version checkout REV
-version checkout REV -- PATHSPEC...
+version checkout [-q] [-f] [-m] [-t|--no-track] [--[no-]guess] [<branch>|<commit>|-]
+version checkout [-q] [-f] -b|-B NEW-BRANCH [START-POINT]
+version checkout [-q] --orphan NEW-BRANCH [START-POINT]
+version checkout [-q] --detach [COMMIT]
+version checkout [-q] [-f] [--ours|--theirs] [TREE-ISH] [--] PATHSPEC...
+version switch [-q] [-f] [-t|--no-track] [-c|-C NEW-BRANCH] [--orphan NEW-BRANCH] [--detach] (BRANCH|START-POINT|-)
 version tag [-a|-s|-u KEY] [-f] [-m MSG] NAME [REV]
 version tag -d NAME...
 version tag -v NAME...
@@ -236,7 +237,7 @@ Version supports a practical subset of Git-compatible client-side hooks from `.g
 
 Commit hooks run in this order: `pre-commit`, message preparation, `commit-msg`, tree/commit creation, ref/reflog update, and optional `post-commit` reporting. Clean automatic merge commits also run `pre-merge-commit` before message preparation and commit creation; `--no-verify` skips it. A failing `post-commit` does not roll back the completed commit. `commit-msg` receives a message-file path and may edit it; Version reads the message file after the hook succeeds. `pre-push` runs before local, HTTP, or SSH push mutation/upload. `post-checkout` runs after branch, detached, or path checkout updates and receives old id, new id, and checkout flag arguments. `post-merge` runs after completed merge and squash workflows with Git-compatible squash argument `0` or `1`.
 
-Use `version save --no-verify MESSAGE`, `version push --no-verify REMOTE BRANCH`, or `version push --no-verify --tags [REMOTE]` to bypass blocking hooks for that invocation. Hook execution sets `GIT_DIR`, `GIT_COMMON_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, and `VERSION=1`, runs with the repository root as the current directory, and restores the caller current directory and hook environment afterward. Timeout and full Git environment parity beyond the documented variables remain deferred.
+Use `version commit --no-verify -m MESSAGE`, `version push --no-verify REMOTE BRANCH`, or `version push --no-verify --tags [REMOTE]` to bypass blocking hooks for that invocation. Hook execution sets `GIT_DIR`, `GIT_COMMON_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, and `VERSION=1`, runs with the repository root as the current directory, and restores the caller current directory and hook environment afterward. Timeout and full Git environment parity beyond the documented variables remain deferred.
 
 Phase 35 replay-created commits produced by rebase, cherry-pick, and revert use the shared hook helpers from `Version.Hooks`, including message preparation and optional post-commit reporting for user-facing commits. Checkout operations, including linked worktree add materialization, use the shared post-checkout helper; linked worktrees discover hooks from the common repository hooks directory and execute them with the linked worktree root as `GIT_WORK_TREE`.
 ## Repository health check

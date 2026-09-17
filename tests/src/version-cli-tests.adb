@@ -478,7 +478,8 @@ package body Version.CLI.Tests is
       Assert_Contains
         (Text, "version completion bash", "man page completion reference");
       Assert_Contains
-        (Text, "version save [--no-verify] MESSAGE", "man page save no-verify reference");
+        (Text, "version commit [-a] [--no-verify] [-m MESSAGE] [--] [PATHSPEC...]",
+         "man page commit no-verify reference");
       Assert_Contains
         (Text, "version push [--no-verify] [--force] REMOTE BRANCH", "man page push no-verify reference");
       Assert_Contains
@@ -626,12 +627,12 @@ package body Version.CLI.Tests is
 
       Assert_Contains
         (Version.CLI.Help.Command_Text ("save"),
-         "  version save --no-verify MESSAGE",
-         "save no-verify command help");
+         "  version commit [-a] [-q] [-n] [-s] [-e] [-v] [-m MESSAGE]...",
+         "save command help");
       Assert_Contains
         (Version.CLI.Help.Command_Text ("save"),
-         "Use --no-verify to skip blocking commit hooks.",
-         "save no-verify command help");
+         "Interactive patch selection (-p) is not supported.",
+         "save unsupported -p note");
       Assert_Contains
         (Version.CLI.Help.Command_Text ("restore"),
          "  version restore --source REV --staged [--] PATHSPEC...",
@@ -2590,8 +2591,11 @@ package body Version.CLI.Tests is
       Root : constant String :=
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Usage : constant String :=
-        "version save [--amend] [--no-verify] [-S[<keyid>]]"
-        & " [--no-gpg-sign] [-m] MESSAGE";
+        "version commit [-a] [-q] [-n] [-s] [-e] [-v] [-m MESSAGE]..."
+        & " [-F FILE] [-C|-c REV] [-t FILE] [--amend] [--allow-empty]"
+        & " [--author=AUTHOR] [--date=DATE] [--fixup=REV] [--squash=REV]"
+        & " [--trailer=TOKEN[=VALUE]]... [--cleanup=MODE]"
+        & " [-S[KEY]|--no-gpg-sign] [--dry-run] [-o|-i] [--] [PATHSPEC...]";
 
       procedure Check_Usage_Failure
         (Command : String; Detail : String; Context : String)
@@ -2627,34 +2631,17 @@ package body Version.CLI.Tests is
 
       Old_Dir : constant String := Ada.Directories.Current_Directory;
    begin
-      Check_Usage_Failure
-        ("save",
-         "missing save message",
-         "save missing message");
+      --  The option surface is git's: a bare word is a pathspec, not a
+      --  message, -m repeats (paragraphs), --signoff is real, and a
+      --  value-taking flag without its value is the usage error.
       Check_Usage_Failure
         ("save -m",
-         "-m requires a message",
+         "switch 'm' requires a value",
          "save missing -m message");
       Check_Usage_Failure
-        ("save --amend --amend message",
-         "duplicate option: --amend",
-         "save duplicate amend");
-      Check_Usage_Failure
-        ("save --no-verify --no-verify message",
-         "duplicate option: --no-verify",
-         "save duplicate no-verify");
-      Check_Usage_Failure
-        ("save -m one -m two",
-         "duplicate option: -m",
-         "save duplicate message option");
-      Check_Usage_Failure
-        ("save --signoff message",
-         "unknown save option: --signoff",
+        ("save --bogus message",
+         "unknown save option: --bogus",
          "save unknown option");
-      Check_Usage_Failure
-        ("save message extra",
-         "too many save arguments",
-         "save extra operand");
 
       Version.Init.Init (Root);
       Configure_User (Root);
@@ -2670,6 +2657,14 @@ package body Version.CLI.Tests is
       Check_Success
         ("save --no-verify --amend -m amended-order",
          "save amend mixed order");
+
+      --  git's bundled short flags and repeated -m paragraphs.
+      Write_File (Root, "a.txt", "two-b" & Character'Val (10));
+      Check_Success ("save -anm bundled", "save bundled short flags");
+      Write_File (Root, "a.txt", "two-c" & Character'Val (10));
+      Check_Success
+        ("save -a -m first -m second --signoff",
+         "save repeated -m with signoff");
 
       --  --no-gpg-sign is accepted (and produces an unsigned commit) without a
       --  configured key or gpg; -S/--gpg-sign are parsed as signing options
@@ -4150,7 +4145,11 @@ package body Version.CLI.Tests is
       Root : constant String :=
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Usage : constant String :=
-        "version checkout REV [-- PATHSPEC...]";
+        "version checkout [-q] [-f] [-m] [-t|--no-track]"
+        & " [-b|-B <new-branch>] [--orphan <new-branch>] [--detach]"
+        & " [--ignore-other-worktrees] [<branch>|<commit>|-]"
+        & " | version checkout [-q] [-f] [--ours|--theirs] [<tree-ish>]"
+        & " [--] <pathspec>...";
 
       procedure Check_Usage_Failure
         (Command : String; Detail : String; Context : String)
@@ -4198,26 +4197,17 @@ package body Version.CLI.Tests is
 
       Old_Dir : constant String := Ada.Directories.Current_Directory;
    begin
+      --  git's option surface: --detach, --ours and `REV PATH` without
+      --  "--" are all valid now; only a genuinely unknown flag is a
+      --  usage error.
       Check_Usage_Failure
-        ("checkout",
-         "missing checkout revision",
-         "checkout missing revision");
-      Check_Usage_Failure
-        ("checkout --detach HEAD",
-         "unknown checkout option: --detach",
+        ("checkout --bogus HEAD",
+         "unknown checkout option: --bogus",
          "checkout unknown leading option");
       Check_Usage_Failure
-        ("checkout HEAD a.txt",
-         "expected -- before checkout pathspec",
-         "checkout missing separator");
-      Check_Usage_Failure
-        ("checkout HEAD --ours a.txt",
-         "unknown checkout option: --ours",
+        ("checkout HEAD --bogus a.txt",
+         "unknown checkout option: --bogus",
          "checkout unknown option after revision");
-      Check_Usage_Failure
-        ("checkout HEAD --",
-         "missing checkout pathspec",
-         "checkout separator only");
 
       Version.Init.Init (Root);
       Configure_User (Root);
@@ -4225,7 +4215,28 @@ package body Version.CLI.Tests is
       Commit_File (Root, "a.txt", "one" & Character'Val (10), "base");
 
       Check_Success
-        ("checkout HEAD", "HEAD is now at", "checkout revision");
+        ("checkout --detach HEAD", "HEAD is now at", "checkout revision");
+      Check_Success
+        ("checkout main", "Switched to branch 'main'", "checkout branch");
+      Check_Success
+        ("checkout -b topic", "Switched to a new branch 'topic'",
+         "checkout -b");
+      Check_Success
+        ("checkout -", "Switched to branch 'main'", "checkout dash");
+
+      --  `checkout HEAD --` alone is git's "pathspec matched nothing" (exit
+      --  1), not a usage error.
+      declare
+         Output : Ada.Strings.Unbounded.Unbounded_String;
+         Status : Integer;
+      begin
+         Run_CLI_Capture (Root, "checkout HEAD -- nosuch", Output, Status);
+         Assert (Status = 1, "checkout unmatched pathspec exits 1");
+         Assert_Contains
+           (Ada.Strings.Unbounded.To_String (Output),
+            "did not match any file(s) known to git",
+            "checkout unmatched pathspec message");
+      end;
 
       Write_File (Root, "a.txt", "two" & Character'Val (10));
       Check_Silent

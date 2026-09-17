@@ -25,7 +25,7 @@ procedure Check_Examples is
       Run_In (Work, "version init demo");
       Tool_Support.Write_File (Tool_Support.Join (Repo, "hello.txt"), "hello" & ASCII.LF);
       Run_In (Repo, "version stage hello.txt");
-      Run_In (Repo, "version save " & Tool_Support.Shell_Quote ("initial"));
+      Run_In (Repo, "version commit -m " & Tool_Support.Shell_Quote ("initial"));
       Run_In (Repo, "version status", Quiet => True);
       Run_In (Repo, "version log", Quiet => True);
       Run_In (Repo, "version verify");
@@ -42,7 +42,7 @@ procedure Check_Examples is
       Run_In (Work, "version init source");
       Tool_Support.Write_File (Tool_Support.Join (Source, "hello.txt"), "hello" & ASCII.LF);
       Run_In (Source, "version stage hello.txt");
-      Run_In (Source, "version save " & Tool_Support.Shell_Quote ("initial"));
+      Run_In (Source, "version commit -m " & Tool_Support.Shell_Quote ("initial"));
       Run_In (Source, "version remote add origin ../remote.git");
       Run_In (Source, "version push origin main");
       Run_In (Work, "version clone remote.git clone");
@@ -60,13 +60,13 @@ procedure Check_Examples is
       Run_In (Work, "version init demo");
       Tool_Support.Write_File (Tool_Support.Join (Repo, "base.txt"), "base" & ASCII.LF);
       Run_In (Repo, "version stage base.txt");
-      Run_In (Repo, "version save " & Tool_Support.Shell_Quote ("base"));
+      Run_In (Repo, "version commit -m " & Tool_Support.Shell_Quote ("base"));
       Run_In (Repo, "version branch create feature");
       Run_In (Repo, "version worktree add ../feature feature");
       Run_In (Repo, "version worktree list", Quiet => True);
       Tool_Support.Write_File (Tool_Support.Join (Feature, "feature.txt"), "feature" & ASCII.LF);
       Run_In (Feature, "version stage feature.txt");
-      Run_In (Feature, "version save " & Tool_Support.Shell_Quote ("feature work"));
+      Run_In (Feature, "version commit -m " & Tool_Support.Shell_Quote ("feature work"));
       Run_In (Feature, "version status", Quiet => True);
    end Worktree_Workflow;
 begin

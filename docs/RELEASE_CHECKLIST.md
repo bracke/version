@@ -57,7 +57,7 @@ version init v
 cd v
 printf 'hello\n' > a.txt
 version stage a.txt
-version save "initial"
+version commit -m "initial"
 version verify
 git fsck --strict
 git log --oneline
@@ -76,7 +76,7 @@ git config user.email test@example.com
 git config user.name Test
 printf 'from git\n' > a.txt
 git add a.txt
-version save "version save in git repo"
+version commit -m "version commit in git repo"
 version verify
 git fsck --strict
 git status --porcelain

@@ -76,6 +76,7 @@ with Version.Hooks;
 with Version.Tree_Cache;
 with Version.Trailers;
 with Version.Stripspace;
+with Version.Editor;
 with Version.Ref_Names;
 with Version.Fmt_Merge_Msg;
 with Version.Apply;
@@ -1179,15 +1180,6 @@ package body Version.CLI is
    begin
       return Ada.Strings.Fixed.Trim (Natural'Image (Value), Ada.Strings.Left);
    end Natural_Image;
-
-   function Short_Id (Id : String) return String is
-   begin
-      if Id'Length > 12 then
-         return Id (Id'First .. Id'First + 11);
-      else
-         return Id;
-      end if;
-   end Short_Id;
 
    --  git's `worktree list`: the primary worktree first, then the linked ones
    --  by path. The plain form pads the path column to the widest entry and
@@ -2593,9 +2585,11 @@ package body Version.CLI is
    --    [ Date: <author-date>]            -- when Force_Date (sequencer, --date)
    --    <N file(s) changed, ...>          -- shortstat + create/delete/mode
    procedure Print_Commit_Summary
-     (Repo       : Version.Repository.Repository_Handle;
-      New_Id     : Version.Objects.Hex_Object_Id;
-      Force_Date : Boolean := False)
+     (Repo         : Version.Repository.Repository_Handle;
+      New_Id       : Version.Objects.Hex_Object_Id;
+      Force_Date   : Boolean := False;
+      Force_Author : Boolean := False;
+      Amended      : Boolean := False)
    is
       Obj     : constant Version.Objects.Git_Object :=
         Version.Objects.Read_Object (Repo, New_Id);
@@ -2604,7 +2598,9 @@ package body Version.CLI is
       Abbrev  : constant String := Hex (Hex'First .. Hex'First + 6);
       Parents : constant Version.Objects.Object_Id_Vectors.Vector :=
         Version.Objects.Commit_Parent_Ids (Obj);
-      Is_Root : constant Boolean := Parents.Is_Empty;
+      --  git's "(root-commit)" marks a commit made on an unborn branch; an
+      --  amended root commit had a HEAD to amend and is not labelled.
+      Is_Root : constant Boolean := Parents.Is_Empty and then not Amended;
       Subject : constant String :=
         Version.Objects.Commit_Message_First_Line (Obj);
       Label   : constant String :=
@@ -2651,14 +2647,35 @@ package body Version.CLI is
       Success_Line
         ("[" & Label & (if Is_Root then " (root-commit)" else "")
          & " " & Abbrev & "] " & Subject);
+      if Force_Author then
+         declare
+            Line : constant String :=
+              Version.Objects.Commit_Header_Value (Obj, "author");
+            GT   : Natural := 0;
+         begin
+            for K in reverse Line'Range loop
+               if Line (K) = '>' then
+                  GT := K;
+                  exit;
+               end if;
+            end loop;
+            if GT /= 0 then
+               Success_Line (" Author: " & Line (Line'First .. GT));
+            end if;
+         end;
+      end if;
       if Force_Date then
          Success_Line (" Date: " & Version.Ref_Format.Git_Date (Author_Date));
       end if;
-      Version.Console.Put
-        ((if Is_Root
-          then Version.Diff.Diff_Root_Commit (Repo, New_Id, Stat_Opts)
-          else Version.Diff.Diff_Commits
-                 (Repo, Parents.First_Element, New_Id, Stat_Opts)));
+      --  git's summary diff ignores merges (rev.ignore_merges), so a merge
+      --  commit gets the header line only.
+      if Parents.Length <= 1 then
+         Version.Console.Put
+           ((if Parents.Is_Empty
+             then Version.Diff.Diff_Root_Commit (Repo, New_Id, Stat_Opts)
+             else Version.Diff.Diff_Commits
+                    (Repo, Parents.First_Element, New_Id, Stat_Opts)));
+      end if;
    end Print_Commit_Summary;
 
    --  Write the local ref a fetch refspec's destination half names, from the
@@ -3009,14 +3026,56 @@ package body Version.CLI is
    --  A switch carries local modifications across when the target does not
    --  touch those paths; git lists what it carried, one "M<TAB><path>" line
    --  per path, on standard output.
+   --  git's report of the local changes that rode across a switch: one
+   --  "<status><tab><path>" per path differing between HEAD and the index
+   --  or working tree (A/D/M, by path), staged or not.
    procedure Print_Carried_Modifications is
       Result : constant Version.Status.Status_Result :=
         Version.Status.Current_Status;
+      Paths  : Version.Path_Safety.Path_Vector;
+      Codes  : Version.Path_Safety.Path_Vector;
+      package Path_Sort is new
+        Version.Path_Safety.Path_Vectors.Generic_Sorting;
+
+      procedure Note (C : Version.Status.File_Change; Staged : Boolean) is
+         P    : constant String := Ada.Strings.Unbounded.To_String (C.Path);
+         Code : constant String :=
+           (if Version.Status."=" (C.Kind, Version.Status.Deleted_File) then "D"
+            elsif Staged
+              and then Version.Status."=" (C.Kind, Version.Status.New_File)
+            then "A"
+            else "M");
+      begin
+         for K in Paths.First_Index .. Paths.Last_Index loop
+            if Paths.Element (K) = P then
+               --  Staged and unstaged on the same path: the staged
+               --  status names the index side, which is what wins.
+               return;
+            end if;
+         end loop;
+         Paths.Append (P);
+         Codes.Append (Code);
+      end Note;
    begin
-      for C of Result.Changes loop
-         Success_Line
-           ("M" & Character'Val (9) & Ada.Strings.Unbounded.To_String (C.Path));
+      for C of Result.Staged loop
+         Note (C, Staged => True);
       end loop;
+      for C of Result.Changes loop
+         Note (C, Staged => False);
+      end loop;
+      declare
+         Sorted : Version.Path_Safety.Path_Vector := Paths;
+      begin
+         Path_Sort.Sort (Sorted);
+         for P of Sorted loop
+            for K in Paths.First_Index .. Paths.Last_Index loop
+               if Paths.Element (K) = P then
+                  Success_Line (Codes.Element (K) & Character'Val (9) & P);
+                  exit;
+               end if;
+            end loop;
+         end loop;
+      end;
    end Print_Carried_Modifications;
 
    --  git's report for a checkout or switch that leaves HEAD detached: the
@@ -11715,6 +11774,13 @@ package body Version.CLI is
       function Rev (S : String) return Version.Objects.Hex_Object_Id is
         (Version.Revisions.Resolve_Commit (Repo, S));
 
+      --  The session's terms (good/bad unless --term-* said otherwise), as
+      --  git 2.55 names them in its messages.
+      function Good_Term return String is
+        (To_String (Current_Terms (Repo).Good));
+      function Bad_Term return String is
+        (To_String (Current_Terms (Repo).Bad));
+
       Sub : constant String := (if Count >= 2 then Arg (2) else "");
 
       procedure Emit_Continue (B : Version.Bisect.Bisection) is
@@ -11739,8 +11805,9 @@ package body Version.CLI is
            (Stat => True, others => <>);
       begin
          Append_Log
-           (Repo, "# first bad commit: [" & Hex & "] " & Subject (B.Rev));
-         Success_Line (Hex & " is the first bad commit");
+           (Repo, "# first '" & Bad_Term & "' commit: [" & Hex & "] "
+                  & Subject (B.Rev));
+         Success_Line (Hex & " is the first '" & Bad_Term & "' commit");
          Version.Console.Put (Version.Show.Show_Commit (Repo, B.Rev, Opts));
       end Emit_Found;
 
@@ -11845,7 +11912,8 @@ package body Version.CLI is
                   if Both_Good_And_Bad (Is_Bad, Id) then
                      Success_Line
                        (Version.Objects.To_String (Id)
-                        & " was both good and bad");
+                        & " was both '" & Good_Term & "' and '" & Bad_Term
+                        & "'");
                      Set_Command_Failure;
                      return;
                   end if;
@@ -12059,10 +12127,10 @@ package body Version.CLI is
             Success_Line (To_String (T.Bad));
          else
             Success_Line
-              ("Your current terms are " & To_String (T.Good)
-               & " for the old state");
+              ("Your current terms are '" & To_String (T.Good)
+               & "' for the old state");
             Success_Line
-              ("and " & To_String (T.Bad) & " for the new state.");
+              ("and '" & To_String (T.Bad) & "' for the new state.");
          end if;
       end Do_Terms;
 
@@ -12199,7 +12267,7 @@ package body Version.CLI is
          end loop;
 
          if Found_It then
-            Success_Line ("bisect found first bad commit");
+            Success_Line ("bisect found first '" & Bad_Term & "' commit");
          end if;
       end Do_Run;
 
@@ -12432,6 +12500,2268 @@ package body Version.CLI is
    --  reflog diagnostics are this tool's own -- git ignores such a reflog and
    --  exits 0 -- so there is no git status to match, and the established
    --  contract is kept.
+   --  `commit` (this tool's `save`): git's option surface over
+   --  Version.Write.Commit. The message is assembled here -- -m pieces, a
+   --  file, a reused commit, fixup!/squash! prefixes, sign-off and trailers,
+   --  then the editor with git's commented status template -- and cleaned
+   --  the way git's commit.cleanup does before the library writes anything.
+   procedure Run_Commit is
+      Cmd   : constant String := Arg (1);
+      Usage : constant String :=
+        "version commit [-a] [-q] [-n] [-s] [-e] [-v] [-m MESSAGE]..."
+        & " [-F FILE] [-C|-c REV] [-t FILE] [--amend] [--allow-empty]"
+        & " [--author=AUTHOR] [--date=DATE] [--fixup=REV] [--squash=REV]"
+        & " [--trailer=TOKEN[=VALUE]]... [--cleanup=MODE]"
+        & " [-S[KEY]|--no-gpg-sign] [--dry-run] [-o|-i] [--] [PATHSPEC...]";
+      LF : constant Character := ASCII.LF;
+
+      type Tri is (Unset, Yes, No);
+
+      All_Tracked         : Boolean := False;
+      No_Verify           : Boolean := False;
+      Signoff             : Boolean := False;
+      Edit                : Tri := Unset;
+      Verbose             : Boolean := False;
+      Amend               : Boolean := False;
+      Allow_Empty         : Boolean := False;
+      Allow_Empty_Message : Boolean := False;
+      Reset_Author        : Boolean := False;
+      Only                : Boolean := False;
+      Include             : Boolean := False;
+      Dry_Run             : Boolean := False;
+      Status_In_Template  : Boolean := True;
+      Short_Out           : Boolean := False;
+      Porcelain_Out       : Boolean := False;
+      Branch_Out          : Boolean := False;
+      Show_Untracked      : Boolean := True;
+      All_Untracked       : Boolean := False;
+      Pathspec_Nul        : Boolean := False;
+
+      Messages      : Version.Path_Safety.Path_Vector;   --  -m pieces
+      Msg_File      : Unbounded_String;
+      Has_Msg_File  : Boolean := False;
+      Reuse_Rev     : Unbounded_String;
+      Reedit        : Boolean := False;
+      Template_Path : Unbounded_String;
+      Author_Opt    : Unbounded_String;
+      Date_Opt      : Unbounded_String;
+      Cleanup_Opt   : Unbounded_String;
+      Fixup_Rev     : Unbounded_String;
+      Squash_Rev    : Unbounded_String;
+      Trailer_Args  : Version.Trailers.String_Vectors.Vector;
+      Pathspec_File : Unbounded_String;
+      Sign          : Version.Write.Sign_Choice :=
+        Version.Write.Sign_From_Config;
+      Signing_Key   : Unbounded_String;
+      Specs         : Version.Pathspec.Pathspec_Vectors.Vector;
+      Spec_Text     : Version.Path_Safety.Path_Vector;
+
+      Bad : Boolean := False;
+
+      procedure Fail (Detail : String) is
+      begin
+         Usage_Error (Detail, Usage);
+         Bad := True;
+      end Fail;
+
+      procedure Fatal (Text : String) is
+      begin
+         Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, "fatal: " & Text);
+         Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+      end Fatal;
+
+      --  A long option's value: "--opt=value", or the next argument.
+      I : Natural := 2;
+
+      function Long_Value (Name : String; Found : out Boolean) return String is
+         A : constant String := Arg (I);
+      begin
+         Found := False;
+         if Has_Prefix (A, Name & "=") then
+            Found := True;
+            I := I + 1;
+            return A (A'First + Name'Length + 1 .. A'Last);
+         elsif A = Name then
+            if I = Count then
+               Fail ("option '" & Name & "' requires a value");
+               return "";
+            end if;
+            Found := True;
+            I := I + 2;
+            return Arg (I - 1);
+         end if;
+         return "";
+      end Long_Value;
+
+      procedure Set_Sign (Key : String) is
+      begin
+         Sign := Version.Write.Sign_Force;
+         Signing_Key := To_Unbounded_String (Key);
+      end Set_Sign;
+
+      procedure Parse_Untracked (Mode : String) is
+      begin
+         if Mode = "no" then
+            Show_Untracked := False;
+         elsif Mode = "normal" or else Mode = "" then
+            Show_Untracked := True;
+            All_Untracked := False;
+         elsif Mode = "all" then
+            Show_Untracked := True;
+            All_Untracked := True;
+         else
+            Fail ("Invalid untracked files mode '" & Mode & "'");
+         end if;
+      end Parse_Untracked;
+
+      --  Bundled short flags ("-am", "-sqm"): value-taking letters swallow
+      --  the rest of the token or the next argument, as git's parser does.
+      procedure Parse_Short (Token : String) is
+         P : Positive := Token'First + 1;
+      begin
+         while P <= Token'Last and then not Bad loop
+            declare
+               C    : constant Character := Token (P);
+               Rest : constant String := Token (P + 1 .. Token'Last);
+
+               function Value return String is
+               begin
+                  if Rest'Length > 0 then
+                     P := Token'Last + 1;
+                     return Rest;
+                  elsif I = Count then
+                     Fail ("switch '" & C & "' requires a value");
+                     return "";
+                  else
+                     I := I + 1;
+                     P := Token'Last + 1;
+                     return Arg (I);
+                  end if;
+               end Value;
+            begin
+               case C is
+                  when 'a' => All_Tracked := True;
+                  when 'n' => No_Verify := True;
+                  when 'q' => Quiet_Mode := True;
+                  when 's' => Signoff := True;
+                  when 'e' => Edit := Yes;
+                  when 'v' => Verbose := True;
+                  when 'o' => Only := True;
+                  when 'i' => Include := True;
+                  when 'z' => Pathspec_Nul := True;
+                  when 'p' =>
+                     Fail ("interactive patch selection (-p) is not supported");
+                  when 'u' =>
+                     Parse_Untracked (Rest);
+                     P := Token'Last + 1;
+                  when 'S' =>
+                     Set_Sign (Rest);
+                     P := Token'Last + 1;
+                  when 'm' =>
+                     Messages.Append (Value);
+                  when 'F' =>
+                     Msg_File := To_Unbounded_String (Value);
+                     Has_Msg_File := True;
+                  when 'C' =>
+                     Reuse_Rev := To_Unbounded_String (Value);
+                  when 'c' =>
+                     Reuse_Rev := To_Unbounded_String (Value);
+                     Reedit := True;
+                  when 't' =>
+                     Template_Path := To_Unbounded_String (Value);
+                  when others =>
+                     Fail ("unknown " & Cmd & " option: -" & C);
+               end case;
+               P := P + 1;
+            end;
+         end loop;
+      end Parse_Short;
+
+      After_Sep : Boolean := False;
+   begin
+      while I <= Count and then not Bad loop
+         declare
+            A     : constant String := Arg (I);
+            Found : Boolean;
+         begin
+            if After_Sep then
+               Version.Pathspec.Append_Parse (Specs, A, Repo_Prefix);
+               Spec_Text.Append (A);
+               I := I + 1;
+            elsif A = "--" then
+               After_Sep := True;
+               I := I + 1;
+            elsif A = "--all" then
+               All_Tracked := True; I := I + 1;
+            elsif A = "--quiet" then
+               Quiet_Mode := True; I := I + 1;
+            elsif A = "--no-verify" then
+               No_Verify := True; I := I + 1;
+            elsif A = "--verify" then
+               No_Verify := False; I := I + 1;
+            elsif A = "--signoff" then
+               Signoff := True; I := I + 1;
+            elsif A = "--no-signoff" then
+               Signoff := False; I := I + 1;
+            elsif A = "--edit" then
+               Edit := Yes; I := I + 1;
+            elsif A = "--no-edit" then
+               Edit := No; I := I + 1;
+            elsif A = "--verbose" then
+               Verbose := True; I := I + 1;
+            elsif A = "--no-verbose" then
+               Verbose := False; I := I + 1;
+            elsif A = "--amend" then
+               Amend := True; I := I + 1;
+            elsif A = "--allow-empty" then
+               Allow_Empty := True; I := I + 1;
+            elsif A = "--allow-empty-message" then
+               Allow_Empty_Message := True; I := I + 1;
+            elsif A = "--reset-author" then
+               Reset_Author := True; I := I + 1;
+            elsif A = "--only" then
+               Only := True; I := I + 1;
+            elsif A = "--include" then
+               Include := True; I := I + 1;
+            elsif A = "--dry-run" then
+               Dry_Run := True; I := I + 1;
+            elsif A = "--status" then
+               Status_In_Template := True; I := I + 1;
+            elsif A = "--no-status" then
+               Status_In_Template := False; I := I + 1;
+            elsif A = "--short" then
+               Short_Out := True; I := I + 1;
+            elsif A = "--porcelain" then
+               Porcelain_Out := True; I := I + 1;
+            elsif A = "--branch" then
+               Branch_Out := True; I := I + 1;
+            elsif A = "--long" then
+               Short_Out := False; Porcelain_Out := False; I := I + 1;
+            elsif A = "--null" then
+               Pathspec_Nul := True; I := I + 1;
+            elsif A = "--pathspec-file-nul" then
+               Pathspec_Nul := True; I := I + 1;
+            elsif A = "--no-gpg-sign" then
+               Sign := Version.Write.Sign_Disable;
+               Signing_Key := Null_Unbounded_String;
+               I := I + 1;
+            elsif A = "--gpg-sign" then
+               Set_Sign (""); I := I + 1;
+            elsif Has_Prefix (A, "--gpg-sign=") then
+               Set_Sign (A (A'First + 11 .. A'Last)); I := I + 1;
+            elsif A = "--untracked-files" then
+               Parse_Untracked ("all"); I := I + 1;
+            elsif Has_Prefix (A, "--untracked-files=") then
+               Parse_Untracked (A (A'First + 18 .. A'Last)); I := I + 1;
+            elsif A = "--no-post-rewrite" or else A = "--ahead-behind"
+              or else A = "--no-ahead-behind"
+            then
+               I := I + 1;
+            elsif A = "--interactive" or else A = "--patch" then
+               Fail ("interactive patch selection is not supported");
+            elsif A = "--message" or else Has_Prefix (A, "--message=") then
+               declare
+                  V : constant String := Long_Value ("--message", Found);
+               begin
+                  if Found then
+                     Messages.Append (V);
+                  end if;
+               end;
+            elsif A = "--file" or else Has_Prefix (A, "--file=") then
+               declare
+                  V : constant String := Long_Value ("--file", Found);
+               begin
+                  if Found then
+                     Msg_File := To_Unbounded_String (V);
+                     Has_Msg_File := True;
+                  end if;
+               end;
+            elsif A = "--reuse-message"
+              or else Has_Prefix (A, "--reuse-message=")
+            then
+               Reuse_Rev := To_Unbounded_String
+                 (Long_Value ("--reuse-message", Found));
+            elsif A = "--reedit-message"
+              or else Has_Prefix (A, "--reedit-message=")
+            then
+               Reuse_Rev := To_Unbounded_String
+                 (Long_Value ("--reedit-message", Found));
+               Reedit := True;
+            elsif A = "--template" or else Has_Prefix (A, "--template=") then
+               Template_Path := To_Unbounded_String
+                 (Long_Value ("--template", Found));
+            elsif A = "--author" or else Has_Prefix (A, "--author=") then
+               Author_Opt := To_Unbounded_String
+                 (Long_Value ("--author", Found));
+            elsif A = "--date" or else Has_Prefix (A, "--date=") then
+               Date_Opt := To_Unbounded_String (Long_Value ("--date", Found));
+            elsif A = "--cleanup" or else Has_Prefix (A, "--cleanup=") then
+               Cleanup_Opt := To_Unbounded_String
+                 (Long_Value ("--cleanup", Found));
+            elsif A = "--fixup" or else Has_Prefix (A, "--fixup=") then
+               Fixup_Rev := To_Unbounded_String (Long_Value ("--fixup", Found));
+            elsif A = "--squash" or else Has_Prefix (A, "--squash=") then
+               Squash_Rev := To_Unbounded_String
+                 (Long_Value ("--squash", Found));
+            elsif A = "--trailer" or else Has_Prefix (A, "--trailer=") then
+               declare
+                  V : constant String := Long_Value ("--trailer", Found);
+               begin
+                  if Found then
+                     Trailer_Args.Append (V);
+                  end if;
+               end;
+            elsif A = "--pathspec-from-file"
+              or else Has_Prefix (A, "--pathspec-from-file=")
+            then
+               Pathspec_File := To_Unbounded_String
+                 (Long_Value ("--pathspec-from-file", Found));
+            elsif A'Length > 1 and then A (A'First) = '-'
+              and then A (A'First + 1) /= '-'
+            then
+               Parse_Short (A);
+               I := I + 1;
+            elsif A'Length > 0 and then A (A'First) = '-' then
+               Fail ("unknown " & Cmd & " option: " & A);
+            else
+               Version.Pathspec.Append_Parse (Specs, A, Repo_Prefix);
+               Spec_Text.Append (A);
+               I := I + 1;
+            end if;
+         end;
+      end loop;
+
+      if Bad then
+         return;
+      end if;
+
+      --  git's mutual-exclusion rules for the message sources.
+      if not Messages.Is_Empty and then Has_Msg_File then
+         Fatal ("options '-m' and '-F' cannot be used together");
+         return;
+      elsif not Messages.Is_Empty and then Length (Reuse_Rev) > 0 then
+         Fatal ("options '-m' and '-C' cannot be used together");
+         return;
+      elsif Has_Msg_File and then Length (Reuse_Rev) > 0 then
+         Fatal ("options '-F' and '-C' cannot be used together");
+         return;
+      elsif Length (Fixup_Rev) > 0 and then Length (Squash_Rev) > 0 then
+         Fatal ("options '--fixup' and '--squash' cannot be used together");
+         return;
+      elsif Amend and then (Length (Fixup_Rev) > 0 or else Length (Squash_Rev) > 0)
+      then
+         Fatal ("options '--amend' and '--fixup'/'--squash' cannot be used "
+                & "together");
+         return;
+      elsif Reset_Author and then not Amend
+        and then Length (Reuse_Rev) = 0
+      then
+         Fatal ("--reset-author can be used only with -C, -c or --amend.");
+         return;
+      elsif Only and then Include then
+         Fatal ("options '--only' and '--include' cannot be used together");
+         return;
+      end if;
+
+      if Length (Pathspec_File) > 0 then
+         if not Specs.Is_Empty then
+            Fatal ("options '--pathspec-from-file' and pathspec arguments "
+                   & "cannot be used together");
+            return;
+         end if;
+         declare
+            Text : constant String :=
+              (if To_String (Pathspec_File) = "-" then Read_All_Stdin
+               else Version.Files.Read_Binary_File
+                      (To_String (Pathspec_File)));
+            Sep  : constant Character := (if Pathspec_Nul then ASCII.NUL else LF);
+            Start : Positive := Text'First;
+         begin
+            for K in Text'Range loop
+               if Text (K) = Sep then
+                  if K > Start then
+                     Version.Pathspec.Append_Parse
+                       (Specs, Text (Start .. K - 1), Repo_Prefix);
+                     Spec_Text.Append (Text (Start .. K - 1));
+                  end if;
+                  Start := K + 1;
+               end if;
+            end loop;
+            if Start <= Text'Last then
+               Version.Pathspec.Append_Parse
+                 (Specs, Text (Start .. Text'Last), Repo_Prefix);
+               Spec_Text.Append (Text (Start .. Text'Last));
+            end if;
+         end;
+      end if;
+
+      if All_Tracked and then not Specs.Is_Empty then
+         --  git names only the first path, with a literal "...".
+         Fatal ("paths '" & Spec_Text.First_Element
+                & " ...' with -a does not make sense");
+         return;
+      elsif (Only or else Include) and then Specs.Is_Empty
+        and then not Amend
+      then
+         Fatal ("No paths with --include/--only does not make sense.");
+         return;
+      end if;
+
+      declare
+         Repo : constant Version.Repository.Repository_Handle :=
+           Version.Repository.Open;
+         Git_Dir : constant String := Version.Repository.Git_Dir (Repo);
+
+         Merge_Heads : constant Version.Objects.Object_Id_Vectors.Vector :=
+           Version.Merge_State.Merge_Heads (Repo);
+         Merging : constant Boolean := not Merge_Heads.Is_Empty;
+         Picking : constant Boolean :=
+           not Merging and then Version.Merge_State.Git_Pick_In_Progress (Repo);
+         Reverting : constant Boolean :=
+           Picking and then Version.Merge_State.Git_Pick_Is_Revert (Repo);
+         Head_Id : constant String := Version.Refs.Current_Commit_Id (Repo);
+
+         --  The index the commit is made from, when it is not the real one
+         --  (a partial commit), and the real index to put back if the
+         --  commit does not happen: git stages -a and <paths> into a
+         --  temporary index, so an aborted commit leaves the real one alone.
+         Partial     : constant Boolean := not Specs.Is_Empty;
+         Touches_Index : constant Boolean := Partial or else All_Tracked;
+         Orig_Index  : Version.Staging.Index_Entry_Vectors.Vector;
+         Use_Entries : Boolean := False;
+         Entries     : Version.Staging.Index_Entry_Vectors.Vector;
+
+         Use_Editor  : Boolean;
+         Message     : Unbounded_String;
+         Author_Line : Unbounded_String;   --  a reused commit's whole line
+         From_Template : Boolean := False;
+         Template_Body : Unbounded_String;
+
+         function Rev_Object (Rev : String) return Version.Objects.Git_Object
+         is
+           (Version.Objects.Read_Object
+              (Repo, Version.Revisions.Resolve_Commit (Repo, Rev)));
+
+         function Subject_Of (Rev : String) return String is
+           (Version.Objects.Commit_Message_First_Line (Rev_Object (Rev)));
+
+         function Read_Message_File (Path : String) return String is
+           (if Path = "-" then Read_All_Stdin
+            else Version.Files.Read_Binary_File (Path));
+
+         --  Stage every tracked path's worktree state (`-a`): a modified
+         --  file is re-hashed, a deleted one leaves the index.
+         procedure Stage_Tracked_Changes is
+            St : constant Version.Status.Status_Result :=
+              Version.Status.Current_Status;
+         begin
+            for C of St.Changes loop
+               declare
+                  P : constant String := To_String (C.Path);
+               begin
+                  if Version.Status."=" (C.Kind, Version.Status.Deleted_File)
+                  then
+                     declare
+                        Idx : Version.Staging.Index_Entry_Vectors.Vector :=
+                          Version.Staging.Load (Repo);
+                     begin
+                        Version.Staging.Remove_Path (Idx, P);
+                        Version.Staging.Write (Repo, Idx);
+                     end;
+                  elsif Version.Status."="
+                          (C.Kind, Version.Status.Modified_File)
+                  then
+                     Stage_Path (P);
+                  end if;
+               end;
+            end loop;
+         end Stage_Tracked_Changes;
+
+         --  The commit template git writes under the message: the hint,
+         --  the author/date when they are not the obvious ones, and the
+         --  long status with hints off, every line comment-prefixed.
+         function Template_Comments (Cleanup_Strip : Boolean) return String is
+            Out_Text : Unbounded_String;
+            --  git applies --trailer to the written file, which lands the
+            --  trailer block directly above the comments: no blank line.
+            Lead_In  : constant String :=
+              (if Trailer_Args.Is_Empty then "" & LF else "");
+
+            --  git's add_lines: no space after the '#' before a tab.
+            procedure Comment (Line : String) is
+            begin
+               Append (Out_Text,
+                       (if Line'Length = 0 then "#"
+                        elsif Line (Line'First) = ASCII.HT then "#" & Line
+                        else "# " & Line) & LF);
+            end Comment;
+
+            Base_Author : constant String :=
+              Version.Write.Default_Author_Line
+                (Repo, Amend => Amend and then not Reset_Author);
+            Effective_Author : constant String :=
+              Version.Write.Author_Line_With
+                (Base   => (if Length (Author_Line) > 0
+                            then To_String (Author_Line) else Base_Author),
+                 Author => To_String (Author_Opt),
+                 Date   => Version.Config.Normalize_Date (To_String (Date_Opt)));
+            Committer : constant String :=
+              Version.Config.Committer_Signature (Repo);
+
+            function Ident (Line : String) return String is
+            begin
+               for K in reverse Line'Range loop
+                  if Line (K) = '>' then
+                     return Line (Line'First .. K);
+                  end if;
+               end loop;
+               return Line;
+            end Ident;
+
+            function Stamp (Line : String) return String is
+            begin
+               for K in reverse Line'Range loop
+                  if Line (K) = '>' then
+                     return (if K + 2 <= Line'Last
+                             then Line (K + 2 .. Line'Last) else "");
+                  end if;
+               end loop;
+               return "";
+            end Stamp;
+
+            Ident_Shown : Boolean := False;
+            Date_Interesting : constant Boolean :=
+              Length (Date_Opt) > 0
+              or else ((Amend or else Length (Reuse_Rev) > 0 or else Picking)
+                       and then not Reset_Author);
+         begin
+            --  --no-status drops the whole block, hint included.
+            if not Status_In_Template then
+               return "";
+            end if;
+            if Merging or else Picking then
+               Comment ("");
+               Comment ("It looks like you may be committing a "
+                        & (if Merging then "merge" else "cherry-pick") & ".");
+               Comment ("If this is not correct, please run");
+               Comment (ASCII.HT & "git update-ref -d "
+                        & (if Merging then "MERGE_HEAD"
+                           elsif Reverting then "REVERT_HEAD"
+                           else "CHERRY_PICK_HEAD"));
+               Comment ("and try again.");
+               --  The translated block ends in a newline of its own.
+               Append (Out_Text, LF);
+            end if;
+            Append (Out_Text, Lead_In);
+            if Cleanup_Strip then
+               Comment ("Please enter the commit message for your changes. "
+                        & "Lines starting");
+               Comment ("with '#' will be ignored, and an empty message "
+                        & "aborts the commit.");
+            else
+               Comment ("Please enter the commit message for your changes. "
+                        & "Lines starting");
+               Comment ("with '#' will be kept; you may remove them yourself "
+                        & "if you want to.");
+               Comment ("An empty message aborts the commit.");
+            end if;
+            if Ident (Effective_Author) /= Ident (Committer) then
+               Comment ("");
+               Comment ("Author:    " & Ident (Effective_Author));
+               Ident_Shown := True;
+            end if;
+            if Date_Interesting then
+               if not Ident_Shown then
+                  Comment ("");
+               end if;
+               Comment ("Date:      "
+                        & Version.Ref_Format.Git_Date
+                            (Stamp (Effective_Author)));
+            end if;
+            Comment ("");
+            declare
+               --  An amend's template shows the index against HEAD's
+               --  parent (git's s->reference = "HEAD^1"), the empty tree
+               --  when amending a root commit.
+               Parents : constant Version.Objects.Object_Id_Vectors.Vector :=
+                 (if Amend
+                  then Version.Objects.Commit_Parent_Ids
+                         (Rev_Object (Head_Id))
+                  else Version.Objects.Object_Id_Vectors.Empty_Vector);
+               Text : constant String :=
+                 Version.Status.Long_Status_Text
+                   (Version.Status.Current_Status
+                      (All_Untracked,
+                       Use_Base    => Amend,
+                       Base_Commit =>
+                         (if Parents.Is_Empty then ""
+                          else Version.Objects.To_String
+                                 (Parents.First_Element))),
+                    Show_Untracked  => Show_Untracked,
+                    Hints           => False,
+                    Nowarn          => True,
+                    Commit_Template => True,
+                    Initial         => Amend and then Parents.Is_Empty);
+               Start : Positive := Text'First;
+            begin
+               for K in Text'Range loop
+                  if Text (K) = LF then
+                     Comment (Text (Start .. K - 1));
+                     Start := K + 1;
+                  end if;
+               end loop;
+            end;
+            if Verbose then
+               Comment ("------------------------ >8 ------------------------");
+               Comment ("Do not modify or remove the line above.");
+               Comment ("Everything below it will be ignored.");
+               declare
+                  Opts : constant Version.Diff.Diff_Options :=
+                    (others => <>);
+               begin
+                  if Head_Id'Length = 0 then
+                     null;
+                  elsif Use_Entries then
+                     Append (Out_Text,
+                             Version.Diff.Diff_Trees
+                               (Repo,
+                                Commit_Tree_Id
+                                  (Repo, Version.Objects.To_Object_Id (Head_Id)),
+                                Version.Write.Write_Tree_From_Index
+                                  (Repo, Entries),
+                                Opts));
+                  else
+                     Append (Out_Text, Version.Diff.Diff_Cached (Repo, Opts));
+                  end if;
+               end;
+            end if;
+            return To_String (Out_Text);
+         end Template_Comments;
+
+         --  Everything after git's scissors line is dropped (the -v diff).
+         function Truncate_At_Cut_Line (Text : String) return String is
+            Cut : constant String :=
+              "# ------------------------ >8 ------------------------";
+            Start : Positive := Text'First;
+         begin
+            for K in Text'Range loop
+               if Text (K) = LF then
+                  if Text (Start .. K - 1) = Cut then
+                     return Text (Text'First .. Start - 1);
+                  end if;
+                  Start := K + 1;
+               end if;
+            end loop;
+            return Text;
+         end Truncate_At_Cut_Line;
+
+         function Cleanup_Mode return String is
+            Cfg : constant String :=
+              (if Version.Config.Has_Key (Repo, "commit.cleanup")
+               then Version.Config.Trim
+                      (Version.Config.Get_Value (Repo, "commit.cleanup"))
+               else "");
+            Opt : constant String :=
+              (if Length (Cleanup_Opt) > 0 then To_String (Cleanup_Opt)
+               else Cfg);
+         begin
+            if Opt = "" or else Opt = "default" then
+               return (if Use_Editor then "strip" else "whitespace");
+            elsif Opt in "verbatim" | "whitespace" | "strip" | "scissors" then
+               return Opt;
+            else
+               raise Ada.IO_Exceptions.Data_Error
+                 with "Invalid cleanup mode " & Opt;
+            end if;
+         end Cleanup_Mode;
+
+         function Clean_Message (Raw : String; Mode : String) return String is
+         begin
+            if Mode = "verbatim" then
+               return Raw;
+            elsif Mode = "whitespace" then
+               return Version.Stripspace.Clean (Raw, Version.Stripspace.Default);
+            else
+               --  strip, and scissors (whose cut has already happened for a
+               --  -v template; a scissors line typed by hand is honoured
+               --  here too).
+               return Version.Stripspace.Clean
+                 ((if Mode = "scissors" then Truncate_At_Cut_Line (Raw)
+                   else Raw),
+                  Version.Stripspace.Strip_Comments);
+            end if;
+         end Clean_Message;
+
+         procedure Restore_Index is
+         begin
+            if Touches_Index then
+               Version.Staging.Write (Repo, Orig_Index);
+            end if;
+         end Restore_Index;
+
+         function Committable return Boolean is
+            Idx : constant Version.Staging.Index_Entry_Vectors.Vector :=
+              (if Use_Entries then Entries else Version.Staging.Load (Repo));
+            Tree : constant Version.Objects.Hex_Object_Id :=
+              Version.Write.Write_Tree_From_Index (Repo, Idx);
+            Ref  : Unbounded_String;
+         begin
+            if Head_Id'Length = 0 then
+               return not Idx.Is_Empty;
+            end if;
+            if Amend then
+               declare
+                  Parents : constant Version.Objects.Object_Id_Vectors.Vector :=
+                    Version.Objects.Commit_Parent_Ids
+                      (Version.Objects.Read_Object
+                         (Repo, Version.Objects.To_Object_Id (Head_Id)));
+               begin
+                  if Parents.Is_Empty then
+                     return not Idx.Is_Empty;
+                  end if;
+                  Ref := To_Unbounded_String
+                    (Version.Objects.To_String (Parents.First_Element));
+               end;
+            else
+               Ref := To_Unbounded_String (Head_Id);
+            end if;
+            return Version.Objects."/="
+              (Commit_Tree_Id (Repo, Version.Objects.To_Object_Id (To_String (Ref))),
+               Tree);
+         end Committable;
+
+         procedure Print_Nothing_To_Commit is
+            St : constant Version.Status.Status_Result :=
+              Version.Status.Current_Status (All_Untracked);
+         begin
+            if Short_Out or else Porcelain_Out then
+               if Branch_Out or else Short_Out then
+                  Version.Console.Put (Version.Status.Branch_Status_Text (St));
+               else
+                  Version.Console.Put
+                    (Version.Status.Porcelain_Status_Text (St));
+               end if;
+            else
+               Version.Console.Put
+                 (Version.Status.Long_Status_Text
+                    (St, Show_Untracked => Show_Untracked));
+            end if;
+         end Print_Nothing_To_Commit;
+      begin
+         --  Unmerged entries block a commit outright; git's index refresh
+         --  lists each one as "U<tab>path" first.
+         declare
+            Unmerged : Version.Path_Safety.Path_Vector;
+         begin
+            for E of Version.Staging.Load (Repo) loop
+               if E.Stage /= 0 then
+                  Append_Unique (Unmerged, To_String (E.Path));
+               end if;
+            end loop;
+            if not Unmerged.Is_Empty then
+               Error_Line ("Committing is not possible because you have "
+                           & "unmerged files.");
+               Stderr_Line ("hint: Fix them up in the work tree, and then use "
+                            & "'git add/rm <file>'");
+               Stderr_Line ("hint: as appropriate to mark resolution and make "
+                            & "a commit.");
+               Fatal ("Exiting because of an unresolved conflict.");
+               --  git's "U<tab>path" lines go to (buffered) stdout, so
+               --  they land after the diagnostics in a combined capture.
+               for P of Unmerged loop
+                  Success_Line ("U" & ASCII.HT & P);
+               end loop;
+               return;
+            end if;
+         end;
+
+         if Amend then
+            if Merging then
+               Fatal ("You are in the middle of a merge -- cannot amend.");
+               return;
+            elsif Picking then
+               Fatal ("You are in the middle of a "
+                      & (if Reverting then "revert" else "cherry-pick")
+                      & " -- cannot amend.");
+               return;
+            elsif Head_Id'Length = 0 then
+               Fatal ("You have nothing to amend.");
+               return;
+            end if;
+         end if;
+
+         if Touches_Index then
+            Orig_Index := Version.Staging.Load (Repo);
+         end if;
+
+         if All_Tracked then
+            Stage_Tracked_Changes;
+         end if;
+
+         if Partial then
+            --  `commit <paths>` commits HEAD plus those paths' worktree
+            --  state (--only, the default) or the index plus them
+            --  (--include), and updates the real index for those paths
+            --  either way. The paths are staged into the real index first;
+            --  the tree to commit is then assembled from that. Only a path
+            --  git already knows -- in the index or HEAD -- qualifies.
+            declare
+               Candidates : Version.Path_Safety.Path_Vector;
+               Matches    : Version.Path_Safety.Path_Vector;
+            begin
+               for E of Orig_Index loop
+                  Append_Unique (Candidates, To_String (E.Path));
+               end loop;
+               if Head_Id'Length > 0 then
+                  for P of Tree_Candidates
+                             (Version.Objects.To_Object_Id (Head_Id))
+                  loop
+                     Append_Unique (Candidates, P);
+                  end loop;
+               end if;
+               Matches := Matching_Candidates (Candidates, Specs);
+               if Matches.Is_Empty then
+                  Error_Line ("pathspec '" & Spec_Text.First_Element
+                              & "' did not match any file(s) known to git");
+                  Set_Command_Failure;
+                  return;
+               end if;
+
+               for P of Matches loop
+                  if Ada.Directories.Exists
+                       (Version.Files.Join
+                          (Version.Repository.Root_Path (Repo), P))
+                  then
+                     Stage_Path (P);
+                  else
+                     declare
+                        Idx : Version.Staging.Index_Entry_Vectors.Vector :=
+                          Version.Staging.Load (Repo);
+                     begin
+                        Version.Staging.Remove_Path (Idx, P);
+                        Version.Staging.Write (Repo, Idx);
+                     end;
+                  end if;
+               end loop;
+
+               declare
+                  Updated : constant Version.Staging.Index_Entry_Vectors.Vector :=
+                    Version.Staging.Load (Repo);
+               begin
+                  if Include then
+                     Use_Entries := False;
+                  else
+                     Use_Entries := True;
+                     Entries :=
+                       (if Head_Id'Length = 0
+                        then Version.Staging.Index_Entry_Vectors.Empty_Vector
+                        else Version.Staging.Entries_From_Tree
+                               (Repo,
+                                Commit_Tree_Id
+                                  (Repo, Version.Objects.To_Object_Id (Head_Id))));
+                     for P of Matches loop
+                        Version.Staging.Remove_Path (Entries, P);
+                        declare
+                           K : constant Natural :=
+                             Version.Staging.Find_Path (Updated, P);
+                        begin
+                           if K /= Natural'Last then
+                              Entries.Append (Updated.Element (K));
+                           end if;
+                        end;
+                     end loop;
+                     Version.Staging.Sort_By_Path (Entries);
+                  end if;
+               end;
+            end;
+         end if;
+
+         if Dry_Run then
+            declare
+               Can : constant Boolean := Committable;
+            begin
+               Print_Nothing_To_Commit;
+               Restore_Index;
+               if not Can then
+                  Set_Command_Failure;
+               end if;
+               return;
+            end;
+         end if;
+
+         if not Allow_Empty and then not Merging
+           and then not Committable
+         then
+            Restore_Index;
+            Print_Nothing_To_Commit;
+            Set_Command_Failure;
+            return;
+         end if;
+
+         --  The message and whether the editor opens on it.
+         if Length (Fixup_Rev) > 0 then
+            declare
+               R    : constant String := To_String (Fixup_Rev);
+               Kind : constant String :=
+                 (if Has_Prefix (R, "amend:") then "amend"
+                  elsif Has_Prefix (R, "reword:") then "reword"
+                  else "");
+               Rev  : constant String :=
+                 (if Kind = "" then R
+                  else R (R'First + Kind'Length + 1 .. R'Last));
+            begin
+               if Kind = "" then
+                  Message := To_Unbounded_String
+                    ("fixup! " & Subject_Of (Rev) & LF);
+                  Use_Editor := Edit = Yes;
+               else
+                  --  amend!/reword!: the target's body follows for editing.
+                  declare
+                     Body_Text : constant String :=
+                       Version.Objects.Commit_Message (Rev_Object (Rev));
+                  begin
+                     Message := To_Unbounded_String
+                       ("amend! " & Subject_Of (Rev) & LF & LF & Body_Text);
+                  end;
+                  Use_Editor := Edit /= No;
+                  if Kind = "reword" then
+                     Only := True;
+                     Allow_Empty := True;
+                  end if;
+               end if;
+            end;
+         elsif Length (Squash_Rev) > 0 then
+            Message := To_Unbounded_String
+              ("squash! " & Subject_Of (To_String (Squash_Rev)) & LF);
+            Use_Editor := True;
+            if not Messages.Is_Empty then
+               for M of Messages loop
+                  Append (Message, LF & M & LF);
+               end loop;
+               Use_Editor := False;
+            elsif Has_Msg_File then
+               Append (Message, LF & Read_Message_File (To_String (Msg_File)));
+               Use_Editor := False;
+            elsif Length (Reuse_Rev) > 0 then
+               Append (Message, LF & Version.Objects.Commit_Message
+                                       (Rev_Object (To_String (Reuse_Rev))));
+               Use_Editor := Reedit;
+            end if;
+            if Edit /= Unset then
+               Use_Editor := Edit = Yes;
+            end if;
+         elsif not Messages.Is_Empty then
+            for M of Messages loop
+               if Length (Message) > 0 then
+                  Append (Message, LF);
+               end if;
+               Append (Message, M & LF);
+            end loop;
+            Use_Editor := Edit = Yes;
+         elsif Has_Msg_File then
+            Message := To_Unbounded_String
+              (Read_Message_File (To_String (Msg_File)));
+            Use_Editor := Edit = Yes;
+         elsif Length (Reuse_Rev) > 0 then
+            declare
+               Obj : constant Version.Objects.Git_Object :=
+                 Rev_Object (To_String (Reuse_Rev));
+            begin
+               Message := To_Unbounded_String
+                 (Version.Objects.Commit_Message (Obj));
+               if not Reset_Author then
+                  Author_Line := To_Unbounded_String
+                    (Version.Objects.Commit_Header_Value (Obj, "author"));
+               end if;
+            end;
+            Use_Editor := (if Edit = Unset then Reedit else Edit = Yes);
+         elsif Amend then
+            Message := To_Unbounded_String
+              (Version.Objects.Commit_Message
+                 (Rev_Object (Head_Id)));
+            Use_Editor := Edit /= No;
+         elsif Version.Files.Is_Ordinary_File
+                 (Version.Files.Join (Git_Dir, "MERGE_MSG"))
+           or else Version.Files.Is_Ordinary_File
+                     (Version.Files.Join (Git_Dir, "SQUASH_MSG"))
+         then
+            --  A merge, `merge --squash` or `cherry-pick -n` left the
+            --  message it prepared; a squash's SQUASH_MSG goes first.
+            declare
+               M : constant String := Version.Files.Join (Git_Dir, "MERGE_MSG");
+               Q : constant String := Version.Files.Join (Git_Dir, "SQUASH_MSG");
+            begin
+               if Version.Files.Is_Ordinary_File (Q) then
+                  Message := To_Unbounded_String
+                    (Version.Files.Read_Binary_File (Q));
+                  if Version.Files.Is_Ordinary_File (M) then
+                     Append (Message, LF & Version.Files.Read_Binary_File (M));
+                  end if;
+               else
+                  Message := To_Unbounded_String
+                    (Version.Files.Read_Binary_File (M));
+               end if;
+            end;
+            Use_Editor := Edit /= No;
+         else
+            declare
+               T : constant String :=
+                 (if Length (Template_Path) > 0 then To_String (Template_Path)
+                  elsif Version.Config.Has_Key (Repo, "commit.template")
+                  then Version.Config.Trim
+                         (Version.Config.Get_Value (Repo, "commit.template"))
+                  else "");
+            begin
+               if T'Length > 0 then
+                  if not Version.Files.Is_Ordinary_File (T) then
+                     Restore_Index;
+                     Fatal ("could not read '" & T & "'");
+                     return;
+                  end if;
+                  Message := To_Unbounded_String
+                    (Version.Files.Read_Binary_File (T));
+                  Template_Body := Message;
+                  From_Template := True;
+               end if;
+            end;
+            Use_Editor := Edit /= No;
+         end if;
+
+         if Picking and then not Reverting and then Length (Author_Line) = 0
+           and then not Reset_Author
+         then
+            --  A cherry-pick keeps the picked commit's author.
+            Author_Line := To_Unbounded_String
+              (Version.Objects.Commit_Header_Value
+                 (Version.Objects.Read_Object
+                    (Repo, Version.Merge_State.Git_Pick_Head (Repo)),
+                  "author"));
+         end if;
+
+         if Signoff then
+            declare
+               Committer : constant String :=
+                 Version.Config.Committer_Signature (Repo);
+               Ident_End : Natural := Committer'Last;
+               T : Version.Trailers.String_Vectors.Vector;
+            begin
+               for K in reverse Committer'Range loop
+                  if Committer (K) = '>' then
+                     Ident_End := K;
+                     exit;
+                  end if;
+               end loop;
+               T.Append
+                 ("Signed-off-by: " & Committer (Committer'First .. Ident_End));
+               if Length (Message) = 0 then
+                  --  git's append_signoff leaves room above the sign-off
+                  --  for the subject and body still to be typed.
+                  Message := To_Unbounded_String
+                    (LF & LF & T.First_Element & LF);
+               else
+                  Message := To_Unbounded_String
+                    (Version.Trailers.Interpret
+                       (To_String (Message), T,
+                        If_Exists =>
+                          Version.Trailers.IE_Add_If_Different_Neighbor));
+               end if;
+            end;
+         end if;
+
+         if not Trailer_Args.Is_Empty then
+            Message := To_Unbounded_String
+              (Version.Trailers.Interpret (To_String (Message), Trailer_Args));
+         end if;
+
+         declare
+            Mode      : constant String := Cleanup_Mode;
+            Edit_Path : constant String :=
+              Version.Files.Join (Git_Dir, "COMMIT_EDITMSG");
+            Raw       : Unbounded_String;
+         begin
+            if Use_Editor then
+               declare
+                  Seed : constant String :=
+                    To_String (Message)
+                    & (if Length (Message) > 0
+                         and then Element (Message, Length (Message)) /= LF
+                       then "" & LF else "");
+               begin
+                  Raw := To_Unbounded_String
+                    (Version.Editor.Edit_File
+                       (Repo, Edit_Path,
+                        Seed & Template_Comments
+                                 (Cleanup_Strip => Mode in "strip" | "scissors")));
+               exception
+                  when E : Ada.IO_Exceptions.Data_Error =>
+                     Restore_Index;
+                     Error_Line
+                       (Ada.Characters.Handling.To_Lower
+                          (Ada.Exceptions.Exception_Message (E)
+                             (Ada.Exceptions.Exception_Message (E)'First
+                              .. Ada.Exceptions.Exception_Message (E)'First))
+                        & Ada.Exceptions.Exception_Message (E)
+                            (Ada.Exceptions.Exception_Message (E)'First + 1
+                             .. Ada.Exceptions.Exception_Message (E)'Last));
+                     Stderr_Line ("Please supply the message using either "
+                                  & "-m or -F option.");
+                     Set_Command_Failure;
+                     return;
+               end;
+               if Verbose then
+                  Raw := To_Unbounded_String
+                    (Truncate_At_Cut_Line (To_String (Raw)));
+               end if;
+            else
+               Raw := Message;
+               Version.Files.Write_Binary_File_Atomic
+                 (Edit_Path, To_String (Raw));
+            end if;
+
+            declare
+               Cleaned : constant String :=
+                 Clean_Message (To_String (Raw), Mode);
+               --  The object writer terminates the message itself.
+               Final : constant String :=
+                 (if Cleaned'Length > 0 and then Cleaned (Cleaned'Last) = LF
+                  then Cleaned (Cleaned'First .. Cleaned'Last - 1)
+                  else Cleaned);
+            begin
+               if From_Template and then Use_Editor
+                 and then Clean_Message (To_String (Template_Body), Mode)
+                          = Cleaned
+               then
+                  Restore_Index;
+                  Stderr_Line ("Aborting commit; you did not edit the message.");
+                  Set_Command_Failure;
+                  return;
+               end if;
+
+               if Version.Stripspace.Clean
+                    (Final, Version.Stripspace.Strip_Comments)'Length = 0
+                 and then not Allow_Empty_Message
+               then
+                  Restore_Index;
+                  Stderr_Line ("Aborting commit due to empty commit message.");
+                  Set_Command_Failure;
+                  return;
+               end if;
+
+               declare
+                  New_Id : Version.Objects.Object_Id_Storage;
+                  Date_Interesting : constant Boolean :=
+                    Length (Date_Opt) > 0
+                    or else ((Amend or else Length (Reuse_Rev) > 0
+                              or else Picking)
+                             and then not Reset_Author);
+               begin
+                  declare
+                     Req : Version.Write.Commit_Request;
+                     Out_Come : Version.Write.Commit_Outcome;
+                  begin
+                        Req.Message := To_Unbounded_String (Final);
+                        Req.Amend := Amend;
+                        Req.Run_Hooks := not No_Verify;
+                        Req.Sign := Sign;
+                        Req.Signing_Key := Signing_Key;
+                        Req.Allow_Empty := Allow_Empty or else Merging;
+                        Req.Author :=
+                          (if Length (Author_Opt) > 0 then Author_Opt
+                           else Author_Line);
+                        if Length (Date_Opt) > 0 then
+                           declare
+                              D : constant String :=
+                                Version.Config.Normalize_Date
+                                  (To_String (Date_Opt));
+                           begin
+                              if D'Length = 0 then
+                                 Restore_Index;
+                                 Fatal ("invalid date format: "
+                                        & To_String (Date_Opt));
+                                 return;
+                              end if;
+                              Req.Author_Date := To_Unbounded_String (D);
+                           end;
+                        end if;
+                        Req.Reset_Author := Reset_Author;
+                        Req.Use_Entries := Use_Entries;
+                        Req.Entries := Entries;
+                     Req.Kind :=
+                       (if Merging then Version.Write.Merge_Commit
+                        elsif Reverting then Version.Write.Revert_Commit
+                        elsif Picking then Version.Write.Cherry_Pick_Commit
+                        else Version.Write.Plain_Commit);
+                     Req.Extra_Parents := Merge_Heads;
+                     Out_Come := Version.Write.Commit (Req);
+                     if not Out_Come.Committed then
+                        Restore_Index;
+                        Print_Nothing_To_Commit;
+                        Set_Command_Failure;
+                        return;
+                     end if;
+                     New_Id := Out_Come.Commit_Id;
+                  end;
+
+                  if Merging then
+                     --  The merge is concluded: its state files go, as
+                     --  git's commit does after writing the merge commit.
+                     Version.Merge_State.Clear_State (Repo);
+                  elsif Picking then
+                     --  The pick is concluded: git drops its markers (a
+                     --  multi-commit sequence continues with --continue).
+                     Version.Files.Delete_File_If_Exists
+                       (Version.Files.Join
+                          (Git_Dir,
+                           (if Reverting then "REVERT_HEAD"
+                            else "CHERRY_PICK_HEAD")));
+                     Version.Files.Delete_File_If_Exists
+                       (Version.Files.Join (Git_Dir, "MERGE_MSG"));
+                  else
+                     --  A leftover MERGE_MSG/SQUASH_MSG (cherry-pick -n,
+                     --  merge --squash) is consumed by the commit.
+                     Version.Files.Delete_File_If_Exists
+                       (Version.Files.Join (Git_Dir, "MERGE_MSG"));
+                     Version.Files.Delete_File_If_Exists
+                       (Version.Files.Join (Git_Dir, "SQUASH_MSG"));
+                  end if;
+
+                  if not Quiet_Mode then
+                     declare
+                        Obj : constant Version.Objects.Git_Object :=
+                          Version.Objects.Read_Object (Repo, New_Id);
+
+                        function Ident (Line : String) return String is
+                        begin
+                           for K in reverse Line'Range loop
+                              if Line (K) = '>' then
+                                 return Line (Line'First .. K);
+                              end if;
+                           end loop;
+                           return Line;
+                        end Ident;
+                     begin
+                        --  git adds " Author:" when the author is not the
+                        --  committer, " Date:" when the date is not "now".
+                        Print_Commit_Summary
+                          (Repo, New_Id,
+                           Force_Date   => Date_Interesting,
+                           Amended      => Amend,
+                           Force_Author =>
+                             Ident (Version.Objects.Commit_Header_Value
+                                      (Obj, "author"))
+                             /= Ident (Version.Objects.Commit_Header_Value
+                                         (Obj, "committer")));
+                     end;
+                  end if;
+               end;
+            end;
+         end;
+      end;
+   end Run_Commit;
+
+   --  `checkout` and `switch`, over one parser: switch is checkout's
+   --  branch-switching half with its own spellings (-c/-C for -b/-B, no
+   --  path form, a stricter operand). Messages, streams and exit codes
+   --  follow git's checkout.c.
+   procedure Run_Checkout (As_Switch : Boolean) is
+      Cmd   : constant String := (if As_Switch then "switch" else "checkout");
+      Usage : constant String :=
+        (if As_Switch
+         then "version switch [-q] [-f] [-m] [-t|--no-track] [--[no-]guess]"
+              & " [-c|-C <new-branch>] [--orphan <new-branch>] [--detach]"
+              & " [--ignore-other-worktrees] (<branch>|<start-point>|-)"
+         else "version checkout [-q] [-f] [-m] [-t|--no-track]"
+              & " [-b|-B <new-branch>] [--orphan <new-branch>] [--detach]"
+              & " [--ignore-other-worktrees] [<branch>|<commit>|-]"
+              & " | version checkout [-q] [-f] [--ours|--theirs] [<tree-ish>]"
+              & " [--] <pathspec>...");
+
+      Force          : Boolean := False;
+      Merge_Mode     : Boolean := False;
+      Detach         : Boolean := False;
+      Track          : Boolean := False;
+      No_Track       : Boolean := False;
+      Guess          : Boolean := True;
+      Ignore_Other   : Boolean := False;
+      Ours           : Boolean := False;
+      Theirs         : Boolean := False;
+      Create         : Boolean := False;
+      Create_Force   : Boolean := False;
+      Orphan         : Boolean := False;
+      New_Name       : Unbounded_String;
+      Pathspec_File  : Unbounded_String;
+      Pathspec_Nul   : Boolean := False;
+
+      Operands  : Version.Path_Safety.Path_Vector;   --  before any "--"
+      After_Sep : Version.Path_Safety.Path_Vector;   --  after "--"
+      Seen_Sep  : Boolean := False;
+
+      Bad : Boolean := False;
+      I   : Natural := 2;
+
+      --  Raised after a failure has already been reported and the exit
+      --  status set, to unwind to the handler at the bottom.
+      Handled : exception;
+
+      procedure Fail (Detail : String) is
+      begin
+         Usage_Error (Detail, Usage);
+         Bad := True;
+      end Fail;
+
+      procedure Fatal (Text : String) is
+      begin
+         Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, "fatal: " & Text);
+         Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+      end Fatal;
+
+      function Long_Value (Name : String; Found : out Boolean) return String is
+         A : constant String := Arg (I);
+      begin
+         Found := False;
+         if Has_Prefix (A, Name & "=") then
+            Found := True;
+            I := I + 1;
+            return A (A'First + Name'Length + 1 .. A'Last);
+         elsif A = Name then
+            if I = Count then
+               Fail ("option '" & Name & "' requires a value");
+               return "";
+            end if;
+            Found := True;
+            I := I + 2;
+            return Arg (I - 1);
+         end if;
+         return "";
+      end Long_Value;
+
+      procedure Set_Create (Name : String; Forced : Boolean) is
+      begin
+         Create := True;
+         Create_Force := Forced;
+         New_Name := To_Unbounded_String (Name);
+      end Set_Create;
+
+      --  The letters that create a branch: git's -b/-B, switch's -c/-C.
+      Create_Letter       : constant Character := (if As_Switch then 'c' else 'b');
+      Create_Force_Letter : constant Character := (if As_Switch then 'C' else 'B');
+
+      procedure Parse_Short (Token : String) is
+         P : Positive := Token'First + 1;
+      begin
+         while P <= Token'Last and then not Bad loop
+            declare
+               C    : constant Character := Token (P);
+               Rest : constant String := Token (P + 1 .. Token'Last);
+
+               function Value return String is
+               begin
+                  if Rest'Length > 0 then
+                     P := Token'Last + 1;
+                     return Rest;
+                  elsif I = Count then
+                     Fail ("switch '" & C & "' requires a value");
+                     return "";
+                  else
+                     I := I + 1;
+                     P := Token'Last + 1;
+                     return Arg (I);
+                  end if;
+               end Value;
+            begin
+               if C = Create_Letter then
+                  Set_Create (Value, Forced => False);
+               elsif C = Create_Force_Letter then
+                  Set_Create (Value, Forced => True);
+               else
+                  case C is
+                     when 'q' => Quiet_Mode := True;
+                     when 'f' => Force := True;
+                     when 'm' => Merge_Mode := True;
+                     when 't' => Track := True;
+                     when 'l' => null;   --  reflogs are always written
+                     when 'd' =>
+                        if As_Switch then
+                           Detach := True;
+                        else
+                           Fail ("unknown " & Cmd & " option: -d");
+                        end if;
+                     when 'p' =>
+                        Fail ("interactive patch selection (-p) is not "
+                              & "supported");
+                     when others =>
+                        Fail ("unknown " & Cmd & " option: -" & C);
+                  end case;
+               end if;
+               P := P + 1;
+            end;
+         end loop;
+      end Parse_Short;
+   begin
+      while I <= Count and then not Bad loop
+         declare
+            A     : constant String := Arg (I);
+            Found : Boolean;
+         begin
+            if Seen_Sep then
+               After_Sep.Append (A);
+               I := I + 1;
+            elsif A = "--" then
+               if As_Switch then
+                  Fail ("switch takes no pathspec");
+               else
+                  Seen_Sep := True;
+                  I := I + 1;
+               end if;
+            elsif A = "--quiet" then
+               Quiet_Mode := True; I := I + 1;
+            elsif A = "--force" or else A = "--discard-changes" then
+               Force := True; I := I + 1;
+            elsif A = "--merge" then
+               Merge_Mode := True; I := I + 1;
+            elsif A = "--no-merge" then
+               Merge_Mode := False; I := I + 1;
+            elsif A = "--detach" then
+               Detach := True; I := I + 1;
+            elsif A = "--track" or else Has_Prefix (A, "--track=") then
+               Track := True; No_Track := False; I := I + 1;
+            elsif A = "--no-track" then
+               No_Track := True; Track := False; I := I + 1;
+            elsif A = "--guess" then
+               Guess := True; I := I + 1;
+            elsif A = "--no-guess" then
+               Guess := False; I := I + 1;
+            elsif A = "--ignore-other-worktrees" then
+               Ignore_Other := True; I := I + 1;
+            elsif A = "--ours" or else A = "-2" then
+               Ours := True; I := I + 1;
+            elsif A = "--theirs" or else A = "-3" then
+               Theirs := True; I := I + 1;
+            elsif A = "--recurse-submodules"
+              or else Has_Prefix (A, "--recurse-submodules=")
+              or else A = "--no-recurse-submodules"
+              or else A = "--progress" or else A = "--no-progress"
+              or else A = "--overwrite-ignore" or else A = "--no-overwrite-ignore"
+              or else A = "--no-overlay" or else A = "--overlay"
+              or else Has_Prefix (A, "--conflict=")
+            then
+               I := I + 1;
+            elsif A = "--patch" then
+               Fail ("interactive patch selection is not supported");
+            elsif A = "--orphan" or else Has_Prefix (A, "--orphan=") then
+               declare
+                  V : constant String := Long_Value ("--orphan", Found);
+               begin
+                  if Found then
+                     Orphan := True;
+                     New_Name := To_Unbounded_String (V);
+                  end if;
+               end;
+            elsif not As_Switch
+              and then (A = "--pathspec-from-file"
+                        or else Has_Prefix (A, "--pathspec-from-file="))
+            then
+               Pathspec_File := To_Unbounded_String
+                 (Long_Value ("--pathspec-from-file", Found));
+            elsif not As_Switch and then A = "--pathspec-file-nul" then
+               Pathspec_Nul := True; I := I + 1;
+            elsif A = "-" then
+               Operands.Append (A);
+               I := I + 1;
+            elsif A'Length > 1 and then A (A'First) = '-'
+              and then A (A'First + 1) /= '-'
+            then
+               Parse_Short (A);
+               I := I + 1;
+            elsif A'Length > 0 and then A (A'First) = '-' then
+               Fail ("unknown " & Cmd & " option: " & A);
+            else
+               Operands.Append (A);
+               I := I + 1;
+            end if;
+         end;
+      end loop;
+
+      if Bad then
+         return;
+      end if;
+
+      if Length (Pathspec_File) > 0 then
+         declare
+            Text : constant String :=
+              (if To_String (Pathspec_File) = "-" then Read_All_Stdin
+               else Version.Files.Read_Binary_File
+                      (To_String (Pathspec_File)));
+            Sep  : constant Character :=
+              (if Pathspec_Nul then ASCII.NUL else ASCII.LF);
+            Start : Positive := Text'First;
+         begin
+            Seen_Sep := True;
+            for K in Text'Range loop
+               if Text (K) = Sep then
+                  if K > Start then
+                     After_Sep.Append (Text (Start .. K - 1));
+                  end if;
+                  Start := K + 1;
+               end if;
+            end loop;
+            if Start <= Text'Last then
+               After_Sep.Append (Text (Start .. Text'Last));
+            end if;
+         end;
+      end if;
+
+      declare
+         Repo : constant Version.Repository.Repository_Handle :=
+           Version.Repository.Open;
+         Head : constant Version.Refs.Head_Info :=
+           Version.Refs.Read_Head (Repo);
+         Head_Attached : constant Boolean := Version.Refs.Is_Attached (Head);
+         Head_Id_Text  : constant String :=
+           Version.Refs.Current_Commit_Id (Repo);
+
+         function Is_Local_Branch (Name : String) return Boolean is
+           (Version.Refs.Ref_Exists (Repo, "refs/heads/" & Name));
+
+         function Resolves (Rev : String) return Boolean is
+         begin
+            declare
+               Id : constant Version.Objects.Hex_Object_Id :=
+                 Version.Revisions.Resolve_Commit (Repo, Rev);
+               pragma Unreferenced (Id);
+            begin
+               return True;
+            end;
+         exception
+            when others =>
+               return False;
+         end Resolves;
+
+         function Tree_Resolves (Rev : String) return Boolean is
+         begin
+            declare
+               Id : constant Version.Objects.Hex_Object_Id :=
+                 Version.Revisions.Resolve_Tree (Repo, Rev);
+               pragma Unreferenced (Id);
+            begin
+               return True;
+            end;
+         exception
+            when others =>
+               return False;
+         end Tree_Resolves;
+
+         --  The worktree that has Name checked out, or "" (git names it
+         --  when refusing to check the branch out a second time).
+         function Other_Worktree_With (Name : String) return String is
+         begin
+            for Item of Version.Worktrees.List loop
+               if not Item.Current and then not Item.Detached
+                 and then To_String (Item.Branch) = Name
+               then
+                  return To_String (Item.Path);
+               end if;
+            end loop;
+            return "";
+         end Other_Worktree_With;
+
+         --  git's DWIM: a name that is no local branch but exists as
+         --  <remote>/<name> under exactly one remote becomes a new
+         --  tracking branch. Returns the remote, or "".
+         function Unique_Remote_For (Name : String) return String is
+            Found  : Unbounded_String;
+            Hits   : Natural := 0;
+         begin
+            for R of Version.Remotes.List_Remotes loop
+               if Version.Refs.Ref_Exists
+                    (Repo, "refs/remotes/" & To_String (R.Name) & "/" & Name)
+               then
+                  Hits := Hits + 1;
+                  Found := R.Name;
+               end if;
+            end loop;
+            return (if Hits = 1 then To_String (Found) else "");
+         end Unique_Remote_For;
+
+         function Previous_Branch return String is
+            Entries : constant Version.Reflog.Log_Entry_Vectors.Vector :=
+              Version.Reflog.Read_Entries (Repo, "HEAD");
+            Key : constant String := "moving from ";
+         begin
+            --  "-" is the branch the newest HEAD reflog entry moved from:
+            --  "checkout: moving from <from> to <to>".
+            if not Entries.Is_Empty then
+               declare
+                  M : constant String :=
+                    To_String (Entries.Last_Element.Message);
+                  F : constant Natural := Ada.Strings.Fixed.Index (M, Key);
+                  T : constant Natural :=
+                    Ada.Strings.Fixed.Index (M, " to ", Ada.Strings.Backward);
+               begin
+                  if F /= 0 and then T > F + Key'Length then
+                     return M (F + Key'Length .. T - 1);
+                  end if;
+               end;
+            end if;
+            raise Ada.IO_Exceptions.Data_Error
+              with "no previous branch to switch to";
+         end Previous_Branch;
+
+         procedure Note_Previous_Head (Target : Version.Objects.Hex_Object_Id)
+         is
+         begin
+            --  Leaving a detached HEAD for a different commit: git names
+            --  the commit being abandoned first.
+            if not Head_Attached and then Head_Id_Text'Length > 0
+              and then Head_Id_Text /= Version.Objects.To_String (Target)
+            then
+               declare
+                  Obj : constant Version.Objects.Git_Object :=
+                    Version.Objects.Read_Object
+                      (Repo, Version.Objects.To_Object_Id (Head_Id_Text));
+               begin
+                  Stderr_Line
+                    ("Previous HEAD position was "
+                     & Head_Id_Text (Head_Id_Text'First
+                                     .. Head_Id_Text'First + 6)
+                     & " " & Version.Objects.Commit_Message_First_Line (Obj));
+               end;
+            end if;
+         end Note_Previous_Head;
+
+         --  git's destination line (stderr) and the "M<tab>path" lines for
+         --  the local edits that rode across (stdout, which git buffers,
+         --  so they follow in a combined capture).
+         procedure Report_Switch (Line : String; Branch : String := "") is
+         begin
+            Stderr_Line (Line);
+            --  Landing on a branch with an upstream adds git's tracking
+            --  report ("Your branch is up to date with ...").
+            if Branch /= "" and then not Quiet_Mode then
+               declare
+                  Text : constant String :=
+                    Version.Status.Upstream_Status_Text (Repo, Branch);
+                  Start : Positive := Text'First;
+               begin
+                  for K in Text'Range loop
+                     if Text (K) = ASCII.LF then
+                        Stderr_Line (Text (Start .. K - 1));
+                        Start := K + 1;
+                     end if;
+                  end loop;
+               end;
+            end if;
+            Print_Carried_Modifications;
+         end Report_Switch;
+
+         --  Set up tracking for a branch created from Start, as git's
+         --  branch.autoSetupMerge default / -t do, printing its line.
+         procedure Setup_Tracking (Name, Start : String) is
+            Rt_Ref      : constant String := "refs/remotes/" & Start;
+            From_Remote : constant Boolean :=
+              Version.Refs.Ref_Exists (Repo, Rt_Ref);
+            Slash       : constant Natural :=
+              Ada.Strings.Fixed.Index (Start, "/", Ada.Strings.Backward);
+         begin
+            if No_Track then
+               return;
+            end if;
+            if From_Remote and then Slash /= 0 then
+               Version.Tracking.Set_Upstream
+                 (Repo        => Repo,
+                  Branch_Name => Name,
+                  Remote_Name => Start (Start'First .. Slash - 1),
+                  Merge_Ref   => "refs/heads/" & Start (Slash + 1 .. Start'Last));
+               Success_Line
+                 ("branch '" & Name & "' set up to track '" & Start & "'.");
+            elsif Track and then Is_Local_Branch (Start) then
+               Version.Tracking.Set_Upstream
+                 (Repo        => Repo,
+                  Branch_Name => Name,
+                  Remote_Name => ".",
+                  Merge_Ref   => "refs/heads/" & Start);
+               Success_Line
+                 ("branch '" & Name & "' set up to track '" & Start & "'.");
+            elsif Track then
+               Fatal ("cannot set up tracking information; starting point '"
+                      & Start & "' is not a branch");
+            end if;
+         end Setup_Tracking;
+
+         --  Move HEAD and the working tree to Target, attached to Branch
+         --  (or detached when empty), refusing as git does when local
+         --  edits would be overwritten.
+         procedure Move_To
+           (Target     : Version.Objects.Hex_Object_Id;
+            Branch     : String;
+            Typed      : String := "";
+            Reflog_Old : String := "";
+            Log        : Boolean := True)
+         is
+         begin
+            begin
+               Version.Checkout.Checkout_Commit
+                 (Target, Branch => Branch, Force => Force,
+                  Reflog_Target => Typed, Reflog_Old => Reflog_Old,
+                  --  Detached to the very same commit is no HEAD change,
+                  --  and git logs none.
+                  Write_Reflog =>
+                    Log and then not (Branch = "" and then not Head_Attached
+                                      and then Version.Objects.To_String (Target)
+                                               = Head_Id_Text));
+            exception
+               when E : Ada.IO_Exceptions.Data_Error =>
+                  --  Local edits in the way: git's "Aborting" block,
+                  --  exit 1.
+                  Error_Line (Ada.Exceptions.Exception_Message (E));
+                  Set_Command_Failure;
+                  raise Handled;
+            end;
+         end Move_To;
+
+         --  -B / -C on an existing branch: move the ref in place, keeping
+         --  its reflog, with git's "branch: Reset to <start>" line.
+         procedure Reset_Branch_Ref
+           (Name : String; Target : Version.Objects.Hex_Object_Id; Start : String)
+         is
+            Ref : constant String := "refs/heads/" & Name;
+            Old : constant String :=
+              Version.Objects.To_String (Version.Branch.Resolve_Branch (Name));
+            Tx  : Version.Ref_Transaction.Transaction;
+         begin
+            Version.Ref_Transaction.Start (Tx, Repo);
+            Version.Ref_Transaction.Add_Update
+              (Item => Tx, Ref_Name => Ref, New_Id => Target,
+               Expected_Old => Old);
+            Version.Ref_Transaction.Commit (Tx);
+            Version.Reflog.Append
+              (Repo => Repo, Ref => Ref, Old_Id => Old,
+               New_Id => Version.Objects.To_String (Target),
+               Message => "branch: Reset to " & Start);
+         end Reset_Branch_Ref;
+
+         --  The operands, split into a revision (if any) and pathspecs.
+         Rev       : Unbounded_String;
+         Has_Rev   : Boolean := False;
+         Paths     : Version.Path_Safety.Path_Vector;
+      begin
+         if Ours and then Theirs then
+            Fatal ("options '--ours' and '--theirs' cannot be used together");
+            return;
+         elsif Create and then Orphan then
+            Fatal ("options '-" & Create_Letter & "' and '--orphan' cannot "
+                   & "be used together");
+            return;
+         elsif Detach and then (Create or else Orphan) then
+            Fatal ("options '--detach' and '-" & Create_Letter
+                   & "/--orphan' cannot be used together");
+            return;
+         elsif Force and then Merge_Mode then
+            Fatal ("options '-f' and '-m' cannot be used together");
+            return;
+         end if;
+
+         --  Which operands are pathspecs. After "--" everything is; before
+         --  it, git takes the first operand as a revision when it resolves
+         --  and is not also a file (a plain branch name wins over a file
+         --  of the same name), and the rest as pathspecs.
+         if Seen_Sep then
+            Paths := After_Sep;
+            if Operands.Length > 1 then
+               Fatal ("only one reference expected, " & Operands.First_Element
+                      & " given.");
+               return;
+            elsif Operands.Length = 1 then
+               Rev := To_Unbounded_String (Operands.First_Element);
+               Has_Rev := True;
+            end if;
+         elsif not Operands.Is_Empty then
+            declare
+               First : constant String := Operands.First_Element;
+               First_Is_Rev : constant Boolean :=
+                 First = "-"
+                 or else Is_Local_Branch (First)
+                 or else (Create or else Orphan or else Detach)
+                 or else (not As_Switch
+                          and then Tree_Resolves (First)
+                          and then not Ada.Directories.Exists
+                                         (Version.Files.Join
+                                            (Version.Repository.Root_Path (Repo),
+                                             Version.Files.Join
+                                               (Repo_Prefix, First))))
+                 or else (Guess and then Unique_Remote_For (First) /= "");
+            begin
+               if First_Is_Rev or else As_Switch then
+                  Rev := To_Unbounded_String (First);
+                  Has_Rev := True;
+                  for K in Operands.First_Index + 1 .. Operands.Last_Index loop
+                     Paths.Append (Operands.Element (K));
+                  end loop;
+               else
+                  Paths := Operands;
+               end if;
+            end;
+         end if;
+
+         if As_Switch and then not Paths.Is_Empty then
+            Fatal ("only one reference expected");
+            return;
+         end if;
+
+         if (Ours or else Theirs) and then Paths.Is_Empty then
+            Fatal ("'--ours/--theirs' cannot be used with switching branches");
+            return;
+         end if;
+
+         ------------------------------------------------------------------
+         --  Path form: restore paths from the index or a tree-ish.
+         ------------------------------------------------------------------
+         if not Paths.Is_Empty then
+            if Create or else Orphan then
+               Fatal ("'" & Paths.First_Element & "' is not a commit and a "
+                      & "branch '" & To_String (New_Name)
+                      & "' cannot be created from it");
+               return;
+            elsif Detach or else Track then
+               Fatal ("'" & (if Detach then "--detach" else "-t")
+                      & "' cannot be used with updating paths");
+               return;
+            end if;
+            declare
+               Specs : Version.Pathspec.Pathspec_Vectors.Vector;
+               Prefix : constant String := Repo_Prefix;
+               Source_Commit : Version.Objects.Object_Id_Storage;
+               Candidates : Version.Path_Safety.Path_Vector;
+               Matches    : Version.Path_Safety.Path_Vector;
+            begin
+               for P of Paths loop
+                  Version.Pathspec.Append_Parse (Specs, P, Prefix);
+               end loop;
+               if Has_Rev then
+                  Source_Commit := Version.Revisions.Resolve_Commit
+                    (Repo, To_String (Rev));
+                  Candidates := Tree_Candidates (Source_Commit);
+               else
+                  for E of Version.Staging.Load (Repo) loop
+                     Append_Unique (Candidates, To_String (E.Path));
+                  end loop;
+               end if;
+               Matches := Matching_Candidates (Candidates, Specs);
+               if Matches.Is_Empty then
+                  Error_Line ("pathspec '" & Paths.First_Element
+                              & "' did not match any file(s) known to git");
+                  Set_Command_Failure;
+                  return;
+               end if;
+
+               --  git counts the paths it actually rewrote and, oddly,
+               --  reports them only when no "--" was given: "Updated N
+               --  paths from <tree>" / "from the index".
+               declare
+                  St : constant Version.Status.Status_Result :=
+                    Version.Status.Current_Status;
+                  Index : constant Version.Staging.Index_Entry_Vectors.Vector :=
+                    Version.Staging.Load (Repo);
+                  Tree_Items : Version.Objects.Tree_Entry_Vectors.Vector;
+                  Updated : Natural := 0;
+
+                  function Dirty (P : String) return Boolean is
+                    (for some C of St.Changes => To_String (C.Path) = P);
+
+                  function Tree_Differs (P : String) return Boolean is
+                     K : constant Natural :=
+                       Version.Staging.Find_Path (Index, P);
+                  begin
+                     if K = Natural'Last then
+                        return True;
+                     end if;
+                     for T of Tree_Items loop
+                        if To_String (T.Path) = P then
+                           return Version.Objects."/="
+                             (T.Id, Index.Element (K).Id);
+                        end if;
+                     end loop;
+                     return True;
+                  end Tree_Differs;
+               begin
+                  if Has_Rev then
+                     Tree_Items := Version.Objects.Flatten_Tree
+                       (Repo, Commit_Tree_Id (Repo, Source_Commit));
+                  end if;
+                  for P of Matches loop
+                     if Dirty (P) or else (Has_Rev and then Tree_Differs (P))
+                     then
+                        Updated := Updated + 1;
+                     end if;
+                     if Ours or else Theirs then
+                        Version.Restore.Restore_Path_From_Index_Stage
+                          (Repo, P, (if Ours then 2 else 3));
+                     elsif Has_Rev then
+                        Version.Checkout.Checkout_Path_From_Commit
+                          (Source_Commit, P);
+                     else
+                        Version.Restore.Restore_Path_From_Index (Repo, P);
+                     end if;
+                  end loop;
+                  if not Seen_Sep and then not Quiet_Mode
+                    and then Length (Pathspec_File) = 0
+                  then
+                     declare
+                        N : constant String :=
+                          Ada.Strings.Fixed.Trim
+                            (Natural'Image (Updated), Ada.Strings.Left);
+                        Word : constant String :=
+                          (if Updated = 1 then " path" else " paths");
+                     begin
+                        if Has_Rev then
+                           declare
+                              Tree : constant Version.Objects.Hex_Object_Id :=
+                                Commit_Tree_Id (Repo, Source_Commit);
+                              Hex  : constant String :=
+                                Version.Objects.To_String (Tree);
+                           begin
+                              Stderr_Line
+                                ("Updated " & N & Word & " from "
+                                 & Hex (Hex'First
+                                        .. Hex'First
+                                           + Version.Revisions
+                                               .Unique_Abbrev_Length
+                                                 (Repo, Tree, 7) - 1));
+                           end;
+                        else
+                           Stderr_Line
+                             ("Updated " & N & Word & " from the index");
+                        end if;
+                     end;
+                  end if;
+               end;
+            end;
+            return;
+         end if;
+
+         ------------------------------------------------------------------
+         --  Branch form.
+         ------------------------------------------------------------------
+         if Has_Rev and then To_String (Rev) = "-" then
+            Rev := To_Unbounded_String (Previous_Branch);
+         end if;
+
+         --  `-t <remote>/<branch>` alone names the new branch after the
+         --  remote one (the part after the remote name).
+         if Track and then not Create and then Has_Rev
+           and then Version.Refs.Ref_Exists
+                      (Repo, "refs/remotes/" & To_String (Rev))
+         then
+            declare
+               R : constant String := To_String (Rev);
+            begin
+               for Rm of Version.Remotes.List_Remotes loop
+                  declare
+                     Pfx : constant String := To_String (Rm.Name) & "/";
+                  begin
+                     if Has_Prefix (R, Pfx) and then R'Length > Pfx'Length then
+                        Set_Create (R (R'First + Pfx'Length .. R'Last),
+                                    Forced => False);
+                        exit;
+                     end if;
+                  end;
+               end loop;
+               if not Create then
+                  Fatal ("missing branch name; try -" & Create_Letter);
+                  return;
+               end if;
+            end;
+         end if;
+
+         if Orphan then
+            --  A new unborn branch: HEAD points at it, the index and
+            --  working tree come from the start point (HEAD by default)
+            --  and stay staged for its first commit.
+            declare
+               Name : constant String := To_String (New_Name);
+            begin
+               if Is_Local_Branch (Name) then
+                  Fatal ("a branch named '" & Name & "' already exists");
+                  return;
+               end if;
+               Version.Ref_Names.Require_Branch_Name (Name);
+               if Has_Rev then
+                  declare
+                     Target : constant Version.Objects.Hex_Object_Id :=
+                       Version.Revisions.Resolve_Commit (Repo, To_String (Rev));
+                  begin
+                     if Version.Objects.To_String (Target) /= Head_Id_Text then
+                        Move_To (Target, Branch => "");
+                     end if;
+                  end;
+               end if;
+               Version.Refs.Write_Symbolic_HEAD
+                 (Repo, Target => "refs/heads/" & Name);
+               if As_Switch then
+                  --  `switch --orphan` starts from nothing: tracked files
+                  --  leave the working tree and the index is emptied.
+                  Version.Restore.Restore_Working_Tree_For_Tree
+                    (Repo,
+                     Version.Write.Write_Tree_From_Index
+                       (Repo, Version.Staging.Index_Entry_Vectors.Empty_Vector));
+                  Version.Staging.Write
+                    (Repo, Version.Staging.Index_Entry_Vectors.Empty_Vector);
+               end if;
+               Stderr_Line ("Switched to a new branch '" & Name & "'");
+               return;
+            end;
+         end if;
+
+         if Create then
+            declare
+               Name  : constant String := To_String (New_Name);
+               Start : constant String :=
+                 (if Has_Rev then To_String (Rev) else "HEAD");
+               Exists : constant Boolean := Is_Local_Branch (Name);
+               Target : Version.Objects.Object_Id_Storage;
+            begin
+               if not Resolves (Start) then
+                  Fatal ("invalid reference: " & Start);
+                  return;
+               end if;
+               Target := Version.Revisions.Resolve_Commit (Repo, Start);
+               if Exists and then not Create_Force then
+                  Fatal ("a branch named '" & Name & "' already exists");
+                  return;
+               end if;
+               if Exists and then not Ignore_Other
+                 and then Other_Worktree_With (Name) /= ""
+               then
+                  Fatal ("'" & Name & "' is already used by worktree at '"
+                         & Other_Worktree_With (Name) & "'");
+                  return;
+               end if;
+               Version.Ref_Names.Require_Branch_Name (Name);
+
+               declare
+                  On_It : constant Boolean :=
+                    Exists and then Head_Attached
+                    and then Version.Refs.Branch_Name (Head) = Name;
+               begin
+                  if Exists then
+                     --  -B: the safety check runs against the tip being
+                     --  left, then the branch is reset in place and
+                     --  checked out.
+                     if not Force then
+                        declare
+                           Carried : Version.Path_Safety.Path_Vector;
+                        begin
+                           Version.Checkout.Require_Switch_Safe
+                             (Repo, Target, Carried);
+                        exception
+                           when E : Ada.IO_Exceptions.Data_Error =>
+                              Error_Line (Ada.Exceptions.Exception_Message (E));
+                              Set_Command_Failure;
+                              return;
+                        end;
+                     end if;
+                     Note_Previous_Head (Target);
+                     if On_It then
+                        --  Resetting the checked-out branch: move the
+                        --  working tree first (HEAD still names the old
+                        --  tip, so the safety check and the restore see
+                        --  the real change), then the ref, then re-attach.
+                        Move_To (Target, Branch => "", Log => False);
+                        Reset_Branch_Ref (Name, Target, Start);
+                        Version.Refs.Write_Symbolic_HEAD
+                          (Repo, Target => "refs/heads/" & Name);
+                        --  git logs an update of the branch HEAD points
+                        --  at into HEAD's reflog too, then the checkout.
+                        Version.Reflog.Append
+                          (Repo => Repo, Ref => "HEAD",
+                           Old_Id => Head_Id_Text,
+                           New_Id => Version.Objects.To_String (Target),
+                           Message => "branch: Reset to " & Start);
+                        Version.Reflog.Append
+                          (Repo => Repo, Ref => "HEAD",
+                           Old_Id => Version.Objects.To_String (Target),
+                           New_Id => Version.Objects.To_String (Target),
+                           Message => "checkout: moving from " & Name
+                                      & " to " & Name);
+                     else
+                        Reset_Branch_Ref (Name, Target, Start);
+                        Move_To (Target, Branch => Name,
+                                 Reflog_Old =>
+                                   (if Head_Attached
+                                    then Version.Refs.Branch_Name (Head)
+                                    else Head_Id_Text));
+                     end if;
+                     Report_Switch
+                       ((if On_It then "Reset branch '" & Name & "'"
+                         else "Switched to and reset branch '" & Name & "'"),
+                        Branch => Name);
+                  else
+                     Note_Previous_Head (Target);
+                     Version.Branch.Create_Branch
+                       (Name, Version.Objects.To_String (Target));
+                     begin
+                        Move_To (Target, Branch => Name);
+                     exception
+                        when Handled =>
+                           Version.Branch.Delete_Branch (Name, Force => True);
+                           raise;
+                     end;
+                     Report_Switch ("Switched to a new branch '" & Name & "'");
+                  end if;
+                  Setup_Tracking (Name, Start);
+               end;
+               return;
+            end;
+         end if;
+
+         if not Has_Rev then
+            if As_Switch then
+               if Detach then
+                  Rev := To_Unbounded_String ("HEAD");
+                  Has_Rev := True;
+               else
+                  Fatal ("missing branch or commit argument");
+                  return;
+               end if;
+            elsif Detach then
+               Rev := To_Unbounded_String ("HEAD");
+               Has_Rev := True;
+            else
+               --  A bare `checkout` lists the local edits; `checkout -f`
+               --  throws them away, re-checking out HEAD where it is.
+               --  Neither writes a reflog entry.
+               if Force and then Head_Id_Text'Length > 0 then
+                  Version.Checkout.Checkout_Commit
+                    (Version.Objects.To_Object_Id (Head_Id_Text),
+                     Branch => (if Head_Attached
+                                then Version.Refs.Branch_Name (Head) else ""),
+                     Force => True, Write_Reflog => False);
+               elsif not Force then
+                  Print_Carried_Modifications;
+               end if;
+               return;
+            end if;
+         end if;
+
+         declare
+            Name : constant String := To_String (Rev);
+         begin
+            if Detach then
+               if not Resolves (Name) then
+                  if As_Switch then
+                     Fatal ("invalid reference: " & Name);
+                  else
+                     Error_Line ("pathspec '" & Name
+                                 & "' did not match any file(s) known to git");
+                     Set_Command_Failure;
+                  end if;
+                  return;
+               end if;
+               declare
+                  Target : constant Version.Objects.Hex_Object_Id :=
+                    Version.Revisions.Resolve_Commit (Repo, Name);
+                  Hex : constant String := Version.Objects.To_String (Target);
+               begin
+                  Note_Previous_Head (Target);
+                  Move_To (Target, Branch => "", Typed => Name);
+                  --  Explicit --detach: git skips the advice block.
+                  Report_Switch
+                    ("HEAD is now at " & Hex (Hex'First .. Hex'First + 6) & " "
+                     & Version.Objects.Commit_Message_First_Line
+                         (Version.Objects.Read_Object (Repo, Target)));
+               end;
+               return;
+            end if;
+
+            if Is_Local_Branch (Name) then
+               if not Ignore_Other and then Other_Worktree_With (Name) /= ""
+               then
+                  Fatal ("'" & Name & "' is already used by worktree at '"
+                         & Other_Worktree_With (Name) & "'");
+                  return;
+               end if;
+               declare
+                  Target : constant Version.Objects.Hex_Object_Id :=
+                    Version.Revisions.Resolve_Commit (Repo, Name);
+                  Already : constant Boolean :=
+                    Head_Attached and then Version.Refs.Branch_Name (Head) = Name;
+               begin
+                  Note_Previous_Head (Target);
+                  Move_To (Target, Branch => Name);
+                  Report_Switch
+                    ((if Already then "Already on '" & Name & "'"
+                      else "Switched to branch '" & Name & "'"),
+                     Branch => Name);
+               end;
+               return;
+            end if;
+
+            --  Not a local branch: a unique remote-tracking branch of that
+            --  name is checked out as a new tracking branch (DWIM), else a
+            --  commit-ish detaches HEAD (checkout) or is refused (switch).
+            declare
+               Remote : constant String :=
+                 (if Guess then Unique_Remote_For (Name) else "");
+            begin
+               if Remote /= "" then
+                  declare
+                     Start  : constant String := Remote & "/" & Name;
+                     Target : constant Version.Objects.Hex_Object_Id :=
+                       Version.Revisions.Resolve_Commit
+                         (Repo, "refs/remotes/" & Start);
+                  begin
+                     Note_Previous_Head (Target);
+                     Version.Branch.Create_Branch
+                       (Name, Version.Objects.To_String (Target));
+                     begin
+                        Move_To (Target, Branch => Name);
+                     exception
+                        when Handled =>
+                           Version.Branch.Delete_Branch (Name, Force => True);
+                           raise;
+                     end;
+                     Report_Switch ("Switched to a new branch '" & Name & "'");
+                     Setup_Tracking (Name, Start);
+                  end;
+                  return;
+               end if;
+            end;
+
+            if not Resolves (Name) then
+               if As_Switch then
+                  Fatal ("invalid reference: " & Name);
+               else
+                  Error_Line ("pathspec '" & Name
+                              & "' did not match any file(s) known to git");
+                  Set_Command_Failure;
+               end if;
+               return;
+            end if;
+
+            declare
+               Target : constant Version.Objects.Hex_Object_Id :=
+                 Version.Revisions.Resolve_Commit (Repo, Name);
+               Hex : constant String := Version.Objects.To_String (Target);
+            begin
+               if As_Switch then
+                  Fatal ("a branch is expected, got commit '" & Name & "'");
+                  Stderr_Line ("hint: If you want to detach HEAD at the "
+                               & "commit, try again with the --detach option.");
+                  return;
+               end if;
+               Note_Previous_Head (Target);
+               Move_To (Target, Branch => "", Typed => Name);
+               Print_Carried_Modifications;
+               Print_Detached_Head_Advice (Repo, Name, Target);
+               pragma Unreferenced (Hex);
+            end;
+         end;
+      end;
+   exception
+      when Handled =>
+         null;
+   end Run_Checkout;
+
    function Failure_Is_Ordinary (Command : String) return Boolean is
      (Command in "apply" | "checkout" | "restore" | "switch" | "notes"
                  | "bisect" | "merge" | "cherry-pick" | "revert"
@@ -15314,130 +17644,7 @@ package body Version.CLI is
             end;
 
          elsif Command = "save" then
-            declare
-               Usage      : constant String :=
-                 "version save [--amend] [--no-verify] [-S[<keyid>]]"
-                 & " [--no-gpg-sign] [-m] MESSAGE";
-               I          : Natural := 2;
-               Amend      : Boolean := False;
-               No_Verify  : Boolean := False;
-               Message    : Unbounded_String;
-               Has_Message : Boolean := False;
-               Used_M     : Boolean := False;
-               Sign        : Version.Write.Sign_Choice :=
-                 Version.Write.Sign_From_Config;
-               Signing_Key : Unbounded_String;
-            begin
-               while I <= Count loop
-                  if Arg (I) = "--amend" then
-                     if Amend then
-                        Usage_Error ("duplicate option: --amend", Usage);
-                        return;
-                     end if;
-
-                     Amend := True;
-                     I := I + 1;
-
-                  elsif Arg (I) = "--no-verify" then
-                     if No_Verify then
-                        Usage_Error ("duplicate option: --no-verify", Usage);
-                        return;
-                     end if;
-
-                     No_Verify := True;
-                     I := I + 1;
-
-                  elsif Arg (I) = "-m" then
-                     if Used_M then
-                        Usage_Error ("duplicate option: -m", Usage);
-                        return;
-                     elsif I = Count then
-                        Usage_Error ("-m requires a message", Usage);
-                        return;
-                     elsif Has_Message then
-                        Usage_Error ("too many save arguments", Usage);
-                        return;
-                     end if;
-
-                     Used_M := True;
-                     Has_Message := True;
-                     Message := To_Unbounded_String (Arg (I + 1));
-                     I := I + 2;
-
-                  elsif Arg (I) = "-S" or else Arg (I) = "--gpg-sign" then
-                     Sign := Version.Write.Sign_Force;
-                     Signing_Key := Null_Unbounded_String;
-                     I := I + 1;
-
-                  elsif Arg (I)'Length > 2
-                    and then Arg (I) (Arg (I)'First .. Arg (I)'First + 1) = "-S"
-                  then
-                     Sign := Version.Write.Sign_Force;
-                     Signing_Key :=
-                       To_Unbounded_String
-                         (Arg (I) (Arg (I)'First + 2 .. Arg (I)'Last));
-                     I := I + 1;
-
-                  elsif Arg (I)'Length > 11
-                    and then Arg (I) (Arg (I)'First .. Arg (I)'First + 10)
-                             = "--gpg-sign="
-                  then
-                     Sign := Version.Write.Sign_Force;
-                     Signing_Key :=
-                       To_Unbounded_String
-                         (Arg (I) (Arg (I)'First + 11 .. Arg (I)'Last));
-                     I := I + 1;
-
-                  elsif Arg (I) = "--no-gpg-sign" then
-                     Sign := Version.Write.Sign_Disable;
-                     Signing_Key := Null_Unbounded_String;
-                     I := I + 1;
-
-                  elsif Arg (I)'Length > 0
-                    and then Arg (I) (Arg (I)'First) = '-'
-                  then
-                     Usage_Error ("unknown save option: " & Arg (I), Usage);
-                     return;
-
-                  else
-                     if Has_Message then
-                        Usage_Error ("too many save arguments", Usage);
-                        return;
-                     end if;
-
-                     Has_Message := True;
-                     Message := To_Unbounded_String (Arg (I));
-                     I := I + 1;
-                  end if;
-               end loop;
-
-               if not Has_Message then
-                  Usage_Error ("missing save message", Usage);
-                  return;
-               elsif Amend then
-                  Version.Write.Save_Amend
-                    (Message     => To_String (Message),
-                     Run_Hooks   => not No_Verify,
-                     Sign        => Sign,
-                     Signing_Key => To_String (Signing_Key));
-               else
-                  Version.Write.Save
-                    (Message     => To_String (Message),
-                     Run_Hooks   => not No_Verify,
-                     Sign        => Sign,
-                     Signing_Key => To_String (Signing_Key));
-               end if;
-
-               declare
-                  Repo : constant Version.Repository.Repository_Handle :=
-                    Version.Repository.Open;
-               begin
-                  Print_Commit_Summary
-                    (Repo,
-                     Version.Objects.To_Object_Id
-                       (Version.Refs.Current_Commit_Id (Repo)));
-               end;
-            end;
+            Run_Commit;
 
          elsif Command = "branch" then
             declare
@@ -21925,265 +24132,10 @@ package body Version.CLI is
             end;
 
          elsif Command = "checkout" then
-            declare
-               Usage : constant String :=
-                 "version checkout REV [-- PATHSPEC...]";
-            begin
-               if Count < 2 then
-                  Usage_Error ("missing checkout revision", Usage);
-               elsif Arg (2)'Length > 0 and then Arg (2) (Arg (2)'First) = '-' then
-                  Usage_Error ("unknown checkout option: " & Arg (2), Usage);
-               elsif Count = 2 then
-                  declare
-                     Repo : constant Version.Repository.Repository_Handle :=
-                       Version.Repository.Open;
-                     Head : constant Version.Refs.Head_Info :=
-                       Version.Refs.Read_Head (Repo);
-                     --  `checkout <branch>` attaches HEAD to the branch; a
-                     --  commit, tag or other revision detaches it, as git does.
-                     Is_Branch : constant Boolean :=
-                       Version.Refs.Ref_Exists
-                         (Repo, "refs/heads/" & Arg (2));
-                     Already   : constant Boolean :=
-                       Is_Branch
-                         and then Version.Refs.Is_Attached (Head)
-                         and then Version.Refs.Branch_Name (Head) = Arg (2);
-                  begin
-                     if Is_Branch then
-                        Version.Checkout.Checkout_Commit
-                          (Version.Revisions.Resolve_Commit (Repo, Arg (2)),
-                           Branch => Arg (2));
-                        Print_Carried_Modifications;
-                        if Already then
-                           Stderr_Line ("Already on '" & Arg (2) & "'");
-                        else
-                           Stderr_Line
-                             ("Switched to branch '" & Arg (2) & "'");
-                        end if;
-                     else
-                        declare
-                           C : constant Version.Objects.Hex_Object_Id :=
-                             Version.Revisions.Resolve_Commit (Repo, Arg (2));
-                        begin
-                           Version.Checkout.Checkout_Commit (C);
-                           Print_Carried_Modifications;
-                           Print_Detached_Head_Advice (Repo, Arg (2), C);
-                        end;
-                     end if;
-                  end;
-               elsif Arg (3) /= "--" then
-                  if Arg (3)'Length > 0
-                    and then Arg (3) (Arg (3)'First) = '-'
-                  then
-                     Usage_Error ("unknown checkout option: " & Arg (3), Usage);
-                  else
-                     Usage_Error ("expected -- before checkout pathspec", Usage);
-                  end if;
-               elsif Count = 3 then
-                  Usage_Error ("missing checkout pathspec", Usage);
-               else
-                  declare
-                     Repo   : constant Version.Repository.Repository_Handle :=
-                       Version.Repository.Open;
-                     Commit : constant Version.Objects.Hex_Object_Id :=
-                       Version.Revisions.Resolve_Commit (Repo, Arg (2));
-                  begin
-                     declare
-                        Specs   :
-                          constant Version.Pathspec.Pathspec_Vectors.Vector :=
-                            Pathspecs_From_Args (4);
-                        Matches : constant Version.Path_Safety.Path_Vector :=
-                          Matching_Candidates (Tree_Candidates (Commit), Specs);
-                     begin
-                        if Matches.Is_Empty then
-                           raise Ada.IO_Exceptions.Data_Error
-                             with Pathspec_No_Source_Paths_Text;
-                        end if;
-
-                        for I in Matches.First_Index .. Matches.Last_Index loop
-                           Version.Checkout.Checkout_Path_From_Commit
-                             (Commit, Matches.Element (I));
-                        end loop;
-                     end;
-                  end;
-               end if;
-            end;
+            Run_Checkout (As_Switch => False);
 
          elsif Command = "switch" then
-            declare
-               Usage : constant String :=
-                 "version switch [-c|-C <new-branch>] [--detach]"
-                 & " (<branch>|<start-point>|-)";
-               Create   : Boolean := False;
-               Detach   : Boolean := False;
-               New_Name : Ada.Strings.Unbounded.Unbounded_String;
-               Target   : Ada.Strings.Unbounded.Unbounded_String;
-               Has_Tgt  : Boolean := False;
-               Bad      : Boolean := False;
-               I        : Positive := 2;
-
-               function Previous_Branch
-                 (Repo : Version.Repository.Repository_Handle) return String
-               is
-                  Entries :
-                    constant Version.Reflog.Log_Entry_Vectors.Vector :=
-                      Version.Reflog.Read_Entries (Repo, "HEAD");
-               begin
-                  --  git names "-" from the newest HEAD reflog entry, whose
-                  --  message is "... moving from <from> to <to>". version's
-                  --  own switch writes the same "moving from X to Y" shape,
-                  --  so this parse works for both git- and version-made logs.
-                  if not Entries.Is_Empty then
-                     declare
-                        M   : constant String :=
-                          Ada.Strings.Unbounded.To_String
-                            (Entries.Last_Element.Message);
-                        Key : constant String := "moving from ";
-                        F   : Natural := 0;
-                        T   : Natural := 0;
-                     begin
-                        for P in M'First .. M'Last - Key'Length + 1 loop
-                           if M (P .. P + Key'Length - 1) = Key then
-                              F := P + Key'Length;
-                              exit;
-                           end if;
-                        end loop;
-                        if F /= 0 then
-                           for P in reverse F .. M'Last - 3 loop
-                              if M (P .. P + 3) = " to " then
-                                 T := P;
-                                 exit;
-                              end if;
-                           end loop;
-                           if T /= 0 then
-                              return M (F .. T - 1);
-                           end if;
-                        end if;
-                     end;
-                  end if;
-                  raise Ada.IO_Exceptions.Data_Error
-                    with "switch: no previous branch to switch to";
-               end Previous_Branch;
-            begin
-               while I <= Count and then not Bad loop
-                  if Arg (I) = "-c" or else Arg (I) = "-C" then
-                     if I = Count then
-                        Usage_Error
-                          ("switch -c requires a branch name", Usage);
-                        Bad := True;
-                     else
-                        Create   := True;
-                        New_Name :=
-                          Ada.Strings.Unbounded.To_Unbounded_String
-                            (Arg (I + 1));
-                        I := I + 2;
-                     end if;
-                  elsif Arg (I) = "--detach" or else Arg (I) = "-d" then
-                     Detach := True;
-                     I      := I + 1;
-                  elsif Arg (I) = "-" then
-                     Target  := Ada.Strings.Unbounded.To_Unbounded_String ("-");
-                     Has_Tgt := True;
-                     I       := I + 1;
-                  elsif Arg (I)'Length > 0
-                    and then Arg (I) (Arg (I)'First) = '-'
-                  then
-                     Usage_Error ("unknown switch option: " & Arg (I), Usage);
-                     Bad := True;
-                  elsif not Has_Tgt then
-                     Target  :=
-                       Ada.Strings.Unbounded.To_Unbounded_String (Arg (I));
-                     Has_Tgt := True;
-                     I       := I + 1;
-                  else
-                     Usage_Error ("too many switch arguments", Usage);
-                     Bad := True;
-                  end if;
-               end loop;
-
-               if not Bad then
-                  declare
-                     Repo : constant Version.Repository.Repository_Handle :=
-                       Version.Repository.Open;
-                     Prev_Detached : constant Boolean :=
-                       Version.Refs.Is_Detached (Repo);
-                     Tgt  : constant String :=
-                       (if Has_Tgt
-                          and then Ada.Strings.Unbounded.To_String (Target) = "-"
-                        then Previous_Branch (Repo)
-                        elsif Has_Tgt
-                        then Ada.Strings.Unbounded.To_String (Target)
-                        elsif Detach then "HEAD"
-                        else "");
-
-                     procedure Note_Previous is
-                     begin
-                        --  git announces the abandoned commit whenever a switch
-                        --  leaves a detached HEAD, before the destination line.
-                        if Prev_Detached then
-                           declare
-                              P   : constant Version.Objects.Hex_Object_Id :=
-                                Version.Refs.Detached_Commit_Id (Repo);
-                              Hex : constant String :=
-                                Version.Objects.To_String (P);
-                              Obj : constant Version.Objects.Git_Object :=
-                                Version.Objects.Read_Object (Repo, P);
-                           begin
-                              Success_Line
-                                ("Previous HEAD position was "
-                                 & Hex (Hex'First .. Hex'First + 6) & " "
-                                 & Version.Objects.Commit_Message_First_Line
-                                     (Obj));
-                           end;
-                        end if;
-                     end Note_Previous;
-                  begin
-                     if Create then
-                        Note_Previous;
-                        if Has_Tgt then
-                           Version.Branch.Create_Branch
-                             (Ada.Strings.Unbounded.To_String (New_Name),
-                              Version.Objects.To_String
-                                (Version.Revisions.Resolve_Commit (Repo, Tgt)));
-                        else
-                           Version.Branch.Create_Branch
-                             (Ada.Strings.Unbounded.To_String (New_Name));
-                        end if;
-                        Version.Branch.Switch_Branch
-                          (Ada.Strings.Unbounded.To_String (New_Name));
-                        Stderr_Line
-                          ("Switched to a new branch '"
-                           & Ada.Strings.Unbounded.To_String (New_Name) & "'");
-                     elsif not Has_Tgt and then not Detach then
-                        Usage_Error ("switch requires a branch name", Usage);
-                     elsif Detach then
-                        declare
-                           C   : constant Version.Objects.Hex_Object_Id :=
-                             Version.Revisions.Resolve_Commit (Repo, Tgt);
-                           Hex : constant String :=
-                             Version.Objects.To_String (C);
-                           Obj : constant Version.Objects.Git_Object :=
-                             Version.Objects.Read_Object (Repo, C);
-                        begin
-                           Note_Previous;
-                           Version.Checkout.Checkout_Commit (C);
-                           Print_Carried_Modifications;
-                           --  `switch --detach` is explicit intent, so git
-                           --  omits the detached-HEAD advice block here.
-                           Stderr_Line
-                             ("HEAD is now at "
-                              & Hex (Hex'First .. Hex'First + 6) & " "
-                              & Version.Objects.Commit_Message_First_Line (Obj));
-                        end;
-                     else
-                        Note_Previous;
-                        Version.Branch.Switch_Branch (Tgt);
-                        Print_Carried_Modifications;
-                        Stderr_Line ("Switched to branch '" & Tgt & "'");
-                     end if;
-                  end;
-               end if;
-            end;
+            Run_Checkout (As_Switch => True);
 
          elsif Command = "reset" then
             declare
@@ -23580,7 +25532,7 @@ package body Version.CLI is
                  Version.Format_Patch.Auto;
                Reroll    : Natural := 0;
                Emit_Sig  : Boolean := True;
-               Sig       : Unbounded_String := To_Unbounded_String ("2.54.0");
+               Sig       : Unbounded_String := To_Unbounded_String ("2.55.0");
                Start_No  : Positive := 1;
                Context   : Natural := 3;   --  -U<n>/--unified=<n>
                Show_Summary : Boolean := True;   --  --stat drops the summary

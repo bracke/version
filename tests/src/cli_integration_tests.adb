@@ -4950,6 +4950,244 @@ package body CLI_Integration_Tests is
    --  bisect run (verdict from exit status: 0 good / 125 skip / 1..127 bad)
    --  and patch-id, both byte-compared with git.  bisect run also proves an
    --  untracked file (its own test script!) no longer blocks the checkouts.
+   --  A transcript driver shared by the commit and checkout parity tests:
+   --  the same scenario script runs once under git and once under this
+   --  tool, each in a fresh isolated repository, recording every command's
+   --  combined output and exit code plus the repository state after it
+   --  (HEAD, log, status, reflog). The two transcripts must be identical.
+   procedure Run_Parity_Transcript
+     (Root, Scenario, Context : String)
+   is
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      CLI     : constant String :=
+        Version.Test_Support.Join (Old_Dir, "bin/main");
+      Q       : constant Character := '"';
+
+      --  git localizes its messages, so pin the locale; pin dates and the
+      --  default branch so both repositories get identical ids; isolate
+      --  HOME so no user config leaks in.
+      Env : constant String :=
+        "LC_ALL=C LANG=C LANGUAGE=C GIT_CONFIG_NOSYSTEM=1 "
+        & "GIT_AUTHOR_DATE='2024-01-02T03:04:05+0100' "
+        & "GIT_COMMITTER_DATE='2024-01-02T03:04:05+0100'";
+
+      Driver : constant String :=
+        "set -u" & LF
+        & "export " & Env & LF
+        & "export HOME=" & Q & "$BASE/home_$NAME" & Q
+        & "; mkdir -p " & Q & "$HOME" & Q & LF
+        --  The fixture runner points GIT_CONFIG_GLOBAL at /dev/null; both
+        --  tools must see the same global file, so re-point it into HOME.
+        & "export GIT_CONFIG_GLOBAL=" & Q & "$HOME/.gitconfig" & Q & LF
+        & "git config --global init.defaultBranch main" & LF
+        & "git config --global advice.detachedHead false" & LF
+        & "TF=" & Q & "$BASE/$NAME.T" & Q & "; : > " & Q & "$TF" & Q & LF
+        & "R=" & Q & "$BASE/$NAME" & Q & "; rm -rf " & Q & "$R" & Q
+        & "; mkdir -p " & Q & "$R" & Q & "; cd " & Q & "$R" & Q & LF
+        --  t LABEL ARGS...: run the tool, record output, exit code, state.
+        & "t() { l=$1; shift; echo " & Q & "\$ $l" & Q
+        & " >> " & Q & "$TF" & Q & "; " & Q & "$TOOL" & Q & " " & Q & "$@" & Q
+        & " >> " & Q & "$TF" & Q & " 2>&1 < /dev/null; echo " & Q
+        & "[rc=$?]" & Q & " >> " & Q & "$TF" & Q & "; state; }" & LF
+        --  te LABEL ARGS...: the same, with $ED as the message editor.
+        & "te() { l=$1; shift; echo " & Q & "\$ $l" & Q
+        & " >> " & Q & "$TF" & Q & "; GIT_EDITOR=" & Q & "$ED" & Q & " "
+        & Q & "$TOOL" & Q & " " & Q & "$@" & Q
+        & " >> " & Q & "$TF" & Q & " 2>&1 < /dev/null; echo " & Q
+        & "[rc=$?]" & Q & " >> " & Q & "$TF" & Q & "; state; }" & LF
+        & "state() { { cat .git/HEAD; git log --all --format='%h|%an|%ae|%ad|%cn|%P|%s|%b' 2>/dev/null;"
+        & " git status --porcelain=v1 -b; git reflog -2 --format=%gs 2>/dev/null;"
+        & " git branch -vv --no-color 2>/dev/null | sed 's/ *$//'; } >> " & Q & "$TF" & Q & " 2>&1; }" & LF
+        & "seed() { git init -q; git config user.email a@b; git config user.name A;"
+        & " printf 'one\ntwo\n' > f; echo k > keep; git add f keep;"
+        & " GIT_AUTHOR_NAME=Orig GIT_AUTHOR_EMAIL=o@o"
+        & " GIT_AUTHOR_DATE='2001-01-01T00:00:00+0000' git commit -qm first; }" & LF;
+
+      procedure Run_Flow (Name, Tool : String) is
+         Script_Path : constant String :=
+           Version.Test_Support.Join (Root, Name & ".sh");
+      begin
+         Version.Test_Support.Write_Text_File
+           (Script_Path,
+            "BASE=" & Q & Root & Q & LF
+            & "NAME=" & Name & LF
+            & "TOOL=" & Q & Tool & Q & LF
+            & Driver & Scenario
+            & "sed -i " & Q & "s#$BASE/wt_$NAME#WT#g; s#$BASE/$NAME#REPO#g" & Q
+            & " " & Q & "$TF" & Q & LF);
+         Version.Git_Fixtures.Run (Root, "bash " & Q & Script_Path & Q);
+      end Run_Flow;
+   begin
+      Run_Flow ("g", "git");
+      Run_Flow ("v", CLI);
+      declare
+         G : constant String :=
+           Read_Raw_Bytes (Version.Test_Support.Join (Root, "g.T"));
+         V : constant String :=
+           Read_Raw_Bytes (Version.Test_Support.Join (Root, "v.T"));
+      begin
+         Assert (G = V,
+                 Context & " transcript must match git byte-for-byte." & LF
+                 & "--- git ---" & LF & G & LF & "--- version ---" & LF & V);
+      end;
+   end Run_Parity_Transcript;
+
+   --  `commit`: git's option surface and the state machines behind it --
+   --  bundled flags, -m paragraphs, amend keeping the author, reuse, fixup
+   --  and squash subjects, sign-off and trailers, dates, partial commits,
+   --  nothing-to-commit, the editor template, merge and cherry-pick
+   --  conclusion, and the unmerged refusal.
+   procedure Commit_Option_Surface_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Q    : constant Character := '"';
+      Scenario : constant String :=
+        "seed" & LF
+        --  The editor: keep a copy of the template, then prepend "ed" to
+        --  the first line so the message is non-empty and edited.
+        & "ED='cp " & Q & "$1" & Q & " tmpl.txt; sed -i 1s/^/ed/'" & LF
+        & "printf 'one\nthree\n' > f" & LF
+        & "t 'nothing staged' commit -m x" & LF
+        & "t 'bundled -am' commit -am second" & LF
+        & "printf 'four\n' >> f" & LF
+        & "t '-m twice + signoff' commit -asm one -m two" & LF
+        & "t 'amend keeps author' commit --amend -m amended" & LF
+        & "t 'amend --no-edit' commit --amend --no-edit" & LF
+        & "t 'amend --reset-author' commit --amend --reset-author -m ra" & LF
+        & "t 'amend --author' commit --amend -m x --author='Z <z@z>'" & LF
+        & "echo more >> f" & LF
+        & "t '-C reuses author' commit -a -C HEAD~1" & LF
+        & "echo more >> f" & LF
+        & "t '--fixup' commit -a --fixup=HEAD" & LF
+        & "echo more >> f" & LF
+        & "t '--squash -m' commit -a --squash=HEAD~1 -m sq" & LF
+        & "echo more >> f" & LF
+        & "t '--date --trailer' commit -am dated --date='2020-05-06T07:08:09+0000'"
+        & " --trailer 'Reviewed-by: R <r@r>'" & LF
+        & "t '--allow-empty' commit --allow-empty -m empty" & LF
+        & "t 'empty message' commit --allow-empty -m ''" & LF
+        & "t 'clean tree' commit -m nothing" & LF
+        & "t '--dry-run' commit --dry-run" & LF
+        & "echo p > f; echo p > keep; echo n > newf" & LF
+        & "t 'untracked pathspec' commit -m x newf" & LF
+        & "t 'partial --only' commit -m only f" & LF
+        & "t 'partial --include' commit -i -m incl keep" & LF
+        & "rm keep" & LF
+        & "t '-a deletion' commit -am del" & LF
+        & "t '-a with paths' commit -am x f" & LF
+        & "t 'verbatim' commit --allow-empty -m 'x  ' --cleanup=verbatim" & LF
+        --  The editor path, with the template bytes captured for comparison.
+        & "echo e > f" & LF
+        & "te 'editor -a -v' commit -a -v" & LF
+        & "cat tmpl.txt >> " & Q & "$TF" & Q & LF
+        & "te 'editor amend' commit --amend" & LF
+        & "cat tmpl.txt >> " & Q & "$TF" & Q & LF
+        & "echo u > u; git add u; echo w > w" & LF
+        & "te 'editor signoff status' commit -s" & LF
+        & "cat tmpl.txt >> " & Q & "$TF" & Q & LF
+        & "ED=true te 'editor no change' commit --allow-empty" & LF
+        --  Concluding a merge: two parents, MERGE_MSG, state cleared.
+        & "git checkout -qb side; echo s > s; git add s; git commit -qm s;"
+        & " git checkout -q main; echo m > m; git add m; git commit -qm m;"
+        & " git merge -q --no-commit side > /dev/null 2>&1; echo r > r" & LF
+        & "t 'merge --amend refused' commit --amend -m x" & LF
+        & "t 'merge commit' commit -m merged" & LF
+        --  A conflicted merge: refused until resolved, then concluded.
+        & "git checkout -qb c1; printf 'one\nS\n' > f; git commit -qam s2;"
+        & " git checkout -q main; printf 'one\nM\n' > f; git commit -qam m2;"
+        & " git merge -q c1 > /dev/null 2>&1" & LF
+        & "t 'unmerged refused' commit -m x" & LF
+        & "printf 'one\nR\n' > f; git add f" & LF
+        & "te 'resolved merge editor' commit" & LF
+        & "cat tmpl.txt >> " & Q & "$TF" & Q & LF
+        --  A conflicted cherry-pick keeps the picked author.
+        & "git checkout -qb c2; printf 'one\nP\n' > f;"
+        & " GIT_AUTHOR_NAME=P GIT_AUTHOR_EMAIL=p@p git commit -qam picked;"
+        & " git checkout -q main; printf 'one\nQ\n' > f; git commit -qam q;"
+        & " git cherry-pick c2 > /dev/null 2>&1; printf 'one\nZ\n' > f; git add f" & LF
+        & "t 'cherry-pick conclude' commit -m mine" & LF;
+   begin
+      Run_Parity_Transcript (Root, Scenario, "commit");
+   end Commit_Option_Surface_Matches_Git;
+
+   --  `checkout`/`switch`: branch creation and reset, orphans, detaching,
+   --  the remote-name DWIM and tracking, carried and refused local edits
+   --  (staged ones keeping their index state), path restores with git's
+   --  "Updated N paths" line, and switch's stricter operand rules.
+   procedure Checkout_Option_Surface_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Q    : constant Character := '"';
+      Scenario : constant String :=
+        "seed" & LF
+        & "git checkout -qb side; echo 2 > f; git commit -qam side;"
+        & " git checkout -q main; git branch -q f;"
+        & " git remote add origin .; git fetch -q origin;"
+        & " git update-ref refs/remotes/origin/feat side" & LF
+        & "t 'branch' checkout side" & LF
+        & "t 'same branch' checkout side" & LF
+        & "t '-q' checkout -q main" & LF
+        & "t 'detach rev' checkout side~0" & LF
+        & "t 'detach same commit' checkout side~0" & LF
+        & "t '--detach branch' checkout --detach main" & LF
+        & "t 'dash' checkout -" & LF
+        & "t 'main' checkout main" & LF
+        & "t '-b' checkout -b nb" & LF
+        & "t '-b existing' checkout -b side" & LF
+        & "t '-B current' checkout -B nb side" & LF
+        & "t '-B other' checkout -B f main" & LF
+        & "t 'DWIM remote' checkout feat" & LF
+        & "git update-ref refs/remotes/origin/feat2 side" & LF
+        & "t 'back to main' checkout -q main" & LF
+        & "t '--no-guess' checkout --no-guess feat2" & LF
+        & "t '-t remote' checkout -t origin/feat2" & LF
+        & "t '-b from remote' checkout -b x2 origin/feat" & LF
+        & "t 'unknown' checkout nosuch" & LF
+        & "t 'switch commit' switch side~0" & LF
+        & "t 'switch bad' switch nosuch" & LF
+        & "t 'switch none' switch" & LF
+        & "t 'switch -c' switch -c sw main" & LF
+        & "t 'switch -C' switch -C f side" & LF
+        & "t 'switch -d' switch -d main" & LF
+        & "t 'switch dash' switch -" & LF
+        & "t 'orphan' checkout --orphan orph" & LF
+        & "t 'orphan back' checkout -q -f main" & LF
+        --  Local edits: carried, listed, refused, discarded.
+        & "echo mod >> keep; echo mod2 > f" & LF
+        & "t 'conflict refused' checkout side" & LF
+        & "t 'conflict -f' checkout -f side" & LF
+        & "git checkout -q main; echo mod >> keep; echo n > newf; git add newf keep; git rm -q --cached f" & LF
+        & "t 'staged carried' checkout side" & LF
+        & "t 'staged carried back' checkout main" & LF
+        & "git add -A; git commit -qm staged" & LF
+        --  Path restores.
+        & "echo z > keep; echo z > newf" & LF
+        & "t 'path from index' checkout -- keep" & LF
+        & "t 'path nodash' checkout newf" & LF
+        & "t 'tree path' checkout side -- keep" & LF
+        & "t 'tree path nodash' checkout side keep" & LF
+        & "t 'path nomatch' checkout -- nosuch" & LF
+        & "t '-b with path' checkout -b zz -- keep" & LF
+        & "t 'ours outside' checkout --ours keep" & LF
+        --  --ours/--theirs on a real conflict.
+        & "git checkout -q -f main; git checkout -qb o1; printf 'one\nS\n' > f; git add f; git commit -qm o1;"
+        & " git checkout -q main; printf 'one\nM\n' > f; git add f; git commit -qm o2;"
+        & " git merge -q o1 > /dev/null 2>&1" & LF
+        & "t '--ours' checkout --ours f; cat f >> " & Q & "$TF" & Q & LF
+        & "t '--theirs' checkout --theirs -- f; cat f >> " & Q & "$TF" & Q & LF
+        & "git merge --abort" & LF
+        --  A branch checked out in another worktree.
+        & "git worktree add -q ../wt_$NAME side > /dev/null 2>&1" & LF
+        & "t 'worktree in use' checkout side" & LF
+        & "t 'worktree ignore' checkout --ignore-other-worktrees side" & LF;
+   begin
+      Run_Parity_Transcript (Root, Scenario, "checkout");
+   end Checkout_Option_Surface_Matches_Git;
+
    procedure Bisect_Run_And_Patch_Id_Match_Git
      (T : in out AUnit.Test_Cases.Test_Case'Class)
    is
@@ -6331,6 +6569,12 @@ package body CLI_Integration_Tests is
       Register_Routine
         (T, Notes_Add_Overwrite_Matches_Git'Access,
          "Notes: add refuses to clobber an existing note without -f");
+      Register_Routine
+        (T, Commit_Option_Surface_Matches_Git'Access,
+         "Commit: git's option surface, template, merge/pick conclusion");
+      Register_Routine
+        (T, Checkout_Option_Surface_Matches_Git'Access,
+         "Checkout/switch: git's option surface, carried edits, paths");
       Register_Routine
         (T, Fast_Import_Stream_Matches_Git'Access,
          "Fast-import: author defaults to committer, short modes are files");

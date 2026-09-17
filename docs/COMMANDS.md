@@ -202,15 +202,21 @@ A pathspec matching no tracked path is fatal (`fatal: pathspec '<text>' did not 
 
 Common failures: pathspec matching nothing (exit 128), a path that would lose content (exit 1), unsafe deletion target, repository not open.
 
-### save
+### save / commit
 
-Syntax: `version save MESSAGE`, `version save -m MESSAGE`, `version save --no-verify MESSAGE`, `version save --amend MESSAGE`, with `--amend --no-verify` and `-m` variants.
+Syntax: `version commit [-a|--all] [-q] [-n|--no-verify] [-s|--signoff] [-e|--edit|--no-edit] [-v] [-m MESSAGE]... [-F FILE] [-C|-c REV] [-t FILE] [--amend] [--allow-empty] [--allow-empty-message] [--author=AUTHOR] [--date=DATE] [--reset-author] [--fixup=[amend:|reword:]REV] [--squash=REV] [--trailer=TOKEN[=VALUE]]... [--cleanup=MODE] [-S[KEY]|--gpg-sign[=KEY]|--no-gpg-sign] [--dry-run [--short|--porcelain|--branch]] [-o|--only|-i|--include] [-u[MODE]] [--[no-]status] [--pathspec-from-file=FILE [--pathspec-file-nul]] [--] [PATHSPEC...]`. `save` is this tool's alias for `commit`.
 
-Purpose: create or amend a commit from the index.
+Purpose: record the index as a new commit, matching `git commit`. Short flags bundle as in git (`-am`, `-qsm`, `-anm`); `-m` repeats, each piece becoming a paragraph. Without `-m`/`-F`/`-C` the message comes from the editor (`GIT_EDITOR`, `core.editor`, `VISUAL`, `EDITOR`, else `vi`), seeded with git's byte-identical `COMMIT_EDITMSG` template: the amended/picked message or `commit.template`/`-t`, the sign-off and `--trailer` block, the commented hint, `# Author:`/`# Date:` when they are not the committer's and now, the status with hints off (`--no-status` drops it), and with `-v` the scissors line and the diff being committed. Message cleanup follows `commit.cleanup`/`--cleanup`: `strip` (comments and whitespace) when the editor was used, `whitespace` otherwise, `verbatim`, `scissors`. An empty message aborts (`Aborting commit due to empty commit message.`, exit 1) unless `--allow-empty-message`; an unedited template aborts too.
 
-Example: `version save "initial import"`.
+`-a` stages every tracked modification and deletion first; `PATHSPEC` commits only those paths' working-tree state on top of HEAD (`--only`, the default) or on top of the index (`--include`), updating the real index for them afterwards — an aborted commit leaves the index as it was, as git's temporary index does. `--amend` keeps the original author and date (`--reset-author` takes the configured identity and the clock); `-C`/`-c` reuse a commit's message and author; `--author` and `--date` override either; `--fixup`/`--squash` write `fixup!`/`squash!`/`amend!` subjects for `rebase --autosquash`. Nothing to commit prints git's status block and exits 1 (`--allow-empty` overrides); `--dry-run` prints it and exits 0 or 1 accordingly. Unmerged entries are refused with git's `Committing is not possible because you have unmerged files.` (exit 128).
 
-Common failures: missing identity, empty/invalid state, hook failure, object/ref write failure.
+A commit made with `MERGE_HEAD` present concludes the merge (parents `HEAD` + every `MERGE_HEAD`, default message `MERGE_MSG`, state cleared; `--amend` is refused mid-merge); with `CHERRY_PICK_HEAD`/`REVERT_HEAD` it concludes that pick, keeping the picked commit's author; a leftover `MERGE_MSG`/`SQUASH_MSG` (`cherry-pick -n`, `merge --squash`) seeds the message. The summary line, ` Author:`/` Date:` lines and diffstat match git; the reflog entry is git's `commit: <subject>` (`commit (amend)`, `commit (initial)`, `commit (merge)`, `commit (cherry-pick)`).
+
+Not supported: `-p`/`--interactive` patch selection (rejected explicitly), and `--author=<pattern>` searching history (only the literal `Name <email>` form).
+
+Example: `version commit -am "initial import"`.
+
+Common failures: missing identity, unmerged paths, nothing to commit, empty message, hook failure, object/ref write failure.
 
 ### status
 
@@ -250,21 +256,25 @@ Common failures: unknown source revision, dirty target, no source match, filesys
 
 ### checkout
 
-Syntax: `version checkout REV`, `version checkout REV -- PATHSPEC...`.
+Syntax: `version checkout [-q] [-f] [-m] [-t|--track|--no-track] [--[no-]guess] [--ignore-other-worktrees] [--recurse-submodules] [<branch>|<commit>|-]`, `version checkout [-q] [-f] [-t] -b|-B <new-branch> [<start-point>]`, `version checkout [-q] --orphan <new-branch> [<start-point>]`, `version checkout [-q] --detach [<commit>]`, `version checkout [-q] [-f] [--ours|--theirs] [<tree-ish>] [--] <pathspec>...` (also `--pathspec-from-file=FILE [--pathspec-file-nul]`; `-l`, `--progress`, `--overwrite-ignore`, `--conflict=` and `--[no-]recurse-submodules` are accepted as no-ops). Short flags bundle as in git.
 
-Purpose: switch to a branch, detach at a revision, or restore matching paths from a revision. Restoring paths prints nothing. A switch reports `Switched to branch '<name>'`, `Already on '<name>'` or, when it detaches, git's detached-HEAD advice followed by `HEAD is now at <short> <subject>` — all on **standard error**, where git puts them. (`reset --hard`'s identical-looking `HEAD is now at` line goes to standard output; the streams genuinely differ between the two commands.) The advice block is suppressed by `advice.detachedHead=false`.
+Purpose: switch branches or restore paths, matching `git checkout`. `<branch>` attaches HEAD (`Switched to branch '<name>'`, `Already on '<name>'`); a commit-ish detaches it with git's detached-HEAD advice (suppressed by `advice.detachedHead=false` or `-q`) and `HEAD is now at <short> <subject>`; `--detach` skips the advice. `-b <new> [<start>]` creates and switches (`Switched to a new branch`), refusing an existing name; `-B` resets an existing branch to `<start>` instead (`Reset branch '<name>'` on the current branch, else `Switched to and reset branch`), logging `branch: Reset to <start>` in its reflog. `--orphan <new>` points HEAD at an unborn branch while keeping the index and working tree. `-` returns to the previous HEAD (from the reflog). A name that is no local branch but exists as `<remote>/<name>` under exactly one remote is checked out as a new tracking branch (`branch '<name>' set up to track '<remote>/<name>'.`); `--no-guess` disables that, and `-t <remote>/<name>` names the branch after the remote one. Creating from a remote-tracking start point, or with `-t`, sets up tracking unless `--no-track`. A branch checked out in another worktree is refused (`fatal: '<name>' is already used by worktree at '<path>'`) unless `--ignore-other-worktrees`. All switch messages go to **standard error**, as in git; the carried-change list to standard output.
 
-A switch with work in progress follows git's rule: it is refused only for paths whose content differs between HEAD and the target, and every other local edit is carried across untouched and listed as `M<TAB><path>` on standard output. Refusal reports `Your local changes to the following files would be overwritten by checkout:` and changes nothing.
+A switch with work in progress follows git's rule: it is refused (`error: Your local changes to the following files would be overwritten by checkout:` … `Aborting`, exit 1) only for paths whose content differs between HEAD and the target; every other local edit — staged or not, including a staged new file or deletion — rides across with its index state and is listed as `<A|D|M><TAB><path>`. `-f` discards local edits and unmerged entries instead; a bare `checkout -f` re-checks out HEAD that way (no reflog entry), and a bare `checkout` just lists the local edits. The HEAD reflog line is git's `checkout: moving from <old> to <target as typed>`.
 
-Common failures: unknown revision, a local change the target would overwrite, an untracked file the target would overwrite, unsafe materialization target.
+The path form restores matching paths from the index (no tree-ish, `checkout -- <path>`) or from `<tree-ish>` (index and working tree), `--ours`/`--theirs` taking merge stage 2/3 of a conflicted path; a non-conflicted path is restored as usual. When no `--` is given git reports `Updated N paths from <tree>` / `from the index` on standard error, counting the paths it rewrote, and so does this tool. A pathspec matching nothing is `error: pathspec '<p>' did not match any file(s) known to git` (exit 1). A first operand that is both a file and a revision is taken as the revision.
+
+Not supported: `-p`/`--patch` (rejected explicitly), and `-m`'s three-way merge of conflicting local edits into the target (the flag is accepted; edits that would be overwritten are still refused).
+
+Common failures: unknown revision or pathspec, a local change the target would overwrite, an existing branch name with `-b`, a branch in use by another worktree.
 
 ### switch
 
-Syntax: `version switch [-c|-C <new-branch>] [--detach] (<branch>|<start-point>|-)`.
+Syntax: `version switch [-q] [-f|--discard-changes] [-m] [-t|--no-track] [--[no-]guess] [--ignore-other-worktrees] [-c|-C <new-branch>] [--orphan <new-branch>] [-d|--detach] (<branch>|<start-point>|-)`.
 
-Purpose: switch the current branch, matching `git switch`. `<branch>` updates HEAD to the branch symref (`Switched to branch '<name>'`); `-c`/`-C <new> [<start>]` creates `<new>` (at `<start>`, else HEAD) and switches to it (`Switched to a new branch '<new>'`); `-` returns to the previously checked-out branch (resolved from the HEAD reflog); `--detach [<commit>]` detaches HEAD at `<commit>` (default HEAD) and prints `HEAD is now at <short> <subject>` without the detached-HEAD advice, since asking for it is explicit intent. Leaving a detached HEAD first prints `Previous HEAD position was <short> <subject>`, as git does. All of these go to standard error, as in git. Local changes are carried or refused exactly as for `checkout` above.
+Purpose: switch the current branch, matching `git switch`, over the same engine as `checkout`. `<branch>` updates HEAD to the branch symref (`Switched to branch '<name>'`); `-c`/`-C <new> [<start>]` creates `<new>` (at `<start>`, else HEAD) and switches to it, `-C` resetting an existing branch; `--orphan <new>` starts an unborn branch from an emptied index and working tree (git's `switch` semantics, unlike `checkout --orphan`); `-` returns to the previously checked-out branch (resolved from the HEAD reflog); `--detach [<commit>]` detaches HEAD at `<commit>` (default HEAD) and prints `HEAD is now at <short> <subject>` without the advice. A commit given without `--detach` is refused (`fatal: a branch is expected, got commit '<rev>'` plus git's hint, exit 128); an unknown name is `fatal: invalid reference: <name>`. Leaving a detached HEAD first prints `Previous HEAD position was <short> <subject>`, as git does. All of these go to standard error, as in git. Local changes are carried, refused, or with `-f` discarded exactly as for `checkout` above; the remote-name DWIM applies too.
 
-Common failures: unknown branch or revision, no previous branch for `-`, ambiguous or missing operand.
+Common failures: unknown branch or revision, no previous branch for `-`, a commit without `--detach`, missing operand.
 
 ### reset
 

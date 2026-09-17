@@ -185,18 +185,35 @@ package body Version.CLI.Help is
            (Text, "Use -f or --force to stage ignored matches.");
       elsif Name = "save" then
          Append_Line (Text, "Usage:");
-         Append_Line (Text, "  version save MESSAGE");
-         Append_Line (Text, "  version save -m MESSAGE");
-         Append_Line (Text, "  version save --no-verify MESSAGE");
-         Append_Line (Text, "  version save --no-verify -m MESSAGE");
-         Append_Line (Text, "  version save --amend MESSAGE");
-         Append_Line (Text, "  version save --amend -m MESSAGE");
-         Append_Line (Text, "  version save --amend --no-verify MESSAGE");
-         Append_Line (Text, "  version save --amend --no-verify -m MESSAGE");
-         Append_Line (Text);
-         Append_Line (Text, "Create a commit, or amend the current commit.");
          Append_Line
-           (Text, "Use --no-verify to skip blocking commit hooks.");
+           (Text, "  version commit [-a] [-q] [-n] [-s] [-e] [-v] [-m MESSAGE]...");
+         Append_Line
+           (Text, "                 [-F FILE] [-C|-c REV] [-t FILE] [--amend]");
+         Append_Line
+           (Text, "                 [--allow-empty] [--allow-empty-message]");
+         Append_Line
+           (Text, "                 [--author=AUTHOR] [--date=DATE] [--reset-author]");
+         Append_Line
+           (Text, "                 [--fixup=[amend:|reword:]REV] [--squash=REV]");
+         Append_Line
+           (Text, "                 [--trailer=TOKEN[=VALUE]]... [--cleanup=MODE]");
+         Append_Line
+           (Text, "                 [-S[KEY]|--no-gpg-sign] [--dry-run] [-o|-i]");
+         Append_Line
+           (Text, "                 [-u[MODE]] [--[no-]status] [--] [PATHSPEC...]");
+         Append_Line (Text);
+         Append_Line
+           (Text, "Record the index as a new commit (git's commit; `save` is an alias).");
+         Append_Line
+           (Text, "Without -m/-F/-C the message is taken from the editor, seeded with");
+         Append_Line
+           (Text, "git's commented status template; -a stages every tracked change");
+         Append_Line
+           (Text, "first and PATHSPEC commits only those paths (-o) or the index plus");
+         Append_Line
+           (Text, "them (-i). Concludes a merge, cherry-pick or revert in progress.");
+         Append_Line
+           (Text, "Interactive patch selection (-p) is not supported.");
       elsif Name = "status" then
          Append_Line (Text, "Usage:");
          Append_Line
@@ -661,8 +678,8 @@ package body Version.CLI.Help is
       Append_Line (Text, ".SH DESCRIPTION");
       Append_Line (Text, "version provides deterministic Git-compatible repository workflows.");
       Append_Line (Text, ".SH COMMANDS");
-      Append_Line (Text, "version save [--no-verify] MESSAGE");
-      Append_Line (Text, "version save --amend [--no-verify] MESSAGE");
+      Append_Line (Text, "version commit [-a] [--no-verify] [-m MESSAGE] [--] [PATHSPEC...]");
+      Append_Line (Text, "version commit --amend [--no-verify] [-m MESSAGE]");
       Append_Line (Text, "version push [--no-verify] [--force] REMOTE BRANCH");
       Append_Line (Text, "version push [--no-verify] --tags [REMOTE]");
       Append_Line (Text, "version push [--no-verify] --delete REMOTE REF");
@@ -773,17 +790,21 @@ package body Version.CLI.Help is
            ("Remove one or more matching tracked paths from the index and working tree.");
       elsif Name = "save" then
          Line ("Usage:");
-         Line ("  version save MESSAGE");
-         Line ("  version save -m MESSAGE");
-         Line ("  version save --no-verify MESSAGE");
-         Line ("  version save --no-verify -m MESSAGE");
-         Line ("  version save --amend MESSAGE");
-         Line ("  version save --amend -m MESSAGE");
-         Line ("  version save --amend --no-verify MESSAGE");
-         Line ("  version save --amend --no-verify -m MESSAGE");
+         Line ("  version commit [-a] [-q] [-n] [-s] [-e] [-v] [-m MESSAGE]...");
+         Line ("                 [-F FILE] [-C|-c REV] [-t FILE] [--amend]");
+         Line ("                 [--allow-empty] [--allow-empty-message]");
+         Line ("                 [--author=AUTHOR] [--date=DATE] [--reset-author]");
+         Line ("                 [--fixup=[amend:|reword:]REV] [--squash=REV]");
+         Line ("                 [--trailer=TOKEN[=VALUE]]... [--cleanup=MODE]");
+         Line ("                 [-S[KEY]|--no-gpg-sign] [--dry-run] [-o|-i]");
+         Line ("                 [-u[MODE]] [--[no-]status] [--] [PATHSPEC...]");
          Line;
-         Line ("Create a commit, or amend the current commit.");
-         Line ("Use --no-verify to skip blocking commit hooks.");
+         Line ("Record the index as a new commit (git's commit; `save` is an alias).");
+         Line ("Without -m/-F/-C the message is taken from the editor, seeded with");
+         Line ("git's commented status template; -a stages every tracked change");
+         Line ("first and PATHSPEC commits only those paths (-o) or the index plus");
+         Line ("them (-i). Concludes a merge, cherry-pick or revert in progress.");
+         Line ("Interactive patch selection (-p) is not supported.");
       elsif Name = "status" then
          Line ("Usage:");
          Line
@@ -850,10 +871,20 @@ package body Version.CLI.Help is
          Line ("Restore working tree or staged paths selected by pathspec.");
       elsif Name = "checkout" then
          Line ("Usage:");
-         Line ("  version checkout REV");
-         Line ("  version checkout REV -- PATHSPEC...");
+         Line ("  version checkout [-q] [-f] [-m] [-t|--no-track] [--[no-]guess]");
+         Line ("                   [--ignore-other-worktrees] [<branch>|<commit>|-]");
+         Line ("  version checkout [-q] [-f] [-t|--no-track] -b|-B <new-branch> [<start>]");
+         Line ("  version checkout [-q] --orphan <new-branch> [<start>]");
+         Line ("  version checkout [-q] --detach [<commit>]");
+         Line ("  version checkout [-q] [-f] [--ours|--theirs] [<tree-ish>] [--] <pathspec>...");
          Line;
-         Line ("Check out a commit or restore matching paths from a commit.");
+         Line ("Switch branches (creating one with -b/-B, resetting it with -B,");
+         Line ("an unborn one with --orphan) or detach HEAD at a commit, carrying");
+         Line ("local edits across as git does; -f throws them away. A name that");
+         Line ("only exists as <remote>/<name> becomes a tracking branch (--no-guess");
+         Line ("disables that). With a pathspec, restore paths from the index or the");
+         Line ("named tree-ish (--ours/--theirs pick a merge stage). Interactive");
+         Line ("patch selection (-p) is not supported.");
       elsif Name = "branch" then
          Line ("Usage:");
          Line ("  version branch list");
