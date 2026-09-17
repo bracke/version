@@ -178,15 +178,17 @@ Common failures: repository discovery failure, malformed config file, missing co
 
 ## Change creation and restoration
 
-### stage
+### stage / add
 
-Syntax: `version stage [-f|--force] [--] PATHSPEC...`.
+Syntax: `version add [-n|--dry-run] [-v|--verbose] [-f|--force] [-A|--all|--no-ignore-removal] [-u|--update] [--ignore-removal|--no-all] [-N|--intent-to-add] [--chmod=(+|-)x] [--renormalize] [--refresh] [--ignore-errors] [--ignore-missing] [--sparse] [--pathspec-from-file=FILE [--pathspec-file-nul]] [--] [PATHSPEC...]`. `stage` is this tool's alias for `add`; short flags bundle as in git (`-An`, `-uv`).
 
-Purpose: add matching working-tree files or supported submodule gitlinks to the index. Use `-f` or `--force` to stage ignored matches.
+Purpose: add matching working-tree files or supported submodule gitlinks to the index, matching `git add`. A plain `add <pathspec>` stages modifications, new files and deletions of matching paths (`--ignore-removal` keeps deletions out); `-A` takes the whole tree; `-u` only tracked paths. `-n` reports the `add '<path>'`/`remove '<path>'` lines without touching the index and `-v` reports them while doing it (a `--chmod`-only update is silent, as in git). `--chmod=+x`/`-x` sets the index mode regardless of the file's own bits. `-N` records an untracked path with an empty blob and git's intent-to-add bit: `status` shows it as an unstaged new file, `commit` leaves it out of the tree, and a later `add` stages its content. `--renormalize` (implies `-u`) re-runs the clean filters over tracked matches and re-stages those whose blob changes. `--refresh` is accepted (nothing is cached to refresh), `--sparse` too. `--ignore-errors` reports a path that cannot be added and carries on (exit 1); `--ignore-missing` (with `-n` only) skips pathspecs that match nothing. Interactive staging (`-p`/`-i`/`-e`) is not supported and is rejected explicitly.
 
-Example: `version stage hello.txt src/`.
+Diagnostics follow git: a bare `add` prints `Nothing specified, nothing added.` with its hints (`advice.addEmptyPathspec`) and exits 0; an ignored match is refused with `The following paths are ignored by one of your .gitignore files:` plus the `-f` hint (`advice.addIgnoredFile`), exit 1, while the other matches are still added; a pathspec matching nothing is `fatal: pathspec '<p>' did not match any files` (exit 128), or with `-u` `error: pathspec '<p>' did not match any file(s) known to git`; `-A` with `-u` and `--ignore-missing` without `-n` are fatal.
 
-Common failures: no match, path outside repository, unsupported file type, sparse-excluded missing path.
+Example: `version add -A`, `version add -v hello.txt src/`.
+
+Common failures: no match, ignored path without `-f`, path outside repository, unsupported file type, sparse-excluded missing path.
 
 ### remove
 

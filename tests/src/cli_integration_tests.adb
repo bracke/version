@@ -5188,6 +5188,55 @@ package body CLI_Integration_Tests is
       Run_Parity_Transcript (Root, Scenario, "checkout");
    end Checkout_Option_Surface_Matches_Git;
 
+   --  `add`: git's option surface -- reporting under -n/-v, -A/-u and
+   --  their conflicts, deletions with and without --ignore-removal, the
+   --  ignored-path refusal, unmatched pathspecs, --chmod, -N (an
+   --  intent-to-add entry that status reports as unstaged and a commit
+   --  leaves out), --renormalize and --pathspec-from-file.
+   procedure Add_Option_Surface_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Q    : constant Character := '"';
+      Scenario : constant String :=
+        "seed" & LF
+        & "echo y > g; echo ig > ig; echo ig > .gitignore; git add g .gitignore;"
+        & " git commit -qm more; echo new > n; echo z >> f" & LF
+        & "t 'bare' add" & LF
+        & "t '-nv' add -nv f n" & LF
+        & "t '-v' add -v f n" & LF
+        & "git reset -q" & LF
+        & "t '-A -u' add -A -u" & LF
+        & "t '-u untracked' add -u n" & LF
+        & "t 'nosuch' add nosuch f" & LF
+        & "t '--ignore-missing' add -n --ignore-missing nosuch f" & LF
+        & "t 'ignored' add ig f" & LF
+        & "t 'ignored -f' add -f ig" & LF
+        & "t '-Av' add -Av" & LF
+        & "git reset -q; git checkout -q -- f; rm -f ig n" & LF
+        & "t '--chmod=+x' add --chmod=+x -v g" & LF
+        & "t '--chmod bad' add --chmod=x g" & LF
+        & "echo new > n" & LF
+        & "t '-N' add -N n" & LF
+        & "t '-N status' status --short" & LF
+        & "t '-N commit' commit -m x" & LF
+        & "t '-N then add' add -v n" & LF
+        & "git rm -q --cached n; rm -f n" & LF
+        & "rm -f g" & LF
+        & "t 'deleted --ignore-removal' add --ignore-removal -v ." & LF
+        & "t 'deleted -uv' add -uv" & LF
+        & "git checkout -q -- g" & LF
+        & "printf 'a\r\n' > crlf; git add crlf; git commit -qm crlf;"
+        & " printf '* text=auto\n' > .gitattributes; sleep 1" & LF
+        & "t '--renormalize -n' add -n --renormalize crlf" & LF
+        & "t '--renormalize' add --renormalize crlf" & LF
+        & "printf 'f\n' > list" & LF
+        & "t '--pathspec-from-file' add -v --pathspec-from-file=list" & LF;
+   begin
+      Run_Parity_Transcript (Root, Scenario, "add");
+   end Add_Option_Surface_Matches_Git;
+
    procedure Bisect_Run_And_Patch_Id_Match_Git
      (T : in out AUnit.Test_Cases.Test_Case'Class)
    is
@@ -6575,6 +6624,9 @@ package body CLI_Integration_Tests is
       Register_Routine
         (T, Checkout_Option_Surface_Matches_Git'Access,
          "Checkout/switch: git's option surface, carried edits, paths");
+      Register_Routine
+        (T, Add_Option_Surface_Matches_Git'Access,
+         "Add: git's option surface, -N, --chmod, --renormalize, refusals");
       Register_Routine
         (T, Fast_Import_Stream_Matches_Git'Access,
          "Fast-import: author defaults to committer, short modes are files");

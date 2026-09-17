@@ -176,13 +176,27 @@ package body Version.CLI.Help is
          Append_Line (Text, "Usage:");
          Append_Line
            (Text,
-            "  version stage [-f|--force] [-A|--all] [-u|--update]"
-            & " [-n|--dry-run] [--] PATHSPEC...");
+            "  version add [-n|--dry-run] [-v|--verbose] [-f|--force]"
+            & " [-A|--all] [-u|--update]");
+         Append_Line
+           (Text,
+            "              [--ignore-removal] [-N|--intent-to-add]"
+            & " [--chmod=(+|-)x] [--renormalize]");
+         Append_Line
+           (Text,
+            "              [--refresh] [--ignore-errors] [--ignore-missing]"
+            & " [--sparse]");
+         Append_Line
+           (Text,
+            "              [--pathspec-from-file=FILE [--pathspec-file-nul]]"
+            & " [--] [PATHSPEC...]");
          Append_Line (Text);
          Append_Line
-           (Text, "Add one or more matching working tree paths to the index.");
+           (Text, "Add matching working tree paths to the index (git's add;"
+                  & " `stage` is an alias).");
          Append_Line
-           (Text, "Use -f or --force to stage ignored matches.");
+           (Text, "Use -f or --force to stage ignored matches. Interactive"
+                  & " staging (-p/-i/-e) is not supported.");
       elsif Name = "save" then
          Append_Line (Text, "Usage:");
          Append_Line
@@ -777,11 +791,19 @@ package body Version.CLI.Help is
          Line ("Inspection commands are read-only.");
       elsif Name = "stage" then
          Line ("Usage:");
-         Line ("  version stage [-f|--force] [-A|--all] [-u|--update]"
-               & " [-n|--dry-run] [--] PATHSPEC...");
+         Line ("  version add [-n|--dry-run] [-v|--verbose] [-f|--force]"
+               & " [-A|--all] [-u|--update]");
+         Line ("              [--ignore-removal] [-N|--intent-to-add]"
+               & " [--chmod=(+|-)x] [--renormalize]");
+         Line ("              [--refresh] [--ignore-errors] [--ignore-missing]"
+               & " [--sparse]");
+         Line ("              [--pathspec-from-file=FILE [--pathspec-file-nul]]"
+               & " [--] [PATHSPEC...]");
          Line;
-         Line ("Add one or more matching working tree paths to the index.");
-         Line ("Use -f or --force to stage ignored matches.");
+         Line ("Add matching working tree paths to the index (git's add;"
+               & " `stage` is an alias).");
+         Line ("Use -f or --force to stage ignored matches. Interactive"
+               & " staging (-p/-i/-e) is not supported.");
       elsif Name = "remove" then
          Line ("Usage:");
          Line ("  version remove [--] PATHSPEC...");

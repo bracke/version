@@ -611,19 +611,15 @@ package body Version.CLI.Tests is
    is
       pragma Unreferenced (T);
    begin
-      Assert
-        (Version.CLI.Help.Command_Text ("stage")
-         = "Usage:"
-           & Character'Val (10)
-           & "  version stage [-f|--force] [-A|--all] [-u|--update]"
-           & " [-n|--dry-run] [--] PATHSPEC..."
-           & Character'Val (10)
-           & Character'Val (10)
-           & "Add one or more matching working tree paths to the index."
-           & Character'Val (10)
-           & "Use -f or --force to stage ignored matches."
-           & Character'Val (10),
+      Assert_Contains
+        (Version.CLI.Help.Command_Text ("stage"),
+         "  version add [-n|--dry-run] [-v|--verbose] [-f|--force]"
+         & " [-A|--all] [-u|--update]",
          "stage command help must be stable");
+      Assert_Contains
+        (Version.CLI.Help.Command_Text ("stage"),
+         "Interactive staging (-p/-i/-e) is not supported.",
+         "stage command help unsupported note");
 
       Assert_Contains
         (Version.CLI.Help.Command_Text ("save"),
@@ -3890,6 +3886,12 @@ package body Version.CLI.Tests is
    is
       Root : constant String :=
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Add_Usage : constant String :=
+        "version add [-n|--dry-run] [-v|--verbose] [-f|--force] [-A|--all]"
+        & " [-u|--update] [--ignore-removal] [-N|--intent-to-add]"
+        & " [--chmod=(+|-)x] [--renormalize] [--refresh] [--ignore-errors]"
+        & " [--ignore-missing] [--sparse] [--pathspec-from-file=FILE"
+        & " [--pathspec-file-nul]] [--] [PATHSPEC...]";
 
       procedure Check_Usage_Failure
         (Command : String; Detail : String; Usage : String; Context : String)
@@ -3926,30 +3928,19 @@ package body Version.CLI.Tests is
 
       Old_Dir : constant String := Ada.Directories.Current_Directory;
    begin
-      Check_Usage_Failure
-        ("stage",
-         "missing stage pathspec",
-         "version stage [-f|--force] [-A|--all] [-u|--update]"
-        & " [-n|--dry-run] [--] PATHSPEC...",
-         "stage missing pathspec");
-      Check_Usage_Failure
-        ("stage --",
-         "missing stage pathspec",
-         "version stage [-f|--force] [-A|--all] [-u|--update]"
-        & " [-n|--dry-run] [--] PATHSPEC...",
-         "stage separator only");
+      --  git's add: a bare `add` is "Nothing specified, nothing added."
+      --  and exit 0 (checked below), --patch is an explicit unsupported
+      --  mode, and repeating -f is fine.
       Check_Usage_Failure
         ("stage --patch a.txt",
-         "unknown stage option: --patch",
-         "version stage [-f|--force] [-A|--all] [-u|--update]"
-        & " [-n|--dry-run] [--] PATHSPEC...",
-         "stage unknown option");
+         "interactive staging (--patch) is not supported",
+         Add_Usage,
+         "stage unsupported interactive mode");
       Check_Usage_Failure
-        ("stage --force -f a.txt",
-         "duplicate option: -f",
-         "version stage [-f|--force] [-A|--all] [-u|--update]"
-        & " [-n|--dry-run] [--] PATHSPEC...",
-         "stage duplicate force option");
+        ("stage --bogus a.txt",
+         "unknown stage option: --bogus",
+         Add_Usage,
+         "stage unknown option");
       Check_Usage_Failure
         ("remove",
          "missing remove pathspec",
@@ -3993,10 +3984,15 @@ package body Version.CLI.Tests is
          Assert
            (Status = Integer (Version.CLI.Command_Failure_Exit_Status),
             "plain stage ignored file must fail with command status");
+         --  git's refusal names the ignored path and the -f hint.
          Assert_Contains
            (Ada.Strings.Unbounded.To_String (Output),
-            "pathspec matched no files",
-            "plain stage ignored file reports no match");
+            "The following paths are ignored by one of your .gitignore files:",
+            "plain stage ignored file reports the ignored path");
+         Assert_Contains
+           (Ada.Strings.Unbounded.To_String (Output),
+            "hint: Use -f if you really want to add them.",
+            "plain stage ignored file hints at -f");
       end;
       Check_Success
         ("stage --force ignored.log",

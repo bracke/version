@@ -32,6 +32,7 @@ with Version.Reachability;
 with Version.LFS;
 with Version.Repository;
 with Version.Staging;
+with Version.Text_Filter;
 with Version.Path_Safety;
 with Version.Pathspec;
 with Version.Platform;
@@ -4621,7 +4622,7 @@ package body Version.CLI is
                Id    => Version.Objects.To_Object_Id (Id),
                Mode  => To_Unbounded_String (Mode),
                Stage => 0,
-               Skip_Worktree => False, Assume_Valid => False));
+               Skip_Worktree => False, Assume_Valid => False, Intent_To_Add => False));
       end Stage_Zero;
 
       function Blob (Id : String) return String is
@@ -6756,7 +6757,7 @@ package body Version.CLI is
                Id    => Version.Objects.To_Object_Id (Id),
                Mode  => To_Unbounded_String (Mode),
                Stage => 0,
-               Skip_Worktree => False, Assume_Valid => False));
+               Skip_Worktree => False, Assume_Valid => False, Intent_To_Add => False));
          Files := Kept;
       end Set_File;
 
@@ -6799,7 +6800,7 @@ package body Version.CLI is
                      Id    => E.Id,
                      Mode  => E.Mode,
                      Stage => 0,
-                     Skip_Worktree => False, Assume_Valid => False));
+                     Skip_Worktree => False, Assume_Valid => False, Intent_To_Add => False));
             end if;
          end loop;
       end Load_Files;
@@ -7941,7 +7942,7 @@ package body Version.CLI is
                                     Id    => E.Id,
                                     Mode  => E.Mode,
                                     Stage => 0,
-                                    Skip_Worktree => False, Assume_Valid => False));
+                                    Skip_Worktree => False, Assume_Valid => False, Intent_To_Add => False));
                            end if;
                         end loop;
 
@@ -8027,7 +8028,7 @@ package body Version.CLI is
                                                   then "100755"
                                                   else "100644"),
                                              Stage => 0,
-                                             Skip_Worktree => False, Assume_Valid => False));
+                                             Skip_Worktree => False, Assume_Valid => False, Intent_To_Add => False));
                                     end if;
                                  end if;
                               end;
@@ -14761,6 +14762,531 @@ package body Version.CLI is
       when Handled =>
          null;
    end Run_Checkout;
+
+   --  `add` (this tool's `stage`) with git's option surface: bundled short
+   --  flags, -A/-u/--ignore-removal, -n/-v reporting, --chmod, -N, --renormalize,
+   --  --refresh, --pathspec-from-file, --ignore-errors/--ignore-missing, and
+   --  git's diagnostics for nothing named, ignored paths and unmatched
+   --  pathspecs. Interactive modes (-p/-i/-e) are rejected explicitly.
+   procedure Run_Add is
+      Cmd   : constant String := Arg (1);
+      Usage : constant String :=
+        "version add [-n|--dry-run] [-v|--verbose] [-f|--force] [-A|--all]"
+        & " [-u|--update] [--ignore-removal] [-N|--intent-to-add]"
+        & " [--chmod=(+|-)x] [--renormalize] [--refresh] [--ignore-errors]"
+        & " [--ignore-missing] [--sparse] [--pathspec-from-file=FILE"
+        & " [--pathspec-file-nul]] [--] [PATHSPEC...]";
+
+      Force          : Boolean := False;
+      All_Changes    : Boolean := False;
+      Update_Only    : Boolean := False;
+      Ignore_Removal : Boolean := False;
+      Dry_Run        : Boolean := False;
+      Verbose        : Boolean := False;
+      Intent         : Boolean := False;
+      Chmod          : Character := ' ';
+      Renormalize    : Boolean := False;
+      Refresh        : Boolean := False;
+      Ignore_Errors  : Boolean := False;
+      Ignore_Missing : Boolean := False;
+      Pathspec_File  : Unbounded_String;
+      Pathspec_Nul   : Boolean := False;
+      After_Sep      : Boolean := False;
+      Specs          : Version.Pathspec.Pathspec_Vectors.Vector;
+      Spec_Text      : Version.Path_Safety.Path_Vector;
+      Bad            : Boolean := False;
+      I              : Natural := 2;
+
+      procedure Fail (Detail : String) is
+      begin
+         Usage_Error (Detail, Usage);
+         Bad := True;
+      end Fail;
+
+      procedure Fatal (Text : String) is
+      begin
+         Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, "fatal: " & Text);
+         Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+      end Fatal;
+
+      procedure Set_Chmod (Value : String) is
+      begin
+         if Value = "+x" then
+            Chmod := '+';
+         elsif Value = "-x" then
+            Chmod := '-';
+         else
+            Fatal ("--chmod param '" & Value & "' must be either -x or +x");
+            Bad := True;
+         end if;
+      end Set_Chmod;
+
+      procedure Parse_Short (Token : String) is
+      begin
+         for P in Token'First + 1 .. Token'Last loop
+            exit when Bad;
+            case Token (P) is
+               when 'n' => Dry_Run := True;
+               when 'v' => Verbose := True;
+               when 'f' => Force := True;
+               when 'A' => All_Changes := True;
+               when 'u' => Update_Only := True;
+               when 'N' => Intent := True;
+               when 'p' | 'i' | 'e' =>
+                  Fail ("interactive staging (-" & Token (P)
+                        & ") is not supported");
+               when others =>
+                  Fail ("unknown " & Cmd & " option: -" & Token (P));
+            end case;
+         end loop;
+      end Parse_Short;
+
+      procedure Add_Spec (Text : String) is
+      begin
+         Version.Pathspec.Append_Parse (Specs, Text, Repo_Prefix);
+         Spec_Text.Append (Text);
+      end Add_Spec;
+   begin
+      while I <= Count and then not Bad loop
+         declare
+            A : constant String := Arg (I);
+         begin
+            if After_Sep then
+               Add_Spec (A);
+            elsif A = "--" then
+               After_Sep := True;
+            elsif A = "--dry-run" then
+               Dry_Run := True;
+            elsif A = "--verbose" then
+               Verbose := True;
+            elsif A = "--force" then
+               Force := True;
+            elsif A = "--all" or else A = "--no-ignore-removal" then
+               All_Changes := True;
+            elsif A = "--update" then
+               Update_Only := True;
+            elsif A = "--ignore-removal" or else A = "--no-all" then
+               Ignore_Removal := True;
+            elsif A = "--intent-to-add" then
+               Intent := True;
+            elsif Has_Prefix (A, "--chmod=") then
+               Set_Chmod (A (A'First + 8 .. A'Last));
+            elsif A = "--chmod" then
+               if I = Count then
+                  Fail ("option '--chmod' requires a value");
+               else
+                  I := I + 1;
+                  Set_Chmod (Arg (I));
+               end if;
+            elsif A = "--renormalize" then
+               Renormalize := True;
+            elsif A = "--refresh" then
+               Refresh := True;
+            elsif A = "--ignore-errors" then
+               Ignore_Errors := True;
+            elsif A = "--ignore-missing" then
+               Ignore_Missing := True;
+            elsif A = "--sparse" or else A = "--no-sparse"
+              or else A = "--no-warn-embedded-repo"
+            then
+               null;
+            elsif A = "--pathspec-file-nul" then
+               Pathspec_Nul := True;
+            elsif Has_Prefix (A, "--pathspec-from-file=") then
+               Pathspec_File := To_Unbounded_String (A (A'First + 21 .. A'Last));
+            elsif A = "--pathspec-from-file" then
+               if I = Count then
+                  Fail ("option '--pathspec-from-file' requires a value");
+               else
+                  I := I + 1;
+                  Pathspec_File := To_Unbounded_String (Arg (I));
+               end if;
+            elsif A = "--patch" or else A = "--interactive" or else A = "--edit"
+            then
+               Fail ("interactive staging (" & A & ") is not supported");
+            elsif A'Length > 1 and then A (A'First) = '-'
+              and then A (A'First + 1) /= '-'
+            then
+               Parse_Short (A);
+            elsif A'Length > 0 and then A (A'First) = '-' then
+               Fail ("unknown " & Cmd & " option: " & A);
+            else
+               Add_Spec (A);
+            end if;
+            I := I + 1;
+         end;
+      end loop;
+
+      if Bad then
+         return;
+      end if;
+
+      if All_Changes and then Update_Only then
+         Fatal ("options '-A' and '-u' cannot be used together");
+         return;
+      elsif Ignore_Missing and then not Dry_Run then
+         Fatal ("the option '--ignore-missing' requires '--dry-run'");
+         return;
+      end if;
+
+      if Length (Pathspec_File) > 0 then
+         if not Specs.Is_Empty then
+            Fatal ("options '--pathspec-from-file' and pathspec arguments "
+                   & "cannot be used together");
+            return;
+         end if;
+         declare
+            Text : constant String :=
+              (if To_String (Pathspec_File) = "-" then Read_All_Stdin
+               else Version.Files.Read_Binary_File (To_String (Pathspec_File)));
+            Sep   : constant Character :=
+              (if Pathspec_Nul then ASCII.NUL else ASCII.LF);
+            Start : Positive := Text'First;
+         begin
+            for K in Text'Range loop
+               if Text (K) = Sep then
+                  if K > Start then
+                     Add_Spec (Text (Start .. K - 1));
+                  end if;
+                  Start := K + 1;
+               end if;
+            end loop;
+            if Start <= Text'Last then
+               Add_Spec (Text (Start .. Text'Last));
+            end if;
+         end;
+      end if;
+
+      --  --renormalize re-adds tracked content, so it implies -u.
+      if Renormalize then
+         Update_Only := not All_Changes;
+      end if;
+
+      declare
+         Repo : constant Version.Repository.Repository_Handle :=
+           Version.Repository.Open;
+      begin
+         --  Nothing named and no "everything" flag: git says so, with its
+         --  hint (advice.addEmptyPathspec), and succeeds.
+         if Specs.Is_Empty and then not (All_Changes or else Update_Only) then
+            Success_Line ("Nothing specified, nothing added.");
+            if not Version.Config.Has_Key (Repo, "advice.addEmptyPathspec")
+              or else Version.Config.Trim
+                        (Version.Config.Get_Value (Repo, "advice.addEmptyPathspec"))
+                      /= "false"
+            then
+               Stderr_Line ("hint: Maybe you wanted to say 'git add .'?");
+               Stderr_Line ("hint: Disable this message with ""git config set "
+                            & "advice.addEmptyPathspec false""");
+            end if;
+            return;
+         end if;
+
+         --  --refresh only re-reads stat data, which this index does not
+         --  cache: nothing to do.
+         if Refresh then
+            return;
+         end if;
+
+         declare
+            package Path_Sort is new
+              Version.Path_Safety.Path_Vectors.Generic_Sorting;
+
+            St : constant Version.Status.Status_Result :=
+              Version.Status.Current_Status (All_Untracked => True);
+            Index : constant Version.Staging.Index_Entry_Vectors.Vector :=
+              Version.Staging.Load (Repo);
+
+            --  Every path a pathspec can name: the working tree (ignored
+            --  files too under -f) and the index (deleted paths).
+            Candidates : Version.Path_Safety.Path_Vector :=
+              Working_Candidates (Include_Ignored => Force);
+
+            --  The ignored working files, scanned only when a pathspec
+            --  matched nothing else: git names them in its refusal.
+            Ignored_Scanned    : Boolean := False;
+            Ignored_Candidates : Version.Path_Safety.Path_Vector;
+
+            function Ignored_Matches
+              (One : Version.Pathspec.Pathspec_Vectors.Vector)
+               return Version.Path_Safety.Path_Vector is
+            begin
+               if not Ignored_Scanned then
+                  Ignored_Scanned := True;
+                  for P of Working_Candidates (Include_Ignored => True) loop
+                     if not (for some C of Candidates => C = P) then
+                        Ignored_Candidates.Append (P);
+                     end if;
+                  end loop;
+               end if;
+               return Matching_Candidates (Ignored_Candidates, One);
+            end Ignored_Matches;
+
+            function Is_Tracked (Path : String) return Boolean is
+              (Version.Staging.Find_Path (Index, Path) /= Natural'Last);
+
+            function Change_Of (Path : String)
+              return Version.Status.Change_Kind
+            is
+               use type Version.Status.Change_Kind;
+            begin
+               for C of St.Changes loop
+                  if To_String (C.Path) = Path then
+                     return C.Kind;
+                  end if;
+               end loop;
+               return Version.Status.Ignored_File;   --  "no unstaged change"
+            end Change_Of;
+
+            function Exists_On_Disk (Path : String) return Boolean is
+              (Ada.Directories.Exists
+                 (Version.Files.Join (Version.Repository.Root_Path (Repo), Path)));
+
+            Adds     : Version.Path_Safety.Path_Vector;   --  paths to stage
+            Mode_Only : Version.Path_Safety.Path_Vector;  --  --chmod alone
+            Removals : Version.Path_Safety.Path_Vector;   --  paths to drop
+            Ignored  : Version.Path_Safety.Path_Vector;   --  refused, listed
+            Failed   : Boolean := False;
+
+            procedure Emit (Verb, Path : String) is
+            begin
+               if Dry_Run or else Verbose then
+                  Success_Line (Verb & " '" & Path & "'");
+               end if;
+            end Emit;
+
+            --  Stage one path; --ignore-errors reports a failure and goes
+            --  on, exiting 1 at the end as git does.
+            procedure Stage_One (Path : String; Intent_To_Add : Boolean) is
+            begin
+               Version.Stage.Stage_Path
+                 (Path, Chmod => Chmod, Intent_To_Add => Intent_To_Add);
+            exception
+               when E : Ada.IO_Exceptions.Data_Error =>
+                  if not Ignore_Errors then
+                     raise;
+                  end if;
+                  Error_Line (Ada.Exceptions.Exception_Message (E));
+                  Failed := True;
+            end Stage_One;
+
+            --  The blob id the working file would be staged as, without
+            --  writing it (for --renormalize's "did it change" test).
+            function Cleaned_Id (Path : String) return String is
+               Content : constant String :=
+                 Version.Text_Filter.Clean_Content
+                   (Repo, Path,
+                    Version.LFS.Clean_Content
+                      (Repo, Path,
+                       Version.Files.Read_Binary_File
+                         (Version.Files.Join
+                            (Version.Repository.Root_Path (Repo), Path))));
+            begin
+               return Version.Hash.Object_Hash_Hex
+                 (Version.Repository.Algorithm (Repo),
+                  "blob" & Natural'Image (Content'Length) & ASCII.NUL & Content);
+            end Cleaned_Id;
+         begin
+            for E of Index loop
+               Append_Unique (Candidates, To_String (E.Path));
+            end loop;
+
+            --  Each pathspec must match something git knows (a working
+            --  file, tracked or not, or an index entry), else it is fatal.
+            for K in Spec_Text.First_Index .. Spec_Text.Last_Index loop
+               declare
+                  One : Version.Pathspec.Pathspec_Vectors.Vector;
+                  --  -u only knows tracked paths.
+                  Known : Version.Path_Safety.Path_Vector;
+               begin
+                  Version.Pathspec.Append_Parse
+                    (One, Spec_Text.Element (K), Repo_Prefix);
+                  if Update_Only then
+                     for E of Index loop
+                        Append_Unique (Known, To_String (E.Path));
+                     end loop;
+                  else
+                     Known := Candidates;
+                  end if;
+                  if Matching_Candidates (Known, One).Is_Empty then
+                     declare
+                        Refused : constant Version.Path_Safety.Path_Vector :=
+                          (if Force or else Update_Only
+                           then Version.Path_Safety.Path_Vectors.Empty_Vector
+                           else Ignored_Matches (One));
+                     begin
+                        for P of Refused loop
+                           Append_Unique (Ignored, P);
+                        end loop;
+                        if not Refused.Is_Empty then
+                           goto Next_Spec;
+                        end if;
+                     end;
+                     if Ignore_Missing then
+                        null;
+                     elsif Update_Only then
+                        Error_Line ("pathspec '" & Spec_Text.Element (K)
+                                    & "' did not match any file(s) known to git");
+                        Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                        return;
+                     else
+                        Raise_If_Explicit_Sparse_Missing_Stage (2);
+                        Fatal ("pathspec '" & Spec_Text.Element (K)
+                               & "' did not match any files");
+                        return;
+                     end if;
+                  end if;
+               end;
+               <<Next_Spec>>
+            end loop;
+
+            declare
+               Matches : constant Version.Path_Safety.Path_Vector :=
+                 (if Specs.Is_Empty then Candidates
+                  else Matching_Candidates (Candidates, Specs));
+            begin
+               for P of Matches loop
+                  declare
+                     use type Version.Status.Change_Kind;
+                     Tracked : constant Boolean := Is_Tracked (P);
+                     Kind    : constant Version.Status.Change_Kind :=
+                       Change_Of (P);
+                  begin
+                     if Tracked then
+                        if Kind = Version.Status.Deleted_File
+                          or else not Exists_On_Disk (P)
+                        then
+                           --  A gone file leaves the index, unless removal
+                           --  is being ignored; -u/-A always take it.
+                           if not Ignore_Removal then
+                              Removals.Append (P);
+                           end if;
+                        elsif Intent then
+                           null;   --  -N leaves tracked content alone
+                        elsif Index.Element
+                                (Version.Staging.Find_Path (Index, P))
+                                .Intent_To_Add
+                        then
+                           --  An intent-to-add placeholder takes its
+                           --  content now.
+                           Adds.Append (P);
+                        elsif Renormalize then
+                           declare
+                              K : constant Natural :=
+                                Version.Staging.Find_Path (Index, P);
+                           begin
+                              if Version.Objects.To_String
+                                   (Index.Element (K).Id) /= Cleaned_Id (P)
+                              then
+                                 Adds.Append (P);
+                              end if;
+                           end;
+                        elsif Kind = Version.Status.Modified_File then
+                           Adds.Append (P);
+                        elsif Chmod /= ' '
+                          and then To_String
+                                     (Index.Element
+                                        (Version.Staging.Find_Path (Index, P))
+                                        .Mode)
+                                   /= (if Chmod = '+' then "100755"
+                                       else "100644")
+                        then
+                           --  --chmod on an unchanged file re-adds it only
+                           --  when the mode actually changes -- and git
+                           --  does not report that under -v.
+                           Mode_Only.Append (P);
+                        end if;
+                     elsif Update_Only then
+                        null;   --  -u never adds a new path
+                     elsif not Exists_On_Disk (P) then
+                        null;   --  only in HEAD: nothing to add
+                     else
+                        Adds.Append (P);
+                     end if;
+                  end;
+               end loop;
+            end;
+
+            Path_Sort.Sort (Adds);
+            Path_Sort.Sort (Removals);
+            Path_Sort.Sort (Ignored);
+
+            --  git lists the ignored paths it refused, then carries on
+            --  with the rest and exits 1.
+            if not Ignored.Is_Empty then
+               Stderr_Line ("The following paths are ignored by one of your "
+                            & ".gitignore files:");
+               for P of Ignored loop
+                  Stderr_Line (P);
+               end loop;
+               if not Version.Config.Has_Key (Repo, "advice.addIgnoredFile")
+                 or else Version.Config.Trim
+                           (Version.Config.Get_Value
+                              (Repo, "advice.addIgnoredFile")) /= "false"
+               then
+                  Stderr_Line ("hint: Use -f if you really want to add them.");
+                  Stderr_Line ("hint: Disable this message with ""git config "
+                               & "set advice.addIgnoredFile false""");
+               end if;
+               Failed := True;
+            end if;
+
+            --  Tracked changes first (removals and re-adds, by path), then
+            --  the new files, as git's report orders them.
+            declare
+               Tracked_First : Version.Path_Safety.Path_Vector;
+               New_Files     : Version.Path_Safety.Path_Vector;
+            begin
+               for P of Adds loop
+                  if Is_Tracked (P) then
+                     Tracked_First.Append (P);
+                  else
+                     New_Files.Append (P);
+                  end if;
+               end loop;
+               for P of Removals loop
+                  Tracked_First.Append (P);
+               end loop;
+               Path_Sort.Sort (Tracked_First);
+
+               for P of Tracked_First loop
+                  if (for some R of Removals => R = P) then
+                     Emit ("remove", P);
+                     if not Dry_Run then
+                        declare
+                           Entries : Version.Staging.Index_Entry_Vectors.Vector :=
+                             Version.Staging.Load (Repo);
+                        begin
+                           Version.Staging.Remove_Path (Entries, P);
+                           Version.Staging.Write (Repo, Entries);
+                        end;
+                     end if;
+                  else
+                     Emit ("add", P);
+                     if not Dry_Run then
+                        Stage_One (P, Intent_To_Add => False);
+                     end if;
+                  end if;
+               end loop;
+               for P of New_Files loop
+                  Emit ("add", P);
+                  if not Dry_Run then
+                     Stage_One (P, Intent_To_Add => Intent);
+                  end if;
+               end loop;
+               if not Dry_Run then
+                  for P of Mode_Only loop
+                     Stage_One (P, Intent_To_Add => False);
+                  end loop;
+               end if;
+            end;
+
+            if Failed then
+               Set_Command_Failure;
+            end if;
+         end;
+      end;
+   end Run_Add;
 
    function Failure_Is_Ordinary (Command : String) return Boolean is
      (Command in "apply" | "checkout" | "restore" | "switch" | "notes"
@@ -23484,234 +24010,7 @@ package body Version.CLI is
             end;
 
          elsif Command = "stage" then
-            declare
-               Usage : constant String :=
-                 "version stage [-f|--force] [-A|--all] [-u|--update]"
-                 & " [-n|--dry-run] [--] PATHSPEC...";
-               Force         : Boolean := False;
-               All_Changes   : Boolean := False;
-               Update_Only   : Boolean := False;
-               Dry_Run       : Boolean := False;
-               After_Separator : Boolean := False;
-               Specs         : Version.Pathspec.Pathspec_Vectors.Vector;
-            begin
-               if Count >= 2 then
-                  for I in 2 .. Count loop
-                     if Arg (I) = "--" and then not After_Separator then
-                        After_Separator := True;
-                     elsif not After_Separator
-                       and then (Arg (I) = "-f" or else Arg (I) = "--force")
-                     then
-                        if Force then
-                           Usage_Error ("duplicate option: " & Arg (I), Usage);
-                           return;
-                        end if;
-
-                        Force := True;
-                     elsif not After_Separator
-                       and then (Arg (I) = "-A" or else Arg (I) = "--all"
-                                 or else Arg (I) = "--no-ignore-removal")
-                     then
-                        All_Changes := True;
-                     elsif not After_Separator
-                       and then (Arg (I) = "-u" or else Arg (I) = "--update")
-                     then
-                        Update_Only := True;
-                     elsif not After_Separator
-                       and then (Arg (I) = "-n" or else Arg (I) = "--dry-run")
-                     then
-                        Dry_Run := True;
-                     elsif not After_Separator
-                       and then Arg (I)'Length > 0
-                       and then Arg (I) (Arg (I)'First) = '-'
-                     then
-                        Usage_Error ("unknown stage option: " & Arg (I), Usage);
-                        return;
-                     else
-                        Version.Pathspec.Append_Parse (Specs, Arg (I), Repo_Prefix);
-                     end if;
-                  end loop;
-               end if;
-
-               --  -A and -u name the whole worktree when no pathspec is
-               --  given; without them a bare `stage` still has nothing to do.
-               if Specs.Is_Empty
-                 and then not (All_Changes or else Update_Only)
-               then
-                  --  git says so and exits 0 for a dry run: asking what would
-                  --  happen with nothing named is a question, not a misuse.
-                  if Dry_Run then
-                     Success_Line ("Nothing specified, nothing added.");
-                     return;
-                  end if;
-
-                  Usage_Error ("missing stage pathspec", Usage);
-                  return;
-               end if;
-
-               declare
-                  --  A file that is gone has to leave the index too, which a
-                  --  worktree scan can never find; -A and -u exist precisely
-                  --  to pick those up, so the removals come from status.
-                  St : constant Version.Status.Status_Result :=
-                    Version.Status.Current_Status;
-
-                  Matches : Version.Path_Safety.Path_Vector :=
-                    (if All_Changes or else Update_Only
-                     then (if Specs.Is_Empty
-                           then Working_Candidates (Include_Ignored => Force)
-                           else Matching_Candidates
-                                  (Working_Candidates
-                                     (Include_Ignored => Force), Specs))
-                     else Matching_Candidates
-                            (Working_Candidates (Include_Ignored => Force),
-                             Specs));
-
-                  Removals : Version.Path_Safety.Path_Vector;
-
-                  function Is_Tracked (Path : String) return Boolean is
-                    (Version.Staging.Find_Path
-                       (Version.Staging.Load (Version.Repository.Open), Path)
-                     /= Natural'Last);
-               begin
-                  --  git's add (2.0+) stages a matching deletion for a plain
-                  --  `add <pathspec>` too, not only under -A/-u.
-                  for C of St.Changes loop
-                     if Version.Status."="
-                          (C.Kind, Version.Status.Deleted_File)
-                     then
-                        declare
-                           P : constant String := To_String (C.Path);
-                           One : Version.Path_Safety.Path_Vector;
-                        begin
-                           One.Append (P);
-                           if Specs.Is_Empty
-                             or else not Matching_Candidates (One, Specs)
-                                          .Is_Empty
-                           then
-                              Removals.Append (P);
-                           end if;
-                        end;
-                     end if;
-                  end loop;
-
-                  --  -u never adds a path the index does not already have.
-                  if Update_Only then
-                     declare
-                        Kept : Version.Path_Safety.Path_Vector;
-                     begin
-                        for P of Matches loop
-                           if Is_Tracked (P) then
-                              Kept.Append (P);
-                           end if;
-                        end loop;
-                        Matches := Kept;
-                     end;
-                  end if;
-
-                  if Matches.Is_Empty and then Removals.Is_Empty then
-                     if All_Changes or else Update_Only then
-                        return;
-                     end if;
-                     Raise_If_Explicit_Sparse_Missing_Stage (2);
-                     raise Ada.IO_Exceptions.Data_Error
-                       with Pathspec_No_Files_Text;
-                  end if;
-
-                  --  git's add only touches paths whose staging would change
-                  --  the index: new (untracked or forced) files and modified
-                  --  tracked files. An unchanged tracked path is a silent
-                  --  no-op. git reports (and stages) the tracked changes first,
-                  --  by path -- "remove" for a deletion, "add" for a
-                  --  modification -- then the untracked adds by path. The
-                  --  pathspec-matched-nothing check above ran on the unfiltered
-                  --  set.
-                  declare
-                     package Path_Sort is new
-                       Version.Path_Safety.Path_Vectors.Generic_Sorting;
-                     Index : constant
-                       Version.Staging.Index_Entry_Vectors.Vector :=
-                         Version.Staging.Load (Version.Repository.Open);
-                     function Is_Tracked (Path : String) return Boolean is
-                       (Version.Staging.Find_Path (Index, Path) /= Natural'Last);
-                     function Is_Modified (Path : String) return Boolean is
-                     begin
-                        for C of St.Changes loop
-                           if To_String (C.Path) = Path
-                             and then Version.Status."="
-                                        (C.Kind, Version.Status.Modified_File)
-                           then
-                              return True;
-                           end if;
-                        end loop;
-                        return False;
-                     end Is_Modified;
-                     function Is_Removal (Path : String) return Boolean is
-                       (for some R of Removals => R = Path);
-
-                     Tracked_Changes : Version.Path_Safety.Path_Vector;
-                     Untracked_Adds  : Version.Path_Safety.Path_Vector;
-
-                     procedure Emit_Add (Path : String) is
-                     begin
-                        if Dry_Run then
-                           Success_Line ("add '" & Path & "'");
-                        else
-                           Stage_Path (Path);
-                        end if;
-                     end Emit_Add;
-
-                     procedure Emit_Remove (Path : String) is
-                     begin
-                        if Dry_Run then
-                           Success_Line ("remove '" & Path & "'");
-                        else
-                           declare
-                              Repo : constant
-                                Version.Repository.Repository_Handle :=
-                                  Version.Repository.Open;
-                              Entries :
-                                Version.Staging.Index_Entry_Vectors.Vector :=
-                                  Version.Staging.Load (Repo);
-                           begin
-                              Version.Staging.Remove_Path (Entries, Path);
-                              Version.Staging.Write (Repo, Entries);
-                           end;
-                        end if;
-                     end Emit_Remove;
-                  begin
-                     for P of Matches loop
-                        if Is_Tracked (P) then
-                           if Is_Modified (P) then
-                              Tracked_Changes.Append (P);
-                           end if;
-                        else
-                           Untracked_Adds.Append (P);
-                        end if;
-                     end loop;
-                     for P of Removals loop
-                        Tracked_Changes.Append (P);
-                     end loop;
-
-                     Path_Sort.Sort (Tracked_Changes);
-                     Path_Sort.Sort (Untracked_Adds);
-
-                     for P of Tracked_Changes loop
-                        if Is_Removal (P) then
-                           Emit_Remove (P);
-                        else
-                           Emit_Add (P);
-                        end if;
-                     end loop;
-                     for P of Untracked_Adds loop
-                        Emit_Add (P);
-                     end loop;
-                  end;
-
-                  --  git's `add`/`stage` prints nothing on success (only the
-                  --  dry-run's per-path "add '...'"/"remove '...'" lines).
-               end;
-            end;
+            Run_Add;
 
          elsif Command = "remove" then
             declare
@@ -30933,7 +31232,9 @@ package body Version.CLI is
                                                     & To_String (E.Path)),
                                         Id    => E.Id,
                                         Mode  => E.Mode,
-                                        Stage => 0, Skip_Worktree => False, Assume_Valid => False));
+                                        Stage => 0, Skip_Worktree => False,
+                                        Assume_Valid => False,
+                                        Intent_To_Add => False));
                                  end if;
                               end loop;
                               Version.Staging.Sort_By_Path (Entries);
@@ -31174,7 +31475,7 @@ package body Version.CLI is
                      (Path  => To_Unbounded_String (Path),
                       Id    => Version.Objects.To_Object_Id (Sha),
                       Mode  => To_Unbounded_String (Mode),
-                      Stage => 0, Skip_Worktree => False, Assume_Valid => False));
+                      Stage => 0, Skip_Worktree => False, Assume_Valid => False, Intent_To_Add => False));
                   Version.Staging.Write (Repo, E);
                end Insert_Cacheinfo;
 
