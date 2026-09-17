@@ -1349,6 +1349,288 @@ package body Version.CLI is
      (Text'Length >= Prefix'Length
       and then Text (Text'First .. Text'First + Prefix'Length - 1) = Prefix);
 
+   --  git's diff-family options that do nothing but set Diff_Options
+   --  fields (whitespace, algorithm, context shape, color, ordering, side
+   --  swap, textconv, submodule format).  Shared by every command that
+   --  renders a patch.  Not_Diff_Flag leaves A to the caller; Bad has
+   --  already printed git's diagnostic and set the usage exit status.
+   type Diff_Flag_Result is (Not_Diff_Flag, Diff_Flag_OK, Diff_Flag_Bad);
+
+   function Apply_Diff_Option
+     (A : String; Opts : in out Version.Diff.Diff_Options)
+      return Diff_Flag_Result
+   is
+      function Bad (Message : String) return Diff_Flag_Result is
+      begin
+         Error_Line (Message);
+         Set_Usage_Failure;
+         return Diff_Flag_Bad;
+      end Bad;
+
+      function Value_After (Prefix : String) return String is
+        (A (A'First + Prefix'Length .. A'Last));
+
+      function Natural_Of (Text : String; Value : out Natural) return Boolean
+      is
+      begin
+         Value := Natural'Value (Text);
+         return Text'Length > 0
+           and then (for all C of Text => C in '0' .. '9');
+      exception
+         when others =>
+            return False;
+      end Natural_Of;
+
+      --  What POSIX regcomp rejects that GNAT.Regpat lets through: an
+      --  unterminated bracket expression or group, or a trailing backslash.
+      function Well_Formed_Regex (Re : String) return Boolean is
+         I     : Natural := Re'First;
+         Depth : Integer := 0;
+      begin
+         while I <= Re'Last loop
+            case Re (I) is
+               when '\' =>
+                  if I = Re'Last then
+                     return False;
+                  end if;
+                  I := I + 1;
+               when '[' =>
+                  I := I + 1;
+                  if I <= Re'Last and then Re (I) = '^' then
+                     I := I + 1;
+                  end if;
+                  if I <= Re'Last and then Re (I) = ']' then
+                     I := I + 1;
+                  end if;
+                  loop
+                     if I > Re'Last then
+                        return False;
+                     end if;
+                     exit when Re (I) = ']';
+                     if Re (I) = '[' and then I < Re'Last
+                       and then Re (I + 1) in ':' | '.' | '='
+                     then
+                        declare
+                           Close : constant Natural :=
+                             Ada.Strings.Fixed.Index
+                               (Re (I + 2 .. Re'Last), Re (I + 1) & "]");
+                        begin
+                           if Close = 0 then
+                              return False;
+                           end if;
+                           I := Close + 1;
+                        end;
+                     end if;
+                     I := I + 1;
+                  end loop;
+               when '(' =>
+                  Depth := Depth + 1;
+               when ')' =>
+                  Depth := Depth - 1;
+                  if Depth < 0 then
+                     return False;
+                  end if;
+               when others =>
+                  null;
+            end case;
+            I := I + 1;
+         end loop;
+         return Depth = 0;
+      end Well_Formed_Regex;
+   begin
+      if A = "-w" or else A = "--ignore-all-space" then
+         Opts.Whitespace := Version.Merge.Whitespace_Ignore_All_Space;
+      elsif A = "-b" or else A = "--ignore-space-change" then
+         Opts.Whitespace := Version.Merge.Whitespace_Ignore_Space_Change;
+      elsif A = "--ignore-space-at-eol" then
+         Opts.Whitespace := Version.Merge.Whitespace_Ignore_Space_At_EOL;
+      elsif A = "--ignore-cr-at-eol" then
+         Opts.Whitespace := Version.Merge.Whitespace_Ignore_CR_At_EOL;
+      elsif A = "--ignore-blank-lines" then
+         Opts.Ignore_Blank_Lines := True;
+      elsif (Has_Prefix (A, "-I") and then A'Length > 2)
+        or else Has_Prefix (A, "--ignore-matching-lines=")
+      then
+         declare
+            Re : constant String :=
+              (if Has_Prefix (A, "-I") then Value_After ("-I")
+               else Value_After ("--ignore-matching-lines="));
+         begin
+            if not Well_Formed_Regex (Re) then
+               return Bad ("invalid regex given to -I: '" & Re & "'");
+            end if;
+            begin
+               declare
+                  Compiled : constant GNAT.Regpat.Pattern_Matcher :=
+                    GNAT.Regpat.Compile (Re);
+                  pragma Unreferenced (Compiled);
+               begin
+                  null;
+               end;
+            exception
+               when GNAT.Regpat.Expression_Error =>
+                  return Bad ("invalid regex given to -I: '" & Re & "'");
+            end;
+            Opts.Ignore_Regexes.Append (Re);
+         end;
+      elsif A = "--patience" then
+         Opts.Algorithm := Version.Merge.Diff_Algorithm_Patience;
+      elsif A = "--histogram" then
+         Opts.Algorithm := Version.Merge.Diff_Algorithm_Histogram;
+      elsif A = "--minimal" then
+         Opts.Algorithm := Version.Merge.Diff_Algorithm_Minimal;
+      elsif Has_Prefix (A, "--diff-algorithm=") then
+         declare
+            V : constant String := Value_After ("--diff-algorithm=");
+         begin
+            if V = "myers" or else V = "default" then
+               Opts.Algorithm := Version.Merge.Diff_Algorithm_Myers;
+            elsif V = "minimal" then
+               Opts.Algorithm := Version.Merge.Diff_Algorithm_Minimal;
+            elsif V = "patience" then
+               Opts.Algorithm := Version.Merge.Diff_Algorithm_Patience;
+            elsif V = "histogram" then
+               Opts.Algorithm := Version.Merge.Diff_Algorithm_Histogram;
+            else
+               return Bad
+                 ("option diff-algorithm accepts ""myers"", ""minimal"", "
+                  & """patience"" and ""histogram""");
+            end if;
+         end;
+      elsif Has_Prefix (A, "--anchored=") then
+         --  Anchors steer patience; the anchor text itself is not honoured.
+         Opts.Algorithm := Version.Merge.Diff_Algorithm_Patience;
+      elsif A = "--indent-heuristic" then
+         Opts.Indent_Heuristic := True;
+      elsif A = "--no-indent-heuristic" then
+         Opts.Indent_Heuristic := False;
+      elsif A = "-R" then
+         Opts.Reverse_Sides := True;
+      elsif A = "--relative" then
+         Opts.Relative_Set := True;
+         Opts.Relative := To_Unbounded_String (Repo_Prefix);
+      elsif Has_Prefix (A, "--relative=") then
+         Opts.Relative_Set := True;
+         Opts.Relative := To_Unbounded_String (Value_After ("--relative="));
+      elsif A = "--no-relative" then
+         Opts.Relative_Set := False;
+         Opts.Relative := Null_Unbounded_String;
+      elsif A = "-W" or else A = "--function-context" then
+         Opts.Function_Context := True;
+      elsif A = "--no-function-context" then
+         Opts.Function_Context := False;
+      elsif Has_Prefix (A, "--inter-hunk-context=") then
+         if not Natural_Of
+                  (Value_After ("--inter-hunk-context="),
+                   Opts.Inter_Hunk_Context)
+         then
+            return Bad
+              ("option `inter-hunk-context' expects a non-negative integer "
+               & "value with an optional k/m/g suffix");
+         end if;
+      elsif A = "--check" then
+         Opts.Check_Whitespace := True;
+      elsif A = "--color" or else A = "--color=always" then
+         Opts.Color := True;
+      elsif A = "--no-color" or else A = "--color=never"
+        or else A = "--color=auto"
+      then
+         --  Output is never a terminal here, so auto is never.
+         Opts.Color := False;
+      elsif Has_Prefix (A, "--color=") then
+         return Bad ("option `color' expects ""always"", ""auto"", or ""never""");
+      elsif Has_Prefix (A, "--ws-error-highlight=") then
+         declare
+            V    : constant String := Value_After ("--ws-error-highlight=");
+            From : Positive := V'First;
+            WS   : Version.Diff.WS_Highlight := (others => False);
+         begin
+            while From <= V'Last loop
+               declare
+                  Stop : Natural := From;
+               begin
+                  while Stop <= V'Last and then V (Stop) /= ',' loop
+                     Stop := Stop + 1;
+                  end loop;
+                  declare
+                     Kind : constant String := V (From .. Stop - 1);
+                  begin
+                     if Kind = "new" then
+                        WS.New_Lines := True;
+                     elsif Kind = "old" then
+                        WS.Old_Lines := True;
+                     elsif Kind = "context" then
+                        WS.Context_Lines := True;
+                     elsif Kind = "all" then
+                        WS := (others => True);
+                     elsif Kind = "none" then
+                        WS := (others => False);
+                     elsif Kind = "default" then
+                        WS := (New_Lines => True, others => False);
+                     else
+                        return Bad ("unknown value after ws-error-highlight=");
+                     end if;
+                  end;
+                  From := Stop + 1;
+               end;
+            end loop;
+            Opts.WS_Errors := WS;
+         end;
+      elsif A = "--color-moved" or else A = "--no-color-moved"
+        or else A = "--no-color-moved-ws"
+        or else Has_Prefix (A, "--color-moved-ws=")
+      then
+         --  Accepted: moved blocks are painted as plain removals/additions.
+         null;
+      elsif Has_Prefix (A, "--color-moved=") then
+         declare
+            V : constant String := Value_After ("--color-moved=");
+         begin
+            if V /= "no" and then V /= "default" and then V /= "blocks"
+              and then V /= "zebra" and then V /= "dimmed-zebra"
+              and then V /= "dimmed_zebra" and then V /= "plain"
+            then
+               Error_Line
+                 ("color moved setting must be one of 'no', 'default', "
+                  & "'blocks', 'zebra', 'dimmed-zebra', 'plain'");
+               return Bad ("bad --color-moved argument: " & V);
+            end if;
+         end;
+      elsif Has_Prefix (A, "-O") and then A'Length > 2 then
+         Opts.Order_File := To_Unbounded_String (Value_After ("-O"));
+      elsif A = "--textconv" then
+         Opts.Textconv := True;
+      elsif A = "--no-textconv" then
+         Opts.Textconv := False;
+      elsif A = "--submodule" or else A = "--submodule=log" then
+         Opts.Submodule := Version.Diff.Sub_Log;
+      elsif A = "--submodule=short" or else A = "--no-submodule" then
+         Opts.Submodule := Version.Diff.Sub_Short;
+      elsif A = "--submodule=diff" then
+         Opts.Submodule := Version.Diff.Sub_Diff;
+      elsif Has_Prefix (A, "--submodule=") then
+         return Bad
+           ("failed to parse --submodule option parameter: '"
+            & Value_After ("--submodule=") & "'");
+      elsif A = "--ita-invisible-in-index" then
+         Opts.Ita_Visible := False;
+      elsif A = "--ita-visible-in-index" then
+         Opts.Ita_Visible := True;
+      elsif A = "--full-index" then
+         Opts.Abbrev := 40;
+         Opts.Index_Abbrev := 40;
+      elsif Has_Prefix (A, "--abbrev=") then
+         if not Natural_Of (Value_After ("--abbrev="), Opts.Index_Abbrev) then
+            return Bad ("option `abbrev' expects a numerical value");
+         end if;
+         Opts.Abbrev := Natural'Max (Opts.Index_Abbrev, 4);
+         Opts.Index_Abbrev := Natural'Max (Opts.Index_Abbrev, 4);
+      else
+         return Not_Diff_Flag;
+      end if;
+      return Diff_Flag_OK;
+   end Apply_Diff_Option;
+
    function Is_Classic_Config_Invocation return Boolean is
       A : constant String := Arg (2);
    begin
@@ -16725,6 +17007,7 @@ package body Version.CLI is
                use type Version.Diff.Rename_Detection;
                Rename_Score : Natural := 0;
                Opts   : Version.Diff.Diff_Options;
+               DOpts  : Version.Diff.Diff_Options;
                Context : Natural := 3;
                --  --exit-code makes a non-empty diff exit 1; --quiet is that
                --  plus suppressed output (git's --quiet implies --exit-code).
@@ -16737,6 +17020,12 @@ package body Version.CLI is
                  To_Unbounded_String ("a/");
                Dst_Prefix_V : Unbounded_String :=
                  To_Unbounded_String ("b/");
+               --  `-O <file>` takes the next argument; --merge-base diffs
+               --  from the merge base of the named commit(s); --output
+               --  writes the patch to a file.
+               Skip_Next       : Boolean := False;
+               Merge_Base_Flag : Boolean := False;
+               Output_File     : Unbounded_String;
 
                function LArg (Index : Positive) return String is
                  (To_String (LArgs (Index)));
@@ -16746,11 +17035,19 @@ package body Version.CLI is
                --  differences" as exit status 1.
                procedure Emit (S : String) is
                begin
-                  if not Quiet and then not Silent then
+                  if Quiet or else Silent then
+                     null;
+                  elsif Length (Output_File) > 0 then
+                     Version.Files.Write_Binary_File (To_String (Output_File), S);
+                  else
                      Version.Console.Put (S);
                   end if;
                   if Exit_Code and then S'Length > 0 then
                      Set_Command_Failure;
+                  end if;
+                  --  --check: whitespace errors are exit status 2.
+                  if DOpts.Check_Whitespace and then S'Length > 0 then
+                     Ada.Command_Line.Set_Exit_Status (2);
                   end if;
                end Emit;
 
@@ -16817,7 +17114,9 @@ package body Version.CLI is
             begin
                LArgs (1) := To_Unbounded_String (Command);
                for I in 2 .. Count loop
-                  if Arg (I) = "--stat" then
+                  if Skip_Next then
+                     Skip_Next := False;
+                  elsif Arg (I) = "--stat" then
                      Stat := True;
                   elsif Has_Prefix (Arg (I), "--stat=") then
                      --  --stat=<width>[,<name-width>[,<count>]]: the total line
@@ -16983,6 +17282,7 @@ package body Version.CLI is
                         Abbrev_Val := Natural'Max
                           (Natural'Value
                              (Arg (I) (Arg (I)'First + 9 .. Arg (I)'Last)), 4);
+                        DOpts.Index_Abbrev := Abbrev_Val;
                      exception
                         when others =>
                            Usage_Error ("--abbrev needs a number", Usage);
@@ -17088,10 +17388,29 @@ package body Version.CLI is
                   elsif Has_Prefix (Arg (I), "--dst-prefix=") then
                      Dst_Prefix_V := To_Unbounded_String
                        (Arg (I) (Arg (I)'First + 13 .. Arg (I)'Last));
-                  elsif Arg (I) = "--no-color" or else Arg (I) = "--color=never"
-                    or else Arg (I) = "--color=auto"
+                  elsif Arg (I) = "--full-index" then
+                     Abbrev_Val := 40;
+                     DOpts.Index_Abbrev := 40;
+                  elsif Arg (I) = "-O" and then I < Count then
+                     DOpts.Order_File := To_Unbounded_String (Arg (I + 1));
+                     Skip_Next := True;
+                  elsif Arg (I) = "-I" and then I < Count then
+                     if Apply_Diff_Option ("-I" & Arg (I + 1), DOpts)
+                        = Diff_Flag_Bad
+                     then
+                        return;
+                     end if;
+                     Skip_Next := True;
+                  elsif Arg (I) = "--merge-base" then
+                     Merge_Base_Flag := True;
+                  elsif Has_Prefix (Arg (I), "--output=") then
+                     Output_File :=
+                       To_Unbounded_String
+                         (Arg (I) (Arg (I)'First + 9 .. Arg (I)'Last));
+                  elsif Arg (I) = "-p" or else Arg (I) = "-u"
+                    or else Arg (I) = "--patch"
                   then
-                     null;   --  output is never colored when piped, as here
+                     Silent := False;
                   elsif Arg (I)'Length > 2
                     and then Arg (I) (Arg (I)'First .. Arg (I)'First + 1) = "-U"
                   then
@@ -17118,11 +17437,36 @@ package body Version.CLI is
                            return;
                      end;
                   else
-                     LCount := LCount + 1;
-                     LArgs (LCount) := To_Unbounded_String (Arg (I));
+                     case Apply_Diff_Option (Arg (I), DOpts) is
+                        when Diff_Flag_OK =>
+                           null;
+                        when Diff_Flag_Bad =>
+                           return;
+                        when Not_Diff_Flag =>
+                           LCount := LCount + 1;
+                           LArgs (LCount) := To_Unbounded_String (Arg (I));
+                     end case;
                   end if;
                end loop;
-               Opts := (Stat => Stat,
+               --  git reads the order file up front and dies when it cannot.
+               if Length (DOpts.Order_File) > 0 then
+                  declare
+                     Given : constant String := To_String (DOpts.Order_File);
+                  begin
+                     if not Ada.Directories.Exists (Given) then
+                        Ada.Text_IO.Put_Line
+                          (Ada.Text_IO.Standard_Error,
+                           "fatal: failed to read orderfile '" & Given
+                           & "': No such file or directory");
+                        Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                        return;
+                     end if;
+                     DOpts.Order_File :=
+                       To_Unbounded_String (Ada.Directories.Full_Name (Given));
+                  end;
+               end if;
+               Opts := (DOpts with delta
+                        Stat => Stat,
                         Numstat => Numstat,
                         Shortstat => Shortstat,
                         Summary => Summary,
@@ -17142,8 +17486,7 @@ package body Version.CLI is
                         Binary_Patch => Binary_Patch,
                         Src_Prefix => Src_Prefix_V,
                         Dst_Prefix => Dst_Prefix_V,
-                        Word_Diff => Word_Diff_Mode,
-                        others => <>);
+                        Word_Diff => Word_Diff_Mode);
 
                --  `--no-index <old> <new>`: diff two files outside the repo.
                --  Exit 1 when they differ, 0 when identical (like `diff`).
@@ -17323,10 +17666,54 @@ package body Version.CLI is
                        (Version.Diff.Diff_Staged
                           (Version.Repository.Open, Opts));
                   else
-                     Emit
-                       (Version.Diff.Diff_Staged
-                          (Version.Repository.Open,
-                           LPathspecs (Path_First), Opts));
+                     --  `--cached <commit> [-- <pathspec>]`: that tree
+                     --  against the index (from the merge base with HEAD
+                     --  under --merge-base); otherwise the operands are
+                     --  pathspecs.
+                     declare
+                        Repo : constant Version.Repository.Repository_Handle :=
+                          Version.Repository.Open;
+                        Tree   : Version.Objects.Hex_Object_Id :=
+                          Version.Objects.Zero_Object_Id;
+                        Is_Rev : Boolean := False;
+                     begin
+                        if LArg (Path_First) /= "--" then
+                           begin
+                              Tree :=
+                                (if Merge_Base_Flag
+                                 then Version.Objects.Commit_Tree_Id
+                                        (Version.Objects.Read_Object
+                                           (Repo,
+                                            Version.History.Merge_Base
+                                              (Repo,
+                                               Version.Revisions.Resolve_Commit
+                                                 (Repo, LArg (Path_First)),
+                                               Version.Revisions.Resolve_Commit
+                                                 (Repo, "HEAD"))))
+                                 else Version.Revisions.Resolve_Tree
+                                        (Repo, LArg (Path_First)));
+                              Is_Rev := True;
+                           exception
+                              when Ada.IO_Exceptions.Data_Error
+                                 | Constraint_Error =>
+                                 Is_Rev := False;
+                           end;
+                        end if;
+                        if Is_Rev and then LCount = Path_First then
+                           Emit
+                             (Version.Diff.Diff_Tree_Vs_Index
+                                (Repo, Tree, Opts));
+                        elsif Is_Rev then
+                           Emit
+                             (Version.Diff.Diff_Tree_Vs_Index
+                                (Repo, Tree,
+                                 LPathspecs (Path_First + 1), Opts));
+                        else
+                           Emit
+                             (Version.Diff.Diff_Staged
+                                (Repo, LPathspecs (Path_First), Opts));
+                        end if;
+                     end;
                   end if;
                elsif LArg (2) = "--" then
                   Has_Separator := True;
@@ -17356,7 +17743,18 @@ package body Version.CLI is
                      Is_Rev : Boolean := False;
                   begin
                      begin
-                        Tree := Version.Revisions.Resolve_Tree (Repo, LArg (2));
+                        Tree :=
+                          (if Merge_Base_Flag
+                           then Version.Objects.Commit_Tree_Id
+                                  (Version.Objects.Read_Object
+                                     (Repo,
+                                      Version.History.Merge_Base
+                                        (Repo,
+                                         Version.Revisions.Resolve_Commit
+                                           (Repo, LArg (2)),
+                                         Version.Revisions.Resolve_Commit
+                                           (Repo, "HEAD"))))
+                           else Version.Revisions.Resolve_Tree (Repo, LArg (2)));
                         Is_Rev := True;
                      exception
                         when Ada.IO_Exceptions.Data_Error | Constraint_Error =>
@@ -17389,6 +17787,46 @@ package body Version.CLI is
                              (Repo, LPathspecs (2), Opts));
                      end if;
                   end;
+               elsif LCount >= 3 and then LArg (3) = "--" then
+                  --  One revision then `-- <pathspec>...`: that tree against
+                  --  the working tree, limited to the paths.
+                  declare
+                     Repo : constant Version.Repository.Repository_Handle :=
+                       Version.Repository.Open;
+                     Tree : Version.Objects.Hex_Object_Id :=
+                       Version.Objects.Zero_Object_Id;
+                  begin
+                     begin
+                        Tree :=
+                          (if Merge_Base_Flag
+                           then Version.Objects.Commit_Tree_Id
+                                  (Version.Objects.Read_Object
+                                     (Repo,
+                                      Version.History.Merge_Base
+                                        (Repo,
+                                         Version.Revisions.Resolve_Commit
+                                           (Repo, LArg (2)),
+                                         Version.Revisions.Resolve_Commit
+                                           (Repo, "HEAD"))))
+                           else Version.Revisions.Resolve_Tree (Repo, LArg (2)));
+                     exception
+                        when Ada.IO_Exceptions.Data_Error | Constraint_Error =>
+                           Ada.Text_IO.Put_Line
+                             (Ada.Text_IO.Standard_Error,
+                              "fatal: bad revision '" & LArg (2) & "'");
+                           Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                           return;
+                     end;
+                     if LCount = 3 then
+                        Emit
+                          (Version.Diff.Diff_Tree_Vs_Working
+                             (Repo, Tree, Opts));
+                     else
+                        Emit
+                          (Version.Diff.Diff_Tree_Vs_Working
+                             (Repo, Tree, LPathspecs (4), Opts));
+                     end if;
+                  end;
                elsif LCount = 3
                  or else (LCount >= 4 and then LArg (4) = "--")
                then
@@ -17410,6 +17848,11 @@ package body Version.CLI is
                           Version.Revisions.Resolve_Commit (Repo, LArg (2));
                         New_Id :=
                           Version.Revisions.Resolve_Commit (Repo, LArg (3));
+                        if Merge_Base_Flag then
+                           --  `--merge-base A B` is `A...B`.
+                           Old_Id :=
+                             Version.History.Merge_Base (Repo, Old_Id, New_Id);
+                        end if;
                         Revisions_Resolved := True;
                      exception
                         when Ada.IO_Exceptions.Data_Error | Constraint_Error =>
@@ -17502,6 +17945,9 @@ package body Version.CLI is
                Stat_W     : Natural := 0;   --  --stat=<w>/--stat-width
                Stat_NW    : Natural := 0;   --  --stat=,<n>/--stat-name-width
                Stat_C     : Natural := 0;   --  --stat=,,<c>/--stat-count
+               --  git's diff-family switches (-w, --color, --diff-algorithm,
+               --  ...), applied to every --stat/-p rendering.
+               LOpts      : Version.Diff.Diff_Options;
                Walk       : Version.History.Rev_List_Options;
                Operands   : Version.Rev_Args.String_Vectors.Vector;
                Only_Paths : Boolean := False;
@@ -17969,9 +18415,26 @@ package body Version.CLI is
                   elsif Arg (I)'Length > 0
                     and then Arg (I) (Arg (I)'First) = '-'
                   then
-                     Usage_Error ("unknown log option: " & Arg (I), Usage);
-                     Bad := True;
-                     exit;
+                     case Apply_Diff_Option (Arg (I), LOpts) is
+                        when Diff_Flag_OK =>
+                           --  The commit headers have no colouring yet, so
+                           --  a painted patch under a plain header would
+                           --  not be git's output: --color stays unknown.
+                           if LOpts.Color then
+                              Usage_Error
+                                ("unknown log option: " & Arg (I), Usage);
+                              Bad := True;
+                              exit;
+                           end if;
+                        when Diff_Flag_Bad =>
+                           Bad := True;
+                           exit;
+                        when Not_Diff_Flag =>
+                           Usage_Error
+                             ("unknown log option: " & Arg (I), Usage);
+                           Bad := True;
+                           exit;
+                     end case;
                   else
                      --  A revision, a range, a ^exclusion or a path: the
                      --  shared parser decides which. After --not, a positive
@@ -18189,7 +18652,8 @@ package body Version.CLI is
                               Date_Mode      => To_String (Date_Mode),
                               Stat_Width      => Stat_W,
                               Stat_Name_Width => Stat_NW,
-                              Stat_Count      => Stat_C));
+                              Stat_Count      => Stat_C,
+                              Diff_Base       => LOpts));
                      elsif Has_Format then
                         Version.Console.Put
                           (Version.Log.Log_Formatted_List_Text
@@ -18217,7 +18681,8 @@ package body Version.CLI is
                               Rename_Score => Rename_Score,
                               Stat_Width      => Stat_W,
                               Stat_Name_Width => Stat_NW,
-                              Stat_Count      => Stat_C));
+                              Stat_Count      => Stat_C,
+                              Diff_Base       => LOpts));
                      elsif Oneline
                        and then (Left_Right or else Cherry_Mark
                                  or else Cherry_Pick or else Left_Only
@@ -18436,7 +18901,8 @@ package body Version.CLI is
                               Date_Mode      => To_String (Date_Mode),
                               Stat_Width      => Stat_W,
                               Stat_Name_Width => Stat_NW,
-                              Stat_Count      => Stat_C));
+                              Stat_Count      => Stat_C,
+                              Diff_Base       => LOpts));
                      else
                         Version.Console.Put
                           (Version.Log.Log_List_Text
@@ -18461,7 +18927,8 @@ package body Version.CLI is
                               Date_Mode      => To_String (Date_Mode),
                               Stat_Width      => Stat_W,
                               Stat_Name_Width => Stat_NW,
-                              Stat_Count      => Stat_C));
+                              Stat_Count      => Stat_C,
+                              Diff_Base       => LOpts));
                      end if;
                   end;
                end if;
@@ -18484,6 +18951,7 @@ package body Version.CLI is
                Stat_W   : Natural := 0;
                Stat_NW  : Natural := 0;
                Stat_C   : Natural := 0;
+               SOpts    : Version.Diff.Diff_Options;   --  git's diff switches
                No_Patch : Boolean := False;
                Oneline  : Boolean := False;
                Name_Only : Boolean := False;
@@ -18627,9 +19095,26 @@ package body Version.CLI is
                   elsif Arg (I)'Length > 0
                     and then Arg (I) (Arg (I)'First) = '-'
                   then
-                     Usage_Error ("unknown show option: " & Arg (I), Usage);
-                     Bad := True;
-                     exit;
+                     case Apply_Diff_Option (Arg (I), SOpts) is
+                        when Diff_Flag_OK =>
+                           --  The commit headers have no colouring yet, so
+                           --  a painted patch under a plain header would
+                           --  not be git's output: --color stays unknown.
+                           if SOpts.Color then
+                              Usage_Error
+                                ("unknown show option: " & Arg (I), Usage);
+                              Bad := True;
+                              exit;
+                           end if;
+                        when Diff_Flag_Bad =>
+                           Bad := True;
+                           exit;
+                        when Not_Diff_Flag =>
+                           Usage_Error
+                             ("unknown show option: " & Arg (I), Usage);
+                           Bad := True;
+                           exit;
+                     end case;
                   else
                      Revs.Append (Arg (I));   --  git shows each in turn
                   end if;
@@ -18644,7 +19129,8 @@ package body Version.CLI is
                      Repo : constant Version.Repository.Repository_Handle :=
                        Version.Repository.Open;
                      Opts : constant Version.Diff.Diff_Options :=
-                       (Stat        => Stat,
+                       (SOpts with delta
+                        Stat        => Stat,
                         Name_Only   => Name_Only,
                         Name_Status => Name_Status,
                         Numstat     => Numstat,
@@ -18653,8 +19139,7 @@ package body Version.CLI is
                         Raw         => Raw_Flag,
                         Stat_Width      => Stat_W,
                         Stat_Name_Width => Stat_NW,
-                        Stat_Count      => Stat_C,
-                        others      => <>);
+                        Stat_Count      => Stat_C);
                   begin
                      for R_Idx in Revs.First_Index .. Revs.Last_Index loop
                         declare

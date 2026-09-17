@@ -858,13 +858,31 @@ package body Version.CLI.Help is
             & "for Git-style inspection modes.");
       elsif Name = "diff" then
          Line ("Usage:");
-         Line ("  version diff [--] [PATHSPEC...]");
-         Line ("  version diff --staged [--] [PATHSPEC...]");
-         Line ("  version diff --cached [--] [PATHSPEC...]");
-         Line ("  version diff REV1 REV2");
+         Line ("  version diff [<options>] [--] [PATHSPEC...]");
+         Line ("  version diff [<options>] --staged|--cached [<commit>] [--] [PATHSPEC...]");
+         Line ("  version diff [<options>] <commit> [--] [PATHSPEC...]");
+         Line ("  version diff [<options>] <commit> <commit> [--] [PATHSPEC...]");
+         Line ("  version diff [<options>] <commit>..<commit> | <commit>...<commit>");
+         Line ("  version diff [<options>] --merge-base <commit> [<commit>]");
+         Line ("  version diff [<options>] --no-index <path> <path>");
          Line;
          Line ("Show working tree, staged, or commit-to-commit differences.");
          Line ("--cached is a byte-identical alias for --staged.");
+         Line;
+         Line ("Output: -p/-u, --stat[=<w>[,<n>[,<c>]]], --numstat, --shortstat,");
+         Line ("  --summary, --compact-summary, --dirstat, --name-only, --name-status,");
+         Line ("  --raw, --patch-with-raw, --patch-with-stat, -s/--no-patch, --binary,");
+         Line ("  --text, --word-diff[=plain|porcelain], --check, --output=<file>,");
+         Line ("  --color[=always|never|auto], --ws-error-highlight=<kinds>,");
+         Line ("  --submodule[=short|log|diff], --abbrev[=<n>], --full-index,");
+         Line ("  --src-prefix=, --dst-prefix=, --no-prefix, --default-prefix,");
+         Line ("  --relative[=<path>], -R, --exit-code, --quiet, --diff-filter=.");
+         Line ("Hunks: -U<n>/--unified=<n>, -W/--function-context, --inter-hunk-context=<n>,");
+         Line ("  --patience, --histogram, --minimal, --diff-algorithm=<algo>,");
+         Line ("  --[no-]indent-heuristic, -w, -b, --ignore-space-at-eol,");
+         Line ("  --ignore-cr-at-eol, --ignore-blank-lines, -I <regex>, -O <orderfile>.");
+         Line ("Renames: -M[<n>], --find-renames[=<n>], --no-renames, -l<n>.");
+         Line ("Content: --textconv/--no-textconv, --ita-visible-in-index.");
       elsif Name = "log" then
          Line ("Usage:");
          Line ("  version log [<REV>...] [--] [PATH...]");
@@ -877,11 +895,14 @@ package body Version.CLI.Help is
          Line ("Ranges (A..B, A...B), exclusions (^X) and path limits work as in git.");
          Line ("--skip, --reverse, --merges/--no-merges, --first-parent and");
          Line ("--topo-order select and order the same way rev-list does.");
+         Line ("The diff switches (-w, -b, -W, --diff-algorithm=, --relative, -R,");
+         Line ("--check, -O, --submodule, ... -- see `help diff`) shape --stat/-p.");
       elsif Name = "show" then
          Line ("Usage:");
          Line ("  version show [REV]");
          Line;
-         Line ("Show a commit and its changes.");
+         Line ("Show a commit and its changes. Takes diff's switches (-w, -W,");
+         Line ("--diff-algorithm=, --relative, -R, --check, --submodule, ...).");
       elsif Name = "restore" then
          Line ("Usage:");
          Line ("  version restore [--] PATHSPEC...");

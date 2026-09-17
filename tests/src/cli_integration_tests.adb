@@ -5331,6 +5331,126 @@ package body CLI_Integration_Tests is
       Run_Parity_Transcript (Root, Scenario, "rebase");
    end Rebase_Option_Surface_Matches_Git;
 
+   --  `diff`: git's option surface -- the whitespace family, -I and
+   --  --ignore-blank-lines (with git's one-byte-line quirk), -W and
+   --  --inter-hunk-context, -R, --check, --color with --ws-error-highlight,
+   --  the algorithms, --relative, -O, --full-index, --merge-base, textconv,
+   --  intent-to-add entries, --output and the --submodule formats.
+   procedure Diff_Option_Surface_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Scenario : constant String :=
+          "seed" & LF
+        & "printf 'int main()\n{\n  a;\n  b;\n  c;\n}\n' > f.c" & LF
+        & "printf 'x\n' > g" & LF
+        & "mkdir sub; printf 'one\ntwo\nthree\n' > sub/s.txt" & LF
+        & "printf 'alpha\n\nbeta\n' > blank.txt" & LF
+        & "printf 'ws\n' > ws.txt" & LF
+        & "printf 'a\r\nb\r\nc\r\n' > crlf.txt" & LF
+        & "printf 'p1\np2\np3\n' > pic.txt" & LF
+        & "git add .; git commit -qm base" & LF
+        & "printf 'int main()\n{\n  a;\n  B; \n  c;\n\td;\n}\n\nvoid f()\n{\n  q;\n}\n\n\n' > f.c" & LF
+        & "printf 'x\ny' > g" & LF
+        & "printf 'one\ntwo  \nthree\n' > sub/s.txt" & LF
+        & "printf 'alpha\n\n\nbeta\n' > blank.txt" & LF
+        & "printf 'ws \n \t\n\n\n' > ws.txt" & LF
+        & "printf 'a\r\nB\r\nc\n' > crlf.txt" & LF
+        & "printf 'p1\np2 \np3\n' > pic.txt" & LF
+        & "t 'plain' diff" & LF
+        & "t '-w' diff -w" & LF
+        & "t '-b' diff -b" & LF
+        & "t '--ignore-space-at-eol' diff --ignore-space-at-eol" & LF
+        & "t '--ignore-cr-at-eol' diff --ignore-cr-at-eol" & LF
+        & "t '--ignore-blank-lines' diff --ignore-blank-lines" & LF
+        & "t '-U0 --ignore-blank-lines' diff -U0 --ignore-blank-lines" & LF
+        & "t '-I' diff -I 'B;'" & LF
+        & "t '-I two' diff -I 'B;' -I 'd;' -- f.c" & LF
+        & "t '-I bad' diff -I '['" & LF
+        & "t '-W' diff -W" & LF
+        & "t '-U0' diff -U0" & LF
+        & "t '--inter-hunk-context=5 -U1' diff --inter-hunk-context=5 -U1" & LF
+        & "t '--inter-hunk-context bad' diff --inter-hunk-context=x" & LF
+        & "t '-R' diff -R" & LF
+        & "t '-R --stat' diff -R --stat" & LF
+        & "t '-R --name-status' diff -R --name-status" & LF
+        & "t '--check' diff --check" & LF
+        & "t '--check -w' diff --check -w" & LF
+        & "t '--check -b' diff --check -b -- ws.txt pic.txt" & LF
+        & "t '--color' diff --color" & LF
+        & "t '--color --ws-error-highlight=all' diff --color --ws-error-highlight=all" & LF
+        & "t '--color --ws-error-highlight=old,new' diff --color --ws-error-highlight=old,new" & LF
+        & "t '--ws-error-highlight bad' diff --ws-error-highlight=bogus" & LF
+        & "t '--color --stat' diff --color --stat" & LF
+        & "t '--color --check' diff --color --check" & LF
+        & "t '--color=never' diff --color=never --stat" & LF
+        & "t '--color=bogus' diff --color=bogus" & LF
+        & "t '--patience' diff --patience" & LF
+        & "t '--histogram' diff --histogram" & LF
+        & "t '--minimal' diff --minimal" & LF
+        & "t '--diff-algorithm=patience' diff --diff-algorithm=patience" & LF
+        & "t '--diff-algorithm=bad' diff --diff-algorithm=bad" & LF
+        & "t '--no-indent-heuristic' diff --no-indent-heuristic" & LF
+        & "t '--relative=sub/' diff --relative=sub/" & LF
+        & "t '--relative=sub/ --stat' diff --relative=sub/ --stat" & LF
+        & "t '--relative=sub/ --name-only' diff --relative=sub/ --name-only" & LF
+        & "printf 'sub/\n*.c\n' > order" & LF
+        & "t '-O' diff -Oorder --name-only" & LF
+        & "t '-O sep' diff -O order --stat" & LF
+        & "t '-O nofile' diff -Onofile" & LF
+        & "t '--full-index' diff --full-index -- g" & LF
+        & "t '--submodule=bogus' diff --submodule=bogus" & LF
+        & "t '--color-moved=bogus' diff --color-moved=bogus" & LF
+        & "t '--color-moved' diff --color-moved -- g" & LF
+        & "t '-w --stat' diff -w --stat" & LF
+        & "t '-w --numstat' diff -w --numstat" & LF
+        & "t '-w --name-only' diff -w --name-only" & LF
+        & "git add .; git commit -qm second" & LF
+        & "printf 'k1\nk2\nk3\nk4\n' > keep" & LF
+        & "git checkout -qb side HEAD~1; printf 'k0\nk1\nk2\nk3\n' > keep; git commit -qam "
+          & "side; git checkout -q main" & LF
+        & "t '--merge-base one' diff --merge-base side" & LF
+        & "t '--merge-base two' diff --merge-base side main --stat" & LF
+        & "t '--cached --merge-base' diff --cached --merge-base side" & LF
+        & "git add keep" & LF
+        & "t '--cached HEAD~1' diff --cached HEAD~1 --stat" & LF
+        & "t '--cached HEAD~1 path' diff --cached HEAD~1 -- keep" & LF
+        & "echo n > n; git add -N n" & LF
+        & "t 'ita' diff" & LF
+        & "t 'ita cached' diff --cached" & LF
+        & "t 'ita visible' diff --cached --ita-visible-in-index" & LF
+        & "t '--output' diff --output=out.patch --stat" & LF
+        & "cat out.patch >> ""$TF""" & LF
+        & "cd sub" & LF
+        & "t 'relative in dir' diff --relative" & LF
+        & "t 'relative --check' diff --relative --check" & LF
+        & "cd .." & LF
+        & "git config diff.algorithm patience" & LF
+        & "t 'config algorithm' diff -- f.c" & LF
+        & "git config diff.tc.textconv 'tr a-z A-Z <'" & LF
+        & "echo 'pic.txt diff=tc' > .gitattributes" & LF
+        & "printf 'p1\np2 \np3\nP4\n' > pic.txt" & LF
+        & "t 'textconv' diff -- pic.txt" & LF
+        & "t '--no-textconv' diff --no-textconv -- pic.txt" & LF
+        & "t 'textconv stat' diff --stat -- pic.txt" & LF
+        & "SM=$BASE/smsub" & LF
+        & "[ -d $SM ] || (git init -q $SM && cd $SM && git config user.email a@b && git config "
+          & "user.name A && echo 1 > f && git add f && git commit -qm s1 && echo 2 > f && git "
+          & "commit -qam s2 && echo 3 > f && git commit -qam 's3 subject')" & LF
+        & "git -c protocol.file.allow=always submodule add -q $SM sm 2>/dev/null; git commit -qm 'add sm'" & LF
+        & "t 'submodule new log' diff HEAD~1 --submodule=log -- sm" & LF
+        & "t 'submodule new diff' diff HEAD~1 --submodule=diff -- sm" & LF
+        & "(cd sm && git checkout -q HEAD~2)" & LF
+        & "t 'submodule rewind' diff --submodule" & LF
+        & "t 'submodule rewind color' diff --submodule --color" & LF
+        & "t 'submodule diff' diff --submodule=diff" & LF
+        & "git add sm; git commit -qm rewind" & LF
+        & "t 'submodule forward' diff HEAD HEAD~1 --submodule=log" & LF;
+   begin
+      Run_Parity_Transcript (Root, Scenario, "diff");
+   end Diff_Option_Surface_Matches_Git;
+
    procedure Bisect_Run_And_Patch_Id_Match_Git
      (T : in out AUnit.Test_Cases.Test_Case'Class)
    is
@@ -6724,6 +6844,9 @@ package body CLI_Integration_Tests is
       Register_Routine
         (T, Rebase_Option_Surface_Matches_Git'Access,
          "Rebase: git's option surface, exec/autosquash/empty, conflicts");
+      Register_Routine
+        (T, Diff_Option_Surface_Matches_Git'Access,
+         "Diff: git's option surface, whitespace, color, check, submodules");
       Register_Routine
         (T, Fast_Import_Stream_Matches_Git'Access,
          "Fast-import: author defaults to committer, short modes are files");

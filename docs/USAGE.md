@@ -64,10 +64,17 @@ version commit [-a] [-q] [-n] [-s] [-e] [-v] [-m MESSAGE]... [-F FILE] [-C|-c RE
 version save ...                    (alias of commit)
 version status [--porcelain|--short|--branch] [--ignored[=MODE]] [--] [PATHSPEC...]
 version check-ignore [-q|--quiet] [-v|--verbose] [--stdin] [-z] [-n|--non-matching] [--index|--no-index] [--] PATH...
-version diff [--] [PATHSPEC...]
-version diff --staged [--] [PATHSPEC...]
-version diff --cached [--] [PATHSPEC...]
-version diff REV1 REV2
+version diff [OPTIONS] [--] [PATHSPEC...]
+version diff [OPTIONS] --staged|--cached [REV] [--] [PATHSPEC...]
+version diff [OPTIONS] REV [--] [PATHSPEC...]
+version diff [OPTIONS] REV1 REV2 [--] [PATHSPEC...]
+version diff [OPTIONS] REV1..REV2 | REV1...REV2 | --merge-base REV [REV2]
+version diff [OPTIONS] --no-index PATH PATH
+  OPTIONS: git's diff surface -- -p, --stat, --numstat, --shortstat, --summary, --name-only,
+  --name-status, --raw, --check, --color, --ws-error-highlight=, -U<n>, -W, --inter-hunk-context=,
+  -w, -b, --ignore-space-at-eol, --ignore-cr-at-eol, --ignore-blank-lines, -I <regex>,
+  --patience, --histogram, --minimal, --diff-algorithm=, --relative[=PATH], -R, -O ORDERFILE,
+  --full-index, --textconv, --submodule[=short|log|diff], --output=FILE, -M, --no-renames, ...
 ```
 
 ## Branches
