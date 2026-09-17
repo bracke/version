@@ -5451,6 +5451,274 @@ package body CLI_Integration_Tests is
       Run_Parity_Transcript (Root, Scenario, "diff");
    end Diff_Option_Surface_Matches_Git;
 
+   --  `log` (and `show`): git's option surface -- dates (approxidate),
+   --  the walk selectors (--author-date-order, --min/max-parents,
+   --  --ancestry-path, --full-history/--sparse, --simplify-by-decoration,
+   --  ref globs and excludes, --stdin, --bisect, -g, --merge), the header
+   --  layouts (mailmap, tabs, --abbrev-commit, --log-size, -z, decorations
+   --  and their filters, --source, --left-right marks, --boundary,
+   --  --parents/--children, notes refs, --show-linear-break, --line-prefix,
+   --  --output), the pretty aliases and formats, --date modes, -m and
+   --  --diff-merges, and the diff-family passthrough.
+   procedure Log_Option_Surface_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Scenario : constant String :=
+          "export TZ=UTC" & LF
+        & "git init -q; git config user.email a@b; git config user.name A" & LF
+        & "d() { export GIT_AUTHOR_DATE=""2024-01-0$1T03:04:05+0100"" "
+          & "GIT_COMMITTER_DATE=""2024-01-0$1T03:04:05+0100""; }" & LF
+        & "d 1; printf 'one\n' > f; git add f; git commit -qm c1" & LF
+        & "d 2; printf 'two\n' > f; printf 'tab\tmsg\n\n\tbody\n' > m; git commit -qaF m" & LF
+        & "d 3; git checkout -qb side HEAD~1; echo s > s; git add s; git commit -qm 'side one'" & LF
+        & "d 4; echo s2 > s; git commit -qam 'side two'" & LF
+        & "d 5; git checkout -q main; echo three > f; git commit -qam c3" & LF
+        & "d 6; git merge -q --no-ff side -m merge 2>/dev/null" & LF
+        & "d 7; git tag -a v1 -m v1 HEAD~1; git tag light HEAD~2" & LF
+        & "git update-ref refs/remotes/origin/main HEAD~1" & LF
+        & "git update-ref refs/bisect/bad HEAD; git update-ref refs/bisect/good-abc HEAD~2" & LF
+        & "printf 'New Name <new@x> <a@b>\n' > .mailmap" & LF
+        & "t 'plain' log" & LF
+        & "t 'expand tabs default' log -1 HEAD~1" & LF
+        & "t '--no-expand-tabs' log --no-expand-tabs -1 HEAD~1" & LF
+        & "t '--expand-tabs=4' log --expand-tabs=4 -1 HEAD~1" & LF
+        & "t '--no-mailmap' log --no-mailmap -1" & LF
+        & "t '--use-mailmap' log --use-mailmap -1" & LF
+        & "t '--log-size' log --log-size -2" & LF
+        & "t '-z' log -z -2" & LF
+        & "t '-z oneline' log -z --oneline -2" & LF
+        & "t '--abbrev-commit' log --abbrev-commit -2" & LF
+        & "t '--abbrev=10 --oneline' log --abbrev=10 --oneline -2" & LF
+        & "t '--no-abbrev-commit --oneline' log --no-abbrev-commit --oneline -2" & LF
+        & "t '--decorate' log --decorate --oneline --all" & LF
+        & "t '--decorate medium' log --decorate -3" & LF
+        & "t '--decorate-refs=tags' log --decorate --decorate-refs=refs/tags --oneline --all" & LF
+        & "t '--decorate-refs-exclude' log --decorate --decorate-refs-exclude=refs/tags/v1 --oneline --all" & LF
+        & "t '--source' log --source --oneline --all" & LF
+        & "t '--source medium' log --source -2 --all" & LF
+        & "t '--left-right medium' log --left-right main...side" & LF
+        & "t '--date=short' log --date=short -1" & LF
+        & "t '--date=format:%Y-%m-%d %H:%M' log --date='format:%Y-%m-%d %H:%M' -1" & LF
+        & "t '--date=iso-local' log --date=iso-local -1" & LF
+        & "t '--date=default-local' log --date=default-local -1" & LF
+        & "t '--date=unix' log --date=unix -1" & LF
+        & "t '--pretty=reference' log --pretty=reference -2" & LF
+        & "t '--pretty=email' log --pretty=email -1 HEAD~1" & LF
+        & "t '--pretty=%s' log --pretty=%s -2" & LF
+        & "t '--pretty=%h %s' log '--pretty=%h %s' -2" & LF
+        & "git config pretty.mine '%h|%s'" & LF
+        & "t 'pretty alias' log --pretty=mine -2" & LF
+        & "t '--pretty=bogus' log --pretty=bogus -1" & LF
+        & "t '-m -p' log -m -p -1" & LF
+        & "t '-m --stat' log -m --stat -1" & LF
+        & "t '-m --oneline -p' log -m --oneline -p -1" & LF
+        & "t '--diff-merges=first-parent -p' log --diff-merges=first-parent -p -1" & LF
+        & "t '--no-diff-merges -p' log --no-diff-merges -p -1" & LF
+        & "t '--first-parent -p' log --first-parent -p -2" & LF
+        & "t '--author-date-order' log --author-date-order --oneline" & LF
+        & "t '--date-order' log --date-order --oneline" & LF
+        & "t '--topo-order' log --topo-order --oneline" & LF
+        & "t '--min-parents=2' log --min-parents=2 --oneline" & LF
+        & "t '--max-parents=1' log --max-parents=1 --oneline" & LF
+        & "t '--no-min-parents' log --merges --no-min-parents --oneline" & LF
+        & "t '--ancestry-path' log --ancestry-path --oneline HEAD~3..HEAD" & LF
+        & "t '--ancestry-path=side' log --ancestry-path=side~1 --oneline HEAD~3..HEAD" & LF
+        & "t '--full-history' log --full-history --oneline -- s" & LF
+        & "t 'default simplification' log --oneline -- s" & LF
+        & "t '--full-history f' log --full-history --oneline -- f" & LF
+        & "t '--sparse' log --sparse --oneline -- s" & LF
+        & "t '--simplify-by-decoration' log --simplify-by-decoration --oneline" & LF
+        & "t '--remotes' log --remotes --oneline" & LF
+        & "t '--branches=si*' log --branches='si*' --oneline" & LF
+        & "t '--tags=v*' log --tags='v*' --oneline" & LF
+        & "t '--glob' log --glob=refs/heads/s* --oneline" & LF
+        & "t '--exclude' log --exclude=side --branches --oneline" & LF
+        & "t '--exclude glob' log --exclude='refs/tags/*' --all --oneline" & LF
+        & "t '--bisect' log --bisect --oneline" & LF
+        & "t '-g' log -g --oneline" & LF
+        & "t '-g medium' log -g -2" & LF
+        & "t '--grep-reflog' log -g --grep-reflog=merge --oneline" & LF
+        & "t '--stdin' log --stdin --oneline < /dev/null" & LF
+        & "printf 'side\n^main~2\n' | git log --stdin --oneline >> ""$TF"" 2>&1; echo ""[rc=$?]"" >> ""$TF""" & LF
+        & "t '--since=' log --since=2024-01-03 --oneline" & LF
+        & "t '--since= dot' log --since=2024.01.03 --oneline" & LF
+        & "t '--until=' log --until='2024-01-04 00:00' --oneline" & LF
+        & "t '--max-age' log --max-age=1704240000 --oneline" & LF
+        & "t '--since-as-filter' log --since-as-filter=2024-01-03 --oneline" & LF
+        & "t '-F --grep' log -F --grep='side.one' --oneline" & LF
+        & "t '-E --grep' log -E --grep='side (one|two)' --oneline" & LF
+        & "t '--basic-regexp' log --basic-regexp --grep='side \(one\|two\)' --oneline" & LF
+        & "t '--perl-regexp' log -P --grep='side (?:one)' --oneline" & LF
+        & "t '--line-prefix' log --line-prefix='> ' --oneline -2" & LF
+        & "t '--line-prefix medium' log --line-prefix='| ' -1 --stat" & LF
+        & "t '--show-linear-break' log --show-linear-break --oneline" & LF
+        & "t '--show-linear-break=X' log --show-linear-break=XXX -3" & LF
+        & "t '--quiet -p' log --quiet -p -1 HEAD~1" & LF
+        & "t '--output' log --output=out.txt --oneline -2" & LF
+        & "cat out.txt >> ""$TF""" & LF
+        & "t '--summary' log --summary -1 HEAD~2" & LF
+        & "t '--word-diff' log --word-diff -p -1 HEAD~2" & LF
+        & "t '--diff-filter' log --diff-filter=A --name-only --oneline" & LF
+        & "t '--patch-with-stat' log --patch-with-stat -1 HEAD~1" & LF
+        & "t '--patch-with-raw' log --patch-with-raw -1 HEAD~1" & LF
+        & "t '--output-indicator' log --output-indicator-new=A --output-indicator-old=D -p -1 HEAD~1" & LF
+        & "t '--full-diff' log --full-diff --stat --oneline -- s" & LF
+        & "t '--encoding' log --encoding=utf-8 --oneline -1" & LF
+        & "t '-c' log -c -1" & LF
+        & "t '--simplify-merges' log --simplify-merges --oneline" & LF
+        & "t '--notes=foo' log --notes=foo -1" & LF
+        & "git notes add -m 'a note' HEAD; git notes --ref=extra add -m 'extra note' HEAD" & LF
+        & "t 'notes default' log -1" & LF
+        & "t '--notes=extra' log --notes=extra -1" & LF
+        & "t '--no-standard-notes --notes=extra' log --no-standard-notes --notes=extra -1" & LF
+        & "t '--show-notes' log --show-notes -1" & LF
+        & "t '--no-notes --notes' log --no-notes --notes -1" & LF
+        & "t 'pretty + notes' log --pretty=medium -1" & LF
+        & "t '--merge' log --merge --oneline" & LF
+        & "git checkout -q -b conf HEAD~3; echo x > f; git commit -qam conf; git merge main 2>/dev/null" & LF
+        & "t '--merge conflict' log --merge --oneline" & LF
+        & "t '--merge -p' log --merge -p" & LF
+        & "cd ""$R""; /bin/rm -rf sub2; mkdir sub2; cd sub2" & LF
+        & "git init -q; git config user.email a@b; git config user.name A" & LF
+        & "d() { export GIT_AUTHOR_DATE=""2024-01-0$1T03:04:05+0100"" "
+          & "GIT_COMMITTER_DATE=""2024-01-0$1T03:04:05+0100""; }" & LF
+        & "d 1; printf 'one\n' > f; git add f; git commit -qm c1" & LF
+        & "d 2; printf 'two\n' > f; git commit -qam c2" & LF
+        & "d 3; git checkout -qb side HEAD~1; echo s > s; git add s; git commit -qm 'side one'" & LF
+        & "d 4; echo s2 > s; git commit -qam 'side two'" & LF
+        & "d 5; git checkout -q main; echo three > f; git commit -qam c3" & LF
+        & "d 6; git merge -q --no-ff side -m merge 2>/dev/null" & LF
+        & "d 7; echo four > f; git commit -qam c4" & LF
+        & "t 'parents medium' log --parents -2" & LF
+        & "t 'parents abbrev' log --parents --abbrev-commit -2" & LF
+        & "t 'children medium' log --children -3" & LF
+        & "t 'boundary medium' log --boundary HEAD~2..HEAD" & LF
+        & "t 'graph decorate' log --graph --decorate --oneline" & LF
+        & "t 'graph medium abbrev' log --graph --abbrev-commit -3" & LF
+        & "t 'graph -m -p' log --graph -m -p -2" & LF
+        & "t 'graph source' log --graph --source --oneline --all" & LF
+        & "t 'reverse break' log --reverse --show-linear-break --oneline" & LF
+        & "t '-g date' log -g --date=short -2" & LF
+        & "t '-g format' log -g --format=%gd -2" & LF
+        & "t '-g -z' log -g -z --oneline -2" & LF
+        & "t 'follow' log --follow --oneline -- f" & LF
+        & "t 'follow abbrev' log --follow --no-abbrev-commit --oneline -- f" & LF
+        & "t '-z format' log -z --format=%s -3" & LF
+        & "t 'log-size oneline' log --log-size --oneline -1" & LF
+        & "t 'log-size format' log --log-size --format=%s -1" & LF
+        & "t 'log-size merge' log --log-size -1 HEAD~1" & LF
+        & "t 'left-right oneline' log --left-right --oneline main...side" & LF
+        & "t 'cherry-mark medium' log --cherry-mark main...side" & LF
+        & "t 'cherry-pick medium' log --cherry-pick --right-only main...side" & LF
+        & "t 'source oneline HEAD' log --source --oneline -2" & LF
+        & "t 'source explicit' log --source --oneline main side" & LF
+        & "t 'source range' log --source --oneline side..main" & LF
+        & "t 'date rfc-local' log --date=rfc-local -1" & LF
+        & "t 'date iso-strict-local' log --date=iso-strict-local -1" & LF
+        & "t 'date raw-local' log --date=raw-local -1" & LF
+        & "t 'date short-local' log --date=short-local -1" & LF
+        & "t 'date format-local' log --date='format-local:%H %z' -1" & LF
+        & "t 'date format %a %b %e %j %u %w %y %C %I %p' log --date='format:%a %b %e %j %u %w "
+          & "%y %C %I %p %D %F %T %R %s %%' -1" & LF
+        & "t 'date bogus' log --date=bogus -1" & LF
+        & "t 'stdin paths' log --oneline --stdin -- f < /dev/null" & LF
+        & "printf 'main\n--\ns\n' | git log --stdin --oneline >> ""$TF"" 2>&1; echo ""[rc=$?]"" >> ""$TF""" & LF
+        & "printf 'main\n' | git log --stdin --oneline -- s >> ""$TF"" 2>&1; echo ""[rc=$?]"" >> ""$TF""" & LF
+        & "t 'tags no pattern' log --tags --oneline" & LF
+        & "git tag t1 HEAD~2; git tag t2 HEAD~4" & LF
+        & "t 'tags=t1' log --tags=t1 --oneline" & LF
+        & "t 'glob heads' log --glob=heads --oneline" & LF
+        & "t 'glob refs/tags/t*' log --glob='refs/tags/t*' --oneline" & LF
+        & "t 'exclude before all' log --exclude=refs/heads/side --all --oneline" & LF
+        & "t 'exclude after all' log --all --exclude=refs/heads/side --oneline" & LF
+        & "t 'remotes empty' log --remotes --oneline" & LF
+        & "t 'branches pattern star' log --branches='*ide' --oneline" & LF
+        & "t 'ancestry no range' log --ancestry-path --oneline" & LF
+        & "t 'max-count skip topo' log --author-date-order --skip=1 -2 --oneline" & LF
+        & "t 'expand-tabs oneline' log --expand-tabs --oneline -1" & LF
+        & "t 'no-expand short' log --pretty=short -1 HEAD~5" & LF
+        & "t 'expand full' log --pretty=full -1 HEAD~5" & LF
+        & "t 'mailmap fuller' log --pretty=fuller -1" & LF
+        & "printf 'B <b@b> <a@b>\n' > .mailmap" & LF
+        & "t 'mailmap default' log -1" & LF
+        & "t 'mailmap reference' log --pretty=reference -1" & LF
+        & "t 'mailmap email' log --pretty=email -1" & LF
+        & "git config log.mailmap false" & LF
+        & "t 'log.mailmap false' log -1" & LF
+        & "git config log.mailmap true" & LF
+        & "t 'log.mailmap true' log -1" & LF
+        & "t 'notes ref spelled' log --notes=refs/notes/commits -1" & LF
+        & "git notes add -m 'note here' HEAD" & LF
+        & "t 'notes ref spelled 2' log --notes=refs/notes/commits -1" & LF
+        & "t 'notes/ prefix' log --notes=notes/commits -1" & LF
+        & "t 'show-notes ref' log --show-notes=commits --no-standard-notes -1" & LF
+        & "t 'notes oneline' log --notes --oneline -1" & LF
+        & "t 'decorate full' log --decorate=full --oneline -3" & LF
+        & "t 'decorate-refs exclude glob' log --decorate --decorate-refs-exclude='refs/tags/*' --oneline -3" & LF
+        & "t 'clear-decorations' log --decorate --clear-decorations --oneline -3" & LF
+        & "t 'decorate + source' log --decorate --source --oneline -2" & LF
+        & "t 'min-age' log --min-age=1704240000 --oneline" & LF
+        & "t 'until+since' log --since=2024-01-02 --until=2024-01-05 --oneline" & LF
+        & "t 'since-as-filter' log --since-as-filter=2024-01-03 --oneline" & LF
+        & "t 'since iso zone' log --since='2024-01-03T03:04:05+0100' --oneline" & LF
+        & "t 'since unix' log --since=@1704240245 --oneline" & LF
+        & "t 'before+after' log --after=2024-01-03 --before=2024-01-06 --oneline" & LF
+        & "t 'oneline -p' log --oneline -p -1" & LF
+        & "t 'oneline --stat -p' log --oneline --stat -p -1" & LF
+        & "t 'oneline -m -p' log --oneline -m -p -1 HEAD~1" & LF
+        & "t 'oneline -c' log --oneline -c -2" & LF
+        & "t 'first-parent oneline -p' log --first-parent --oneline -p -2" & LF
+        & "t 'diff-merges=1 stat' log --diff-merges=1 --stat -1 HEAD~1" & LF
+        & "t 'diff-merges bad' log --diff-merges=bogus" & LF
+        & "t 'remerge-diff' log --remerge-diff -1" & LF
+        & "t 'name-status' log --name-status --oneline -3" & LF
+        & "t 'output-indicator context' log --output-indicator-context=C -p -U1 -1" & LF
+        & "t 'line-prefix graph' log --line-prefix='## ' --graph --oneline -3" & LF
+        & "t 'raw abbrev' log --raw --abbrev=12 --oneline -1" & LF
+        & "t 'full-index' log --full-index -p -1" & LF
+        & "t 'relative' log -p --relative -1" & LF
+        & "t 'no-walk' log --no-walk --oneline side main" & LF
+        & "t 'do-walk' log --no-walk --do-walk --oneline side" & LF
+        & "t 'grep-reflog no -g' log --grep-reflog=x --oneline -1" & LF
+        & "cd ""$R""; /bin/rm -rf sub3; mkdir sub3; cd sub3" & LF
+        & "git init -q; git config user.email a@b; git config user.name A" & LF
+        & "d() { export GIT_AUTHOR_DATE=""2024-01-0$1T03:04:05+0100"" "
+          & "GIT_COMMITTER_DATE=""2024-01-0$1T03:04:05+0100""; }" & LF
+        & "d 1; printf 'one\n' > f; git add f; git commit -qm c1" & LF
+        & "d 2; printf 'two\n' > f; printf 'tab\tmsg\n\n\tbody\n' > m; git commit -qaF m" & LF
+        & "d 3; git checkout -qb side HEAD~1; echo s > s; git add s; git commit -qm 'side one'" & LF
+        & "d 5; git checkout -q main; echo three > f; git commit -qam c3" & LF
+        & "d 6; git merge -q --no-ff side -m merge 2>/dev/null" & LF
+        & "printf 'B <b@b> <a@b>\n' > .mailmap" & LF
+        & "git notes add -m 'a note' HEAD; git notes --ref=x add -m 'x note' HEAD" & LF
+        & "t 'show plain' show" & LF
+        & "t 'show abbrev-commit' show --abbrev-commit --stat" & LF
+        & "t 'show abbrev=12' show --abbrev=12 -s" & LF
+        & "t 'show no-mailmap' show --no-mailmap -s" & LF
+        & "t 'show expand-tabs' show HEAD~2 -s" & LF
+        & "t 'show no-expand-tabs' show --no-expand-tabs -s HEAD~2" & LF
+        & "t 'show expand-tabs=2' show --expand-tabs=2 -s HEAD~2" & LF
+        & "t 'show notes=x' show --notes=x -s" & LF
+        & "t 'show no-notes' show --no-notes -s" & LF
+        & "t 'show no-standard-notes' show --no-standard-notes --notes=x -s" & LF
+        & "t 'show log-size' show --log-size -s" & LF
+        & "t 'show date=short' show --date=short -s" & LF
+        & "t 'show date format' show --date='format:%Y/%m/%d' -s" & LF
+        & "t 'show -m' show -m --stat" & LF
+        & "t 'show first-parent' show --first-parent --stat" & LF
+        & "t 'show oneline' show --oneline -s" & LF
+        & "t 'show format' show --format=%s%n%gd -s" & LF
+        & "t 'log plain' log" & LF
+        & "t 'log --stat -m' log --stat -m -1" & LF
+        & "git config log.mailmap false" & LF
+        & "t 'show log.mailmap' show -s" & LF
+        & "t 'log log.mailmap' log -1" & LF;
+   begin
+      Run_Parity_Transcript (Root, Scenario, "log");
+   end Log_Option_Surface_Matches_Git;
+
    procedure Bisect_Run_And_Patch_Id_Match_Git
      (T : in out AUnit.Test_Cases.Test_Case'Class)
    is
@@ -6847,6 +7115,9 @@ package body CLI_Integration_Tests is
       Register_Routine
         (T, Diff_Option_Surface_Matches_Git'Access,
          "Diff: git's option surface, whitespace, color, check, submodules");
+      Register_Routine
+        (T, Log_Option_Surface_Matches_Git'Access,
+         "Log: git's option surface, dates, walk, layouts, formats, merges");
       Register_Routine
         (T, Fast_Import_Stream_Matches_Git'Access,
          "Fast-import: author defaults to committer, short modes are files");

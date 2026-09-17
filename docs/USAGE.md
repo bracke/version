@@ -166,10 +166,17 @@ are stored by `version`.
 ## History
 
 ```text
-version log [<REV>...] [--] [PATH...]
-version log --oneline [<REV>...]
-version log [--skip=<n>] [--reverse] [--merges|--no-merges] [--first-parent]
-version show [REV]
+version log [OPTIONS] [<REV>...] [--] [PATH...]
+version log --stdin | -g [<ref>] | --merge
+  OPTIONS: git's log surface -- --all/--branches/--tags/--remotes[=PAT], --glob=, --exclude=,
+  --since=/--until= (approxidate), --author=, --grep= (-E/-F/-P/-i), -S/-G, --merges,
+  --min/max-parents=, --first-parent, --ancestry-path, --full-history, --sparse,
+  --simplify-by-decoration, --topo-order/--date-order/--author-date-order, --reverse,
+  --oneline, --pretty=/--format=, --date=MODE, --abbrev-commit, --abbrev=N, --decorate[=..],
+  --decorate-refs[-exclude]=, --source, --left-right, --cherry-mark, --boundary, --parents,
+  --children, --graph, --show-linear-break, --log-size, -z, --expand-tabs, --[no-]use-mailmap,
+  --notes[=REF], --line-prefix=, --output=FILE, -p, --stat, -m, --diff-merges=, -c/--cc, ...
+version show [OPTIONS] [REV | REV:PATH]
 version checkout [-q] [-f] [-m] [-t|--no-track] [--[no-]guess] [<branch>|<commit>|-]
 version checkout [-q] [-f] -b|-B NEW-BRANCH [START-POINT]
 version checkout [-q] --orphan NEW-BRANCH [START-POINT]
