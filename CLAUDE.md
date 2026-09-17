@@ -25,7 +25,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Dependencies
 
-`versionlib`'s `alire.toml` pins `httpclient`, `zlib`, `i18n`, and `ssh_lib` to **sibling directories** (`../httpclient`, `../zlib`, `../i18n`, `../sshlib`). This `version` crate depends only on `versionlib` (pinned to `../versionlib`), which brings the rest transitively. The CLI executable links `-lssl -lcrypto`, so OpenSSL dev libraries are required.
+`versionlib`'s `alire.toml` pins `httpclient`, `zlib`, `i18n`, and `ssh_lib` to **sibling directories** (`../httpclient`, `../zlib`, `../i18n`, `../sshlib`). This `version` crate depends only on `versionlib` (pinned to `../versionlib`), which brings the rest transitively. TLS and SSH are pure Ada (`ssllib`/`cryptolib`); nothing links OpenSSL, so no system crypto libraries are needed.
 
 ## Code style (differs from defaults)
 

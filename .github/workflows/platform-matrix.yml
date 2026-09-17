@@ -34,8 +34,6 @@ jobs:
         uses: alire-project/setup-alire@v6
         with:
           toolchain: gnat_native=15.2.1 gprbuild
-      - name: Install OpenSSL headers
-        run: sudo apt-get update && sudo apt-get install -y libssl-dev
       - name: Build version (generates configs, compiles the sibling graph)
         working-directory: version
         run: alr --non-interactive build
@@ -137,8 +135,6 @@ jobs:
         uses: alire-project/setup-alire@v6
         with:
           toolchain: gnat_native=15.2.1 gprbuild
-      - name: Install OpenSSL headers
-        run: sudo apt-get update && sudo apt-get install -y libssl-dev
       - name: Download platform evidence
         uses: actions/download-artifact@v8
         with:
