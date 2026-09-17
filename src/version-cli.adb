@@ -106,6 +106,7 @@ with Version.Log;
 with Version.Show;
 with Version.Maintenance;
 with Version.Rebase;
+with Version.Rebase_State;
 with Version.Cherry_Pick;
 with Version.Cherry_Pick_State;
 with Version.Revert;
@@ -12696,10 +12697,9 @@ package body Version.CLI is
                All_Tracked := True; I := I + 1;
             elsif A = "--quiet" then
                Quiet_Mode := True; I := I + 1;
-            elsif A = "--no-verify" then
-               No_Verify := True; I := I + 1;
-            elsif A = "--verify" then
-               No_Verify := False; I := I + 1;
+            elsif A = "--no-verify" or else A = "--verify" then
+               --  No pre-rebase hook runs here yet, so both are accepted.
+               I := I + 1;
             elsif A = "--signoff" then
                Signoff := True; I := I + 1;
             elsif A = "--no-signoff" then
@@ -15287,6 +15287,855 @@ package body Version.CLI is
          end;
       end;
    end Run_Add;
+
+   --  The rebase stopped on a conflict: git has narrated the merge on
+   --  stdout (Auto-merging / CONFLICT lines, from the recorded merge state)
+   --  and reports the failed pick on stderr with its hints.
+   procedure Report_Rebase_Conflict
+     (Repo : Version.Repository.Repository_Handle)
+   is
+      State : constant Version.Rebase_State.Rebase_State :=
+        Version.Rebase_State.Read_State (Repo);
+      Id    : constant Version.Objects.Hex_Object_Id :=
+        Version.Rebase_State.Current_Commit (State);
+      Hex   : constant String := Version.Objects.To_String (Id);
+      Short : constant String :=
+        Hex (Hex'First .. Hex'First
+                          + Version.Revisions.Unique_Abbrev_Length (Repo, Id, 7)
+                          - 1);
+      Subject : constant String :=
+        Version.Objects.Commit_Message_First_Line
+          (Version.Objects.Read_Object (Repo, Id));
+   begin
+      Emit_Pick_Conflict_Narration;
+      Stderr_Line ("error: could not apply " & Short & "... " & Subject);
+      if not Version.Config.Has_Key (Repo, "advice.mergeConflict")
+        or else Version.Config.Trim
+                  (Version.Config.Get_Value (Repo, "advice.mergeConflict"))
+                /= "false"
+      then
+         Stderr_Line ("hint: Resolve all conflicts manually, mark them as "
+                      & "resolved with");
+         Stderr_Line ("hint: ""git add/rm <conflicted_files>"", then run "
+                      & """git rebase --continue"".");
+         Stderr_Line ("hint: You can instead skip this commit: run ""git "
+                      & "rebase --skip"".");
+         Stderr_Line ("hint: To abort and get back to the state before ""git "
+                      & "rebase"", run ""git rebase --abort"".");
+         Stderr_Line ("hint: Disable this message with ""git config set "
+                      & "advice.mergeConflict false""");
+      end if;
+      Stderr_Line ("Could not apply " & Short & "... # " & Subject);
+   exception
+      when others =>
+         null;
+   end Report_Rebase_Conflict;
+
+   --  --empty=stop: after the status block, the failed pick's line.
+   procedure Report_Empty_Stop (Repo : Version.Repository.Repository_Handle) is
+      State : constant Version.Rebase_State.Rebase_State :=
+        Version.Rebase_State.Read_State (Repo);
+      Id    : constant Version.Objects.Hex_Object_Id :=
+        Version.Rebase_State.Current_Commit (State);
+      Hex   : constant String := Version.Objects.To_String (Id);
+      Short : constant String :=
+        Hex (Hex'First .. Hex'First
+                          + Version.Revisions.Unique_Abbrev_Length (Repo, Id, 7)
+                          - 1);
+   begin
+      Stderr_Line
+        ("Could not apply " & Short & "... # "
+         & Version.Objects.Commit_Message_First_Line
+             (Version.Objects.Read_Object (Repo, Id)));
+   exception
+      when others =>
+         null;
+   end Report_Empty_Stop;
+
+   --  An `edit` stop: git names the todo's commit (the original id).
+   procedure Report_Edit_Stop (Repo : Version.Repository.Repository_Handle) is
+      Id  : constant Version.Objects.Hex_Object_Id :=
+        Version.Rebase_State.Current_Commit
+          (Version.Rebase_State.Read_State (Repo));
+      Hex : constant String := Version.Objects.To_String (Id);
+      Short : constant String :=
+        Hex (Hex'First .. Hex'First
+                          + Version.Revisions.Unique_Abbrev_Length (Repo, Id, 7)
+                          - 1);
+   begin
+      Stderr_Line
+        ("Stopped at " & Short & "...  # "
+         & Version.Objects.Commit_Message_First_Line
+             (Version.Objects.Read_Object (Repo, Id)));
+      Stderr_Line ("You can amend the commit now, with");
+      Stderr_Line ("");
+      Stderr_Line ("  git commit --amend ");
+      Stderr_Line ("");
+      Stderr_Line ("Once you are satisfied with your changes, run");
+      Stderr_Line ("");
+      Stderr_Line ("  git rebase --continue");
+   end Report_Edit_Stop;
+
+   --  git's --fork-point: the most recent commit the base ref ever pointed
+   --  to (per its reflog) that is a merge base with Derived. Found is False
+   --  when there is no single such base among the reflog positions.
+   function Fork_Point_Base
+     (Repo    : Version.Repository.Repository_Handle;
+      Ref_Op  : String;
+      Derived : Version.Objects.Hex_Object_Id;
+      Found   : out Boolean) return Version.Objects.Hex_Object_Id
+   is
+      function Full_Ref (Name : String) return String is
+        (if Name = "HEAD" or else Has_Prefix (Name, "refs/") then Name
+         elsif Version.Refs.Ref_Exists (Repo, "refs/heads/" & Name)
+         then "refs/heads/" & Name
+         elsif Version.Refs.Ref_Exists (Repo, "refs/remotes/" & Name)
+         then "refs/remotes/" & Name
+         elsif Version.Refs.Ref_Exists (Repo, "refs/tags/" & Name)
+         then "refs/tags/" & Name
+         else Name);
+
+      Ref_Name    : constant String := Full_Ref (Ref_Op);
+      Entries     : constant Version.Reflog.Log_Entry_Vectors.Vector :=
+        Version.Reflog.Read_Entries (Repo, Ref_Name);
+      Reflog_Oids : Version.History.Commit_Id_Vectors.Vector;
+
+      procedure Add_Oid (S : String) is
+      begin
+         if S'Length in 40 | 64
+           and then (for all C of S => C in '0' .. '9' | 'a' .. 'f' | 'A' .. 'F')
+           and then (for some C of S => C /= '0')
+         then
+            declare
+               Id : constant Version.Objects.Hex_Object_Id :=
+                 Version.Objects.To_Object_Id (S);
+            begin
+               if not Reflog_Oids.Contains (Id) then
+                  Reflog_Oids.Append (Id);
+               end if;
+            end;
+         end if;
+      end Add_Oid;
+   begin
+      Found := False;
+      if Entries.Is_Empty then
+         Reflog_Oids.Append (Version.Revisions.Resolve_Commit (Repo, Ref_Op));
+      else
+         Add_Oid (To_String (Entries.First_Element.Old_Id));
+         for E of Entries loop
+            Add_Oid (To_String (E.New_Id));
+         end loop;
+      end if;
+
+      declare
+         Bases : constant Version.History.Commit_Id_Vectors.Vector :=
+           Version.History.Merge_Bases_Many (Repo, Derived, Reflog_Oids);
+      begin
+         if Natural (Bases.Length) = 1
+           and then Reflog_Oids.Contains (Bases.First_Element)
+         then
+            Found := True;
+            return Bases.First_Element;
+         end if;
+      end;
+      return Version.Objects.Zero_Object_Id;
+   exception
+      when others =>
+         Found := False;
+         return Version.Objects.Zero_Object_Id;
+   end Fork_Point_Base;
+
+   --  git's is_linear_history: no merge commit on the first-parent chain
+   --  from To back to From.
+   function Linear_History
+     (Repo     : Version.Repository.Repository_Handle;
+      From, To : Version.Objects.Hex_Object_Id) return Boolean
+   is
+      Cur : Version.Objects.Hex_Object_Id := To;
+   begin
+      while Version.Objects."/=" (Cur, From) loop
+         declare
+            Parents : constant Version.Objects.Object_Id_Vectors.Vector :=
+              Version.Objects.Commit_Parent_Ids
+                (Version.Objects.Read_Object (Repo, Cur));
+         begin
+            if Parents.Is_Empty then
+               return True;
+            elsif Parents.Length > 1 then
+               return False;
+            end if;
+            Cur := Parents.First_Element;
+         end;
+      end loop;
+      return True;
+   exception
+      when others =>
+         return True;
+   end Linear_History;
+
+   --  `rebase` with git's option surface. The library replays; this parses,
+   --  picks the upstream/onto pair (tracking upstream, --fork-point,
+   --  --keep-base), decides the up-to-date short-cut, and renders git's
+   --  reports around the replay (conflict narration, edit/exec/empty stops).
+   procedure Run_Rebase is
+      Usage : constant String :=
+        "version rebase [-i] [-q|-v] [--onto NEWBASE|--keep-base] [--root]"
+        & " [--exec CMD]... [--autosquash] [--update-refs] [--rebase-merges]"
+        & " [--empty=drop|keep|stop] [--[no-]keep-empty]"
+        & " [--[no-]reapply-cherry-picks] [-f|--no-ff] [--signoff]"
+        & " [--committer-date-is-author-date] [--ignore-date]"
+        & " [-s STRATEGY] [-X OPTION]... [--[no-]fork-point] [--no-verify]"
+        & " [--stat|-n] [UPSTREAM [BRANCH]]"
+        & " | version rebase --continue|--skip|--abort|--quit";
+
+      type Tri is (Unset, Yes, No);
+
+      Interactive   : Boolean := False;
+      Autosquash    : Tri := Unset;
+      Update_Refs   : Boolean := False;
+      Merges        : Boolean := False;
+      Root          : Boolean := False;
+      Force         : Boolean := False;
+      Verbose       : Boolean := False;
+      Show_Stat     : Tri := Unset;
+      Keep_Base     : Boolean := False;
+      Fork_Point    : Tri := Unset;
+      Onto          : Unbounded_String;
+      Has_Onto      : Boolean := False;
+      Action        : Unbounded_String;   --  --continue/--skip/--abort/--quit
+      Operands      : Version.Path_Safety.Path_Vector;
+      Opts          : Version.Rebase_State.Replay_Options;
+      Execs         : Version.Rebase_State.String_Vectors.Vector;
+      Reapply       : Boolean := False;
+      Bad           : Boolean := False;
+      I             : Natural := 2;
+
+      procedure Fail (Detail : String) is
+      begin
+         Usage_Error (Detail, Usage);
+         Bad := True;
+      end Fail;
+
+      procedure Fatal (Text : String) is
+      begin
+         Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, "fatal: " & Text);
+         Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+      end Fatal;
+
+      function Long_Value (Name : String; Found : out Boolean) return String is
+         A : constant String := Arg (I);
+      begin
+         Found := False;
+         if Has_Prefix (A, Name & "=") then
+            Found := True;
+            I := I + 1;
+            return A (A'First + Name'Length + 1 .. A'Last);
+         elsif A = Name then
+            if I = Count then
+               Fail ("option '" & Name & "' requires a value");
+               return "";
+            end if;
+            Found := True;
+            I := I + 2;
+            return Arg (I - 1);
+         end if;
+         return "";
+      end Long_Value;
+
+      procedure Set_Action (Name : String) is
+      begin
+         if Length (Action) > 0 and then To_String (Action) /= Name then
+            Fatal ("options '" & To_String (Action) & "' and '" & Name
+                   & "' cannot be used together");
+            Bad := True;
+         end if;
+         Action := To_Unbounded_String (Name);
+      end Set_Action;
+
+      procedure Set_Empty (Mode : String) is
+      begin
+         if Mode = "drop" then
+            Opts.Empty := Version.Rebase_State.Empty_Drop;
+         elsif Mode = "keep" then
+            Opts.Empty := Version.Rebase_State.Empty_Keep;
+         elsif Mode = "stop" or else Mode = "ask" then
+            Opts.Empty := Version.Rebase_State.Empty_Stop;
+         else
+            Fatal ("unrecognized empty type '" & Mode & "'");
+            Bad := True;
+         end if;
+      end Set_Empty;
+
+      procedure Parse_Short (Token : String) is
+         P : Positive := Token'First + 1;
+      begin
+         while P <= Token'Last and then not Bad loop
+            declare
+               C    : constant Character := Token (P);
+               Rest : constant String := Token (P + 1 .. Token'Last);
+
+               function Value return String is
+               begin
+                  if Rest'Length > 0 then
+                     P := Token'Last + 1;
+                     return Rest;
+                  elsif I = Count then
+                     Fail ("switch '" & C & "' requires a value");
+                     return "";
+                  else
+                     I := I + 1;
+                     P := Token'Last + 1;
+                     return Arg (I);
+                  end if;
+               end Value;
+            begin
+               case C is
+                  when 'i' => Interactive := True;
+                  when 'q' => Opts.Quiet := True; Quiet_Mode := True;
+                  when 'v' => Verbose := True;
+                  when 'f' => Force := True;
+                  when 'n' => Show_Stat := No;
+                  when 'm' => null;   --  the merge backend is the only one
+                  when 'x' => Execs.Append (Value);
+                  when 'X' => Opts.Strategy_Opts.Append (Value);
+                  when 's' =>
+                     declare
+                        S : constant String := Value;
+                     begin
+                        if S /= "ort" and then S /= "recursive"
+                          and then S /= "resolve"
+                        then
+                           Fatal ("Unknown merge strategy " & S);
+                           Bad := True;
+                        end if;
+                     end;
+                  when 'S' => P := Token'Last + 1;   --  gpg key: config signs
+                  when 'C' => P := Token'Last + 1;   --  apply-backend context
+                  when others =>
+                     Fail ("unknown rebase option: -" & C);
+               end case;
+               P := P + 1;
+            end;
+         end loop;
+      end Parse_Short;
+   begin
+      while I <= Count and then not Bad loop
+         declare
+            A     : constant String := Arg (I);
+            Found : Boolean;
+         begin
+            if A = "--continue" or else A = "--skip" or else A = "--abort"
+              or else A = "--quit"
+            then
+               Set_Action (A); I := I + 1;
+            elsif A = "--edit-todo" or else A = "--show-current-patch" then
+               Fail (A & " is not supported");
+            elsif A = "--interactive" then
+               Interactive := True; I := I + 1;
+            elsif A = "--autosquash" then
+               Autosquash := Yes; I := I + 1;
+            elsif A = "--no-autosquash" then
+               Autosquash := No; I := I + 1;
+            elsif A = "--update-refs" then
+               Update_Refs := True; I := I + 1;
+            elsif A = "--no-update-refs" then
+               Update_Refs := False; I := I + 1;
+            elsif A = "--rebase-merges" or else Has_Prefix (A, "--rebase-merges=")
+              or else A = "-r"
+            then
+               Merges := True; I := I + 1;
+            elsif A = "--no-rebase-merges" then
+               Merges := False; I := I + 1;
+            elsif A = "--preserve-merges" or else A = "-p" then
+               Fatal ("--preserve-merges was replaced by --rebase-merges");
+               return;
+            elsif A = "--root" then
+               Root := True; I := I + 1;
+            elsif A = "--force-rebase" or else A = "--no-ff" then
+               Force := True; I := I + 1;
+            elsif A = "--ff" then
+               Force := False; I := I + 1;
+            elsif A = "--quiet" then
+               Opts.Quiet := True; Quiet_Mode := True; I := I + 1;
+            elsif A = "--verbose" then
+               Verbose := True; I := I + 1;
+            elsif A = "--stat" then
+               Show_Stat := Yes; I := I + 1;
+            elsif A = "--no-stat" then
+               Show_Stat := No; I := I + 1;
+            elsif A = "--keep-base" then
+               Keep_Base := True; I := I + 1;
+            elsif A = "--fork-point" then
+               Fork_Point := Yes; I := I + 1;
+            elsif A = "--no-fork-point" then
+               Fork_Point := No; I := I + 1;
+            elsif A = "--no-verify" or else A = "--verify" then
+               --  No pre-rebase hook runs here yet, so both are accepted.
+               I := I + 1;
+            elsif A = "--signoff" then
+               Opts.Signoff := True; I := I + 1;
+            elsif A = "--no-signoff" then
+               Opts.Signoff := False; I := I + 1;
+            elsif A = "--committer-date-is-author-date" then
+               Opts.Cdate_Is_Adate := True; I := I + 1;
+            elsif A = "--ignore-date" or else A = "--reset-author-date" then
+               Opts.Ignore_Date := True; I := I + 1;
+            elsif A = "--keep-empty" then
+               Opts.Keep_Empty := True; I := I + 1;
+            elsif A = "--no-keep-empty" then
+               Opts.Keep_Empty := False; I := I + 1;
+            elsif A = "--reapply-cherry-picks" then
+               Reapply := True; I := I + 1;
+            elsif A = "--no-reapply-cherry-picks" then
+               Reapply := False; I := I + 1;
+            elsif A = "--empty" or else Has_Prefix (A, "--empty=") then
+               declare
+                  V : constant String := Long_Value ("--empty", Found);
+               begin
+                  if Found then
+                     Set_Empty (V);
+                  end if;
+               end;
+            elsif A = "--onto" or else Has_Prefix (A, "--onto=") then
+               declare
+                  V : constant String := Long_Value ("--onto", Found);
+               begin
+                  if Found then
+                     Onto := To_Unbounded_String (V);
+                     Has_Onto := True;
+                  end if;
+               end;
+            elsif A = "--exec" or else Has_Prefix (A, "--exec=") then
+               declare
+                  V : constant String := Long_Value ("--exec", Found);
+               begin
+                  if Found then
+                     Execs.Append (V);
+                  end if;
+               end;
+            elsif A = "--strategy" or else Has_Prefix (A, "--strategy=") then
+               declare
+                  V : constant String := Long_Value ("--strategy", Found);
+               begin
+                  if Found and then V /= "ort" and then V /= "recursive"
+                    and then V /= "resolve"
+                  then
+                     Fatal ("Unknown merge strategy " & V);
+                     return;
+                  end if;
+               end;
+            elsif A = "--strategy-option"
+              or else Has_Prefix (A, "--strategy-option=")
+            then
+               declare
+                  V : constant String := Long_Value ("--strategy-option", Found);
+               begin
+                  if Found then
+                     Opts.Strategy_Opts.Append (V);
+                  end if;
+               end;
+            elsif A = "--ignore-whitespace" then
+               Opts.Strategy_Opts.Append ("ignore-space-change"); I := I + 1;
+            elsif Has_Prefix (A, "--whitespace=") or else Has_Prefix (A, "-C")
+              or else A = "--apply" or else A = "--merge"
+              or else A = "--autostash" or else A = "--no-autostash"
+              or else A = "--rerere-autoupdate" or else A = "--no-rerere-autoupdate"
+              or else A = "--gpg-sign" or else Has_Prefix (A, "--gpg-sign=")
+              or else A = "--no-gpg-sign" or else A = "--reschedule-failed-exec"
+              or else A = "--no-reschedule-failed-exec"
+              or else A = "--allow-empty-message"
+            then
+               --  Accepted: the merge backend is the only one, hooks, gpg
+               --  and autostash follow the configuration.
+               I := I + 1;
+            elsif A = "--" then
+               I := I + 1;
+            elsif A'Length > 1 and then A (A'First) = '-'
+              and then A (A'First + 1) /= '-'
+            then
+               Parse_Short (A);
+               I := I + 1;
+            elsif A'Length > 0 and then A (A'First) = '-' then
+               Fail ("unknown rebase option: " & A);
+            else
+               Operands.Append (A);
+               I := I + 1;
+            end if;
+         end;
+      end loop;
+
+      if Bad then
+         return;
+      end if;
+
+      Opts.Update_Refs := Update_Refs;
+      Opts.Verbose := Verbose;
+      Opts.Allow_FF :=
+        not (Force or else Opts.Signoff or else Opts.Cdate_Is_Adate
+             or else Opts.Ignore_Date);
+      Version.Rebase.Current_Options := Opts;
+      Version.Rebase.Exec_After_Each := Execs;
+      Version.Rebase.Reapply_Cherry_Picks := Reapply;
+
+      ---------------------------------------------------------------------
+      --  The in-progress actions.
+      ---------------------------------------------------------------------
+      if Length (Action) > 0 then
+         declare
+            Act  : constant String := To_String (Action);
+            Repo : constant Version.Repository.Repository_Handle :=
+              Version.Repository.Open;
+         begin
+            if not Operands.Is_Empty then
+               Fatal ("options '" & Act & "' and '" & Operands.First_Element
+                      & "' cannot be used together");
+               return;
+            end if;
+            if not Version.Rebase_State.State_Exists (Repo) then
+               Fatal ("no rebase in progress");
+               return;
+            end if;
+            declare
+               Branch : constant String :=
+                 Version.Rebase_State.Branch_Ref
+                   (Version.Rebase_State.Read_State (Repo));
+            begin
+               if Act = "--abort" then
+                  Version.Rebase.Abort_Rebase;
+               elsif Act = "--quit" then
+                  Version.Rebase.Quit_Rebase;
+               else
+                  begin
+                     if Act = "--skip" then
+                        Version.Rebase.Skip_Rebase;
+                     else
+                        Version.Rebase.Continue_Rebase;
+                     end if;
+                  exception
+                     when Version.Rebase.Unresolved_Continue
+                        | Version.Rebase.Exec_Failed =>
+                        Set_Command_Failure;
+                        return;
+                     when Version.Rebase.Empty_Stop =>
+                        Version.Status.Print_Status;
+                        Report_Empty_Stop (Repo);
+                        Set_Command_Failure;
+                        return;
+                     when E : Ada.IO_Exceptions.Data_Error =>
+                        if Ada.Strings.Fixed.Index
+                             (Ada.Exceptions.Exception_Message (E),
+                              "conflicts recorded") > 0
+                        then
+                           Report_Rebase_Conflict (Repo);
+                           Set_Command_Failure;
+                           return;
+                        end if;
+                        raise;
+                  end;
+                  if Version.Rebase.In_Progress then
+                     Report_Edit_Stop (Repo);
+                  else
+                     Stderr_Line
+                       ("Successfully rebased and updated " & Branch & ".");
+                     if not Version.Rebase.Updated_Refs.Is_Empty then
+                        Stderr_Line
+                          ("Updated the following refs with --update-refs:");
+                        for R of Version.Rebase.Updated_Refs loop
+                           Stderr_Line (ASCII.HT & R);
+                        end loop;
+                     end if;
+                  end if;
+               end if;
+            end;
+         end;
+         return;
+      end if;
+
+      ---------------------------------------------------------------------
+      --  A new rebase.
+      ---------------------------------------------------------------------
+      if Natural (Operands.Length) > 2 then
+         Fail ("too many rebase arguments");
+         return;
+      elsif Root and then not Operands.Is_Empty and then not Has_Onto then
+         Fatal ("options '--root' and '<upstream>' cannot be used together");
+         return;
+      elsif Keep_Base and then Has_Onto then
+         Fatal ("options '--keep-base' and '--onto' cannot be used together");
+         return;
+      elsif Keep_Base and then Root then
+         Fatal ("options '--keep-base' and '--root' cannot be used together");
+         return;
+      end if;
+
+      declare
+         Repo : constant Version.Repository.Repository_Handle :=
+           Version.Repository.Open;
+         Upstream_Text : Unbounded_String;
+         Upstream_Given : constant Boolean := not Operands.Is_Empty;
+      begin
+         if Version.Rebase_State.State_Exists (Repo) then
+            Fatal ("It seems that there is already a rebase-merge directory, "
+                   & "and" & ASCII.LF
+                   & "I wonder if you are in the middle of another rebase.  "
+                   & "If that is the" & ASCII.LF
+                   & "case, please try" & ASCII.LF
+                   & ASCII.HT & "git rebase (--continue | --abort | --skip)"
+                   & ASCII.LF
+                   & "If that is not the case, please" & ASCII.LF
+                   & ASCII.HT & "rm -fr "".git/rebase-merge""" & ASCII.LF
+                   & "and run me again.  I am stopping in case you still "
+                   & "have something" & ASCII.LF
+                   & "valuable there." & ASCII.LF);
+            return;
+         end if;
+
+         --  A named branch is checked out first, as git does.
+         if Natural (Operands.Length) = 2 then
+            Version.Branch.Switch_Branch (Operands.Last_Element);
+         end if;
+
+         if Upstream_Given then
+            Upstream_Text := To_Unbounded_String (Operands.First_Element);
+         elsif not Root then
+            --  No upstream: the branch's configured upstream, else git's
+            --  no-tracking message on stdout and exit 1.
+            declare
+               Branch : constant String :=
+                 Version.Refs.Current_Branch_Name (Repo);
+            begin
+               if Version.Tracking.Has_Upstream (Repo, Branch) then
+                  Upstream_Text := To_Unbounded_String
+                    (Version.Tracking.Remote_Tracking_Ref
+                       (Version.Tracking.Upstream (Repo, Branch)));
+               else
+                  Success_Line
+                    ("There is no tracking information for the current branch.");
+                  Success_Line
+                    ("Please specify which branch you want to rebase against.");
+                  Success_Line ("See git-rebase(1) for details.");
+                  Success_Line ("");
+                  Success_Line ("    git rebase '<branch>'");
+                  Success_Line ("");
+                  Success_Line
+                    ("If you wish to set tracking information for this branch "
+                     & "you can do so with:");
+                  Success_Line ("");
+                  Success_Line
+                    ("    git branch --set-upstream-to=<remote>/<branch> "
+                     & Branch);
+                  Success_Line ("");
+                  Set_Command_Failure;
+                  return;
+               end if;
+            end;
+         end if;
+
+         declare
+            Branch : constant String := Version.Refs.Current_Branch_Name (Repo);
+            Head   : constant Version.Objects.Hex_Object_Id :=
+              Version.Objects.To_Object_Id (Version.Refs.Current_Commit_Id (Repo));
+            Upstream_Id : Version.Objects.Object_Id_Storage;
+            Onto_Id     : Version.Objects.Object_Id_Storage;
+            Onto_Text   : Unbounded_String;
+
+            --  Upstream as the replay range's base: the typed revision, or
+            --  its fork point with this branch (--fork-point, which git
+            --  applies by itself when the upstream came from the config).
+            Base_Text : Unbounded_String;
+         begin
+            if not Root then
+               begin
+                  Upstream_Id := Version.Revisions.Resolve_Commit
+                    (Repo, To_String (Upstream_Text));
+               exception
+                  when others =>
+                     Fatal ("invalid upstream '" & To_String (Upstream_Text)
+                            & "'");
+                     return;
+               end;
+               Base_Text := Upstream_Text;
+               if Fork_Point = Yes
+                 or else (Fork_Point = Unset and then not Upstream_Given)
+               then
+                  declare
+                     Found : Boolean;
+                     FP    : constant Version.Objects.Hex_Object_Id :=
+                       Fork_Point_Base
+                         (Repo, To_String (Upstream_Text), Head, Found);
+                  begin
+                     if Found then
+                        Base_Text := To_Unbounded_String
+                          (Version.Objects.To_String (FP));
+                     end if;
+                  end;
+               end if;
+            end if;
+
+            if Has_Onto then
+               begin
+                  Onto_Id := Version.Revisions.Resolve_Commit
+                    (Repo, To_String (Onto));
+               exception
+                  when others =>
+                     Fatal ("Does not point to a valid commit '"
+                            & To_String (Onto) & "'");
+                     return;
+               end;
+               Onto_Text := Onto;
+            elsif Keep_Base then
+               Onto_Id := Version.History.Merge_Base (Repo, Head, Upstream_Id);
+               Onto_Text := To_Unbounded_String
+                 (Version.Objects.To_String (Onto_Id));
+            elsif not Root then
+               --  --fork-point only narrows the range; onto stays the
+               --  upstream as typed.
+               Onto_Id := Upstream_Id;
+               Onto_Text := Upstream_Text;
+            end if;
+
+            --  git's --stat/-v diffstat of what the new base brings, from
+            --  the merge base to onto, before anything moves.
+            if not Root
+              and then (Show_Stat = Yes or else Verbose)
+              and then not Version.History.Is_Ancestor (Repo, Onto_Id, Head)
+            then
+               declare
+                  MB : constant Version.Objects.Hex_Object_Id :=
+                    Version.History.Merge_Base (Repo, Head, Onto_Id);
+               begin
+                  if Verbose then
+                     Success_Line
+                       ("Changes from " & Version.Objects.To_String (MB)
+                        & " to " & Version.Objects.To_String (Onto_Id) & ":");
+                  end if;
+                  Version.Console.Put
+                    (Version.Diff.Diff_Commits
+                       (Repo    => Repo,
+                        Old_Id  => MB,
+                        New_Id  => Onto_Id,
+                        Options =>
+                          (Stat => True, Summary => True, others => <>)));
+               end;
+            end if;
+
+            --  Already on top of the base (git's can_fast_forward: onto is
+            --  an ancestor of HEAD, is the merge base with the upstream, and
+            --  the history between is linear -- a merge in it gets
+            --  flattened, so it is not "up to date"): nothing to replay
+            --  unless forced.
+            --  An interactive, --exec or --autosquash rebase always runs
+            --  its todo; the flags that rewrite every commit (--signoff and
+            --  the date options) force it with git's note.
+            if not Root
+              and then not (Interactive or else not Execs.Is_Empty
+                            or else Autosquash = Yes)
+              and then Version.History.Is_Ancestor (Repo, Onto_Id, Head)
+              and then Version.Objects."="
+                         (Version.History.Merge_Base (Repo, Head, Upstream_Id),
+                          Onto_Id)
+              and then Linear_History (Repo, Onto_Id, Head)
+            then
+               if Force or else Opts.Signoff or else Opts.Cdate_Is_Adate
+                 or else Opts.Ignore_Date
+               then
+                  Success_Line
+                    ("Current branch " & Branch & " is up to date, rebase "
+                     & "forced.");
+               else
+                  Success_Line ("Current branch " & Branch & " is up to date.");
+                  return;
+               end if;
+            end if;
+
+            declare
+               Todo_Driven : constant Boolean :=
+                 Interactive or else not Execs.Is_Empty
+                 or else Autosquash = Yes
+                 or else (Autosquash = Unset
+                          and then Version.Config.Has_Key (Repo, "rebase.autoSquash")
+                          and then Version.Config.Trim
+                                     (Version.Config.Get_Value
+                                        (Repo, "rebase.autoSquash")) = "true"
+                          and then Interactive);
+            begin
+               if Root then
+                  if Has_Onto then
+                     Version.Rebase.Start_Root (To_String (Onto));
+                  else
+                     Version.Rebase.Start_Root_Bare;
+                  end if;
+               elsif Merges then
+                  Version.Rebase.Start_Rebase_Merges (To_String (Base_Text));
+               elsif Todo_Driven then
+                  Version.Rebase.Start_Interactive
+                    (Upstream   => To_String (Base_Text),
+                     Autosquash => Autosquash = Yes,
+                     Onto       => (if Onto_Text /= Base_Text
+                                    then To_String (Onto_Text) else ""),
+                     Edit_Todo  => Interactive);
+               elsif Onto_Text /= Base_Text then
+                  Version.Rebase.Start_Onto
+                    (To_String (Onto_Text), To_String (Base_Text));
+               else
+                  Version.Rebase.Start (To_String (Base_Text));
+               end if;
+            exception
+               when Version.Rebase.Exec_Failed =>
+                  Set_Command_Failure;
+                  return;
+               when Version.Rebase.Empty_Stop =>
+                  --  git follows its message with the status block and the
+                  --  failed pick's line.
+                  Version.Status.Print_Status;
+                  Report_Empty_Stop (Repo);
+                  Set_Command_Failure;
+                  return;
+               when E : Ada.IO_Exceptions.Data_Error =>
+                  if Ada.Strings.Fixed.Index
+                       (Ada.Exceptions.Exception_Message (E),
+                        "conflicts recorded") > 0
+                  then
+                     Report_Rebase_Conflict (Repo);
+                     Set_Command_Failure;
+                     return;
+                  elsif Ada.Strings.Fixed.Index
+                          (Ada.Exceptions.Exception_Message (E), "nothing to do")
+                        > 0
+                  then
+                     Stderr_Line ("error: nothing to do");
+                     Set_Command_Failure;
+                     return;
+                  end if;
+                  raise;
+            end;
+
+            if Version.Rebase.In_Progress then
+               Report_Edit_Stop (Repo);
+            else
+               if Verbose then
+                  --  git's -v ends with the diffstat of what the branch
+                  --  gained: its old tip against its new one.
+                  Version.Console.Put
+                    (Version.Diff.Diff_Commits
+                       (Repo    => Repo,
+                        Old_Id  => Head,
+                        New_Id  => Version.Objects.To_Object_Id
+                                     (Version.Refs.Current_Commit_Id (Repo)),
+                        Options => (Stat => True, others => <>)));
+               end if;
+               Stderr_Line
+                 ("Successfully rebased and updated refs/heads/" & Branch & ".");
+               if not Version.Rebase.Updated_Refs.Is_Empty then
+                  Stderr_Line ("Updated the following refs with --update-refs:");
+                  for R of Version.Rebase.Updated_Refs loop
+                     Stderr_Line (ASCII.HT & R);
+                  end loop;
+               end if;
+            end if;
+         end;
+      end;
+   end Run_Rebase;
 
    function Failure_Is_Ordinary (Command : String) return Boolean is
      (Command in "apply" | "checkout" | "restore" | "switch" | "notes"
@@ -22327,285 +23176,7 @@ package body Version.CLI is
             end;
 
          elsif Command = "rebase" then
-            declare
-               Usage : constant String :=
-                 "version rebase TARGET | version rebase -i UPSTREAM"
-                 & " | version rebase --continue | version rebase --skip"
-                 & " | version rebase --quit | version rebase --abort";
-            begin
-               if Count < 2 then
-                  Usage_Error ("missing rebase target or action", Usage);
-                  return;
-               elsif Arg (2) = "-i" or else Arg (2) = "--interactive" then
-                  declare
-                     Upstream   : Unbounded_String;
-                     Have_Up    : Boolean := False;
-                     Autosquash : Boolean := False;
-                     Bad_Arg    : Boolean := False;
-                  begin
-                     for J in 3 .. Count loop
-                        if Arg (J) = "--autosquash" then
-                           Autosquash := True;
-                        elsif Arg (J) = "--no-autosquash" then
-                           Autosquash := False;
-                        elsif not Have_Up
-                          and then (Arg (J)'Length = 0
-                                    or else Arg (J) (Arg (J)'First) /= '-')
-                        then
-                           Upstream := To_Unbounded_String (Arg (J));
-                           Have_Up  := True;
-                        else
-                           Usage_Error
-                             ("rebase -i requires an upstream", Usage);
-                           Bad_Arg := True;
-                        end if;
-                     end loop;
-                     if Bad_Arg then
-                        return;
-                     end if;
-
-                     if not Have_Up then
-                        --  No upstream given: git falls back to the branch's
-                        --  configured upstream, or prints the no-tracking
-                        --  message on stdout and exits 1.
-                        declare
-                           Repo : constant
-                             Version.Repository.Repository_Handle :=
-                               Version.Repository.Open;
-                           Branch : constant String :=
-                             Version.Refs.Current_Branch_Name (Repo);
-                        begin
-                           if Version.Tracking.Has_Upstream (Repo, Branch) then
-                              Upstream := To_Unbounded_String
-                                (Version.Tracking.Remote_Tracking_Ref
-                                   (Version.Tracking.Upstream (Repo, Branch)));
-                              Have_Up := True;
-                           else
-                              Success_Line
-                                ("There is no tracking information for the"
-                                 & " current branch.");
-                              Success_Line
-                                ("Please specify which branch you want to"
-                                 & " rebase against.");
-                              Success_Line ("See git-rebase(1) for details.");
-                              Success_Line ("");
-                              Success_Line ("    git rebase '<branch>'");
-                              Success_Line ("");
-                              Success_Line
-                                ("If you wish to set tracking information for"
-                                 & " this branch you can do so with:");
-                              Success_Line ("");
-                              Success_Line
-                                ("    git branch"
-                                 & " --set-upstream-to=<remote>/<branch> "
-                                 & Branch);
-                              Success_Line ("");
-                              Set_Command_Failure;
-                              return;
-                           end if;
-                        end;
-                     end if;
-
-                     Version.Rebase.Start_Interactive
-                       (To_String (Upstream), Autosquash => Autosquash);
-                     if Version.Rebase.In_Progress then
-                        Success_Line
-                          ("stopped for edit; amend as needed, then run "
-                           & "version rebase --continue");
-                     else
-                        Success_Line ("rebased onto " & To_String (Upstream));
-                     end if;
-                  end;
-               elsif Arg (2) = "--rebase-merges" then
-                  if Count /= 3 then
-                     Usage_Error
-                       ("rebase --rebase-merges requires an upstream", Usage);
-                     return;
-                  end if;
-                  Version.Rebase.Start_Rebase_Merges (Arg (3));
-                  Success_Line ("rebased onto " & Arg (3));
-               elsif Arg (2) = "--preserve-merges" then
-                  raise Ada.IO_Exceptions.Data_Error with
-                    Version.Rebase.Merge_Preserving_Rebase_Not_Supported;
-               elsif Arg (2) = "--skip" then
-                  if Count > 2 then
-                     Usage_Error ("too many rebase --skip arguments", Usage);
-                     return;
-                  end if;
-                  Version.Rebase.Skip_Rebase;
-                  if Version.Rebase.In_Progress then
-                     Success_Line
-                       ("stopped for edit; amend as needed, then run "
-                        & "version rebase --continue");
-                  else
-                     Success_Line ("skipped commit; rebase complete");
-                  end if;
-               elsif Arg (2) = "--quit" then
-                  if Count > 2 then
-                     Usage_Error ("too many rebase --quit arguments", Usage);
-                     return;
-                  end if;
-                  Version.Rebase.Quit_Rebase;
-                  Success_Line ("rebase state cleared; HEAD left as it is");
-               elsif Arg (2) = "--continue" then
-                  if Count > 2 then
-                     Usage_Error ("too many rebase --continue arguments", Usage);
-                     return;
-                  end if;
-                  Version.Rebase.Continue_Rebase;
-                  if Version.Rebase.In_Progress then
-                     Success_Line
-                       ("stopped for edit; amend as needed, then run "
-                        & "version rebase --continue");
-                  else
-                     Success_Line ("continued rebase");
-                  end if;
-               elsif Arg (2) = "--abort" then
-                  if Count > 2 then
-                     Usage_Error ("too many rebase --abort arguments", Usage);
-                     return;
-                  end if;
-                  Version.Rebase.Abort_Rebase;
-                  Success_Line ("aborted rebase");
-               elsif Arg (2) = "--root" then
-                  if Count = 4 and then Arg (3) = "--onto" then
-                     Version.Rebase.Start_Root (Arg (4));
-                     Success_Line ("rebased onto " & Arg (4));
-                  elsif Count = 2 then
-                     Version.Rebase.Start_Root_Bare;
-                     Success_Line ("rebased from root");
-                  else
-                     Usage_Error
-                       ("rebase --root requires --onto NEWBASE", Usage);
-                     return;
-                  end if;
-               elsif (Arg (2) = "--keep-empty"
-                      or else Arg (2) = "--no-keep-empty"
-                      or else Arg (2) = "--empty=keep"
-                      or else Arg (2) = "--empty=drop")
-                 and then Count = 3
-               then
-                  --  version's rebase already replays an already-empty commit;
-                  --  --keep-empty is git's flag for exactly that, so a plain
-                  --  rebase onto the given upstream matches.
-                  Version.Rebase.Start (Arg (3));
-                  declare
-                     Repo : constant Version.Repository.Repository_Handle :=
-                       Version.Repository.Open;
-                  begin
-                     Stderr_Line
-                       ("Successfully rebased and updated refs/heads/"
-                        & Version.Refs.Current_Branch_Name (Repo) & ".");
-                  end;
-               elsif Arg (2) = "--onto"
-                 and then (Count = 4 or else Count = 5)
-               then
-                  --  rebase --onto <newbase> <upstream> [<branch>]: replay
-                  --  <upstream>..<branch> onto <newbase>, checking out <branch>
-                  --  first when it is named.
-                  declare
-                     Repo : constant Version.Repository.Repository_Handle :=
-                       Version.Repository.Open;
-                  begin
-                     if Count = 5 then
-                        Version.Branch.Switch_Branch (Arg (5));
-                     end if;
-                     Version.Rebase.Start_Onto (Arg (3), Arg (4));
-                     declare
-                        Branch : constant String :=
-                          Version.Refs.Current_Branch_Name (Repo);
-                     begin
-                        Stderr_Line
-                          ("Successfully rebased and updated refs/heads/"
-                           & Branch & ".");
-                     end;
-                  end;
-               elsif Arg (2) = "--stat" and then Count = 3 then
-                  --  git prints the diffstat of what the new base brings
-                  --  (diff --stat <merge-base>..<upstream>) before rebasing.
-                  declare
-                     Repo : constant Version.Repository.Repository_Handle :=
-                       Version.Repository.Open;
-                     Branch : constant String :=
-                       Version.Refs.Current_Branch_Name (Repo);
-                     Head : constant Version.Objects.Hex_Object_Id :=
-                       Version.Objects.To_Object_Id
-                         (Version.Refs.Current_Commit_Id (Repo));
-                     Onto : Version.Objects.Hex_Object_Id;
-                  begin
-                     begin
-                        Onto := Version.Revisions.Resolve_Commit
-                          (Repo, Arg (3));
-                     exception
-                        when others =>
-                           Stderr_Line
-                             ("fatal: invalid upstream '" & Arg (3) & "'");
-                           Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
-                           return;
-                     end;
-                     Version.Console.Put
-                       (Version.Diff.Diff_Commits
-                          (Repo    => Repo,
-                           Old_Id  =>
-                             Version.History.Merge_Base (Repo, Head, Onto),
-                           New_Id  => Onto,
-                           Options =>
-                             (Stat => True, Summary => True, others => <>)));
-                     if Version.History.Is_Ancestor (Repo, Onto, Head) then
-                        Success_Line
-                          ("Current branch " & Branch & " is up to date.");
-                     else
-                        Version.Rebase.Start (Arg (3));
-                        Stderr_Line
-                          ("Successfully rebased and updated refs/heads/"
-                           & Branch & ".");
-                     end if;
-                  end;
-               elsif Arg (2)'Length > 0 and then Arg (2) (Arg (2)'First) = '-' then
-                  Usage_Error ("unknown rebase option: " & Arg (2), Usage);
-                  return;
-               elsif Count > 2 then
-                  Usage_Error ("too many rebase arguments", Usage);
-                  return;
-               else
-                  declare
-                     Repo : constant Version.Repository.Repository_Handle :=
-                       Version.Repository.Open;
-                     Branch : constant String :=
-                       Version.Refs.Current_Branch_Name (Repo);
-                     Head : constant Version.Objects.Hex_Object_Id :=
-                       Version.Objects.To_Object_Id
-                         (Version.Refs.Current_Commit_Id (Repo));
-                     Onto : Version.Objects.Hex_Object_Id;
-                  begin
-                     begin
-                        Onto := Version.Revisions.Resolve_Commit
-                          (Repo, Arg (2));
-                     exception
-                        when others =>
-                           --  git die()s on an upstream it cannot resolve.
-                           Stderr_Line
-                             ("fatal: invalid upstream '" & Arg (2) & "'");
-                           Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
-                           return;
-                     end;
-
-                     --  When the target is already an ancestor of HEAD the
-                     --  branch is on top of it and the replay is a no-op; git
-                     --  says so on stdout and does nothing. Otherwise it
-                     --  rebases and reports success on stderr (stdout empty).
-                     if Version.History.Is_Ancestor (Repo, Onto, Head) then
-                        Success_Line
-                          ("Current branch " & Branch & " is up to date.");
-                     else
-                        Version.Rebase.Start (Arg (2));
-                        Stderr_Line
-                          ("Successfully rebased and updated refs/heads/"
-                           & Branch & ".");
-                     end if;
-                  end;
-               end if;
-            end;
+            Run_Rebase;
 
          elsif Command = "cherry-pick" then
             declare

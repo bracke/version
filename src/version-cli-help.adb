@@ -976,12 +976,25 @@ package body Version.CLI.Help is
 
       elsif Name = "rebase" then
          Line ("Usage:");
-         Line ("  version rebase TARGET");
-         Line ("  version rebase --continue");
-         Line ("  version rebase --abort");
+         Line ("  version rebase [-i] [-q|-v] [--stat] [--onto NEWBASE|--keep-base]"
+               & " [--root]");
+         Line ("                 [--exec CMD]... [--autosquash] [--update-refs]"
+               & " [--rebase-merges]");
+         Line ("                 [--empty=drop|keep|stop] [--[no-]keep-empty]"
+               & " [--[no-]reapply-cherry-picks]");
+         Line ("                 [-f|--no-ff] [--signoff]"
+               & " [--committer-date-is-author-date] [--ignore-date]");
+         Line ("                 [-s STRATEGY] [-X OPTION]... [--[no-]fork-point]"
+               & " [UPSTREAM [BRANCH]]");
+         Line ("  version rebase --continue | --skip | --abort | --quit");
          Line;
          Line
-           ("Replay current branch commits onto TARGET with resumable conflict handling.");
+           ("Replay the current branch's commits onto a new base, as git rebase does,"
+            & " with git's");
+         Line
+           ("todo (-i/--exec/--autosquash), empty-commit and cherry-pick handling,"
+            & " and resumable");
+         Line ("conflict state.");
       elsif Name = "cherry-pick" then
          Line ("Usage:");
          Line ("  version cherry-pick REV");

@@ -100,6 +100,11 @@ version merge [OPTIONS] [TARGET...]
 version merge --continue [--verify|--no-verify]
 version merge --abort
 version merge --quit
+version rebase [-i] [-q|-v] [--stat] [--onto NEWBASE|--keep-base] [--root] [--exec CMD]...
+               [--autosquash] [--update-refs] [--rebase-merges] [--empty=drop|keep|stop]
+               [--[no-]reapply-cherry-picks] [-f|--no-ff] [--signoff] [--ignore-date]
+               [--committer-date-is-author-date] [-X OPTION]... [UPSTREAM [BRANCH]]
+version rebase --continue | --skip | --abort | --quit
 version branch set-upstream BRANCH REMOTE REMOTE_BRANCH
 version branch unset-upstream BRANCH
 version branch ahead-behind BRANCH

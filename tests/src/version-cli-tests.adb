@@ -4977,9 +4977,14 @@ package body Version.CLI.Tests is
       Root : constant String :=
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Usage : constant String :=
-        "version rebase TARGET | version rebase -i UPSTREAM"
-        & " | version rebase --continue | version rebase --skip"
-        & " | version rebase --quit | version rebase --abort";
+        "version rebase [-i] [-q|-v] [--onto NEWBASE|--keep-base] [--root]"
+        & " [--exec CMD]... [--autosquash] [--update-refs] [--rebase-merges]"
+        & " [--empty=drop|keep|stop] [--[no-]keep-empty]"
+        & " [--[no-]reapply-cherry-picks] [-f|--no-ff] [--signoff]"
+        & " [--committer-date-is-author-date] [--ignore-date]"
+        & " [-s STRATEGY] [-X OPTION]... [--[no-]fork-point] [--no-verify]"
+        & " [--stat|-n] [UPSTREAM [BRANCH]]"
+        & " | version rebase --continue|--skip|--abort|--quit";
 
       procedure Check_Usage_Failure
         (Command : String; Detail : String; Context : String)
@@ -5002,26 +5007,29 @@ package body Version.CLI.Tests is
          end;
       end Check_Usage_Failure;
 
+      --  git's fatal (128) combinations and the no-upstream report.
+      procedure Check_Fatal
+        (Command : String; Detail : String; Status_Wanted : Integer;
+         Context : String)
+      is
+         Output : Ada.Strings.Unbounded.Unbounded_String;
+         Status : Integer;
+      begin
+         Run_CLI_Capture (Root, Command, Output, Status);
+         Assert (Status = Status_Wanted, Context & " exit status");
+         Assert_Contains
+           (Ada.Strings.Unbounded.To_String (Output), Detail,
+            Context & " detail");
+      end Check_Fatal;
+
       Old_Dir : constant String := Ada.Directories.Current_Directory;
    begin
-      Check_Usage_Failure
-        ("rebase",
-         "missing rebase target or action",
-         "rebase missing target");
-      Check_Usage_Failure
-        ("rebase --continue extra",
-         "too many rebase --continue arguments",
-         "rebase continue extra argument");
-      Check_Usage_Failure
-        ("rebase --abort extra",
-         "too many rebase --abort arguments",
-         "rebase abort extra argument");
       Check_Usage_Failure
         ("rebase --xyzzy",
          "unknown rebase option: --xyzzy",
          "rebase unknown option");
       Check_Usage_Failure
-        ("rebase main extra",
+        ("rebase main extra extra2",
          "too many rebase arguments",
          "rebase too many arguments");
 
@@ -5029,6 +5037,23 @@ package body Version.CLI.Tests is
       Configure_User (Root);
       Ada.Directories.Set_Directory (Root);
       Commit_File (Root, "a.txt", "one" & Character'Val (10), "base");
+
+      Check_Fatal
+        ("rebase",
+         "There is no tracking information for the current branch.", 1,
+         "rebase without upstream");
+      Check_Fatal
+        ("rebase --continue extra",
+         "fatal: options '--continue' and 'extra' cannot be used together",
+         128, "rebase continue extra argument");
+      Check_Fatal
+        ("rebase --abort",
+         "fatal: no rebase in progress", 128,
+         "rebase abort without a rebase");
+      Check_Fatal
+        ("rebase -A -u main",
+         "unknown rebase option: -A", 129,
+         "rebase bundled unknown short flag");
 
       Ada.Directories.Set_Directory (Old_Dir);
    exception
@@ -5061,7 +5086,7 @@ package body Version.CLI.Tests is
          Assert (Status /= 0, Context & " must fail");
          Assert_Contains
            (Ada.Strings.Unbounded.To_String (Output),
-            "error: " & Expected_Diagnostic,
+            Expected_Diagnostic,
             Context & " diagnostic");
          Assert
            (Version.Refs.Current_Commit_Id (Repo) = Head_Before,
@@ -5080,9 +5105,10 @@ package body Version.CLI.Tests is
       Commit_File (Root, "base.txt", "base" & Character'Val (10), "base");
       Commit_File (Root, "topic.txt", "clean" & Character'Val (10), "topic");
 
+      --  git 2.55: --preserve-merges is gone, and says so (exit 128).
       Check_Unsupported
         ("rebase --preserve-merges main",
-         Version.Rebase.Merge_Preserving_Rebase_Not_Supported,
+         "--preserve-merges was replaced by --rebase-merges",
          "rebase --preserve-merges");
 
       Ada.Directories.Set_Directory (Old_Dir);

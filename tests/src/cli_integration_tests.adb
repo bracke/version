@@ -5237,6 +5237,100 @@ package body CLI_Integration_Tests is
       Run_Parity_Transcript (Root, Scenario, "add");
    end Add_Option_Surface_Matches_Git;
 
+   --  `rebase`: git's option surface -- -q/-v/--stat, --onto/--keep-base/
+   --  --fork-point, the up-to-date short-cut and -f/--no-ff, --exec (with
+   --  a failing command), --autosquash, --signoff and the date flags, -X
+   --  strategy options resolving a conflict, --update-refs, the
+   --  cherry-pick dedup warning and --reapply-cherry-picks with --empty,
+   --  a flattened merge, the conflict stop with --abort/--skip/--continue,
+   --  and an interactive edit stop.
+   procedure Rebase_Option_Surface_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Scenario : constant String :=
+        "seed" & LF
+        --  main: base, m; topic: base, t1, t2.
+        & "git checkout -qb topic; echo t1 > t1; git add t1; git commit -qm t1;"
+        & " echo t2 > t2; git add t2; git commit -qm t2;"
+        & " git checkout -q main; echo m > m; git add m; git commit -qm m;"
+        & " git checkout -q topic" & LF
+        & "t 'up to date' rebase HEAD~1" & LF
+        & "t 'forced' rebase -f HEAD~1" & LF
+        & "t 'unknown upstream' rebase nosuch" & LF
+        & "t 'plain -q' rebase -q main" & LF
+        & "git reset -q --hard topic@{1}" & LF
+        & "t '--stat' rebase --stat main" & LF
+        & "git reset -q --hard topic@{1}" & LF
+        & "t '-v' rebase -v main" & LF
+        & "git reset -q --hard topic@{1}" & LF
+        & "t '--onto' rebase --onto main HEAD~1" & LF
+        & "git reset -q --hard topic@{1}" & LF
+        & "t '--keep-base' rebase --keep-base main" & LF
+        & "t '--fork-point' rebase --fork-point main" & LF
+        & "git reset -q --hard topic@{1}" & LF
+        & "t '--exec' rebase --exec 'echo ran' main" & LF
+        & "git reset -q --hard topic@{1}" & LF
+        & "t '--exec fail' rebase --exec false main" & LF
+        & "t 'exec continue' rebase --continue" & LF
+        & "t 'exec continue again' rebase --continue" & LF
+        & "git reset -q --hard topic@{2}" & LF
+        & "t '--signoff' rebase --signoff main" & LF
+        & "git reset -q --hard topic@{1}" & LF
+        & "t '--committer-date-is-author-date' rebase --committer-date-is-author-date main" & LF
+        & "git reset -q --hard topic@{1}" & LF
+        & "t '--no-verify -s ort' rebase --no-verify -s ort main" & LF
+        & "git reset -q --hard topic@{1}" & LF
+        --  --update-refs moves a branch that pointed into the range.
+        & "git branch -q mid topic~1" & LF
+        & "t '--update-refs' rebase --update-refs main" & LF
+        & "git branch -qD mid; git reset -q --hard topic@{1}" & LF
+        --  --autosquash folds a fixup! commit.
+        & "echo fx > t1; git commit -qam 'fixup! t1'" & LF
+        & "t '--autosquash' rebase --autosquash main" & LF
+        & "git reset -q --hard topic@{2}" & LF
+        --  A commit already upstream: warned about and skipped, or
+        --  reapplied and then dropped/kept/stopped on.
+        & "git checkout -q main; git cherry-pick -q topic~1; git checkout -q topic" & LF
+        & "t 'dedup' rebase main" & LF
+        & "git reset -q --hard topic@{1}" & LF
+        & "t '--reapply-cherry-picks' rebase --reapply-cherry-picks main" & LF
+        & "git reset -q --hard topic@{1}" & LF
+        & "t '--empty=keep' rebase --reapply-cherry-picks --empty=keep main" & LF
+        & "git reset -q --hard topic@{1}" & LF
+        & "t '--empty=stop' rebase --reapply-cherry-picks --empty=stop main" & LF
+        & "t 'empty skip' rebase --skip" & LF
+        & "git reset -q --hard topic@{1}" & LF
+        --  A conflict: -X resolves it; otherwise abort, skip, continue.
+        & "git checkout -q main; echo c > t1; git add t1; git commit -qm conflict;"
+        & " git checkout -q topic" & LF
+        & "t '-X theirs' rebase -X theirs main" & LF
+        & "git reset -q --hard topic@{1}" & LF
+        & "t 'conflict' rebase main" & LF
+        & "t 'conflict abort' rebase --abort" & LF
+        & "t 'conflict again' rebase main" & LF
+        & "t 'continue unresolved' rebase --continue" & LF
+        & "echo r > t1; git add t1" & LF
+        & "t 'continue resolved' rebase --continue" & LF
+        & "git reset -q --hard topic@{2}" & LF
+        & "t 'conflict once more' rebase main" & LF
+        & "t 'skip' rebase --skip" & LF
+        & "git reset -q --hard topic@{2}" & LF
+        --  A merge in the history is flattened.
+        & "git merge -q -X theirs main -m merged 2>/dev/null; echo t3 > t3;"
+        & " git add t3; git commit -qm t3" & LF
+        & "t 'flatten merge' rebase -X theirs main" & LF
+        & "git reset -q --hard topic@{2}" & LF
+        --  An interactive edit stop and its continue.
+        & "export GIT_SEQUENCE_EDITOR='sed -i 1s/pick/edit/'" & LF
+        & "t 'edit stop' rebase -i -X theirs main" & LF
+        & "t 'edit continue' rebase --continue" & LF
+        & "t 'no rebase' rebase --continue" & LF;
+   begin
+      Run_Parity_Transcript (Root, Scenario, "rebase");
+   end Rebase_Option_Surface_Matches_Git;
+
    procedure Bisect_Run_And_Patch_Id_Match_Git
      (T : in out AUnit.Test_Cases.Test_Case'Class)
    is
@@ -6627,6 +6721,9 @@ package body CLI_Integration_Tests is
       Register_Routine
         (T, Add_Option_Surface_Matches_Git'Access,
          "Add: git's option surface, -N, --chmod, --renormalize, refusals");
+      Register_Routine
+        (T, Rebase_Option_Surface_Matches_Git'Access,
+         "Rebase: git's option surface, exec/autosquash/empty, conflicts");
       Register_Routine
         (T, Fast_Import_Stream_Matches_Git'Access,
          "Fast-import: author defaults to committer, short modes are files");
