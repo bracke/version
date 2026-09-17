@@ -20305,18 +20305,30 @@ package body Version.CLI is
                   end;
                elsif Count >= 2 and then Arg (2) = "--abort" then
                   if Count /= 2 then
-                     Usage_Error ("too many merge --abort arguments", Usage);
+                     Usage_Error ("--abort expects no arguments", Usage);
+                     return;
+                  end if;
+                  --  git: silent on success, fatal (128) with no merge to
+                  --  abort.
+                  if not Version.Merge_State.State_Exists
+                           (Version.Repository.Open)
+                    and then Version.Merge_State.Merge_Heads
+                               (Version.Repository.Open).Is_Empty
+                  then
+                     Stderr_Line
+                       ("fatal: There is no merge to abort (MERGE_HEAD "
+                        & "missing).");
+                     Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
                      return;
                   end if;
                   Version.Branch.Abort_Integration;
-                  Success_Line ("aborted merge");
                elsif Count >= 2 and then Arg (2) = "--quit" then
                   if Count /= 2 then
-                     Usage_Error ("too many merge --quit arguments", Usage);
+                     Usage_Error ("--quit expects no arguments", Usage);
                      return;
                   end if;
+                  --  git's --quit is silent, with or without a merge.
                   Version.Branch.Quit_Integration;
-                  Success_Line ("quit merge");
                else
                   declare
                      Options : Version.Branch.Merge_Options;

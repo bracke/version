@@ -1584,7 +1584,7 @@ package body Version.CLI.Tests is
 
       Check_Success
         ("merge --abort",
-         "aborted merge",
+         "",
          "merge add/add abort");
       Commit_File (Root, "md.txt", "base" & Character'Val (10), "md base");
       Check_Success
@@ -1618,7 +1618,7 @@ package body Version.CLI.Tests is
 
       Check_Success
         ("merge --abort",
-         "aborted merge",
+         "",
          "merge modify/delete abort");
       Commit_File
         (Root, "old.txt", "base" & Character'Val (10), "rename/delete base");
@@ -1657,7 +1657,7 @@ package body Version.CLI.Tests is
 
       Check_Success
         ("merge --abort",
-         "aborted merge",
+         "",
          "merge rename/delete abort");
       Commit_File
         (Root, "rr-old.txt", "base" & Character'Val (10), "rename/rename base");
@@ -1692,7 +1692,7 @@ package body Version.CLI.Tests is
 
       Check_Success
         ("merge --abort",
-         "aborted merge",
+         "",
          "merge rename/rename abort");
       Version.Git_Fixtures.Run (Root, "mkdir -p dr");
       Write_File (Root, "dr/base.txt", "base" & Character'Val (10));
