@@ -90,6 +90,7 @@ with Version.Shortlog;
 with Version.Grep;
 with Version.Approxidate;
 with Version.Pretty_Format;
+with Version.Combine_Diff;
 with Version.Ref_Transaction;
 with Version.Hash;
 with Version.Describe;
@@ -1679,6 +1680,7 @@ package body Version.CLI is
       elsif A = "--full-index" then
          Opts.Abbrev := 40;
          Opts.Index_Abbrev := 40;
+         Opts.Full_Index := True;
       elsif Has_Prefix (A, "--abbrev=") then
          if not Natural_Of (Value_After ("--abbrev="), Opts.Index_Abbrev) then
             return Bad ("option `abbrev' expects a numerical value");
@@ -2693,7 +2695,10 @@ package body Version.CLI is
       All_Match      : Boolean := False;
       Pickaxe_S      : String := "";
       Pickaxe_G      : String := "";
-      Pattern_Kind   : Version.Grep.Pattern_Kind := Version.Grep.Basic_Regex)
+      Pattern_Kind   : Version.Grep.Pattern_Kind := Version.Grep.Basic_Regex;
+      --  Under -c/--cc/-m a merge gets a diff of its own and is never
+      --  dropped by the pickaxe (git's combined path scan keeps it).
+      Keep_Merges    : Boolean := False)
       return Version.History.Commit_Id_Vectors.Vector
    is
       Grep_Opts : constant Version.Grep.Options :=
@@ -2838,7 +2843,8 @@ package body Version.CLI is
                Parent : constant String :=
                  Version.Objects.Commit_Parent_Id (Obj);
                --  git does not run the pickaxe over a merge's combined diff by
-               --  default, so a merge never matches.
+               --  default, so a merge never matches -- unless it gets a diff
+               --  of its own (-c/--cc/-m), when it is always kept.
                Is_Merge : constant Boolean :=
                  Natural (Version.Objects.Commit_Parent_Ids (Obj).Length) > 1;
                Patch  : constant String :=
@@ -2888,7 +2894,9 @@ package body Version.CLI is
                   Scan (Patch (Line_Start .. Patch'Last));
                end if;
 
-               if (if Is_Regex then Matched else Added /= Removed) then
+               if (Is_Merge and then Keep_Merges)
+                 or else (if Is_Regex then Matched else Added /= Removed)
+               then
                   Kept.Append (C);
                end if;
             end;
@@ -17452,6 +17460,7 @@ package body Version.CLI is
                   elsif Arg (I) = "--full-index" then
                      Abbrev_Val := 40;
                      DOpts.Index_Abbrev := 40;
+                     DOpts.Full_Index := True;
                   elsif Arg (I) = "-O" and then I < Count then
                      DOpts.Order_File := To_Unbounded_String (Arg (I + 1));
                      Skip_Next := True;
@@ -17965,11 +17974,18 @@ package body Version.CLI is
                end if;
             end;
 
-         elsif Command = "log" then
+         elsif Command = "log" or else Command = "show" then
+            --  `show` is `log` with git's show defaults: no walk (each
+            --  operand shown on its own, tags/trees/blobs included), the
+            --  patch on, and merges as dense combined diffs.
             declare
+               As_Show : constant Boolean := Command = "show";
                Usage : constant String :=
-                 "version log [--oneline] [--stat] [--show-signature]"
-                 & " [--format=<fmt>] [-<n>|-n <count>|--max-count=<n>] [REV]";
+                 (if As_Show
+                  then "version show [--stat] [-s] [--oneline] [--format=<fmt>]"
+                       & " [REV | REV:PATH]"
+                  else "version log [--oneline] [--stat] [--show-signature]"
+                       & " [--format=<fmt>] [-<n>|-n <count>|--max-count=<n>] [REV]");
                Oneline    : Boolean := False;
                Show_Sig   : Boolean := False;
                Bad        : Boolean := False;
@@ -17977,8 +17993,9 @@ package body Version.CLI is
                Max_Prefix : constant String := "--max-count=";
                Want_Count : Boolean := False;
                Want_S     : Boolean := False;   --  -S awaiting its value
+               Want_I     : Boolean := False;   --  -I awaiting its value
                Want_G     : Boolean := False;   --  -G awaiting its value
-               No_Walk    : Boolean := False;   --  --no-walk
+               No_Walk    : Boolean := As_Show;   --  --no-walk
                No_Walk_Unsorted : Boolean := False;
                Format     : Unbounded_String;
                Has_Format : Boolean := False;
@@ -17997,6 +18014,7 @@ package body Version.CLI is
                Terminator : Boolean := True;
                Stat       : Boolean := False;
                Patch      : Boolean := False;
+               Patch_Set  : Boolean := False;   --  -p/-s/-U given
                Name_Only  : Boolean := False;
                Name_Status : Boolean := False;
                Numstat    : Boolean := False;
@@ -18027,6 +18045,7 @@ package body Version.CLI is
                Pickaxe_S   : Unbounded_String;   --  -S<string>
                Pickaxe_G   : Unbounded_String;   --  -G<regex>
                Has_Pickaxe : Boolean := False;
+               Pickaxe_Regex : Boolean := False;  --  --pickaxe-regex
                --  --not flips following revisions into exclusions (^rev).
                Negate      : Boolean := False;
                Want_Parents : Boolean := False;   --  --parents
@@ -18077,7 +18096,6 @@ package body Version.CLI is
                Grep_Reflog   : Unbounded_String;
                Show_Source   : Boolean := False;    --  --source
                Merge_Range   : Boolean := False;    --  --merge
-               Since_Filter  : Boolean := False;    --  --since-as-filter
                Line_Prefix   : Unbounded_String;
                Output_File   : Unbounded_String;
                Separate_M    : Boolean := False;    --  -m / --diff-merges=m
@@ -18087,6 +18105,40 @@ package body Version.CLI is
                Standard_Explicit : Boolean := False;  --  a bare --notes seen
                Merges_First  : Boolean := False;    --  --diff-merges=first-parent
                Combined_M    : Boolean := False;    --  -c / --cc / --dd
+               Merges_Explicit : Boolean := False;  --  any --diff-merges form
+               --  Once an operand turned out to be a path (no `--` yet),
+               --  git refuses further options (verify_filename).
+               Paths_Started : Boolean := False;
+               Dense         : Boolean := False;    --  --cc (vs -c)
+               Show_Each     : Boolean := False;    --  show's per-object loop
+               Diff_Wanted   : Boolean := False;    --  -c/--cc: rev.diff on
+               Show_Specs    : Version.Rev_Args.String_Vectors.Vector;
+
+               --  Whether Text names an object (a revision, a range, an
+               --  exclusion, or `rev:path`) rather than a path.
+               function Names_Object (Text : String) return Boolean is
+               begin
+                  if Text'Length = 0 then
+                     return False;
+                  end if;
+                  if Text (Text'First) = '^'
+                    or else Ada.Strings.Fixed.Index (Text, "..") > 0
+                    or else (Text'Length > 2
+                             and then Text (Text'Last - 1 .. Text'Last) in "^!" | "^@")
+                  then
+                     return True;
+                  end if;
+                  declare
+                     Id : constant Version.Objects.Hex_Object_Id :=
+                       Version.Revisions.Resolve (Version.Repository.Open, Text);
+                     pragma Unreferenced (Id);
+                  begin
+                     return True;
+                  end;
+               exception
+                  when others =>
+                     return False;
+               end Names_Object;
 
                --  git's approxidate for the date bounds: a bare unix time,
                --  an ISO/RFC date, or a relative phrase.
@@ -18177,9 +18229,16 @@ package body Version.CLI is
                      if All_Digits (Arg (I)) then
                         Max_Count := Natural'Value (Arg (I));
                         Want_Count := False;
+                        No_Walk := False;
                      else
                         Usage_Error
-                          ("log -n requires a count: " & Arg (I), Usage);
+                          (Command & " -n requires a count: " & Arg (I), Usage);
+                        Bad := True;
+                        exit;
+                     end if;
+                  elsif Want_I then
+                     Want_I := False;
+                     if Apply_Diff_Option ("-I" & Arg (I), LOpts) = Diff_Flag_Bad then
                         Bad := True;
                         exit;
                      end if;
@@ -18196,12 +18255,22 @@ package body Version.CLI is
                   elsif Arg (I) = "--" then
                      Operands.Append (Arg (I));
                      Only_Paths := True;
+                  elsif Paths_Started and then Arg (I)'Length > 1
+                    and then Arg (I) (Arg (I)'First) = '-'
+                  then
+                     Ada.Text_IO.Put_Line
+                       (Ada.Text_IO.Standard_Error,
+                        "fatal: option '" & Arg (I)
+                        & "' must come before non-option arguments");
+                     Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                     Bad := True;
+                     exit;
                   elsif Arg (I) = "--abbrev-commit" then
                      Hdr.Abbrev_Commit := True;
                      Hdr.Full_Oneline := False;
                   elsif Arg (I) = "--no-abbrev-commit" then
                      Hdr.Abbrev_Commit := False;
-                     Hdr.Full_Oneline := True;
+                     Hdr.Full_Oneline := Oneline;
                   elsif Arg (I) = "--no-decorate" then
                      Decorate := Version.Log.No_Decorate;
                   elsif Arg (I) = "--decorate"
@@ -18364,11 +18433,13 @@ package body Version.CLI is
                   elsif Arg (I) = "--pretty=oneline"
                     or else Arg (I) = "--format=oneline"
                   then
-                     --  The one builtin format that is not the default
-                     --  layout: full hash, a space, the subject.
-                     Format := To_Unbounded_String ("%H %s");
-                     Has_Format := True;
-                     Terminator := True;
+                     --  git's oneline layout with the full hash (--oneline
+                     --  is this plus --abbrev-commit): the oneline path,
+                     --  which knows the layout's separators, marks and
+                     --  decorations.
+                     Oneline := True;
+                     Hdr.Full_Oneline := not Hdr.Abbrev_Commit;
+                     Pretty_Explicit := True;
                   elsif Arg (I) = "--pretty" or else Arg (I) = "--pretty=medium"
                     or else Arg (I) = "--format=medium"
                   then
@@ -18478,8 +18549,11 @@ package body Version.CLI is
                            exit;
                         end if;
                      end;
-                  elsif Arg (I) = "-p" or else Arg (I) = "--patch" then
+                  elsif Arg (I) = "-p" or else Arg (I) = "-u"
+                    or else Arg (I) = "--patch"
+                  then
                      Patch := True;
+                     Patch_Set := True;
                   elsif Arg (I)'Length > 2
                     and then Arg (I) (Arg (I)'First .. Arg (I)'First + 1) = "-U"
                     and then All_Digits
@@ -18488,11 +18562,13 @@ package body Version.CLI is
                      Context := Natural'Value
                        (Arg (I) (Arg (I)'First + 2 .. Arg (I)'Last));
                      Patch := True;
+                     Patch_Set := True;
                   elsif Starts (Arg (I), "--unified=")
                     and then All_Digits (After (Arg (I), "--unified="))
                   then
                      Context := Natural'Value (After (Arg (I), "--unified="));
                      Patch := True;
+                     Patch_Set := True;
                   elsif Arg (I) = "-n" then
                      Want_Count := True;
                   elsif Arg (I)'Length > Max_Prefix'Length
@@ -18507,6 +18583,7 @@ package body Version.CLI is
                        Natural'Value
                          (Arg (I) (Arg (I)'First + Max_Prefix'Length
                                    .. Arg (I)'Last));
+                     No_Walk := False;
                   elsif Arg (I)'Length >= 2
                     and then Arg (I) (Arg (I)'First) = '-'
                     and then All_Digits
@@ -18515,6 +18592,7 @@ package body Version.CLI is
                      Max_Count :=
                        Natural'Value
                          (Arg (I) (Arg (I)'First + 1 .. Arg (I)'Last));
+                     No_Walk := False;
                   elsif Arg (I) = "--all" then
                      --  Same ref seeding as rev-list: `log --oneline --all`
                      --  is the everyday spelling and simply failed.
@@ -18525,12 +18603,17 @@ package body Version.CLI is
                      Seed_Tags := True;
                   elsif Arg (I) = "-s" or else Arg (I) = "--no-patch" then
                      Patch := False;
+                     Patch_Set := True;
                   elsif Starts (Arg (I), "--author=") then
                      Author_Pat :=
                        To_Unbounded_String (After (Arg (I), "--author="));
                      Has_Author := True;
                   elsif Starts (Arg (I), "--grep=") then
                      Grep_List.Append (After (Arg (I), "--grep="));
+                  elsif Arg (I) = "--pickaxe-regex" then
+                     Pickaxe_Regex := True;
+                  elsif Arg (I) = "-I" and then I < Count then
+                     Want_I := True;   --  value is the next argument
                   elsif Arg (I) = "-S" then
                      Want_S := True;   --  value is the next argument
                   elsif Arg (I) = "-G" then
@@ -18574,7 +18657,6 @@ package body Version.CLI is
                                   elsif Starts (Arg (I), "--after=") then "--after="
                                   else "--since-as-filter=")));
                      Since_Set := True;
-                     Since_Filter := Starts (Arg (I), "--since-as-filter=");
                   elsif Starts (Arg (I), "--until=")
                     or else Starts (Arg (I), "--before=")
                   then
@@ -18765,39 +18847,64 @@ package body Version.CLI is
                   elsif Starts (Arg (I), "--output=") then
                      Output_File :=
                        To_Unbounded_String (After (Arg (I), "--output="));
+                     Hdr.Output_To_File := True;
                   elsif Arg (I) = "--quiet" then
-                     null;   --  rev-list's; log shows its diffs regardless
+                     --  show's diff output goes quiet (git's NO_OUTPUT);
+                     --  log keeps showing its diffs.
+                     if As_Show then
+                        Patch := False;
+                        Patch_Set := True;
+                     end if;
                   elsif Arg (I) = "-m" or else Arg (I) = "--diff-merges=m"
                     or else Arg (I) = "--diff-merges=separate"
                     or else Arg (I) = "--diff-merges=on"
                   then
                      Separate_M := True;
                      Merges_First := False;
+                     Combined_M := False;
+                     Merges_Explicit := True;
                   elsif Arg (I) = "--diff-merges=first-parent"
                     or else Arg (I) = "--diff-merges=1"
                   then
                      Separate_M := False;
                      Merges_First := True;
+                     Combined_M := False;
+                     Merges_Explicit := True;
                   elsif Arg (I) = "--no-diff-merges"
                     or else Arg (I) = "--diff-merges=off"
                     or else Arg (I) = "--diff-merges=none"
                   then
                      Separate_M := False;
                      Merges_First := False;
-                  elsif Arg (I) = "-c" or else Arg (I) = "--cc" or else Arg (I) = "--dd"
+                     Combined_M := False;
+                     Merges_Explicit := True;
+                  elsif Arg (I) = "--dd" then
+                     --  Dense combined for merges is what git documents, but
+                     --  what it does is diff every commit against its first
+                     --  parent, with the patch on.
+                     Separate_M := False;
+                     Merges_First := True;
+                     Combined_M := False;
+                     Merges_Explicit := True;
+                     Diff_Wanted := True;
+                  elsif Arg (I) = "-c" or else Arg (I) = "--cc"
                     or else Arg (I) = "--diff-merges=c"
                     or else Arg (I) = "--diff-merges=combined"
                     or else Arg (I) = "--diff-merges=cc"
                     or else Arg (I) = "--diff-merges=dense-combined"
                     or else Arg (I) = "--combined-all-paths"
                   then
+                     Dense := Arg (I) = "--cc"
+                       or else Arg (I) = "--diff-merges=cc"
+                       or else Arg (I) = "--diff-merges=dense-combined";
                      --  -c/--cc imply -p; the combined diff itself is not
                      --  rendered (a merge shows its header alone, as it does
                      --  for a clean merge in git).
                      Separate_M := False;
                      Merges_First := False;
                      Combined_M := True;
-                     Patch := True;
+                     Merges_Explicit := True;
+                     Diff_Wanted := True;
                   elsif Arg (I) = "--remerge-diff"
                     or else Arg (I) = "--diff-merges=remerge"
                     or else Arg (I) = "--diff-merges=r"
@@ -18807,7 +18914,8 @@ package body Version.CLI is
                      Separate_M := False;
                      Merges_First := False;
                      Combined_M := True;
-                     Patch := True;
+                     Merges_Explicit := True;
+                     Diff_Wanted := True;
                   elsif Starts (Arg (I), "--diff-merges=") then
                      Ada.Text_IO.Put_Line
                        (Ada.Text_IO.Standard_Error,
@@ -18842,7 +18950,8 @@ package body Version.CLI is
                            --  not be git's output: --color stays unknown.
                            if LOpts.Color then
                               Usage_Error
-                                ("unknown log option: " & Arg (I), Usage);
+                                ("unknown " & Command & " option: " & Arg (I),
+                                 Usage);
                               Bad := True;
                               exit;
                            end if;
@@ -18851,7 +18960,7 @@ package body Version.CLI is
                            exit;
                         when Not_Diff_Flag =>
                            Usage_Error
-                             ("unknown log option: " & Arg (I), Usage);
+                             ("unknown " & Command & " option: " & Arg (I), Usage);
                            Bad := True;
                            exit;
                      end case;
@@ -18867,11 +18976,38 @@ package body Version.CLI is
                      else
                         Operands.Append (Arg (I));
                      end if;
+                     if not Only_Paths and then not Names_Object (Arg (I)) then
+                        Paths_Started := True;
+                     end if;
                   end if;
                end loop;
 
+               if LOpts.Stat then
+                  Stat := True;   --  --compact-summary
+               end if;
+
+               --  show's tweak: the patch unless some output format was
+               --  chosen; a merge diffs as a dense combined diff, or
+               --  against its first parent under --first-parent, unless a
+               --  --diff-merges form said otherwise.
+               if (As_Show or else Diff_Wanted) and then not Patch_Set
+                 and then not (Stat or else Numstat or else Shortstat
+                               or else Name_Only or else Name_Status or else Raw
+                               or else LOpts.Summary or else LOpts.Compact_Summary)
+               then
+                  Patch := True;
+               end if;
+               if As_Show and then not Merges_Explicit then
+                  if Walk.First_Parent then
+                     Merges_First := True;
+                  else
+                     Combined_M := True;
+                     Dense := True;
+                  end if;
+               end if;
+
                if Want_Count and then not Bad then
-                  Usage_Error ("log -n requires a count", Usage);
+                  Usage_Error (Command & " -n requires a count", Usage);
                   Bad := True;
                end if;
 
@@ -18992,6 +19128,62 @@ package body Version.CLI is
                   end if;
                end if;
 
+               --  git opens --output's file while parsing the options, so it
+               --  exists (empty) even when the command then dies.
+               if not Bad and then Length (Output_File) > 0 then
+                  Version.Files.Write_Binary_File (To_String (Output_File), "");
+               end if;
+
+               --  An exclusion or a range turns the walk back on (git's
+               --  add_pending_object), as -n/--do-walk did while parsing.
+               if not Bad then
+                  for Op of Operands loop
+                     exit when Op = "--";
+                     if Op'Length > 0
+                       and then (Op (Op'First) = '^'
+                                 or else Ada.Strings.Fixed.Index (Op, "..") > 0
+                                 or else (Op'Length > 2
+                                          and then Op (Op'Last - 1 .. Op'Last) = "^!"))
+                     then
+                        No_Walk := False;
+                     end if;
+                  end loop;
+                  if No_Walk and then Want_Graph then
+                     Ada.Text_IO.Put_Line
+                       (Ada.Text_IO.Standard_Error,
+                        "fatal: options '--no-walk' and '--graph' cannot be "
+                        & "used together");
+                     Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                     Bad := True;
+                  end if;
+               end if;
+
+               --  show without a walk: every operand before `--` is an
+               --  object shown on its own (git's cmd_show loop), and the
+               --  paths after it limit the diffs.
+               if not Bad and then As_Show and then No_Walk then
+                  declare
+                     Rest : Version.Rev_Args.String_Vectors.Vector;
+                     Seen_Sep : Boolean := False;
+                  begin
+                     for Op of Operands loop
+                        if Seen_Sep then
+                           Rest.Append (Op);
+                        elsif Op = "--" then
+                           Seen_Sep := True;
+                           Rest.Append (Op);
+                        else
+                           Show_Specs.Append (Op);
+                        end if;
+                     end loop;
+                     if not Seen_Sep then
+                        Rest.Prepend ("--");
+                     end if;
+                     Operands := Rest;
+                     Show_Each := True;
+                  end;
+               end if;
+
                if not Bad then
                   declare
                      Repo : constant Version.Repository.Repository_Handle :=
@@ -19002,6 +19194,12 @@ package body Version.CLI is
 
                      Selection : Version.History.Rev_List_Options := Walk;
                      Commits   : Version.History.Commit_Id_Vectors.Vector;
+                     --  Any file-change rendering: the oneline layouts that
+                     --  carry one go through the full list renderer.
+                     Any_Diff  : constant Boolean :=
+                       Stat or else Patch or else Name_Only or else Name_Status
+                       or else Numstat or else Shortstat or else Raw
+                       or else LOpts.Summary;
                      Include   : Version.History.Commit_Id_Vectors.Vector :=
                        Parsed.Include;
                      Exclude   : Version.History.Commit_Id_Vectors.Vector :=
@@ -19066,13 +19264,26 @@ package body Version.CLI is
                         else
                            declare
                               At_Line_Start : Boolean := True;
+                              Bin : constant String := "Binary files differ" & ASCII.LF;
+                              I   : Natural := Text'First;
                            begin
-                              for C of Text loop
-                                 if At_Line_Start then
-                                    Append (Out_Text, Line_Prefix);
+                              while I <= Text'Last loop
+                                 --  git leaves the combined diff's binary
+                                 --  line unprefixed.
+                                 if At_Line_Start
+                                   and then I + Bin'Length - 1 <= Text'Last
+                                   and then Text (I .. I + Bin'Length - 1) = Bin
+                                 then
+                                    Append (Out_Text, Bin);
+                                    I := I + Bin'Length;
+                                 else
+                                    if At_Line_Start then
+                                       Append (Out_Text, Line_Prefix);
+                                    end if;
+                                    Append (Out_Text, Text (I));
+                                    At_Line_Start := Text (I) = ASCII.LF;
+                                    I := I + 1;
                                  end if;
-                                 Append (Out_Text, C);
-                                 At_Line_Start := C = ASCII.LF;
                               end loop;
                            end;
                         end if;
@@ -19083,6 +19294,347 @@ package body Version.CLI is
                            Version.Console.Put (To_String (Out_Text));
                         end if;
                      end Emit;
+
+                     --  One commit, rendered exactly as the log layouts do.
+                     function Commit_Text
+                       (Id : Version.Objects.Hex_Object_Id) return String
+                     is
+                        One : Version.History.Commit_Id_Vectors.Vector;
+                     begin
+                        One.Append (Id);
+                        return Version.Log.Log_List_Text
+                          (Repo, One,
+                           Show_Signature => Show_Sig,
+                           Stat           => Stat,
+                           Patch          => Patch,
+                           Name_Only      => Name_Only,
+                           Name_Status    => Name_Status,
+                           Numstat        => Numstat,
+                           Shortstat      => Shortstat,
+                           Raw            => Raw,
+                           Context        => Context,
+                           Oneline        => Oneline,
+                           First_Parent   => Walk.First_Parent or else Merges_First,
+                           Kind           => Pretty,
+                           Show_Notes     =>
+                             (if No_Notes then False
+                              elsif Want_Notes then True
+                              else not Pretty_Explicit),
+                           Paths          => Log_Paths,
+                           Rename_Score   => Rename_Score,
+                           Date_Mode      => To_String (Date_Mode),
+                           Stat_Width      => Stat_W,
+                           Stat_Name_Width => Stat_NW,
+                           Stat_Count      => Stat_C,
+                           Diff_Base       => LOpts,
+                           Header          => Hdr,
+                           Separate_Merges => Separate_M,
+                           Combined_Merges => Combined_M,
+                           Dense_Combined  => Dense,
+                           Format          =>
+                             (if Has_Format then To_String (Format) else ""),
+                           Terminate_Records => Terminator,
+                           Always_Show_Header => True);
+                     end Commit_Text;
+
+                     --  `show <rev>:<path>`: the object at that path, not the
+                     --  commit -- a blob's contents verbatim, or git's listing
+                     --  for a directory.
+                     procedure Emit_Rev_Path (Spec : String; Colon : Positive) is
+                        Rev_Part  : constant String :=
+                          Spec (Spec'First .. Colon - 1);
+                        Path_Part : constant String :=
+                          Spec (Colon + 1 .. Spec'Last);
+                        Tree_Id : constant Version.Objects.Hex_Object_Id :=
+                          Version.Revisions.Resolve_Tree (Repo, Rev_Part);
+                        Items : constant
+                          Version.Objects.Tree_Entry_Vectors.Vector :=
+                            Version.Objects.Flatten_Tree (Repo, Tree_Id);
+                        Found : Boolean := False;
+                        Listing : Unbounded_String;
+                     begin
+                        for E of Items loop
+                           if To_String (E.Path) = Path_Part then
+                              Emit
+                                (Version.Objects.Content
+                                   (Version.Objects.Read_Object (Repo, E.Id)));
+                              return;
+                           end if;
+                        end loop;
+
+                        --  A directory: git prints `tree <spec>` then the
+                        --  entries directly under it.
+                        declare
+                           Prefix : constant String := Path_Part & "/";
+                           Seen   : Version.Trailers.String_Vectors.Vector;
+                        begin
+                           for E of Items loop
+                              declare
+                                 P : constant String := To_String (E.Path);
+                              begin
+                                 if P'Length > Prefix'Length
+                                   and then P (P'First .. P'First + Prefix'Length - 1)
+                                            = Prefix
+                                 then
+                                    declare
+                                       Rest : constant String :=
+                                         P (P'First + Prefix'Length .. P'Last);
+                                       Slash : constant Natural :=
+                                         Ada.Strings.Fixed.Index (Rest, "/");
+                                       Name : constant String :=
+                                         (if Slash = 0 then Rest
+                                          else Rest (Rest'First .. Slash - 1) & "/");
+                                       Dup : Boolean := False;
+                                    begin
+                                       for X of Seen loop
+                                          if X = Name then
+                                             Dup := True;
+                                          end if;
+                                       end loop;
+                                       if not Dup then
+                                          Seen.Append (Name);
+                                          Append (Listing, Name & ASCII.LF);
+                                       end if;
+                                       Found := True;
+                                    end;
+                                 end if;
+                              end;
+                           end loop;
+                        end;
+                        if Found then
+                           Emit ("tree " & Spec & ASCII.LF & ASCII.LF & To_String (Listing));
+                        else
+                           --  git dies (128) on a path absent from the tree.
+                           Error_Line
+                             ("fatal: path '" & Path_Part & "' does not exist in '"
+                              & Rev_Part & "'");
+                           Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                        end if;
+                     end Emit_Rev_Path;
+
+                     --  git's cmd_show loop: a blob verbatim; a tag as its
+                     --  block and then whatever it points at; a tree as its
+                     --  listing; a commit through the log layouts -- each
+                     --  after a newline when something was shown before (a
+                     --  blob neither gets one nor counts).  The walk's
+                     --  filters (--grep, --no-merges, dates, --skip) still
+                     --  apply to the commits, and one shown twice is shown
+                     --  once.
+                     procedure Show_Objects
+                       (Repo : Version.Repository.Repository_Handle)
+                     is
+                        Shown : Boolean := False;
+                        --  git's use_terminator: oneline and tformat records
+                        --  need no separating newline.
+                        Terminated : constant Boolean :=
+                          Oneline or else (Has_Format and then Terminator);
+                        Specs   : Version.Rev_Args.String_Vectors.Vector;
+                        Skipped : Natural := 0;
+                        Done    : Version.Trailers.String_Vectors.Vector;
+
+                        function Passes
+                          (Id : Version.Objects.Hex_Object_Id) return Boolean
+                        is
+                           One : Version.History.Commit_Id_Vectors.Vector;
+                           Obj : constant Version.Objects.Git_Object :=
+                             Version.Objects.Read_Object (Repo, Id);
+                           NP  : constant Natural :=
+                             Natural (Version.Objects.Commit_Parent_Ids (Obj).Length);
+                           T   : constant Long_Long_Integer :=
+                             Version.Objects.Commit_Committer_Time (Obj);
+                        begin
+                           if (Walk.No_Merges and then NP > 1)
+                             or else NP < Walk.Min_Parents
+                             or else (Walk.Max_Parents /= Version.History.No_Parent_Limit
+                                      and then NP > Walk.Max_Parents)
+                             or else (Since_Set and then T < Since_Time)
+                             or else (Until_Set and then T > Until_Time)
+                           then
+                              return False;
+                           end if;
+                           --  A merge under -c/--cc is never pickaxe-filtered
+                           --  (git's combined path scan keeps it).
+                           if Has_Author or else Has_Committer
+                             or else not Grep_List.Is_Empty
+                             or else (Has_Pickaxe
+                                      and then not (Combined_M and then NP > 1))
+                           then
+                              One.Append (Id);
+                              return not Filter_Commits
+                                (Repo, One,
+                                 Author_Pattern =>
+                                   (if Has_Author then To_String (Author_Pat) else ""),
+                                 Grep_Pattern => "",
+                                 Committer_Pattern =>
+                                   (if Has_Committer then To_String (Committer_Pat)
+                                    else ""),
+                                 Grep_Patterns => Grep_List,
+                                 Ignore_Case   => Ignore_Case,
+                                 Invert_Grep   => Invert_Grep,
+                                 All_Match     => All_Match,
+                                 Pickaxe_S     => To_String (Pickaxe_S),
+                                 Pickaxe_G     => To_String (Pickaxe_G),
+                                 Pattern_Kind  => Grep_Kind).Is_Empty;
+                           end if;
+                           return True;
+                        end Passes;
+                     begin
+                        --  A reflog walk over no walk shows nothing.
+                        if Reflog_Walk then
+                           return;
+                        end if;
+
+                        --  The operands, then the refs --all & co. named (in
+                        --  ref order, HEAD last for --all); an operand that
+                        --  is no object but exists on disk limits the diffs.
+                        for Spec of Show_Specs loop
+                           if Spec'Length > 2
+                             and then Spec (Spec'Last - 1 .. Spec'Last) = "^@"
+                           then
+                              --  r^@: every parent of r, each on its own.
+                              for P of Version.Objects.Commit_Parent_Ids
+                                (Version.Objects.Read_Object
+                                   (Repo,
+                                    Version.Revisions.Resolve_Commit
+                                      (Repo, Spec (Spec'First .. Spec'Last - 2))))
+                              loop
+                                 Specs.Append (Version.Objects.To_String (P));
+                              end loop;
+                           elsif Names_Object (Spec) then
+                              Specs.Append (Spec);
+                           elsif Ada.Directories.Exists (Spec) then
+                              if not Full_Diff then
+                                 Version.Pathspec.Append_Parse
+                                   (Log_Paths, Spec, Repo_Prefix);
+                              end if;
+                           elsif Ada.Strings.Fixed.Index (Spec, ":") > Spec'First
+                             and then Names_Object
+                                        (Spec (Spec'First
+                                               .. Ada.Strings.Fixed.Index (Spec, ":") - 1))
+                           then
+                              declare
+                                 Colon : constant Positive :=
+                                   Ada.Strings.Fixed.Index (Spec, ":");
+                              begin
+                                 raise Ada.IO_Exceptions.Data_Error with
+                                   "path '" & Spec (Colon + 1 .. Spec'Last)
+                                   & "' does not exist in '"
+                                   & Spec (Spec'First .. Colon - 1) & "'";
+                              end;
+                           else
+                              raise Ada.IO_Exceptions.Data_Error with
+                                "ambiguous argument '" & Spec
+                                & "': unknown revision or path not in the "
+                                & "working tree.";
+                           end if;
+                        end loop;
+                        for Name of Tip_Names loop
+                           if Name'Length > 0 then
+                              Specs.Append (Name);
+                           end if;
+                        end loop;
+                        if Seed_All then
+                           Specs.Append ("HEAD");
+                        end if;
+                        if Specs.Is_Empty and then not Ref_Seeded then
+                           Specs.Append ("HEAD");
+                        end if;
+
+                        if Want_Follow and then Natural (Log_Paths.Length) /= 1 then
+                           raise Ada.IO_Exceptions.Use_Error with
+                             "--follow requires exactly one pathspec";
+                        end if;
+
+                        for Spec of Specs loop
+                           declare
+                              Id : Version.Objects.Hex_Object_Id;
+                           begin
+                              begin
+                                 Id := Version.Revisions.Resolve (Repo, Spec);
+                              exception
+                                 when Ada.IO_Exceptions.Data_Error
+                                    | Constraint_Error =>
+                                    raise Ada.IO_Exceptions.Data_Error with
+                                      "ambiguous argument '" & Spec
+                                      & "': unknown revision or path not in "
+                                      & "the working tree.";
+                              end;
+                              loop
+                                 declare
+                                    Obj : constant Version.Objects.Git_Object :=
+                                      Version.Objects.Read_Object (Repo, Id);
+                                    Hex : constant String :=
+                                      Version.Objects.To_String (Id);
+                                    Seen : Boolean := False;
+                                 begin
+                                    case Version.Objects.Kind (Obj) is
+                                       when Version.Objects.Tag_Object =>
+                                          if Shown then
+                                             Emit ([ASCII.LF]);
+                                          end if;
+                                          --  A custom format shows the tagger
+                                          --  without a date, like short.
+                                          Emit
+                                            (Version.Show.Tag_Text
+                                               (Repo, Id,
+                                                (if Has_Format
+                                                 then Version.Log.Pretty_Short
+                                                 else Pretty),
+                                                Oneline));
+                                          Shown := True;
+                                          Id := Version.Objects.Tag_Target_Id (Obj);
+                                       when Version.Objects.Tree_Object =>
+                                          if Shown then
+                                             Emit ([ASCII.LF]);
+                                          end if;
+                                          Emit
+                                            (Version.Show.Tree_Listing
+                                               (Repo, Spec, Id));
+                                          Shown := True;
+                                          exit;
+                                       when Version.Objects.Commit_Object =>
+                                          for D of Done loop
+                                             if D = Hex then
+                                                Seen := True;
+                                             end if;
+                                          end loop;
+                                          if not Seen and then Passes (Id) then
+                                             Done.Append (Hex);
+                                             if Skipped < Walk.Skip then
+                                                Skipped := Skipped + 1;
+                                             else
+                                                if Shown and then not Terminated then
+                                                   Emit
+                                                     ([1 => (if Hdr.Nul_Separated
+                                                             then ASCII.NUL
+                                                             else ASCII.LF)]);
+                                                end if;
+                                                Hdr.Annotations.Clear;
+                                                Hdr.Annotations.Append
+                                                  (Version.Log.Annotation'
+                                                     (Mark =>
+                                                        (if Left_Right then '>'
+                                                         elsif Cherry_Mark then '+'
+                                                         else ' '),
+                                                      Source =>
+                                                        (if Show_Source
+                                                         then To_Unbounded_String (Spec)
+                                                         else Null_Unbounded_String),
+                                                      others => <>));
+                                                Emit (Commit_Text (Id));
+                                                Shown := True;
+                                             end if;
+                                          end if;
+                                          exit;
+                                       when others =>
+                                          Emit (Version.Objects.Content (Obj));
+                                          exit;
+                                    end case;
+                                 end;
+                              end loop;
+                           end;
+                        end loop;
+                     end Show_Objects;
                   begin
                      --  log.mailmap (default on) unless --[no-]use-mailmap said.
                      if not Mailmap_Explicit
@@ -19097,6 +19649,18 @@ package body Version.CLI is
                              not (V = "false" or else V = "0" or else V = "no"
                                   or else V = "off");
                         end;
+                     end if;
+
+                     --  The pickaxe reaches the combined diffs.
+                     if Has_Pickaxe then
+                        Hdr.Pickaxe :=
+                          (Active       => True,
+                           Pattern      =>
+                             (if Length (Pickaxe_G) > 0 then Pickaxe_G else Pickaxe_S),
+                           Regex        => Length (Pickaxe_G) > 0,
+                           Regex_String => Pickaxe_Regex,
+                           Kind         => Grep_Kind,
+                           Ignore_Case  => Ignore_Case);
                      end if;
 
                      --  The explicit operands come first, named as given:
@@ -19185,7 +19749,9 @@ package body Version.CLI is
                        Seed_All or else Seed_Heads or else Seed_Tags
                        or else Seed_Remotes or else not Globs.Is_Empty
                        or else Bisect_Refs;
-                     if Include.Is_Empty and then not Ref_Seeded then
+                     if Include.Is_Empty and then not Ref_Seeded
+                       and then not Show_Each
+                     then
                         Include.Append
                           (Version.Objects.To_Object_Id
                              (Version.Refs.Current_Commit_Id (Repo)));
@@ -19214,6 +19780,18 @@ package body Version.CLI is
                         Selection.Max_Count := 0;
                         Selection.Skip := 0;
                         Selection.Oldest_First := False;
+                     end if;
+
+                     if Show_Each then
+                        if Full_Diff then
+                           Log_Paths.Clear;
+                        end if;
+                        Hdr.Decorate := Decorate;
+                        Hdr.Parents := Want_Parents;
+                        Hdr.Children := Want_Children;
+                        Hdr.Notes_Explicit := Want_Notes;
+                        Show_Objects (Repo);
+                        goto Finished;
                      end if;
 
                      if No_Walk then
@@ -19451,7 +20029,8 @@ package body Version.CLI is
                              All_Match     => All_Match,
                              Pickaxe_S     => To_String (Pickaxe_S),
                              Pickaxe_G     => To_String (Pickaxe_G),
-                             Pattern_Kind  => Grep_Kind);
+                             Pattern_Kind  => Grep_Kind,
+                             Keep_Merges   => Combined_M or else Separate_M);
                      end if;
 
                      --  --since/--until bound the committer date.
@@ -19728,42 +20307,24 @@ package body Version.CLI is
                               Diff_Base       => LOpts,
                               Header          => Hdr,
                               Separate_Merges => Separate_M,
-                              Combined_Merges => Combined_M));
-                     elsif Has_Format then
+                              Combined_Merges => Combined_M,
+                              Dense_Combined  => Dense,
+                              Format          =>
+                                (if Has_Format then To_String (Format) else ""),
+                              Terminate_Records => Terminator,
+                              Always_Show_Header => As_Show));
+                     elsif Has_Format and then not Want_Graph
+                       and then not (Stat or else Patch or else Name_Only
+                                     or else Name_Status or else Numstat
+                                     or else Shortstat or else Raw
+                                     or else LOpts.Summary)
+                     then
                         Emit
                           (Version.Log.Log_Formatted_List_Text
                              (Repo, Commits, To_String (Format),
                               Terminate_Records => Terminator,
                               Date_Mode => To_String (Date_Mode),
                               Header => Hdr));
-                     elsif Oneline
-                       and then (Name_Only or else Name_Status or else Numstat
-                                 or else Shortstat or else Raw or else Stat
-                                 or else Patch)
-                     then
-                        --  git renders the file changes after each oneline
-                        --  header.
-                        Emit
-                          (Version.Log.Log_List_Text
-                             (Repo, Commits,
-                              Stat        => Stat,
-                              Patch       => Patch,
-                              Name_Only   => Name_Only,
-                              Name_Status => Name_Status,
-                              Numstat     => Numstat,
-                              Shortstat   => Shortstat,
-                              Raw         => Raw,
-                              Context     => Context,
-                              Oneline     => True,
-                              First_Parent => Walk.First_Parent or else Merges_First,
-                              Rename_Score => Rename_Score,
-                              Stat_Width      => Stat_W,
-                              Stat_Name_Width => Stat_NW,
-                              Stat_Count      => Stat_C,
-                              Diff_Base       => LOpts,
-                              Header          => Hdr,
-                              Separate_Merges => Separate_M,
-                              Combined_Merges => Combined_M));
                      elsif Oneline
                        and then (Left_Right or else Cherry_Mark
                                  or else Cherry_Pick or else Left_Only
@@ -19945,14 +20506,14 @@ package body Version.CLI is
                               end;
                            end if;
                         end;
-                     elsif Oneline and then Want_Graph then
+                     elsif Oneline and then Want_Graph and then not Any_Diff then
                         Emit
                           (Version.Log.Log_Graph_Oneline_List_Text
                              (Repo, Commits, With_Parents => Want_Parents,
                               With_Children => Want_Children,
                               Decorate => Decorate, Header => Hdr,
                               Known => Graph_Known));
-                     elsif Oneline then
+                     elsif Oneline and then not Any_Diff then
                         Emit
                           (Version.Log.Log_Oneline_List_Text
                              (Repo, Commits, With_Parents => Want_Parents,
@@ -19972,6 +20533,7 @@ package body Version.CLI is
                               Shortstat      => Shortstat,
                               Raw            => Raw,
                               Context        => Context,
+                              Oneline        => Oneline,
                               First_Parent   => Walk.First_Parent or else Merges_First,
                               Kind           => Pretty,
                               Show_Notes     =>
@@ -19988,6 +20550,11 @@ package body Version.CLI is
                               Header          => Hdr,
                               Separate_Merges => Separate_M,
                               Combined_Merges => Combined_M,
+                              Dense_Combined  => Dense,
+                              Format          =>
+                                (if Has_Format then To_String (Format) else ""),
+                              Terminate_Records => Terminator,
+                              Always_Show_Header => As_Show,
                               Known           => Graph_Known));
                      else
                         Emit
@@ -20002,6 +20569,7 @@ package body Version.CLI is
                               Shortstat      => Shortstat,
                               Raw            => Raw,
                               Context        => Context,
+                              Oneline        => Oneline,
                               First_Parent   => Walk.First_Parent or else Merges_First,
                               Kind           => Pretty,
                               Show_Notes     =>
@@ -20017,8 +20585,14 @@ package body Version.CLI is
                               Diff_Base       => LOpts,
                               Header          => Hdr,
                               Separate_Merges => Separate_M,
-                              Combined_Merges => Combined_M));
+                              Combined_Merges => Combined_M,
+                              Dense_Combined  => Dense,
+                              Format          =>
+                                (if Has_Format then To_String (Format) else ""),
+                              Terminate_Records => Terminator,
+                              Always_Show_Header => As_Show));
                      end if;
+                     <<Finished>>
                   end;
                end if;
             exception
@@ -20037,407 +20611,6 @@ package body Version.CLI is
                         "'git <command> [<revision>...] -- [<file>...]'");
                   end if;
                   Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
-            end;
-
-         elsif Command = "show" then
-            declare
-               Usage    : constant String :=
-                 "version show [--stat] [-s] [--oneline] [--format=<fmt>]"
-                 & " [REV]";
-               Stat     : Boolean := False;
-               Stat_W   : Natural := 0;
-               Stat_NW  : Natural := 0;
-               Stat_C   : Natural := 0;
-               SOpts    : Version.Diff.Diff_Options;   --  git's diff switches
-               No_Patch : Boolean := False;
-               Oneline  : Boolean := False;
-               Name_Only : Boolean := False;
-               Name_Status : Boolean := False;
-               Numstat  : Boolean := False;
-               Shortstat : Boolean := False;
-               Summary  : Boolean := False;
-               Raw_Flag : Boolean := False;
-               First_Parent : Boolean := False;
-               Combined_M : Boolean := False;   --  -m
-               Fmt      : Unbounded_String;
-               Fmt_Oneline : Boolean := False;
-               Pretty   : Version.Log.Pretty_Kind :=
-                 Version.Log.Pretty_Medium;
-               Pretty_Explicit : Boolean := False;
-               Want_Notes : Boolean := False;
-               No_Notes   : Boolean := False;
-               Date_Mode : Unbounded_String;
-               Revs     : Version.Trailers.String_Vectors.Vector;
-               Bad      : Boolean := False;
-               --  git's header switches shared with log.
-               Hdr       : Version.Log.Header_Options;
-               Standard_Explicit : Boolean := False;
-               Mailmap_Explicit  : Boolean := False;
-            begin
-               for I in 2 .. Count loop
-                  if Arg (I) = "--stat" then
-                     Stat := True;
-                  elsif Has_Prefix (Arg (I), "--stat=") then
-                     Stat := True;
-                     declare
-                        V : constant String :=
-                          Arg (I) (Arg (I)'First + 7 .. Arg (I)'Last);
-                        C1 : constant Natural :=
-                          Ada.Strings.Fixed.Index (V, ",");
-                     begin
-                        if C1 = 0 then
-                           Stat_W := Natural'Value (V);
-                        else
-                           Stat_W := Natural'Value (V (V'First .. C1 - 1));
-                           declare
-                              R  : constant String := V (C1 + 1 .. V'Last);
-                              C2 : constant Natural :=
-                                Ada.Strings.Fixed.Index (R, ",");
-                           begin
-                              if C2 = 0 then
-                                 Stat_NW := Natural'Value (R);
-                              else
-                                 Stat_NW :=
-                                   Natural'Value (R (R'First .. C2 - 1));
-                                 Stat_C := Natural'Value (R (C2 + 1 .. R'Last));
-                              end if;
-                           end;
-                        end if;
-                     exception
-                        when others =>
-                           Bad := True;
-                     end;
-                  elsif Has_Prefix (Arg (I), "--stat-width=") then
-                     Stat := True;
-                     begin
-                        Stat_W := Natural'Value
-                          (Arg (I) (Arg (I)'First + 13 .. Arg (I)'Last));
-                     exception
-                        when others => Bad := True;
-                     end;
-                  elsif Has_Prefix (Arg (I), "--stat-name-width=") then
-                     Stat := True;
-                     begin
-                        Stat_NW := Natural'Value
-                          (Arg (I) (Arg (I)'First + 18 .. Arg (I)'Last));
-                     exception
-                        when others => Bad := True;
-                     end;
-                  elsif Has_Prefix (Arg (I), "--stat-count=") then
-                     Stat := True;
-                     begin
-                        Stat_C := Natural'Value
-                          (Arg (I) (Arg (I)'First + 13 .. Arg (I)'Last));
-                     exception
-                        when others => Bad := True;
-                     end;
-                  elsif Arg (I) = "--name-only" then
-                     Name_Only := True;
-                  elsif Arg (I) = "--name-status" then
-                     Name_Status := True;
-                  elsif Arg (I) = "--numstat" then
-                     Numstat := True;
-                  elsif Arg (I) = "--shortstat" then
-                     Shortstat := True;
-                  elsif Arg (I) = "--summary" then
-                     Summary := True;
-                  elsif Arg (I) = "--raw" then
-                     Raw_Flag := True;
-                  elsif Arg (I) = "--first-parent" then
-                     First_Parent := True;
-                  elsif Arg (I) = "-m" then
-                     Combined_M := True;
-                  elsif Arg (I) = "-s" or else Arg (I) = "--no-patch" then
-                     No_Patch := True;
-                  elsif Arg (I) = "--oneline" then
-                     Oneline := True;
-                  elsif Arg (I) = "--pretty=oneline"
-                    or else Arg (I) = "--format=oneline"
-                  then
-                     Fmt := To_Unbounded_String ("%H %s");
-                     Fmt_Oneline := True;
-                  elsif Arg (I) = "--pretty" or else Arg (I) = "--pretty=medium"
-                    or else Arg (I) = "--format=medium"
-                  then
-                     Pretty_Explicit := True;
-                  elsif Arg (I) = "--pretty=short"
-                    or else Arg (I) = "--format=short"
-                  then
-                     Pretty := Version.Log.Pretty_Short;
-                     Pretty_Explicit := True;
-                  elsif Arg (I) = "--pretty=full"
-                    or else Arg (I) = "--format=full"
-                  then
-                     Pretty := Version.Log.Pretty_Full;
-                     Pretty_Explicit := True;
-                  elsif Arg (I) = "--pretty=fuller"
-                    or else Arg (I) = "--format=fuller"
-                  then
-                     Pretty := Version.Log.Pretty_Fuller;
-                     Pretty_Explicit := True;
-                  elsif Arg (I) = "--pretty=raw"
-                    or else Arg (I) = "--format=raw"
-                  then
-                     Pretty := Version.Log.Pretty_Raw;
-                     Pretty_Explicit := True;
-                  elsif Arg (I) = "--notes" or else Arg (I) = "--show-notes"
-                    or else Arg (I) = "--standard-notes"
-                  then
-                     Want_Notes := True;
-                     No_Notes := False;
-                     Hdr.Standard_Notes := True;
-                     Standard_Explicit := True;
-                  elsif Arg (I) = "--no-notes" then
-                     No_Notes := True;
-                     Want_Notes := False;
-                     Hdr.Notes_Refs.Clear;
-                     Hdr.Standard_Notes := False;
-                     Standard_Explicit := False;
-                  elsif Arg (I) = "--no-standard-notes" then
-                     Hdr.Standard_Notes := False;
-                     Standard_Explicit := True;
-                  elsif Has_Prefix (Arg (I), "--notes=")
-                    or else Has_Prefix (Arg (I), "--show-notes=")
-                  then
-                     Hdr.Notes_Refs.Append
-                       (Arg (I) (Ada.Strings.Fixed.Index (Arg (I), "=") + 1
-                                 .. Arg (I)'Last));
-                     Want_Notes := True;
-                     No_Notes := False;
-                     if not Standard_Explicit then
-                        Hdr.Standard_Notes := False;
-                     end if;
-                  elsif Arg (I) = "--abbrev-commit" then
-                     Hdr.Abbrev_Commit := True;
-                  elsif Arg (I) = "--no-abbrev-commit" then
-                     Hdr.Abbrev_Commit := False;
-                  elsif Has_Prefix (Arg (I), "--abbrev=")
-                    and then (for all C of Arg (I) (Arg (I)'First + 9 .. Arg (I)'Last)
-                              => C in '0' .. '9')
-                    and then Arg (I)'Length > 9
-                  then
-                     Hdr.Abbrev_Len :=
-                       Natural'Max
-                         (Natural'Value (Arg (I) (Arg (I)'First + 9 .. Arg (I)'Last)),
-                          4);
-                     SOpts.Abbrev := Hdr.Abbrev_Len;
-                     SOpts.Index_Abbrev := Hdr.Abbrev_Len;
-                  elsif Arg (I) = "--use-mailmap" or else Arg (I) = "--mailmap" then
-                     Hdr.Mailmap := True;
-                     Mailmap_Explicit := True;
-                  elsif Arg (I) = "--no-use-mailmap" or else Arg (I) = "--no-mailmap"
-                  then
-                     Hdr.Mailmap := False;
-                     Mailmap_Explicit := True;
-                  elsif Arg (I) = "--expand-tabs" then
-                     Hdr.Expand_Tabs := 8;
-                  elsif Arg (I) = "--no-expand-tabs" then
-                     Hdr.Expand_Tabs := 0;
-                  elsif Has_Prefix (Arg (I), "--expand-tabs=")
-                    and then Arg (I)'Length > 14
-                    and then (for all C of Arg (I) (Arg (I)'First + 14 .. Arg (I)'Last)
-                              => C in '0' .. '9')
-                  then
-                     Hdr.Expand_Tabs :=
-                       Natural'Value (Arg (I) (Arg (I)'First + 14 .. Arg (I)'Last));
-                  elsif Arg (I) = "--log-size" then
-                     Hdr.Log_Size := True;
-                  elsif Arg (I) = "--relative-date" then
-                     Date_Mode := To_Unbounded_String ("relative");
-                  elsif Has_Prefix (Arg (I), "--encoding=") then
-                     null;
-                  elsif Arg (I)'Length > 9
-                    and then Arg (I) (Arg (I)'First .. Arg (I)'First + 8)
-                             = "--format="
-                  then
-                     Fmt := To_Unbounded_String
-                       (Arg (I) (Arg (I)'First + 9 .. Arg (I)'Last));
-                  elsif Has_Prefix (Arg (I), "--date=") then
-                     Date_Mode := To_Unbounded_String
-                       (Arg (I) (Arg (I)'First + 7 .. Arg (I)'Last));
-                  elsif Arg (I)'Length > 0
-                    and then Arg (I) (Arg (I)'First) = '-'
-                  then
-                     case Apply_Diff_Option (Arg (I), SOpts) is
-                        when Diff_Flag_OK =>
-                           --  The commit headers have no colouring yet, so
-                           --  a painted patch under a plain header would
-                           --  not be git's output: --color stays unknown.
-                           if SOpts.Color then
-                              Usage_Error
-                                ("unknown show option: " & Arg (I), Usage);
-                              Bad := True;
-                              exit;
-                           end if;
-                        when Diff_Flag_Bad =>
-                           Bad := True;
-                           exit;
-                        when Not_Diff_Flag =>
-                           Usage_Error
-                             ("unknown show option: " & Arg (I), Usage);
-                           Bad := True;
-                           exit;
-                     end case;
-                  else
-                     Revs.Append (Arg (I));   --  git shows each in turn
-                  end if;
-               end loop;
-
-               if Revs.Is_Empty then
-                  Revs.Append ("HEAD");
-               end if;
-
-               if not Bad then
-                  declare
-                     Repo : constant Version.Repository.Repository_Handle :=
-                       Version.Repository.Open;
-                     Log_Mailmap : constant String :=
-                       (if not Mailmap_Explicit
-                          and then Version.Config.Has_Key (Repo, "log.mailmap")
-                        then Ada.Characters.Handling.To_Lower
-                               (Version.Config.Get_Value (Repo, "log.mailmap"))
-                        else "");
-                     Opts : constant Version.Diff.Diff_Options :=
-                       (SOpts with delta
-                        Stat        => Stat,
-                        Name_Only   => Name_Only,
-                        Name_Status => Name_Status,
-                        Numstat     => Numstat,
-                        Shortstat   => Shortstat,
-                        Summary     => Summary,
-                        Raw         => Raw_Flag,
-                        Stat_Width      => Stat_W,
-                        Stat_Name_Width => Stat_NW,
-                        Stat_Count      => Stat_C);
-                  begin
-                     if Log_Mailmap = "false" or else Log_Mailmap = "0"
-                       or else Log_Mailmap = "no" or else Log_Mailmap = "off"
-                     then
-                        Hdr.Mailmap := False;
-                     end if;
-                     for R_Idx in Revs.First_Index .. Revs.Last_Index loop
-                        declare
-                           Spec  : constant String := Revs.Element (R_Idx);
-                           Colon : constant Natural :=
-                             Ada.Strings.Fixed.Index (Spec, ":");
-                        begin
-                           --  git separates consecutive objects with a blank line.
-                           if R_Idx > Revs.First_Index then
-                              Version.Console.Put ((1 => ASCII.LF));
-                           end if;
-                           --  `show <rev>:<path>`: the object at that path, not the
-                           --  commit -- a blob's contents verbatim, or git's listing
-                           --  for a tree.
-                           if Colon > Spec'First then
-                              declare
-                                 Rev_Part  : constant String :=
-                                   Spec (Spec'First .. Colon - 1);
-                                 Path_Part : constant String :=
-                                   Spec (Colon + 1 .. Spec'Last);
-                                 Tree_Id : constant Version.Objects.Hex_Object_Id :=
-                                   Version.Revisions.Resolve_Tree (Repo, Rev_Part);
-                                 Items : constant
-                                   Version.Objects.Tree_Entry_Vectors.Vector :=
-                                     Version.Objects.Flatten_Tree (Repo, Tree_Id);
-                                 Found : Boolean := False;
-                                 Listing : Unbounded_String;
-                              begin
-                                 for E of Items loop
-                                    if To_String (E.Path) = Path_Part then
-                                       Version.Console.Put
-                                         (Version.Objects.Content
-                                            (Version.Objects.Read_Object
-                                               (Repo, E.Id)));
-                                       Found := True;
-                                       exit;
-                                    end if;
-                                 end loop;
-
-                                 if not Found then
-                                    --  A directory: git prints `tree <spec>` then the
-                                    --  entries directly under it.
-                                    declare
-                                       Prefix : constant String := Path_Part & "/";
-                                       Seen   : Version.Trailers.String_Vectors.Vector;
-                                    begin
-                                       for E of Items loop
-                                          declare
-                                             P : constant String := To_String (E.Path);
-                                          begin
-                                             if P'Length > Prefix'Length
-                                               and then P (P'First .. P'First
-                                                           + Prefix'Length - 1)
-                                                        = Prefix
-                                             then
-                                                declare
-                                                   Rest : constant String :=
-                                                     P (P'First + Prefix'Length
-                                                        .. P'Last);
-                                                   Slash : constant Natural :=
-                                                     Ada.Strings.Fixed.Index
-                                                       (Rest, "/");
-                                                   Name : constant String :=
-                                                     (if Slash = 0 then Rest
-                                                      else Rest (Rest'First
-                                                                 .. Slash - 1) & "/");
-                                                   Dup : Boolean := False;
-                                                begin
-                                                   for X of Seen loop
-                                                      if X = Name then
-                                                         Dup := True;
-                                                      end if;
-                                                   end loop;
-                                                   if not Dup then
-                                                      Seen.Append (Name);
-                                                      Append (Listing,
-                                                              Name & ASCII.LF);
-                                                   end if;
-                                                   Found := True;
-                                                end;
-                                             end if;
-                                          end;
-                                       end loop;
-
-                                       if Found then
-                                          Version.Console.Put
-                                            ("tree " & Spec & ASCII.LF & ASCII.LF
-                                             & To_String (Listing));
-                                       else
-                                          --  git dies (128) on a path absent
-                                          --  from the named tree.
-                                          Error_Line
-                                            ("fatal: path '" & Path_Part
-                                             & "' does not exist in '"
-                                             & Rev_Part & "'");
-                                          Ada.Command_Line.Set_Exit_Status
-                                            (Fatal_Exit);
-                                       end if;
-                                    end;
-                                 end if;
-                              end;
-                           else
-                              Version.Console.Put
-                                (Version.Show.Show_Object
-                                   (Repo, Spec,
-                                    Opts,
-                                    No_Patch => No_Patch,
-                                    Oneline  => Oneline,
-                                    Format   => To_String (Fmt),
-                                    Format_Oneline => Fmt_Oneline,
-                                    Date_Mode => To_String (Date_Mode),
-                                    First_Parent => First_Parent,
-                                    Combined_M => Combined_M,
-                                    Kind => Pretty,
-                                    Show_Notes =>
-                                      (if No_Notes then False
-                                       elsif Want_Notes then True
-                                       else not Pretty_Explicit),
-                                    Layout => Hdr));
-                           end if;
-                        end;
-                     end loop;
-                  end;
-               end if;
             end;
 
          elsif Command = "archive" then
@@ -41703,6 +41876,10 @@ package body Version.CLI is
                Want_Patch : Boolean := False;
                Want_Stat  : Boolean := False;
                Want_Compact : Boolean := False;
+               --  -c/--cc: a merge's combined diff (--cc dense, and a patch).
+               Combined   : Boolean := False;
+               Dense      : Boolean := False;
+               No_Commit_Id : Boolean := False;
 
                --  Everything after `--` is a pathspec; before it, a bare
                --  operand is a tree/commit. --diff-filter and --abbrev tune
@@ -41778,11 +41955,18 @@ package body Version.CLI is
                      --  Show changed tree objects too; git's -t implies -r.
                      Want_Trees := True;
                      Recursive := True;
-                  elsif Arg (I) = "--no-commit-id"
-                    or else Arg (I) = "--full-index"
+                  elsif Arg (I) = "--no-commit-id" then
+                     No_Commit_Id := True;
+                  elsif Arg (I) = "--full-index"
                     or else Arg (I) = "--no-renames"
                   then
                      null;
+                  elsif Arg (I) = "-c" then
+                     Combined := True;
+                  elsif Arg (I) = "--cc" then
+                     Combined := True;
+                     Dense := True;
+                     Want_Patch := True;
                   elsif Arg (I)'Length > 0 and then Arg (I) (Arg (I)'First) = '-'
                   then
                      Usage_Error ("unknown diff-tree option: " & Arg (I),
@@ -41874,8 +42058,38 @@ package body Version.CLI is
                         --  git prints the commit line only when it emits a
                         --  diff: for a root commit without --root, nothing, and
                         --  for a merge commit nothing by default (it needs
-                        --  -m/-c/--cc, which version does not implement).
-                        if Natural (Parents.Length) = 1 then
+                        --  -c/--cc for the combined diff, -m for one per parent).
+                        if Natural (Parents.Length) > 1 and then Combined then
+                           declare
+                              Opts : constant Version.Diff.Diff_Options :=
+                                (Abbrev => (if Abbrev = 0 then 40 else Abbrev),
+                                 Detect_Renames =>
+                                   (if Want_Renames then Version.Diff.Renames_On
+                                    else Version.Diff.Renames_Off),
+                                 others => <>);
+                              Kind : constant Version.Combine_Diff.Listing_Kind :=
+                                (case Format is
+                                    when Render_Name_Only =>
+                                      Version.Combine_Diff.Name_Only_Listing,
+                                    when Render_Name_Status =>
+                                      Version.Combine_Diff.Name_Status_Listing,
+                                    when others => Version.Combine_Diff.Raw_Listing);
+                           begin
+                              if not No_Commit_Id then
+                                 Success_Line (To_String (C));
+                              end if;
+                              if Want_Patch then
+                                 Version.Console.Put
+                                   (Version.Combine_Diff.Combined_Patch
+                                      (Repo, C, Parents, Specs (Repo), Opts,
+                                       Dense => Dense));
+                              elsif Format /= Render_Silent then
+                                 Version.Console.Put
+                                   (Version.Combine_Diff.Combined_Listing
+                                      (Repo, C, Parents, Specs (Repo), Opts, Kind));
+                              end if;
+                           end;
+                        elsif Natural (Parents.Length) = 1 then
                            declare
                               P_Obj : constant Version.Objects.Git_Object :=
                                 Version.Objects.Read_Object

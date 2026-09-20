@@ -176,7 +176,9 @@ version log --stdin | -g [<ref>] | --merge
   --decorate-refs[-exclude]=, --source, --left-right, --cherry-mark, --boundary, --parents,
   --children, --graph, --show-linear-break, --log-size, -z, --expand-tabs, --[no-]use-mailmap,
   --notes[=REF], --line-prefix=, --output=FILE, -p, --stat, -m, --diff-merges=, -c/--cc, ...
-version show [OPTIONS] [REV | REV:PATH]
+version show [OPTIONS] [<commit>|<tag>|<tree>|<blob>|REV:PATH ...] [--] [PATH...]
+  OPTIONS: log's whole surface with show's defaults (no walk, -p, merges as --cc);
+  -c, --cc, -m, --first-parent, --dd, --diff-merges=MODE
 version checkout [-q] [-f] [-m] [-t|--no-track] [--[no-]guess] [<branch>|<commit>|-]
 version checkout [-q] [-f] -b|-B NEW-BRANCH [START-POINT]
 version checkout [-q] --orphan NEW-BRANCH [START-POINT]

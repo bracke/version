@@ -907,16 +907,20 @@ package body Version.CLI.Help is
          Line ("  --[no-]use-mailmap, --notes[=<ref>], --show-signature, --line-prefix=,");
          Line ("  --output=<file>.");
          Line ("Diffs: -p, --stat, --numstat, --summary, --name-only/-status, --raw,");
-         Line ("  -m, --diff-merges=<mode>, -c/--cc, --full-diff, and every diff switch");
+         Line ("  -m, --diff-merges=<mode>, -c/--cc (combined), --full-diff, and every diff switch");
          Line ("  (-w, -b, -W, --diff-algorithm=, --relative, -R, --check, -O, ...).");
       elsif Name = "show" then
          Line ("Usage:");
-         Line ("  version show [REV]");
+         Line ("  version show [<options>] [<object>...] [--] [PATH...]");
+         Line ("  version show [<options>] <commit>..<commit> | --do-walk | -<n>");
          Line;
-         Line ("Show a commit and its changes. Takes diff's switches (-w, -W,");
-         Line ("--diff-algorithm=, --relative, -R, --check, --submodule, ...) and");
-         Line ("log's header switches (--abbrev-commit, --abbrev=, --[no-]use-mailmap,");
-         Line ("--expand-tabs, --notes[=<ref>], --log-size, --date=<mode>).");
+         Line ("Show commits, tags, trees, blobs or REV:PATH objects, each in turn,");
+         Line ("as git does: a commit with its log header and diff, a tag with its");
+         Line ("block and then what it points at, a tree as a listing, a blob raw.");
+         Line ("Takes log's whole option surface (see `help log`) with show's");
+         Line ("defaults: no walk, the patch on, and a merge as a dense combined");
+         Line ("diff (--cc; -c for the full one, -m per parent, --first-parent,");
+         Line ("--dd, --diff-merges=<mode>), plus every diff switch.");
       elsif Name = "restore" then
          Line ("Usage:");
          Line ("  version restore [--] PATHSPEC...");

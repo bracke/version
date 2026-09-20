@@ -5719,6 +5719,203 @@ package body CLI_Integration_Tests is
       Run_Parity_Transcript (Root, Scenario, "log");
    end Log_Option_Surface_Matches_Git;
 
+   --  `show`: git's option surface as log's no-walk form -- merges as
+   --  dense combined diffs (-c/--cc, the ported combine-diff), -m and
+   --  --first-parent, the summary formats against the first parent, tags,
+   --  trees and blobs in turn, `rev:path`, ranges and -n turning the walk
+   --  back on, ref seeding, the walk filters, marks and decorations, the
+   --  pretty forms and dates, and the diff-family passthrough; plus
+   --  `log -c/--cc` and `diff-tree -c/--cc`.
+   procedure Show_Option_Surface_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Scenario : constant String :=
+          "git init -q; git config user.email a@b; git config user.name A" & LF
+        & "d() { export GIT_AUTHOR_DATE=""2024-01-0$1T03:04:05+0100"" "
+          & "GIT_COMMITTER_DATE=""2024-01-0$1T03:04:05+0100""; }" & LF
+        & "d 1; printf 'int main()\n{\n  a;\n  b;\n  c;\n  d;\n  e;\n  f;\n  g;\n}\nX\nvoid "
+          & "tail()\n{\n  t1;\n  t2;\n  t3;\n  t4;\n}\n' > f.c; printf 'k\n' > k; mkdir sub; "
+          & "printf 'q\n' > sub/q; printf 'bin\0x\n' > b.bin; git add .; git commit -qm base" & LF
+        & "d 2; git checkout -qb s1; sed -i 's/  b;/  B1;/; s/  t2;/  T2;/' f.c; echo s1 > k; "
+          & "printf 'bin\0y\n' > b.bin; git rm -q sub/q; git commit -qam s1" & LF
+        & "d 3; git checkout -q main; sed -i 's/  b;/  B2;/; s/  g;/  G;/' f.c; echo m > k; "
+          & "printf 'n\n' > n; chmod +x sub/q; git add n; git commit -qam m" & LF
+        & "d 4; git merge s1 >/dev/null 2>&1; sed -i 's/  B2;/  Bres;/' f.c; echo res > k; "
+          & "printf 'bin\0z\n' > b.bin; git add -A; git commit -qm merged" & LF
+        & "d 5; git tag -a v1 -m 'tag msg' HEAD~1; git tag light HEAD~2; git branch other HEAD~3" & LF
+        & "d 6; echo more >> n; git commit -qam c5" & LF
+        & "git update-ref refs/remotes/o/b HEAD~2" & LF
+        & "printf 'B <b@b> <a@b>\n' > .mailmap; git add .mailmap; git commit -qm mailmap" & LF
+        & "printf 'tab\tone\n\n\tbody\n' > m; git commit -q --allow-empty -F m" & LF
+        & "git notes add -m 'a note' HEAD~1" & LF
+        & "t 'plain' show" & LF
+        & "t 'merge' show HEAD~3" & LF
+        & "t 'merge -c' show -c HEAD~3" & LF
+        & "t 'merge --cc' show --cc HEAD~3" & LF
+        & "t 'merge -U1' show -U1 HEAD~3" & LF
+        & "t 'merge -U0' show -U0 HEAD~3" & LF
+        & "t 'merge --stat' show --stat HEAD~3" & LF
+        & "t 'merge -c --stat' show -c --stat HEAD~3" & LF
+        & "t 'merge --stat -p' show --stat -p HEAD~3" & LF
+        & "t 'merge --raw' show --raw HEAD~3" & LF
+        & "t 'merge --name-status' show --name-status HEAD~3" & LF
+        & "t 'merge --name-only' show --name-only HEAD~3" & LF
+        & "t 'merge --numstat' show --numstat HEAD~3" & LF
+        & "t 'merge --summary' show --summary HEAD~3" & LF
+        & "t 'merge -m' show -m HEAD~3" & LF
+        & "t 'merge -m --stat' show -m --stat HEAD~3" & LF
+        & "t 'merge --first-parent' show --first-parent HEAD~3" & LF
+        & "t 'merge --dd' show --dd HEAD~3" & LF
+        & "t 'merge --diff-merges=first-parent' show --diff-merges=first-parent HEAD~3" & LF
+        & "t 'merge --diff-merges=off' show --diff-merges=off HEAD~3" & LF
+        & "t 'merge --no-diff-merges' show --no-diff-merges HEAD~3" & LF
+        & "t 'merge --oneline' show --oneline HEAD~3" & LF
+        & "t 'merge --format=%s' show --format=%s HEAD~3" & LF
+        & "t 'merge --pretty=format:%s' show --pretty=format:%s HEAD~3" & LF
+        & "t 'merge -s' show -s HEAD~3" & LF
+        & "t 'merge --quiet' show --quiet HEAD~3" & LF
+        & "t 'merge --check' show --check HEAD~3" & LF
+        & "t 'merge -w' show -w HEAD~3" & LF
+        & "t 'merge --full-index' show --full-index HEAD~3" & LF
+        & "t 'merge --abbrev=12' show --abbrev=12 --raw HEAD~3" & LF
+        & "t 'merge -- k' show HEAD~3 -- k" & LF
+        & "t 'merge k' show HEAD~3 k" & LF
+        & "t 'merge --full-diff k' show --full-diff --stat HEAD~3 k" & LF
+        & "t 'merge -Sres' show -Sres HEAD~3" & LF
+        & "t 'merge --output' show --output=x.out HEAD~3" & LF
+        & "t 'merge -I' show -I x HEAD~3" & LF
+        & "t 'merge --line-prefix' show --line-prefix='| ' HEAD~3" & LF
+        & "t 'merge --patch-with-stat' show --patch-with-stat HEAD~3" & LF
+        & "t 'merge --patch-with-raw' show --patch-with-raw HEAD~3" & LF
+        & "t 'merge --compact-summary' show --compact-summary HEAD~3" & LF
+        & "t 'merge --no-abbrev' show --no-abbrev --raw HEAD~3" & LF
+        & "t 'merge --textconv' show --textconv HEAD~3" & LF
+        & "t 'merge --binary' show --binary HEAD~3" & LF
+        & "t 'merge --word-diff' show --word-diff HEAD~3" & LF
+        & "t 'merge -M' show -M HEAD~3" & LF
+        & "t 'merge --no-renames' show --no-renames HEAD~3" & LF
+        & "t 'merge --relative=sub' show --relative=sub/ HEAD~3" & LF
+        & "t 'merge --src-prefix' show --src-prefix=x/ --dst-prefix=y/ HEAD~3" & LF
+        & "t 'merge --no-prefix' show --no-prefix HEAD~3" & LF
+        & "t 'merge --patience' show --patience HEAD~3" & LF
+        & "t 'merge --histogram' show --histogram HEAD~3" & LF
+        & "t 'merge -W' show -W HEAD~3" & LF
+        & "t 'merge -b' show -b HEAD~3" & LF
+        & "t 'tag' show v1" & LF
+        & "t 'tag -s' show -s v1" & LF
+        & "t 'tag --oneline' show --oneline v1" & LF
+        & "t 'tag --pretty=short' show --pretty=short v1 -s" & LF
+        & "t 'tag --pretty=fuller' show --pretty=fuller v1 -s" & LF
+        & "t 'tag --format' show --format=%s v1 -s" & LF
+        & "t 'light tag' show light -s" & LF
+        & "t 'tree' show HEAD^{tree}" & LF
+        & "t 'tree path' show HEAD~4:sub" & LF
+        & "t 'blob' show HEAD:k" & LF
+        & "t 'blob HEAD' show HEAD:k HEAD -s" & LF
+        & "t 'HEAD blob' show HEAD -s HEAD:k" & LF
+        & "t 'two commits' show -s HEAD HEAD~1" & LF
+        & "t 'two commits oneline' show --oneline -s HEAD HEAD~1" & LF
+        & "t 'two commits format:' show --pretty=format:%s -s HEAD HEAD~1" & LF
+        & "t 'two commits tformat' show --pretty=tformat:%s -s HEAD HEAD~1" & LF
+        & "t 'dup' show -s --oneline HEAD HEAD" & LF
+        & "t 'tag commit tree' show -s v1 HEAD~4 HEAD^{tree}" & LF
+        & "t 'nosuch' show nosuch" & LF
+        & "t 'HEAD:nosuch' show HEAD:nosuch" & LF
+        & "t 'path' show -s k" & LF
+        & "t 'path oneline' show --oneline k" & LF
+        & "t 'HEAD path' show --stat HEAD k" & LF
+        & "t 'option after path' show HEAD k --stat" & LF
+        & "t 'range' show HEAD~2..HEAD --oneline -s" & LF
+        & "t 'sym range' show HEAD~3...other --oneline -s" & LF
+        & "t '^!' show HEAD~3^! --oneline -s" & LF
+        & "t '^@' show HEAD~3^@ --oneline -s" & LF
+        & "t '-n' show -2 -s --oneline" & LF
+        & "t '--max-count' show --max-count=2 -s --oneline" & LF
+        & "t '--skip' show --skip=1 -s --oneline HEAD HEAD~1 HEAD~2" & LF
+        & "t '--do-walk' show --do-walk -3 -s --oneline" & LF
+        & "t '--do-walk -p' show --do-walk -3" & LF
+        & "t '--graph' show --graph" & LF
+        & "t '--graph --do-walk' show --graph --do-walk -3 --oneline" & LF
+        & "t '--all' show --all -s --oneline" & LF
+        & "t '--branches' show --branches -s --oneline" & LF
+        & "t '--tags' show --tags -s" & LF
+        & "t '--remotes' show --remotes -s --oneline" & LF
+        & "t '--glob' show --glob=refs/heads/o* -s --oneline" & LF
+        & "t '--exclude' show --exclude=refs/heads/other --branches -s --oneline" & LF
+        & "t '--branches=pat' show --branches='s*' -s --oneline" & LF
+        & "t '--tags=pat' show --tags='v*' -s --oneline" & LF
+        & "t '--no-merges' show --no-merges -s --oneline HEAD~3 HEAD~4" & LF
+        & "t '--merges' show --merges -s --oneline HEAD~3 HEAD~4" & LF
+        & "t '--min-parents' show --min-parents=2 -s --oneline HEAD~3 HEAD~4" & LF
+        & "t '--grep' show --grep=merged -s --oneline HEAD~3 HEAD~4" & LF
+        & "t '--grep -i' show -i --grep=MERGED -s --oneline HEAD~3 HEAD~4" & LF
+        & "t '--author' show --author=nobody -s --oneline" & LF
+        & "t '--since' show --since=2024-01-05 -s --oneline HEAD~3 HEAD~1" & LF
+        & "t '--until' show --until=2024-01-05 -s --oneline HEAD~3 HEAD~1" & LF
+        & "t '-Sx' show -Sx -s --oneline HEAD~3 HEAD~4" & LF
+        & "t '-Sres nonmerge' show -Sres -s --oneline HEAD~4" & LF
+        & "t '--decorate' show --decorate -s" & LF
+        & "t '--decorate=full' show --decorate=full -s HEAD~1" & LF
+        & "t '--no-decorate' show --no-decorate -s" & LF
+        & "t '--decorate-refs' show --decorate --decorate-refs=refs/tags -s HEAD~1" & LF
+        & "t '--decorate-refs-exclude' show --decorate --decorate-refs-exclude=refs/tags -s HEAD~1" & LF
+        & "t '--decorate oneline' show --decorate --oneline -s HEAD~1" & LF
+        & "t '--parents' show --parents -s HEAD~3" & LF
+        & "t '--children' show --children -s HEAD~3" & LF
+        & "t '--left-right' show --left-right -s --oneline" & LF
+        & "t '--cherry-mark' show --cherry-mark -s --oneline" & LF
+        & "t '--source' show --source -s --oneline HEAD~1 other" & LF
+        & "t '--source --all' show --source --all -s --oneline" & LF
+        & "t '--show-signature' show --show-signature -s" & LF
+        & "t '-z' show -z -s HEAD HEAD~1" & LF
+        & "t '--abbrev-commit' show --abbrev-commit -s HEAD~3" & LF
+        & "t '--no-abbrev-commit --oneline' show --no-abbrev-commit --oneline -s" & LF
+        & "t '--log-size' show --log-size -s" & LF
+        & "t '--expand-tabs' show -s" & LF
+        & "t '--no-expand-tabs' show --no-expand-tabs -s" & LF
+        & "t '--expand-tabs=4' show --expand-tabs=4 -s" & LF
+        & "t '--use-mailmap' show --use-mailmap -s" & LF
+        & "t '--no-mailmap' show --no-mailmap -s" & LF
+        & "t '--notes' show --notes -s HEAD~1" & LF
+        & "t '--no-notes' show --no-notes -s HEAD~1" & LF
+        & "t '--notes=x' show --notes=x -s HEAD~1" & LF
+        & "t '--date=short' show --date=short -s" & LF
+        & "t '--date=iso' show --date=iso -s" & LF
+        & "t '--date=format' show --date='format:%Y/%m/%d %H:%M' -s" & LF
+        & "t '--date=bogus' show --date=bogus -s" & LF
+        & "t '--pretty=reference' show --pretty=reference -s" & LF
+        & "t '--pretty=email' show --pretty=email -s HEAD~1" & LF
+        & "t '--pretty=raw' show --pretty=raw -s" & LF
+        & "t '--pretty=full' show --pretty=full -s" & LF
+        & "t '--pretty=%h %s' show '--pretty=%h %s' -s" & LF
+        & "t '--encoding' show --encoding=utf-8 -s" & LF
+        & "t '-p format' show --format=%s HEAD~4" & LF
+        & "t '-p format:' show --pretty=format:%s HEAD~4" & LF
+        & "t 'format --stat' show --format=%s --stat HEAD~4" & LF
+        & "t 'format --stat -p' show --format=%s --stat -p HEAD~4" & LF
+        & "t 'nonmerge default' show HEAD~4" & LF
+        & "t 'nonmerge --stat' show --stat HEAD~4" & LF
+        & "t 'nonmerge -c' show -c HEAD~4" & LF
+        & "t 'root' show HEAD~6" & LF
+        & "t 'root --stat' show --stat HEAD~6" & LF
+        & "t 'log -c' log -c -4 --oneline" & LF
+        & "t 'log --cc' log --cc -4" & LF
+        & "t 'log -c --stat' log -c --stat -4" & LF
+        & "t 'log -m -c' log -m -c -4 --oneline" & LF
+        & "t 'log --cc --name-status' log --cc --name-status -4 --oneline" & LF
+        & "t 'log --cc --raw' log --cc --raw -4 --oneline" & LF
+        & "t 'log -Sres --cc' log -Sres --cc -4 --oneline" & LF
+        & "t 'log --cc -U0' log --cc -U0 -4 --oneline" & LF
+        & "t 'log --cc --check' log --cc --check -4" & LF
+        & "t 'log --cc --line-prefix' log --cc --line-prefix='> ' -4 --oneline" & LF
+        & "t 'diff-tree --cc' diff-tree --cc HEAD~3" & LF
+        & "t 'diff-tree -c' diff-tree -c HEAD~3" & LF;
+   begin
+      Run_Parity_Transcript (Root, Scenario, "show");
+   end Show_Option_Surface_Matches_Git;
+
    procedure Bisect_Run_And_Patch_Id_Match_Git
      (T : in out AUnit.Test_Cases.Test_Case'Class)
    is
@@ -7118,6 +7315,9 @@ package body CLI_Integration_Tests is
       Register_Routine
         (T, Log_Option_Surface_Matches_Git'Access,
          "Log: git's option surface, dates, walk, layouts, formats, merges");
+      Register_Routine
+        (T, Show_Option_Surface_Matches_Git'Access,
+         "Show: git's option surface, combined diffs, objects, walk forms");
       Register_Routine
         (T, Fast_Import_Stream_Matches_Git'Access,
          "Fast-import: author defaults to committer, short modes are files");
