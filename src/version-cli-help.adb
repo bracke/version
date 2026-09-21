@@ -577,6 +577,7 @@ package body Version.CLI.Help is
         or else Name = "show"
         or else Name = "blame"
         or else Name = "annotate"
+        or else Name = "describe"
         or else Name = "restore"
         or else Name = "checkout"
         or else Name = "branch"
@@ -923,6 +924,18 @@ package body Version.CLI.Help is
          Line ("defaults: no walk, the patch on, and a merge as a dense combined");
          Line ("diff (--cc; -c for the full one, -m per parent, --first-parent,");
          Line ("--dd, --diff-merges=<mode>), plus every diff switch.");
+      elsif Name = "describe" then
+         Line ("Usage:");
+         Line ("  version describe [<options>] [<commit-ish>...]");
+         Line ("  version describe [<options>] --dirty[=<mark>] [--broken[=<mark>]]");
+         Line ("  version describe <blob>");
+         Line;
+         Line ("Name a commit by the nearest reachable tag, as git does:");
+         Line ("<tag>, or <tag>-<n>-g<short>. --tags (lightweight too), --all");
+         Line ("(any ref), --long, --abbrev=<n>, --candidates=<n>, --exact-match,");
+         Line ("--first-parent, --match <glob>, --exclude <glob>, --always,");
+         Line ("--debug, --contains (the ref that contains it, via name-rev),");
+         Line ("--dirty[=<mark>]/--broken[=<mark>] mark an edited working tree.");
       elsif Name = "blame" or else Name = "annotate" then
          Line ("Usage:");
          Line ("  version blame [<options>] [<rev-opts>] [<rev>] [--] <file>");

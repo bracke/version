@@ -6089,6 +6089,212 @@ package body CLI_Integration_Tests is
       Run_Parity_Transcript (Root, Scenario, "blame");
    end Blame_Option_Surface_Matches_Git;
 
+   --  `describe`: git's option surface over the describe.c port -- exact
+   --  and searched names, --tags/--all, --long/--abbrev, --candidates and
+   --  --exact-match, --first-parent, --match/--exclude, misnamed tags,
+   --  --always, --debug, blobs, --contains, --dirty/--broken, the error
+   --  texts, and a merge-heavy DAG with a dozen tags for the search itself.
+   procedure Describe_Option_Surface_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Scenario : constant String :=
+          "git init -q; git config user.email a@b; git config user.name A" & LF
+        & "d() { export GIT_AUTHOR_DATE=""200$1-01-01T00:00:00+0000"""
+        & " GIT_COMMITTER_DATE=""200$1-01-01T00:00:00+0000""; }" & LF
+        & "d 1; echo a > f; git add f; git commit -qm c1" & LF
+        & "t 'no tags' describe" & LF
+        & "t 'no tags always' describe --always" & LF
+        & "git tag -a v1.0 -m 'v1.0'" & LF
+        & "d 2; echo b >> f; git commit -qam c2" & LF
+        & "git tag light" & LF
+        & "d 3; echo c >> f; git commit -qam c3" & LF
+        & "git checkout -qb side HEAD~1" & LF
+        & "d 4; echo s > s; git add s; git commit -qm side1" & LF
+        & "git tag -a side-tag -m side" & LF
+        & "d 5; echo s2 >> s; git commit -qam side2" & LF
+        & "git checkout -q main" & LF
+        & "d 6; git merge -q side -m merge" & LF
+        & "d 7; echo d >> f; git commit -qam c4" & LF
+        & "git tag -a v2.0 -m 'v2.0' HEAD~1" & LF
+        & "git tag -a v2.0-again -m 'again' HEAD~1" & LF
+        & "git tag -a old-tag -m old HEAD~3" & LF
+        & "git update-ref refs/remotes/origin/main HEAD~2" & LF
+        & "git tag -a misnamed -m mis HEAD~1; git update-ref refs/tags/renamed"
+        & " refs/tags/misnamed; git tag -d misnamed >/dev/null" & LF
+        & "t 'plain' describe" & LF
+        & "t 'HEAD~1' describe HEAD~1" & LF
+        & "t 'HEAD~2' describe HEAD~2" & LF
+        & "t 'HEAD~3' describe HEAD~3" & LF
+        & "t 'v1.0' describe v1.0" & LF
+        & "t 'light' describe light" & LF
+        & "t 'light --tags' describe --tags light" & LF
+        & "t 'multiple' describe HEAD HEAD~1 HEAD~2" & LF
+        & "t '--long' describe --long HEAD~1" & LF
+        & "t '--long HEAD' describe --long" & LF
+        & "t '--abbrev=10' describe --abbrev=10" & LF
+        & "t '--abbrev=2' describe --abbrev=2" & LF
+        & "t '--abbrev=0' describe --abbrev=0" & LF
+        & "t '--no-abbrev' describe --no-abbrev" & LF
+        & "t '--abbrev' describe --abbrev" & LF
+        & "t '--long --abbrev=0' describe --long --abbrev=0" & LF
+        & "t '--tags' describe --tags" & LF
+        & "t '--tags HEAD~4' describe --tags HEAD~4" & LF
+        & "t '--all' describe --all" & LF
+        & "t '--all HEAD~2' describe --all HEAD~2" & LF
+        & "t '--all side' describe --all side~1" & LF
+        & "t '--all --long' describe --all --long HEAD~1" & LF
+        & "t '--all --match' describe --all --match 'v*'" & LF
+        & "t '--all --match main' describe --all --match 'main'" & LF
+        & "t '--all --exclude' describe --all --exclude 'v*' --exclude 'renamed' --exclude"
+        & " 'side*' --exclude old-tag" & LF
+        & "t '--first-parent' describe --first-parent" & LF
+        & "t '--first-parent side' describe --first-parent HEAD~2" & LF
+        & "t '--match' describe --match 'v1*'" & LF
+        & "t '--match two' describe --match 'v1*' --match 'old*'" & LF
+        & "t '--match none' describe --match 'zzz*'" & LF
+        & "t '--match none --always' describe --match 'zzz*' --always" & LF
+        & "t '--exclude' describe --exclude 'v2*' --exclude renamed" & LF
+        & "t '--exclude=' describe --exclude='v2*' HEAD~1" & LF
+        & "t '--no-match' describe --match 'zzz' --no-match" & LF
+        & "t '--candidates=1' describe --candidates=1 HEAD" & LF
+        & "t '--candidates 1' describe --candidates 1 HEAD" & LF
+        & "t '--candidates=0' describe --candidates=0 HEAD" & LF
+        & "t '--candidates=0 exact' describe --candidates=0 HEAD~1" & LF
+        & "t '--candidates=-3' describe --candidates=-3 HEAD" & LF
+        & "t '--candidates=x' describe --candidates=x HEAD" & LF
+        & "t '--exact-match' describe --exact-match" & LF
+        & "t '--exact-match tag' describe --exact-match HEAD~1" & LF
+        & "t '--no-exact-match' describe --exact-match --no-exact-match" & LF
+        & "t '--debug' describe --debug" & LF
+        & "t '--debug HEAD~1' describe --debug HEAD~1" & LF
+        & "t '--debug --candidates=1' describe --debug --candidates=1" & LF
+        & "t '--debug --tags' describe --debug --tags HEAD" & LF
+        & "t '--debug --all' describe --debug --all HEAD" & LF
+        & "t '--always' describe --always" & LF
+        & "t 'misnamed' describe HEAD~1" & LF
+        & "t 'misnamed --long' describe --long renamed" & LF
+        & "t 'blob' describe HEAD:f" & LF
+        & "t 'blob old' describe HEAD~3:f" & LF
+        & "t 'blob --tags' describe --tags HEAD~2:f" & LF
+        & "t 'blob --all' describe --all HEAD~2:f" & LF
+        & "t 'tree' describe HEAD^{tree}" & LF
+        & "t 'bad' describe nope" & LF
+        & "t 'bad then good' describe nope HEAD" & LF
+        & "t 'good then bad' describe HEAD nope" & LF
+        & "t '--contains' describe --contains HEAD~3" & LF
+        & "t '--contains HEAD' describe --contains" & LF
+        & "t '--contains side' describe --contains side~1" & LF
+        & "t '--contains --all' describe --contains --all HEAD~3" & LF
+        & "t '--contains --all side' describe --contains --all side~1" & LF
+        & "t '--contains --match' describe --contains --match 'v2*' HEAD~3" & LF
+        & "t '--contains --exclude' describe --contains --exclude 'v2*' HEAD~3" & LF
+        & "t '--contains --always' describe --contains --always HEAD" & LF
+        & "t '--contains none' describe --contains HEAD" & LF
+        & "t '--contains bad' describe --contains nope HEAD~3" & LF
+        & "t '--contains multiple' describe --contains HEAD~3 HEAD~4" & LF
+        & "t '--contains --tags' describe --contains --tags HEAD~5" & LF
+        & "t '--dirty clean' describe --dirty" & LF
+        & "t '--dirty=X clean' describe --dirty=X" & LF
+        & "t '--broken clean' describe --broken" & LF
+        & "echo dirty >> f" & LF
+        & "t '--dirty' describe --dirty" & LF
+        & "t '--dirty=X' describe --dirty=X" & LF
+        & "t '--dirty --long' describe --dirty --long" & LF
+        & "t '--broken' describe --broken" & LF
+        & "t '--broken=Y' describe --broken=Y" & LF
+        & "t '--broken --dirty=Z' describe --broken --dirty=Z" & LF
+        & "t '--dirty rev' describe --dirty HEAD" & LF
+        & "t '--broken rev' describe --broken HEAD" & LF
+        & "t '--no-dirty' describe --dirty --no-dirty HEAD" & LF
+        & "t '--dirty --always none' describe --dirty --match zzz --always" & LF
+        & "git add f" & LF
+        & "t '--dirty staged' describe --dirty" & LF
+        & "git checkout -q -- f 2>/dev/null; git reset -q --hard" & LF
+        & "git checkout -q --orphan empty 2>/dev/null; git rm -qrf . >/dev/null 2>&1" & LF
+        & "t 'unborn' describe" & LF
+        & "t 'unborn blob' describe main:f" & LF
+        & "mkdir dag; cd dag" & LF
+        & "git init -q; git config user.email a@b; git config user.name A" & LF
+        & "n=0" & LF
+        & "c() { n=$((n+1)); export GIT_AUTHOR_DATE=""@$((1000000000 + n*1000)) +0000"""
+        & " GIT_COMMITTER_DATE=""@$((1000000000 + n*1000)) +0000""; b=$(git branch"
+        & " --show-current); echo ""$n"" >> ""f_$b""; git add ""f_$b""; git commit -qm ""c$n""; }" & LF
+        & "m() { n=$((n+1)); export GIT_AUTHOR_DATE=""@$((1000000000 + n*1000)) +0000"""
+        & " GIT_COMMITTER_DATE=""@$((1000000000 + n*1000)) +0000""; git merge -q --no-ff ""$1"" -m"
+        & " ""m$n""; }" & LF
+        & "tg() { GIT_COMMITTER_DATE=""@$((1000000000 + n*1000 + 5)) +0000"" git tag -a ""$1"" -m"
+        & " ""$1""; }" & LF
+        & "c; tg t1; c; c; tg t2" & LF
+        & "git checkout -qb b1; c; tg t3; c; c; tg t4; c" & LF
+        & "git checkout -q main; c; c; tg t5; c" & LF
+        & "m b1" & LF
+        & "git checkout -qb b2 HEAD~1; c; tg t6; c; c; c; tg t7" & LF
+        & "git checkout -qb b3; c; git tag l1; c; tg t8" & LF
+        & "git checkout -q b2; c; tg t9" & LF
+        & "git checkout -q main; c; tg t10; c; tg t11" & LF
+        & "m b2" & LF
+        & "c; tg t12; m b3; c; git tag l2; c; tg t13; c; c" & LF
+        & "t 'HEAD' describe" & LF
+        & "t 'HEAD~2' describe HEAD~2" & LF
+        & "t 'HEAD~6' describe HEAD~6" & LF
+        & "t 'b3' describe b3" & LF
+        & "t 'b2' describe b2" & LF
+        & "t 'b1' describe b1" & LF
+        & "t 'main~12' describe main~12" & LF
+        & "t 'HEAD --tags' describe --tags" & LF
+        & "t 'HEAD~3 --tags' describe --tags HEAD~3" & LF
+        & "t 'HEAD --all' describe --all" & LF
+        & "t 'b3~1 --all' describe --all b3~1" & LF
+        & "t 'HEAD --first-parent' describe --first-parent" & LF
+        & "t 'HEAD~6 --first-parent' describe --first-parent HEAD~6" & LF
+        & "t 'HEAD~6 --first-parent --match' describe --first-parent --match 't*' HEAD~6" & LF
+        & "t 'HEAD --candidates=1' describe --candidates=1" & LF
+        & "t 'HEAD --candidates=2' describe --candidates=2" & LF
+        & "t 'HEAD --candidates=3' describe --candidates=3" & LF
+        & "t 'HEAD --candidates=5' describe --candidates=5" & LF
+        & "t 'HEAD --candidates=30' describe --candidates=30" & LF
+        & "t 'HEAD --debug' describe --debug" & LF
+        & "t 'HEAD~6 --debug' describe --debug HEAD~6" & LF
+        & "t 'HEAD --debug --candidates=3' describe --debug --candidates=3" & LF
+        & "t 'HEAD --debug --candidates=30' describe --debug --candidates=30" & LF
+        & "t 'HEAD --debug --match t1*' describe --debug --match 't1*'" & LF
+        & "t 'HEAD --debug --first-parent' describe --debug --first-parent" & LF
+        & "t 'HEAD --debug --tags' describe --debug --tags" & LF
+        & "t 'HEAD --debug --all' describe --debug --all" & LF
+        & "t 'HEAD --debug --exclude x*' describe --debug --exclude 'x*'" & LF
+        & "t 'HEAD --debug --exclude x* --exclude t1*' describe --debug --exclude 'x*' --exclude"
+        & " 't1*'" & LF
+        & "t 'HEAD --debug --match [tl]1*' describe --debug --tags --match '[tl]1*'" & LF
+        & "t 'HEAD --debug --match t[!1]*' describe --debug --match 't[!1]*'" & LF
+        & "t 'b3 --debug' describe --debug b3" & LF
+        & "t 'multi --debug' describe --debug HEAD b3 b2" & LF
+        & "t 'HEAD --long --exclude' describe --long --exclude 'x*' --exclude 't13'" & LF
+        & "t 'blob' describe HEAD~3:f_main" & LF
+        & "t 'blob --debug' describe --debug HEAD~3:f_main" & LF
+        & "t 'blob b3' describe b3:f_b3" & LF
+        & "t 'blob b1' describe --tags HEAD:f_b1" & LF
+        & "for k in 1 2 3 4 5 6 7 8; do git tag -a ""x$k"" -m ""x$k"" HEAD~$k; done" & LF
+        & "t 'x HEAD' describe" & LF
+        & "t 'x HEAD --debug --candidates=3' describe --debug --candidates=3" & LF
+        & "t 'x HEAD~9 --debug' describe --debug HEAD~9" & LF
+        & "t 'x HEAD --exclude x*' describe --debug --exclude 'x*'" & LF
+        & "t 'x --all --debug' describe --all --debug HEAD~4" & LF
+        & "t 'deep --candidates=1 --debug' describe --debug --candidates=1 --exclude 'x*' HEAD~6" & LF
+        & "t 'deep --candidates=2 --debug' describe --debug --candidates=2 --exclude 'x*' HEAD~6" & LF
+        & "t 'deep --candidates=3 --debug' describe --debug --candidates=3 --exclude 'x*' HEAD~6" & LF
+        & "t 'deep --tags --debug' describe --debug --tags --exclude 'x*' --exclude 't*' HEAD~2" & LF
+        & "t 'deep --tags --debug l' describe --debug --tags --exclude 'x*' --exclude 't1*'"
+        & " HEAD~2" & LF
+        & "t 'deep --first-parent --debug' describe --debug --first-parent --exclude 'x*'"
+        & " --exclude 't1*' HEAD~2" & LF
+        & "t 'deep b3 --debug' describe --debug --candidates=2 b3" & LF
+        & "t 'deep --all --debug' describe --all --debug --exclude 'x*' --exclude 't*' HEAD~2" & LF;
+   begin
+      Run_Parity_Transcript (Root, Scenario, "describe");
+   end Describe_Option_Surface_Matches_Git;
+
    procedure Bisect_Run_And_Patch_Id_Match_Git
      (T : in out AUnit.Test_Cases.Test_Case'Class)
    is
@@ -7494,6 +7700,9 @@ package body CLI_Integration_Tests is
       Register_Routine
         (T, Blame_Option_Surface_Matches_Git'Access,
          "Blame: git's option surface, -L forms, -M/-C, ignore-rev, reverse");
+      Register_Routine
+        (T, Describe_Option_Surface_Matches_Git'Access,
+         "Describe: git's option surface, candidates, contains, blobs, dirty");
       Register_Routine
         (T, Fast_Import_Stream_Matches_Git'Access,
          "Fast-import: author defaults to committer, short modes are files");

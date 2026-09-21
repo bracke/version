@@ -29462,218 +29462,395 @@ package body Version.CLI is
             end;
 
          elsif Command = "describe" then
+            --  builtin/describe.c: the option surface, --contains via
+            --  name-rev, --dirty/--broken on HEAD, and each operand
+            --  described as a commit or a blob.
             declare
                Usage    : constant String :=
-                 "version describe [--tags] [--all] [--long] [--always]"
-                 & " [--abbrev=<n>] [--dirty[=<mark>]] [--broken[=<mark>]]"
-                 & " [--match=<pat>] [REV]";
-               All_Tags : Boolean := False;
-               Long     : Boolean := False;
-               Always   : Boolean := False;
-               All_Refs : Boolean := False;
+                 "version describe [--all] [--tags] [--contains] [--abbrev=<n>]"
+                 & " [<commit-ish>...] | --dirty[=<mark>] | <blob>";
+               Opts     : Version.Describe.Describe_Options;
                Contains : Boolean := False;
-               Dirty    : Boolean := False;
-               Dirty_Mark : Unbounded_String := To_Unbounded_String ("-dirty");
-               Abbrev   : Natural := 7;
-               Pattern  : Unbounded_String;
-               Exclude  : Unbounded_String;
+               Dirty    : Unbounded_String;
+               Have_Dirty  : Boolean := False;
+               --  --broken's own mark is only used when the dirtiness check
+               --  itself fails, which cannot happen here; the flag still
+               --  turns the check on with the "-dirty" mark.
+               Have_Broken : Boolean := False;
                Revs     : Version.Trailers.String_Vectors.Vector;
                Bad      : Boolean := False;
+               Fatal    : Unbounded_String;
+               --  git's stdout is block-buffered when piped: every warning
+               --  and fatal reaches stderr before the names do, so the names
+               --  are held until the end.
+               Output   : Unbounded_String;
                I        : Positive := 2;
+
+               procedure Out_Line (Text : String) is
+               begin
+                  Append (Output, Text & Character'Val (10));
+               end Out_Line;
+
+               procedure Die (Text : String) is
+               begin
+                  if Length (Fatal) = 0 then
+                     Fatal := To_Unbounded_String (Text);
+                  end if;
+               end Die;
+
+               --  An option taking a value: attached (`--opt=v`) or the
+               --  next word.
+               function Value_Of (A : String; Name : String; OK : out Boolean)
+                  return String is
+               begin
+                  OK := True;
+                  if A'Length > Name'Length + 2
+                    and then A (A'First + Name'Length + 2) = '='
+                  then
+                     return A (A'First + Name'Length + 3 .. A'Last);
+                  elsif I < Count then
+                     I := I + 1;
+                     return Arg (I);
+                  end if;
+                  Error_Line ("option `" & Name & "' requires a value");
+                  OK := False;
+                  return "";
+               end Value_Of;
             begin
                while I <= Count and then not Bad loop
                   declare
                      A : constant String := Arg (I);
+                     Negated : constant Boolean := Has_Prefix (A, "--no-");
+                     Name : constant String :=
+                       (if Negated then A (A'First + 5 .. A'Last)
+                        elsif Has_Prefix (A, "--") then A (A'First + 2 .. A'Last)
+                        else "");
+                     Eq   : constant Natural :=
+                       (if Name = "" then 0 else Ada.Strings.Fixed.Index (Name, "="));
+                     Base : constant String :=
+                       (if Eq = 0 then Name else Name (Name'First .. Eq - 1));
                   begin
-                     if A = "--tags" then
-                        All_Tags := True;
-                     elsif A = "--long" then
-                        Long := True;
-                     elsif A = "--always" then
-                        Always := True;
-                     elsif A = "--all" then
-                        --  --all names by any ref, not only tags, and prefixes
-                        --  the namespace ("tags/v2", "heads/main").
-                        All_Refs := True;
-                        All_Tags := True;
-                     elsif A = "--dirty" then
-                        Dirty := True;
-                     elsif Has_Prefix (A, "--dirty=") then
-                        Dirty := True;
-                        Dirty_Mark :=
-                          To_Unbounded_String (A (A'First + 8 .. A'Last));
-                     elsif A = "--broken" or else Has_Prefix (A, "--broken=")
-                     then
-                        --  Like --dirty, but tolerant of a diff that fails on a
-                        --  broken repository. A healthy worktree still gets the
-                        --  plain "-dirty" mark; the --broken=<mark> spelling
-                        --  only replaces the suffix used when the diff itself
-                        --  cannot run, which does not arise here.
-                        Dirty := True;
-                     elsif A = "--abbrev" then
-                        Abbrev := 7;
-                     elsif Has_Prefix (A, "--abbrev=") then
-                        begin
-                           Abbrev :=
-                             Natural'Value (A (A'First + 9 .. A'Last));
-                        exception
-                           when others =>
-                              Usage_Error
-                                ("describe --abbrev needs a number", Usage);
-                              Bad := True;
-                        end;
-                     elsif Has_Prefix (A, "--match=") then
-                        Pattern :=
-                          To_Unbounded_String (A (A'First + 8 .. A'Last));
-                     elsif A = "--match" then
-                        if I = Count then
-                           Usage_Error
-                             ("describe --match needs a pattern", Usage);
+                     if A = "--" then
+                        for K in I + 1 .. Count loop
+                           Revs.Append (Arg (K));
+                        end loop;
+                        exit;
+                     elsif Name = "" then
+                        if A'Length > 1 and then A (A'First) = '-' then
+                           Usage_Error ("unknown describe option: " & A, Usage);
                            Bad := True;
                         else
-                           I := I + 1;
-                           Pattern := To_Unbounded_String (Arg (I));
+                           Revs.Append (A);
                         end if;
-                     elsif Has_Prefix (A, "--exclude=") then
-                        Exclude :=
-                          To_Unbounded_String (A (A'First + 10 .. A'Last));
-                     elsif A = "--exclude" then
-                        if I = Count then
-                           Usage_Error
-                             ("describe --exclude needs a pattern", Usage);
-                           Bad := True;
+                     elsif Base = "contains" then
+                        Contains := not Negated;
+                     elsif Base = "debug" then
+                        Opts.Debug := not Negated;
+                     elsif Base = "all" then
+                        Opts.All_Refs := not Negated;
+                     elsif Base = "tags" then
+                        Opts.Tags := not Negated;
+                     elsif Base = "long" then
+                        Opts.Long := not Negated;
+                     elsif Base = "first-parent" then
+                        Opts.First_Parent := not Negated;
+                     elsif Base = "always" then
+                        Opts.Always := not Negated;
+                     elsif Base = "exact-match" then
+                        Opts.Candidates :=
+                          (if Negated then Version.Describe.Default_Candidates
+                           else 0);
+                     elsif Base = "abbrev" then
+                        if Negated then
+                           Opts.Abbrev := 0;
+                        elsif Eq = 0 then
+                           Opts.Abbrev := -1;
                         else
-                           I := I + 1;
-                           Exclude := To_Unbounded_String (Arg (I));
+                           begin
+                              Opts.Abbrev :=
+                                Natural'Value (Name (Eq + 1 .. Name'Last));
+                           exception
+                              when others =>
+                                 Usage_Error
+                                   ("describe --abbrev needs a number", Usage);
+                                 Bad := True;
+                           end;
                         end if;
-                     elsif A = "--first-parent" or else A = "--candidates"
-                       or else Has_Prefix (A, "--candidates=")
-                     then
-                        --  These narrow which tag wins but not, on the fixtures
-                        --  here, which one does; accepted without effect.
-                        if A = "--candidates" then
-                           I := I + 1;
+                     elsif Base = "candidates" then
+                        if Negated then
+                           Opts.Candidates := Version.Describe.Default_Candidates;
+                        else
+                           declare
+                              OK : Boolean;
+                              V  : constant String := Value_Of (A, "candidates", OK);
+                              N  : Integer;
+                           begin
+                              if OK then
+                                 begin
+                                    N := Integer'Value (V);
+                                    Opts.Candidates :=
+                                      (if N < 0 then 0
+                                       else Natural'Min
+                                              (N, Version.Describe.Max_Candidates));
+                                 exception
+                                    when others =>
+                                       Error_Line
+                                         ("option `candidates' expects an integer"
+                                          & " value with an optional k/m/g suffix");
+                                       Bad := True;
+                                 end;
+                              else
+                                 Bad := True;
+                              end if;
+                           end;
                         end if;
-                     elsif A = "--contains" then
-                        --  The opposite search: name the commit by the nearest
-                        --  ref that CONTAINS it (name-rev), tags-only unless
-                        --  --all widens it to every ref.
-                        Contains := True;
-                     elsif A'Length > 0 and then A (A'First) = '-' then
-                        Usage_Error
-                          ("unknown describe option: " & A, Usage);
-                        Bad := True;
+                     elsif Base = "match" or else Base = "exclude" then
+                        if Negated then
+                           if Base = "match" then
+                              Opts.Patterns.Clear;
+                           else
+                              Opts.Excludes.Clear;
+                           end if;
+                        else
+                           declare
+                              OK : Boolean;
+                              V  : constant String := Value_Of (A, Base, OK);
+                           begin
+                              if not OK then
+                                 Bad := True;
+                              elsif Base = "match" then
+                                 Opts.Patterns.Append (V);
+                              else
+                                 Opts.Excludes.Append (V);
+                              end if;
+                           end;
+                        end if;
+                     elsif Base = "dirty" then
+                        Have_Dirty := not Negated;
+                        Dirty := To_Unbounded_String
+                          (if Eq = 0 then "-dirty" else Name (Eq + 1 .. Name'Last));
+                     elsif Base = "broken" then
+                        Have_Broken := not Negated;
                      else
-                        Revs.Append (A);   --  git describes each in turn
+                        Usage_Error ("unknown describe option: " & A, Usage);
+                        Bad := True;
                      end if;
                   end;
                   I := I + 1;
                end loop;
 
-               if not Bad then
-                  declare
-                     Repo : constant Version.Repository.Repository_Handle :=
-                       Version.Repository.Open;
-
-                     --  Describe one revision (empty Spec = HEAD); git prints
-                     --  one line per revision named on the command line.
-                     procedure Describe_One (Spec : String; Is_Head : Boolean) is
-                        Commit : constant Version.Objects.Hex_Object_Id :=
-                          (if Is_Head
-                           then Version.Objects.To_Object_Id
-                                  (Version.Refs.Current_Commit_Id (Repo))
-                           else Version.Revisions.Resolve_Commit (Repo, Spec));
-
-                        --  --dirty applies only to describing HEAD itself.
-                        function Dirty_Suffix return String is
-                        begin
-                           if not Dirty or else not Is_Head then
-                              return "";
-                           end if;
-                           declare
-                              St : constant Version.Status.Status_Result :=
-                                Version.Status.Current_Status;
-                           begin
-                              if St.Staged.Is_Empty
-                                and then St.Changes.Is_Empty
-                              then
-                                 return "";
-                              end if;
-                              return To_String (Dirty_Mark);
-                           end;
-                        end Dirty_Suffix;
-
-                        function Described return String is
-                        begin
-                           --  --contains delegates to name-rev: name Commit by
-                           --  a descendant ref.  Without --all the search is
-                           --  restricted to tags and the "tags/" namespace is
-                           --  dropped ("v2.0^0"); --all keeps it ("tags/...").
-                           if Contains then
-                              declare
-                                 Name : constant String :=
-                                   Version.Name_Rev.Describe_Commit
-                                     (Repo, Commit,
-                                      Tags_Only => not All_Refs);
-                              begin
-                                 if Name = Version.Name_Rev.Undefined then
-                                    raise Ada.IO_Exceptions.Data_Error
-                                      with "cannot describe '"
-                                           & Version.Objects.To_String (Commit)
-                                           & "'";
-                                 end if;
-                                 if not All_Refs
-                                   and then Has_Prefix (Name, "tags/")
-                                 then
-                                    return Name (Name'First + 5 .. Name'Last);
-                                 end if;
-                                 return Name;
-                              end;
-                           end if;
-                           if All_Refs then
-                              return Version.Describe.Describe_By_Any_Ref
-                                (Repo, Commit, Long, Abbrev,
-                                 To_String (Pattern), To_String (Exclude));
-                           end if;
-                           return Version.Describe.Describe
-                             (Repo, Commit, All_Tags, Long, Abbrev,
-                              To_String (Pattern), To_String (Exclude));
-                        end Described;
-                     begin
-                        Success_Line (Described & Dirty_Suffix);
-                     exception
-                        when E : Ada.IO_Exceptions.Data_Error =>
-                           --  --always falls back to the abbreviated commit id
-                           --  when nothing names it, rather than failing.
-                           if Always then
-                              declare
-                                 Hex : constant String :=
-                                   Version.Objects.To_String (Commit);
-                                 N : constant Natural :=
-                                   (if Abbrev = 0 then 7
-                                    else Natural'Min (Natural'Max (Abbrev, 4),
-                                                      Hex'Length));
-                              begin
-                                 Success_Line
-                                   (Hex (Hex'First .. Hex'First + N - 1)
-                                    & Dirty_Suffix);
-                              end;
-                           else
-                              Error_Line
-                                (Ada.Exceptions.Exception_Message (E));
-                              Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
-                           end if;
-                     end Describe_One;
-                  begin
-                     if Revs.Is_Empty then
-                        Describe_One ("", Is_Head => True);
-                     else
-                        for R of Revs loop
-                           Describe_One (R, Is_Head => False);
-                        end loop;
-                     end if;
-                  end;
+               if Bad then
+                  Set_Usage_Failure;
+                  goto Describe_Done;
                end if;
+
+               if Opts.Long and then Opts.Abbrev = 0 then
+                  Stderr_Line
+                    ("fatal: options '--long' and '--abbrev=0' cannot be used together");
+                  Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                  goto Describe_Done;
+               end if;
+
+               declare
+                  Repo : constant Version.Repository.Repository_Handle :=
+                    Version.Repository.Open;
+               begin
+                  if Contains then
+                     --  name-rev --peel-tag --name-only --no-undefined
+                     --  [--always] [--tags] [--refs=...] [--exclude=...]
+                     declare
+                        Refs_Pats, Excl_Pats : Version.Ref_Format.String_Vectors.Vector;
+                        Args : Version.Trailers.String_Vectors.Vector := Revs;
+                     begin
+                        for P of Opts.Patterns loop
+                           Refs_Pats.Append ("refs/tags/" & P);
+                        end loop;
+                        for X of Opts.Excludes loop
+                           Excl_Pats.Append ("refs/tags/" & X);
+                        end loop;
+                        if Opts.All_Refs then
+                           for P of Opts.Patterns loop
+                              Refs_Pats.Append ("refs/heads/" & P);
+                           end loop;
+                           for X of Opts.Excludes loop
+                              Excl_Pats.Append ("refs/heads/" & X);
+                           end loop;
+                           for P of Opts.Patterns loop
+                              Refs_Pats.Append ("refs/remotes/" & P);
+                           end loop;
+                           for X of Opts.Excludes loop
+                              Excl_Pats.Append ("refs/remotes/" & X);
+                           end loop;
+                        end if;
+                        if Args.Is_Empty then
+                           Args.Append ("HEAD");
+                        end if;
+                        for R of Args loop
+                           declare
+                              Commit : Version.Objects.Hex_Object_Id;
+                              Found  : Boolean := True;
+                           begin
+                              begin
+                                 Commit := Version.Revisions.Resolve_Commit (Repo, R);
+                              exception
+                                 when others =>
+                                    Stderr_Line
+                                      ("Could not get sha1 for " & R & ". Skipping.");
+                                    Found := False;
+                              end;
+                              if Found then
+                                 declare
+                                    Name : constant String :=
+                                      Version.Name_Rev.Describe_Commit
+                                        (Repo, Commit,
+                                         Tags_Only => not Opts.All_Refs,
+                                         Refs_Patterns => Refs_Pats,
+                                         Exclude_Patterns => Excl_Pats);
+                                 begin
+                                    if Name /= Version.Name_Rev.Undefined then
+                                       Success_Line
+                                         (if not Opts.All_Refs
+                                            and then Has_Prefix (Name, "tags/")
+                                          then Name (Name'First + 5 .. Name'Last)
+                                          else Name);
+                                    elsif Opts.Always then
+                                       declare
+                                          Hex : constant String :=
+                                            Version.Objects.To_String (Commit);
+                                          N : constant Natural :=
+                                            Natural'Min
+                                              (Hex'Length,
+                                               Version.Revisions.Unique_Abbrev_Length
+                                                 (Repo, Commit, 7));
+                                       begin
+                                          Out_Line (Hex (Hex'First .. Hex'First + N - 1));
+                                       end;
+                                    else
+                                       Die ("cannot describe '"
+                                            & Version.Objects.To_String (Commit) & "'");
+                                       exit;
+                                    end if;
+                                 end;
+                              end if;
+                           end;
+                        end loop;
+                     end;
+                  else
+                     declare
+                        Table : Version.Describe.Name_Table :=
+                          Version.Describe.Load_Names (Repo, Opts);
+                        Messages : Unbounded_String;
+
+                        procedure Flush_Messages is
+                           Text  : constant String := To_String (Messages);
+                           Start : Positive := Text'First;
+                        begin
+                           for K in Text'Range loop
+                              if Text (K) = Character'Val (10) then
+                                 Stderr_Line (Text (Start .. K - 1));
+                                 Start := K + 1;
+                              end if;
+                           end loop;
+                           Messages := Null_Unbounded_String;
+                        end Flush_Messages;
+
+                        --  describe(): a commit-ish or a blob.
+                        procedure Describe_One (Spec : String) is
+                           Id  : Version.Objects.Hex_Object_Id;
+                           Obj_Kind : Version.Objects.Object_Kind;
+                        begin
+                           if Opts.Debug then
+                              Stderr_Line ("describe " & Spec);
+                           end if;
+                           begin
+                              Id := Version.Revisions.Resolve (Repo, Spec);
+                           exception
+                              when others =>
+                                 Die ("Not a valid object name " & Spec);
+                                 return;
+                           end;
+                           --  Peel a tag to what it names.
+                           loop
+                              declare
+                                 Obj : constant Version.Objects.Git_Object :=
+                                   Version.Objects.Read_Object (Repo, Id);
+                              begin
+                                 Obj_Kind := Version.Objects.Kind (Obj);
+                                 exit when Obj_Kind /= Version.Objects.Tag_Object;
+                                 Id := Version.Objects.Tag_Target_Id (Obj);
+                              end;
+                           end loop;
+                           declare
+                              Text : constant String :=
+                                (if Obj_Kind = Version.Objects.Commit_Object
+                                 then Version.Describe.Describe_Commit
+                                        (Repo, Table, Id, Opts, Messages)
+                                 elsif Obj_Kind = Version.Objects.Blob_Object
+                                 then Version.Describe.Describe_Blob
+                                        (Repo, Table, Id, Opts, Messages)
+                                 else "");
+                           begin
+                              Flush_Messages;
+                              if Obj_Kind /= Version.Objects.Commit_Object
+                                and then Obj_Kind /= Version.Objects.Blob_Object
+                              then
+                                 Die (Spec & " is neither a commit nor blob");
+                              else
+                                 Out_Line (Text);
+                              end if;
+                           end;
+                        exception
+                           when E : Version.Describe.Describe_Error =>
+                              Flush_Messages;
+                              Die (Ada.Exceptions.Exception_Message (E));
+                        end Describe_One;
+                     begin
+                        if Version.Describe.Name_Count (Table) = 0
+                          and then not Opts.Always
+                        then
+                           Die ("No names found, cannot describe anything.");
+                        elsif Revs.Is_Empty then
+                           if Have_Broken or else Have_Dirty then
+                              --  diff-index --quiet HEAD: anything staged or
+                              --  changed in tracked files.
+                              declare
+                                 St : constant Version.Status.Status_Result :=
+                                   Version.Status.Current_Status;
+                              begin
+                                 if not St.Staged.Is_Empty
+                                   or else not St.Changes.Is_Empty
+                                   or else not St.Conflicted.Is_Empty
+                                 then
+                                    Opts.Suffix :=
+                                      (if Have_Dirty then Dirty
+                                       else To_Unbounded_String ("-dirty"));
+                                 end if;
+                              end;
+                           end if;
+                           Describe_One ("HEAD");
+                        elsif Have_Dirty then
+                           Die ("option '--dirty' and commit-ishes cannot be used"
+                                & " together");
+                        elsif Have_Broken then
+                           Die ("option '--broken' and commit-ishes cannot be used"
+                                & " together");
+                        else
+                           for R of Revs loop
+                              Describe_One (R);
+                              exit when Length (Fatal) > 0;
+                           end loop;
+                        end if;
+                     end;
+                  end if;
+               end;
+
+               if Length (Fatal) > 0 then
+                  Stderr_Line ("fatal: " & To_String (Fatal));
+                  Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+               end if;
+               Version.Console.Put (To_String (Output));
+               <<Describe_Done>>
+               null;
             end;
 
          elsif Command = "notes" then

@@ -179,6 +179,9 @@ version log --stdin | -g [<ref>] | --merge
 version show [OPTIONS] [<commit>|<tag>|<tree>|<blob>|REV:PATH ...] [--] [PATH...]
   OPTIONS: log's whole surface with show's defaults (no walk, -p, merges as --cc);
   -c, --cc, -m, --first-parent, --dd, --diff-merges=MODE
+version describe [--all] [--tags] [--contains] [--long] [--first-parent] [--abbrev[=N]]
+  [--candidates N|--exact-match] [--match GLOB]... [--exclude GLOB]... [--always] [--debug]
+  [--dirty[=MARK]] [--broken[=MARK]] [<commit-ish>... | <blob>]
 version blame [OPTIONS] [<rev-opts>] [<rev>] [--] <file>
 version annotate [OPTIONS] [<rev-opts>] [<rev>] [--] <file>
   OPTIONS: git's blame surface -- -b, --root, -s, -e, -t, -l, -f, -n, -c, -w, -p/--porcelain,
