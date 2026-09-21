@@ -179,6 +179,14 @@ version log --stdin | -g [<ref>] | --merge
 version show [OPTIONS] [<commit>|<tag>|<tree>|<blob>|REV:PATH ...] [--] [PATH...]
   OPTIONS: log's whole surface with show's defaults (no walk, -p, merges as --cc);
   -c, --cc, -m, --first-parent, --dd, --diff-merges=MODE
+version blame [OPTIONS] [<rev-opts>] [<rev>] [--] <file>
+version annotate [OPTIONS] [<rev-opts>] [<rev>] [--] <file>
+  OPTIONS: git's blame surface -- -b, --root, -s, -e, -t, -l, -f, -n, -c, -w, -p/--porcelain,
+  --line-porcelain, --incremental, --show-stats, --score-debug, --abbrev[=N], --date=MODE,
+  -L START,END | -L /RE/,+N | -L :FUNCNAME (repeatable), -M[SCORE], -C[SCORE] (up to three),
+  --ignore-rev REV, --ignore-revs-file FILE, --contents FILE, --reverse, --first-parent,
+  --since=DATE, --no-follow, --diff-algorithm=ALGO, --minimal, --[no-]indent-heuristic,
+  --color-lines, --color-by-age, -S FILE, --progress, --encoding=
 version checkout [-q] [-f] [-m] [-t|--no-track] [--[no-]guess] [<branch>|<commit>|-]
 version checkout [-q] [-f] -b|-B NEW-BRANCH [START-POINT]
 version checkout [-q] --orphan NEW-BRANCH [START-POINT]

@@ -575,6 +575,8 @@ package body Version.CLI.Help is
         or else Name = "diff"
         or else Name = "log"
         or else Name = "show"
+        or else Name = "blame"
+        or else Name = "annotate"
         or else Name = "restore"
         or else Name = "checkout"
         or else Name = "branch"
@@ -921,6 +923,26 @@ package body Version.CLI.Help is
          Line ("defaults: no walk, the patch on, and a merge as a dense combined");
          Line ("diff (--cc; -c for the full one, -m per parent, --first-parent,");
          Line ("--dd, --diff-merges=<mode>), plus every diff switch.");
+      elsif Name = "blame" or else Name = "annotate" then
+         Line ("Usage:");
+         Line ("  version blame [<options>] [<rev-opts>] [<rev>] [--] <file>");
+         Line ("  version blame [<options>] <file> <rev>");
+         Line ("  version annotate ...   (blame -c)");
+         Line;
+         Line ("Show which commit introduced each line of a file, as git does:");
+         Line ("the working file (or --contents <file>|-) on top of HEAD, a");
+         Line ("revision's copy, or a range whose bottom's ancestors are the");
+         Line ("boundary (^). Follows renames and every merge parent.");
+         Line ("Attribution: -w, -M[<score>], -C[<score>] (up to three times),");
+         Line ("  --ignore-rev <rev>, --ignore-revs-file <file>, --reverse,");
+         Line ("  --first-parent, --since=<date>, --root, --no-follow, -S <grafts>,");
+         Line ("  --diff-algorithm=<algo>, --minimal, --[no-]indent-heuristic.");
+         Line ("Range: -L <start>,<end> | -L <start>,+<n> | -L /<re>/,/<re>/ |");
+         Line ("  -L :<funcname> (repeatable).");
+         Line ("Layout: -s, -e/--show-email, -t, --date=<mode>, -l, --abbrev[=<n>],");
+         Line ("  -b, -f/--show-name, -n/--show-number, -c, --score-debug,");
+         Line ("  --color-lines, --color-by-age, -p/--porcelain, --line-porcelain,");
+         Line ("  --incremental, --show-stats, --progress.");
       elsif Name = "restore" then
          Line ("Usage:");
          Line ("  version restore [--] PATHSPEC...");

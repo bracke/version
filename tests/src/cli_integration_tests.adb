@@ -5916,6 +5916,179 @@ package body CLI_Integration_Tests is
       Run_Parity_Transcript (Root, Scenario, "show");
    end Show_Option_Surface_Matches_Git;
 
+   --  `blame`: git's option surface over the blame.c port -- the operand
+   --  DWIM, every layout switch, -L in all its forms, ranges and boundaries,
+   --  --reverse, --first-parent, -M/-C, --ignore-rev with its marks,
+   --  mailmap, the blame.*/color.blame.* config, dates, --contents, and
+   --  the error texts.  Nothing here is attributed to the working tree, so
+   --  no "Not Committed Yet" timestamp can drift between the two runs.
+   procedure Blame_Option_Surface_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Scenario : constant String :=
+          "git init -q; git config user.email a@b; git config user.name A" & LF
+        & "d() { export GIT_AUTHOR_DATE=""200$1-01-01T00:00:00+0000"""
+        & " GIT_COMMITTER_DATE=""200$1-01-01T00:00:00+0000""; }" & LF
+        & "d 1; printf 'int alpha(int x)\n{\n\treturn x + 1;\n}\n\nint beta(int y)\n{\n\tint z = y"
+        & " * 2;\n\treturn z - 1;\n}\n\nstatic void"
+        & " helper(void)\n{\n\tputs(""hello"");\n\tputs(""world"");\n}\n' > lib.c" & LF
+        & "printf 'ONE\nTWO\nTHREE\nFOUR\nFIVE\nSIX\nSEVEN\nEIGHT\n' > nums; printf 'no newline at"
+        & " end' > nonl; : > empty; git add .; git commit -qm initial" & LF
+        & "d 2; printf 'static void helper(void)\n{\n\tputs(""hello"");\n\tputs(""world"");\n}\n\nint"
+        & " alpha(int x)\n{\n\treturn x + 1;\n}\n\nint beta(int y)\n{\n\tint z = y * 3;\n\treturn"
+        & " z - 1;\n}\n' > lib.c" & LF
+        & "git commit -qam 'move helper up' --author='Bob <bob@x.org>'" & LF
+        & "d 3; printf '#include <stdio.h>\n\nstatic void"
+        & " helper(void)\n{\n\tputs(""hello"");\n\tputs(""world"");\n}\n\nvoid"
+        & " extra(void)\n{\n\tputs(""extra"");\n}\n' > util.c" & LF
+        & "printf 'int alpha(int x)\n{\n\treturn x + 1;\n}\n\nint beta(int y)\n{\n\tint z = y *"
+        & " 3;\n\treturn z - 1;\n}\n' > lib.c" & LF
+        & "printf 'FIVE\nSIX\nSEVEN\nEIGHT\nONE\nTWO\nTHREE\nFOUR\n' > nums; git add .; git commit"
+        & " -qm 'split helper out, rotate nums' --author='Carol <carol@x.org>'" & LF
+        & "d 4; sed -i 's/\t/    /' lib.c; git commit -qam 'reindent lib.c'" & LF
+        & "d 5; git checkout -qb feat HEAD~2; printf"
+        & " 'ONE\nTWO\nTHREE\nFOUR!\nFIVE\nSIX\nSEVEN\nEIGHT\nNINE\n' > nums; git commit -qam"
+        & " 'feat: four bang and nine' --author='Dan <dan@x.org>'" & LF
+        & "d 6; git checkout -q main; git merge feat -m 'merge feat' >/dev/null 2>&1; printf"
+        & " 'FIVE\nSIX\nSEVEN\nEIGHT\nONE\nTWO\nTHREE\nFOUR!\nNINE\n' > nums; git add nums; git"
+        & " commit -qm 'merge feat'" & LF
+        & "d 7; git mv nums g; printf 'FIVE\nSIX\nSEVEN\nEIGHT\n  ONE\nTWO\nTHREE\nFOUR!\nNINE\n'"
+        & " > g; git commit -qam 'rename nums to g, indent one'" & LF
+        & "printf 'Bob Builder <bob@x.org>\n' > .mailmap; git add .mailmap; git commit -qm mailmap" & LF
+        & "t 'plain' blame g" & LF
+        & "t 'HEAD~1' blame HEAD~1 g" & LF
+        & "t 'HEAD~2 nums' blame HEAD~2 nums" & LF
+        & "t 'g HEAD~1' blame g HEAD~1" & LF
+        & "t '-- g HEAD~1' blame -- g HEAD~1" & LF
+        & "t 'missing at rev' blame HEAD~2 g" & LF
+        & "t 'nofile' blame nofile" & LF
+        & "t 'bad rev' blame g HEAD nofile" & LF
+        & "t '-s' blame -s g" & LF
+        & "t '-l' blame -l g" & LF
+        & "t '-e' blame -e g" & LF
+        & "t '-t' blame -t g" & LF
+        & "t '-f' blame -f lib.c" & LF
+        & "t '-n' blame -n g" & LF
+        & "t '-c' blame -c g" & LF
+        & "t '-b' blame -b g" & LF
+        & "t '--root' blame --root g" & LF
+        & "t '-w' blame -w g" & LF
+        & "t '-fnsl' blame -fnsl g" & LF
+        & "t '--abbrev=10' blame --abbrev=10 g" & LF
+        & "t '--abbrev=3' blame --abbrev=3 g" & LF
+        & "t '--no-abbrev' blame --no-abbrev g" & LF
+        & "t '-L 2,4' blame -L 2,4 g" & LF
+        & "t '-L2,+2' blame -L2,+2 g" & LF
+        & "t '-L 4,-2' blame -L 4,-2 g" & LF
+        & "t '-L ,3' blame -L ,3 g" & LF
+        & "t '-L 6,' blame -L 6, g" & LF
+        & "t '-L /TWO/,+2' blame -L '/TWO/,+2' g" & LF
+        & "t '-L /TWO/,/FOUR/' blame -L '/TWO/,/FOUR/' g" & LF
+        & "t '-L 2,3 -L 5,6' blame -L 2,3 -L 5,6 g" & LF
+        & "t '-L 2,4 -L 3,5' blame -L 2,4 -L 3,5 g" & LF
+        & "t '-L 99' blame -L 99 g" & LF
+        & "t '-L 0' blame -L 0 g" & LF
+        & "t '-L 2,+0' blame -L 2,+0 g" & LF
+        & "t '-L /nomatch/' blame -L /nomatch/ g" & LF
+        & "t '-L :beta' blame -L :beta lib.c" & LF
+        & "t '-L :alpha' blame -L :alpha lib.c" & LF
+        & "t '-L 5,6 -L :alpha' blame -L 5,6 -L :alpha lib.c" & LF
+        & "t '-L /beta/,/^}/' blame -L '/beta/,/^}/' lib.c" & LF
+        & "t '-L 8 -L ^/alpha/,+2' blame -L 8 -L '^/alpha/,+2' lib.c" & LF
+        & "t '-L :zzz' blame -L :zzz lib.c" & LF
+        & "t '-L bad regex' blame -L '/[/' lib.c" & LF
+        & "t '--porcelain' blame --porcelain HEAD g" & LF
+        & "t '--line-porcelain' blame --line-porcelain HEAD g" & LF
+        & "t '--incremental' blame --incremental HEAD g" & LF
+        & "t '--first-parent' blame --first-parent g" & LF
+        & "t 'range' blame HEAD~3..HEAD g" & LF
+        & "t '^rev' blame ^HEAD~3 g" & LF
+        & "t 'sym range' blame HEAD~4...feat g" & LF
+        & "t '--since' blame --since=2003-06-01 g" & LF
+        & "t '--since -b' blame --since=2005-06-01 -b g" & LF
+        & "t '--reverse' blame --reverse HEAD~6..HEAD~2 nums" & LF
+        & "t '--reverse one' blame --reverse HEAD~6 -- g" & LF
+        & "t '--reverse -M' blame --reverse -M HEAD~6..HEAD~2 nums" & LF
+        & "t '--reverse --first-parent' blame --reverse --first-parent HEAD~6..HEAD~2 nums" & LF
+        & "t '--reverse --first-parent norange' blame --reverse --first-parent HEAD~4 nums" & LF
+        & "t '--reverse off chain' blame --reverse --first-parent feat~1..HEAD nums" & LF
+        & "t '--reverse porcelain' blame --reverse --porcelain HEAD~6..HEAD~2 nums" & LF
+        & "t 'two tips' blame HEAD feat nums" & LF
+        & "t 'lib -M' blame -M HEAD~5 lib.c" & LF
+        & "t 'lib -M1' blame -M1 HEAD~5 lib.c" & LF
+        & "t 'util -C' blame -C util.c" & LF
+        & "t 'util -C -C' blame -C -C util.c" & LF
+        & "t 'util -C -C -C' blame -C -C -C util.c" & LF
+        & "t 'util -C5' blame -C5 util.c" & LF
+        & "t 'find-copies-harder' blame --find-copies-harder util.c" & LF
+        & "t 'nums -M' blame -M HEAD~2 nums" & LF
+        & "t 'nums -M -n -f' blame -M -n -f HEAD~2 nums" & LF
+        & "t 'nums -C first-parent' blame -C --first-parent HEAD~2 nums" & LF
+        & "t 'ignore reindent' blame --ignore-rev HEAD~4 lib.c" & LF
+        & "t 'ignore porcelain' blame --ignore-rev HEAD~4 --porcelain lib.c" & LF
+        & "t 'ignore -w' blame -w --ignore-rev HEAD~4 lib.c" & LF
+        & "t 'ignore two' blame --ignore-rev HEAD~4 --ignore-rev HEAD~5 lib.c" & LF
+        & "git config blame.markIgnoredLines true; git config blame.markUnblamableLines true" & LF
+        & "t 'ignore marks' blame --ignore-rev HEAD~4 lib.c" & LF
+        & "t 'ignore marks nums' blame --ignore-rev HEAD~5 HEAD~2 nums" & LF
+        & "t 'ignore marks porcelain' blame --ignore-rev HEAD~4 --line-porcelain lib.c" & LF
+        & "git config --unset blame.markIgnoredLines; git config --unset blame.markUnblamableLines" & LF
+        & "t 'ignore bad' blame --ignore-rev nope g" & LF
+        & "git rev-parse HEAD~4 > .ignore" & LF
+        & "t 'ignore-revs-file' blame --ignore-revs-file .ignore lib.c" & LF
+        & "git config blame.ignoreRevsFile .ignore" & LF
+        & "t 'ignore-revs-file config' blame lib.c" & LF
+        & "t 'ignore-revs-file reset' blame --ignore-revs-file '' lib.c" & LF
+        & "git config --unset blame.ignoreRevsFile" & LF
+        & "t 'ignore-revs-file missing' blame --ignore-revs-file nofile g" & LF
+        & "t 'nonl' blame nonl" & LF
+        & "t 'nonl -p' blame -p nonl" & LF
+        & "t 'empty' blame empty" & LF
+        & "t 'empty -L' blame -L 1 empty" & LF
+        & "t 'mailmap -e' blame -e lib.c" & LF
+        & "t 'mailmap -p' blame -p HEAD lib.c" & LF
+        & "t '--show-stats' blame --show-stats -M lib.c" & LF
+        & "t '--score-debug' blame --score-debug -M HEAD~2 nums" & LF
+        & "t '--color-lines' blame --color-lines g" & LF
+        & "t '--color-by-age' blame --color-by-age g" & LF
+        & "git config blame.coloring highlightRecent; git config color.blame.highlightRecent"
+        & " yellow,2004-01-01,green" & LF
+        & "t 'coloring config' blame g" & LF
+        & "git config --unset blame.coloring; git config --unset color.blame.highlightRecent" & LF
+        & "git config color.blame.repeatedLines magenta" & LF
+        & "t 'repeated color' blame --color-lines g" & LF
+        & "git config --unset color.blame.repeatedLines" & LF
+        & "git config blame.showRoot true; git config blame.blankBoundary true; git config"
+        & " blame.showEmail true; git config blame.date short" & LF
+        & "t 'config layout' blame g" & LF
+        & "git config --unset blame.showRoot; git config --unset blame.blankBoundary; git config"
+        & " --unset blame.showEmail; git config --unset blame.date" & LF
+        & "t '--date=short' blame --date=short g" & LF
+        & "t '--date=relative -L1,2' blame --date=relative -L 1,2 g" & LF
+        & "t '--date=raw' blame --date=raw g" & LF
+        & "t '--date=unix' blame --date=unix g" & LF
+        & "t '--date=rfc' blame --date=rfc g" & LF
+        & "t '--date=iso-strict' blame --date=iso-strict g" & LF
+        & "t '--date=human' blame --date=human g" & LF
+        & "t '--date=default' blame --date=default g" & LF
+        & "t '--date=format:%Y' blame --date=format:%Y g" & LF
+        & "t '--date=bad' blame --date=bad g" & LF
+        & "t '--contents -s' blame -s --contents util.c g" & LF
+        & "t '--contents missing' blame --contents nofile g" & LF
+        & "t '--contents --reverse' blame --contents util.c --reverse HEAD~2..HEAD g" & LF
+        & "t '--minimal' blame --minimal lib.c" & LF
+        & "t '--diff-algorithm=patience' blame --diff-algorithm=patience lib.c" & LF
+        & "t '--diff-algorithm=bad' blame --diff-algorithm=bad lib.c" & LF
+        & "t '--no-indent-heuristic' blame --no-indent-heuristic lib.c" & LF
+        & "t '--progress porcelain' blame --progress --porcelain g" & LF
+        & "t '--no-follow' blame --no-follow g" & LF
+        & "t 'annotate' annotate g" & LF;
+   begin
+      Run_Parity_Transcript (Root, Scenario, "blame");
+   end Blame_Option_Surface_Matches_Git;
+
    procedure Bisect_Run_And_Patch_Id_Match_Git
      (T : in out AUnit.Test_Cases.Test_Case'Class)
    is
@@ -7318,6 +7491,9 @@ package body CLI_Integration_Tests is
       Register_Routine
         (T, Show_Option_Surface_Matches_Git'Access,
          "Show: git's option surface, combined diffs, objects, walk forms");
+      Register_Routine
+        (T, Blame_Option_Surface_Matches_Git'Access,
+         "Blame: git's option surface, -L forms, -M/-C, ignore-rev, reverse");
       Register_Routine
         (T, Fast_Import_Stream_Matches_Git'Access,
          "Fast-import: author defaults to committer, short modes are files");

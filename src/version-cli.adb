@@ -30101,145 +30101,531 @@ package body Version.CLI is
                end if;
             end;
 
-         elsif Command = "blame" then
+         elsif Command = "blame" or else Command = "annotate" then
+            --  git's builtin/blame.c: the option surface, the argument
+            --  DWIM (`[<rev>] [--] <file>` or `<file> <rev>`), and the four
+            --  output layouts, over Version.Blame's port of blame.c.
             declare
+               Is_Annotate : constant Boolean := Command = "annotate";
                Usage : constant String :=
-                 "version blame [-s] [-l] [-e] [-t] [-f] [-L <range>]"
-                 & " [--abbrev=<n>] [REV] [--] FILE";
+                 "version " & Command
+                 & " [<options>] [<rev-opts>] [<rev>] [--] <file>";
                LF    : constant Character := Character'Val (10);
+               HT    : constant Character := Character'Val (9);
+               Reset_Color : constant String := ASCII.ESC & "[m";
 
-               function Img (N : Natural) return String is
-                  S : constant String := Natural'Image (N);
-               begin
-                  return S (S'First + 1 .. S'Last);
-               end Img;
-
+               function Img (N : Integer) return String is
+                 (Ada.Strings.Fixed.Trim (Integer'Image (N), Ada.Strings.Left));
                function Spaces (N : Integer) return String is
                  (if N <= 0 then "" else [1 .. N => ' ']);
-               function Pad_Right (S : String; W : Natural) return String is
-                 (S & Spaces (W - S'Length));
                function Pad_Left (S : String; W : Natural) return String is
                  (Spaces (W - S'Length) & S);
-
-               --  git's blame options that only shape the annotation (not the
-               --  line-attribution algorithm): -s drops the author/date, -l/
-               --  --abbrev set the id width, -e shows the email, -t the raw
-               --  time, -f the filename, -L limits the line range.
-               Short      : Boolean := False;   --  -s
-               Long_Sha   : Boolean := False;   --  -l
-               Show_Email : Boolean := False;   --  -e/--show-email
-               Raw_Time   : Boolean := False;   --  -t
-               Show_Name  : Boolean := False;   --  -f/--show-name
-               Show_Num   : Boolean := False;   --  -n/--show-number
-               Compat     : Boolean := False;   --  -c (git-annotate format)
-               Ignore_WS  : Boolean := False;   --  -w (ignore whitespace)
-               Porcelain  : Boolean := False;   --  --porcelain
-               Line_Porc  : Boolean := False;   --  --line-porcelain
-               Abbrev_Val : Natural := 7;       --  --abbrev=<n> (width is +1)
-               L_Set      : Boolean := False;   --  -L given
-               L_First    : Positive := 1;
-               L_Last     : Natural := 0;       --  0 = to end of file
-               Bad        : Boolean := False;
-               Sep_Seen   : Boolean := False;   --  -- separator seen
-               Sep_At     : Natural := 0;       --  positionals before --
-               Positionals : Version.Trailers.String_Vectors.Vector;
-               Unknown    : Unbounded_String;   --  first unrecognised option
-
-               procedure Parse_Range (S : String) is
-                  Comma : constant Natural :=
-                    Ada.Strings.Fixed.Index (S, ",");
+               function Decimal_Width (N : Natural) return Natural is
+                 (Img (N)'Length);
+               --  utf8_strwidth, as a code-point count.
+               function Str_Width (S : String) return Natural is
+                  W : Natural := 0;
                begin
-                  L_Set := True;
-                  if Comma = 0 then
-                     L_First := Positive'Value (S);
-                     L_Last := 0;
+                  for C of S loop
+                     if Character'Pos (C) < 16#80#
+                       or else Character'Pos (C) >= 16#C0#
+                     then
+                        W := W + 1;
+                     end if;
+                  end loop;
+                  return W;
+               end Str_Width;
+
+               Repo : constant Version.Repository.Repository_Handle :=
+                 Version.Repository.Open;
+
+               function Config_Value (Key : String) return String is
+                 (if Version.Config.Has_Key (Repo, Key)
+                  then Version.Config.Get_Value (Repo, Key) else "");
+               function Config_Bool (Key : String; Default : Boolean := False)
+                  return Boolean
+               is
+                  OK : Boolean;
+               begin
+                  if not Version.Config.Has_Key (Repo, Key) then
+                     return Default;
+                  end if;
+                  return Config_Bool_Norm (Config_Value (Key), OK) = "true";
+               end Config_Bool;
+
+               Opts : Version.Blame.Blame_Options;
+
+               --  Output flags (git's OUTPUT_* bits).
+               Out_Score      : Boolean := False;   --  --score-debug
+               Out_Name       : Boolean := False;   --  -f
+               Out_Number     : Boolean := False;   --  -n
+               Out_Porcelain  : Boolean := False;   --  -p
+               Out_Line_Porc  : Boolean := False;   --  --line-porcelain
+               Out_Compat     : Boolean := Is_Annotate;   --  -c
+               Out_Raw_Time   : Boolean := False;   --  -t
+               Out_Long       : Boolean := False;   --  -l
+               Out_No_Author  : Boolean := False;   --  -s
+               Out_Email      : Boolean := False;   --  -e
+               Out_Color_Line : Boolean := False;   --  --color-lines
+               Out_Age_Color  : Boolean := False;   --  --color-by-age
+               Incremental    : Boolean := False;
+               Blank_Boundary : Boolean := False;   --  -b
+               Show_Stats     : Boolean := False;
+               Show_Progress  : Integer := -1;
+               Abbrev         : Integer := -1;      --  --abbrev=<n>; -1 auto
+               Date_Mode      : Unbounded_String := To_Unbounded_String ("iso");
+               Revs_File      : Unbounded_String;   --  -S
+               Contents_From  : Unbounded_String;   --  --contents
+               Have_Contents  : Boolean := False;
+               Ignore_Rev_List   : Version.Trailers.String_Vectors.Vector;
+               Ignore_Revs_Files : Version.Trailers.String_Vectors.Vector;
+               Mark_Unblamable : Boolean := False;
+               Mark_Ignored    : Boolean := False;
+               Repeated_Color  : Unbounded_String;
+               Coloring_Lines  : Boolean := False;   --  blame.coloring
+               Coloring_Age    : Boolean := False;
+               Copies_Harder   : Boolean := False;   --  --find-copies-harder
+
+               --  color.blame.highlightRecent: alternating colour, date.
+               type Color_Field is record
+                  Hop : Long_Long_Integer := Long_Long_Integer'Last;
+                  Col : Unbounded_String;
+               end record;
+               package Field_Vectors is new Ada.Containers.Vectors
+                 (Index_Type => Positive, Element_Type => Color_Field);
+               Fields : Field_Vectors.Vector;
+
+               Operands    : Version.Trailers.String_Vectors.Vector;
+               Dashdash_At : Natural := 0;   --  operands before "--" (+1)
+               Have_Dashdash : Boolean := False;
+               Bad         : Boolean := False;
+               Fatal       : Unbounded_String;
+
+               procedure Die (Text : String) is
+               begin
+                  if Length (Fatal) = 0 then
+                     Fatal := To_Unbounded_String (Text);
+                  end if;
+               end Die;
+
+               procedure Parse_Color_Fields (S : String) is
+                  Expect_Color : Boolean := True;
+                  Start        : Positive := S'First;
+                  Cur          : Color_Field;
+               begin
+                  Fields.Clear;
+                  for K in S'First .. S'Last + 1 loop
+                     if K > S'Last or else S (K) = ',' then
+                        declare
+                           Item : constant String := S (Start .. K - 1);
+                        begin
+                           if Expect_Color then
+                              Cur.Col := To_Unbounded_String
+                                (Version.Color.To_Ansi (Item));
+                              Expect_Color := False;
+                           else
+                              Cur.Hop := Version.Approxidate.Value (Item);
+                              Fields.Append (Cur);
+                              Cur := (others => <>);
+                              Expect_Color := True;
+                           end if;
+                        end;
+                        Start := K + 1;
+                     end if;
+                  end loop;
+                  if Expect_Color then
+                     Die ("must end with a color");
+                     return;
+                  end if;
+                  Cur.Hop := Long_Long_Integer'Last;
+                  Fields.Append (Cur);
+               end Parse_Color_Fields;
+
+               function Parse_Score (Arg : String) return Natural is
+               begin
+                  return Natural'Value (Arg);
+               exception
+                  when others => return 0;
+               end Parse_Score;
+
+               --  --diff-algorithm=<x> / diff.algorithm
+               function Algorithm_Of (Value : String) return Boolean is
+               begin
+                  if Value = "myers" or else Value = "default" then
+                     Opts.Algorithm := Version.Merge.Diff_Algorithm_Myers;
+                  elsif Value = "minimal" then
+                     Opts.Algorithm := Version.Merge.Diff_Algorithm_Minimal;
+                  elsif Value = "patience" then
+                     Opts.Algorithm := Version.Merge.Diff_Algorithm_Patience;
+                  elsif Value = "histogram" then
+                     Opts.Algorithm := Version.Merge.Diff_Algorithm_Histogram;
                   else
+                     return False;
+                  end if;
+                  return True;
+               end Algorithm_Of;
+
+               --  parse_date_format: the modes git accepts.
+               function Valid_Date_Mode (M : String) return Boolean is
+                  Base : constant String :=
+                    (if M'Length > 6 and then M (M'Last - 5 .. M'Last) = "-local"
+                     then M (M'First .. M'Last - 6) else M);
+               begin
+                  return Base = "relative" or else Base = "iso8601"
+                    or else Base = "iso" or else Base = "iso8601-strict"
+                    or else Base = "iso-strict" or else Base = "rfc2822"
+                    or else Base = "rfc" or else Base = "short"
+                    or else Base = "default" or else Base = "human"
+                    or else Base = "raw" or else Base = "unix"
+                    or else Has_Prefix (M, "format:")
+                    or else Has_Prefix (M, "format-local:");
+               end Valid_Date_Mode;
+
+               --  -C: each use goes one level deeper; every use implies -M.
+               procedure Copy_Option (Arg : String) is
+               begin
+                  if Opts.Copies < 3 then
+                     Opts.Copies := Opts.Copies + 1;
+                  end if;
+                  Opts.Find_Moves := True;
+                  if Arg /= "" then
                      declare
-                        Start_S : constant String := S (S'First .. Comma - 1);
-                        End_S   : constant String := S (Comma + 1 .. S'Last);
+                        S : constant Natural := Parse_Score (Arg);
                      begin
-                        L_First :=
-                          (if Start_S = "" then 1
-                           else Positive'Value (Start_S));
-                        if End_S = "" then
-                           L_Last := 0;
-                        elsif End_S (End_S'First) = '+' then
-                           L_Last :=
-                             L_First
-                             + Natural'Value
-                                 (End_S (End_S'First + 1 .. End_S'Last)) - 1;
-                        else
-                           L_Last := Natural'Value (End_S);
+                        if S /= 0 then
+                           Opts.Copy_Score := S;
                         end if;
                      end;
                   end if;
-               exception
-                  when others =>
-                     Bad := True;
-               end Parse_Range;
+               end Copy_Option;
+
+               procedure Move_Option (Arg : String) is
+               begin
+                  Opts.Find_Moves := True;
+                  if Arg /= "" then
+                     declare
+                        S : constant Natural := Parse_Score (Arg);
+                     begin
+                        if S /= 0 then
+                           Opts.Move_Score := S;
+                        end if;
+                     end;
+                  end if;
+               end Move_Option;
+
+               --  A short option with no argument.
+               function Short_Flag (C : Character) return Boolean is
+               begin
+                  case C is
+                     when 'b' => Blank_Boundary := True;
+                     when 'f' => Out_Name := True;
+                     when 'n' => Out_Number := True;
+                     when 'p' => Out_Porcelain := True;
+                     when 'c' => Out_Compat := True;
+                     when 't' => Out_Raw_Time := True;
+                     when 'l' => Out_Long := True;
+                     when 's' => Out_No_Author := True;
+                     when 'e' => Out_Email := True;
+                     when 'w' =>
+                        Opts.Whitespace :=
+                          Version.Merge.Whitespace_Ignore_All_Space;
+                     when others => return False;
+                  end case;
+                  return True;
+               end Short_Flag;
+
+               --  A long option, with its value when the spelling carried
+               --  one (`--opt=value`); Value_Given says so.  Returns whether
+               --  the option is known.
+               function Long_Option
+                 (Name : String; Value : String; Value_Given : Boolean;
+                  Negated : Boolean) return Boolean is
+               begin
+                  if Name = "incremental" then
+                     Incremental := not Negated;
+                  elsif Name = "root" then
+                     Opts.Show_Root := not Negated;
+                  elsif Name = "show-stats" then
+                     Show_Stats := not Negated;
+                  elsif Name = "progress" then
+                     Show_Progress := (if Negated then 0 else 1);
+                  elsif Name = "score-debug" then
+                     Out_Score := not Negated;
+                  elsif Name = "show-name" then
+                     Out_Name := not Negated;
+                  elsif Name = "show-number" then
+                     Out_Number := not Negated;
+                  elsif Name = "porcelain" then
+                     Out_Porcelain := not Negated;
+                  elsif Name = "line-porcelain" then
+                     Out_Porcelain := not Negated;
+                     Out_Line_Porc := not Negated;
+                  elsif Name = "show-email" then
+                     Out_Email := not Negated;
+                  elsif Name = "color-lines" then
+                     Out_Color_Line := not Negated;
+                  elsif Name = "color-by-age" then
+                     Out_Age_Color := not Negated;
+                  elsif Name = "minimal" then
+                     Opts.Algorithm :=
+                       (if Negated then Version.Merge.Diff_Algorithm_Myers
+                        else Version.Merge.Diff_Algorithm_Minimal);
+                  elsif Name = "first-parent" then
+                     Opts.First_Parent := not Negated;
+                  elsif Name = "reverse" then
+                     Opts.Reverse_Blame := not Negated;
+                  elsif Name = "follow" then
+                     Opts.Follow_Renames := not Negated;
+                  elsif Name = "indent-heuristic" then
+                     Opts.Indent_Heuristic := not Negated;
+                  elsif Name = "textconv" then
+                     Opts.Textconv := not Negated;
+                  elsif Name = "find-copies-harder" then
+                     Copies_Harder := not Negated;
+                  elsif Name = "abbrev" then
+                     if Negated then
+                        Abbrev := 0;
+                     elsif not Value_Given then
+                        Abbrev := -1;
+                     else
+                        begin
+                           Abbrev := Natural'Value (Value);
+                        exception
+                           when others => return False;
+                        end;
+                     end if;
+                  elsif Name = "diff-algorithm" then
+                     if not Algorithm_Of (Value) then
+                        Error_Line
+                          ("option diff-algorithm accepts ""myers"", "
+                           & """minimal"", ""patience"" and ""histogram""");
+                        Bad := True;
+                     end if;
+                  elsif Name = "ignore-rev" then
+                     if Negated then
+                        Ignore_Rev_List.Clear;
+                     else
+                        Ignore_Rev_List.Append (Value);
+                     end if;
+                  elsif Name = "ignore-revs-file" then
+                     if Negated then
+                        Ignore_Revs_Files.Clear;
+                     else
+                        Ignore_Revs_Files.Append (Value);
+                     end if;
+                  elsif Name = "contents" then
+                     Have_Contents := not Negated;
+                     Contents_From := To_Unbounded_String (Value);
+                  elsif Name = "since" or else Name = "after" then
+                     Opts.Max_Age := Version.Approxidate.Value (Value);
+                  elsif Name = "max-age" then
+                     begin
+                        Opts.Max_Age := Long_Long_Integer'Value (Value);
+                     exception
+                        when others => return False;
+                     end;
+                  elsif Name = "until" or else Name = "before"
+                    or else Name = "min-age"
+                  then
+                     null;   --  a rev-list limit blame does not apply
+                  elsif Name = "date" then
+                     if not Valid_Date_Mode (Value) then
+                        Die ("unknown date format " & Value);
+                     end if;
+                     Date_Mode := To_Unbounded_String (Value);
+                  elsif Name = "encoding" then
+                     null;   --  accepted: output is the stored bytes
+                  else
+                     return False;
+                  end if;
+                  return True;
+               end Long_Option;
+
+               --  Whether a long option takes a value (from the next word
+               --  when not attached).
+               function Takes_Value (Name : String) return Boolean is
+                 (Name = "diff-algorithm" or else Name = "ignore-rev"
+                  or else Name = "ignore-revs-file" or else Name = "contents"
+                  or else Name = "since" or else Name = "after"
+                  or else Name = "until" or else Name = "before"
+                  or else Name = "max-age" or else Name = "min-age"
+                  or else Name = "date" or else Name = "encoding");
             begin
+               --  git_blame_config
+               Opts.Show_Root := Config_Bool ("blame.showroot");
+               Blank_Boundary := Config_Bool ("blame.blankboundary");
+               Out_Email := Config_Bool ("blame.showemail");
+               if Version.Config.Has_Key (Repo, "blame.date") then
+                  declare
+                     V : constant String := Config_Value ("blame.date");
+                  begin
+                     if Valid_Date_Mode (V) then
+                        Date_Mode := To_Unbounded_String (V);
+                     else
+                        Die ("unknown date format " & V);
+                     end if;
+                  end;
+               end if;
+               if Version.Config.Has_Key (Repo, "blame.ignorerevsfile") then
+                  Ignore_Revs_Files.Append (Config_Value ("blame.ignorerevsfile"));
+               end if;
+               Mark_Unblamable := Config_Bool ("blame.markunblamablelines");
+               Mark_Ignored := Config_Bool ("blame.markignoredlines");
+               if Version.Config.Has_Key (Repo, "color.blame.repeatedlines") then
+                  Repeated_Color := To_Unbounded_String
+                    (Version.Color.To_Ansi
+                       (Config_Value ("color.blame.repeatedlines")));
+               end if;
+               Parse_Color_Fields ("blue,12 month ago,white,1 month ago,red");
+               if Version.Config.Has_Key (Repo, "color.blame.highlightrecent") then
+                  Parse_Color_Fields (Config_Value ("color.blame.highlightrecent"));
+               end if;
+               if Version.Config.Has_Key (Repo, "blame.coloring") then
+                  declare
+                     V : constant String := Config_Value ("blame.coloring");
+                  begin
+                     if V = "repeatedLines" then
+                        Coloring_Lines := True;
+                     elsif V = "highlightRecent" then
+                        Coloring_Age := True;
+                     elsif V = "none" then
+                        Coloring_Lines := False;
+                        Coloring_Age := False;
+                     else
+                        Stderr_Line
+                          ("warning: invalid value for 'blame.coloring': '"
+                           & V & "'");
+                     end if;
+                  end;
+               end if;
+               if Version.Config.Has_Key (Repo, "diff.algorithm") then
+                  if not Algorithm_Of (Config_Value ("diff.algorithm")) then
+                     Error_Line
+                       ("unknown value for config 'diff.algorithm': "
+                        & Config_Value ("diff.algorithm"));
+                     Die ("bad config variable 'diff.algorithm' in file '.git/config'");
+                  end if;
+               end if;
+               if Version.Config.Has_Key (Repo, "diff.indentheuristic") then
+                  Opts.Indent_Heuristic := Config_Bool ("diff.indentheuristic");
+               end if;
+
+               --  Arguments.
                declare
                   I : Natural := 2;
                begin
-                  while I <= Count loop
+                  while I <= Count and then not Bad loop
                      declare
                         A : constant String := Arg (I);
                      begin
-                        if not Sep_Seen and then A = "--" then
-                           Sep_Seen := True;
-                           Sep_At := Natural (Positionals.Length);
-                        elsif not Sep_Seen and then A = "-s" then
-                           Short := True;
-                        elsif not Sep_Seen and then A = "-l" then
-                           Long_Sha := True;
-                        elsif not Sep_Seen
-                          and then (A = "-e" or else A = "--show-email")
+                        if Have_Dashdash then
+                           Operands.Append (A);
+                        elsif A = "--" then
+                           Have_Dashdash := True;
+                           Dashdash_At := Natural (Operands.Length) + 1;
+                        elsif A'Length > 2 and then A (A'First .. A'First + 1) = "--"
                         then
-                           Show_Email := True;
-                        elsif not Sep_Seen and then A = "-t" then
-                           Raw_Time := True;
-                        elsif not Sep_Seen
-                          and then (A = "-f" or else A = "--show-name")
-                        then
-                           Show_Name := True;
-                        elsif not Sep_Seen
-                          and then (A = "-n" or else A = "--show-number")
-                        then
-                           Show_Num := True;
-                        elsif not Sep_Seen and then A = "-w" then
-                           Ignore_WS := True;
-                        elsif not Sep_Seen and then A = "-c" then
-                           Compat := True;
-                        elsif not Sep_Seen and then A = "--porcelain" then
-                           Porcelain := True;
-                        elsif not Sep_Seen and then A = "--line-porcelain" then
-                           Line_Porc := True;
-                        elsif not Sep_Seen and then A = "-L" then
-                           if I < Count then
-                              I := I + 1;
-                              Parse_Range (Arg (I));
-                           else
-                              Bad := True;
-                           end if;
-                        elsif not Sep_Seen and then Has_Prefix (A, "-L") then
-                           Parse_Range (A (A'First + 2 .. A'Last));
-                        elsif not Sep_Seen
-                          and then Has_Prefix (A, "--abbrev=")
-                        then
+                           declare
+                              Eq   : constant Natural :=
+                                Ada.Strings.Fixed.Index (A, "=");
+                              Body_S : constant String :=
+                                (if Eq = 0 then A (A'First + 2 .. A'Last)
+                                 else A (A'First + 2 .. Eq - 1));
+                              Negated : constant Boolean :=
+                                Has_Prefix (Body_S, "no-")
+                                and then Body_S /= "no-";
+                              Name : constant String :=
+                                (if Negated
+                                 then Body_S (Body_S'First + 3 .. Body_S'Last)
+                                 else Body_S);
                            begin
-                              Abbrev_Val :=
-                                Natural'Value (A (A'First + 9 .. A'Last));
-                           exception
-                              when others => Bad := True;
+                              if Eq = 0 and then not Negated
+                                and then Takes_Value (Name)
+                              then
+                                 if I < Count then
+                                    I := I + 1;
+                                    if not Long_Option (Name, Arg (I), True, False)
+                                    then
+                                       Usage_Error
+                                         ("unknown " & Command & " option: " & A,
+                                          Usage);
+                                       Bad := True;
+                                    end if;
+                                 else
+                                    Error_Line
+                                      ("option `" & Name & "' requires a value");
+                                    Bad := True;
+                                 end if;
+                              elsif not Long_Option
+                                         (Name,
+                                          (if Eq = 0 then ""
+                                           else A (Eq + 1 .. A'Last)),
+                                          Eq /= 0, Negated)
+                              then
+                                 Usage_Error
+                                   ("unknown " & Command & " option: " & A, Usage);
+                                 Bad := True;
+                              end if;
                            end;
-                        elsif not Sep_Seen and then A'Length > 1
-                          and then A (A'First) = '-'
-                        then
-                           Unknown := To_Unbounded_String (A);
-                           Bad := True;
-                           exit;
+                        elsif A'Length > 1 and then A (A'First) = '-' then
+                           --  Bundled short options; -L/-S take the rest of
+                           --  the word or the next one, -C/-M an attached
+                           --  score.
+                           declare
+                              K : Positive := A'First + 1;
+                           begin
+                              while K <= A'Last and then not Bad loop
+                                 declare
+                                    C : constant Character := A (K);
+                                 begin
+                                    if C = 'L' or else C = 'S' then
+                                       declare
+                                          V : Unbounded_String;
+                                       begin
+                                          if K < A'Last then
+                                             V := To_Unbounded_String
+                                               (A (K + 1 .. A'Last));
+                                          elsif I < Count then
+                                             I := I + 1;
+                                             V := To_Unbounded_String (Arg (I));
+                                          else
+                                             Error_Line
+                                               ("switch `" & C
+                                                & "' requires a value");
+                                             Bad := True;
+                                             exit;
+                                          end if;
+                                          if C = 'L' then
+                                             Opts.Ranges.Append (To_String (V));
+                                          else
+                                             Revs_File := V;
+                                          end if;
+                                       end;
+                                       exit;
+                                    elsif C = 'C' or else C = 'M' then
+                                       declare
+                                          Rest : constant String :=
+                                            A (K + 1 .. A'Last);
+                                       begin
+                                          if C = 'C' then
+                                             Copy_Option (Rest);
+                                          else
+                                             Move_Option (Rest);
+                                          end if;
+                                       end;
+                                       exit;
+                                    elsif not Short_Flag (C) then
+                                       Usage_Error
+                                         ("unknown " & Command & " option: " & A,
+                                          Usage);
+                                       Bad := True;
+                                    end if;
+                                 end;
+                                 K := K + 1;
+                              end loop;
+                           end;
                         else
-                           Positionals.Append (A);
+                           Operands.Append (A);
                         end if;
                      end;
                      I := I + 1;
@@ -30247,540 +30633,927 @@ package body Version.CLI is
                end;
 
                if Bad then
-                  if Length (Unknown) > 0 then
-                     Usage_Error
-                       ("unknown blame option: " & To_String (Unknown), Usage);
-                  else
-                     Usage_Error ("blame: invalid -L range", Usage);
+                  Set_Usage_Failure;
+                  goto Blame_Done;
+               end if;
+
+               if Length (Fatal) > 0 then
+                  Stderr_Line ("fatal: " & To_String (Fatal));
+                  Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                  goto Blame_Done;
+               end if;
+
+               if Incremental or else Out_Porcelain then
+                  if Show_Progress > 0 then
+                     Stderr_Line
+                       ("fatal: --progress can't be used with --incremental"
+                        & " or porcelain formats");
+                     Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                     goto Blame_Done;
                   end if;
-               elsif Positionals.Is_Empty then
-                  Usage_Error ("blame requires a file", Usage);
-               else
-                  declare
-                     Repo : constant Version.Repository.Repository_Handle :=
-                       Version.Repository.Open;
-                     Have_Rev : constant Boolean :=
-                       (if Sep_Seen then Sep_At >= 1
-                        else Natural (Positionals.Length) >= 2);
-                     Rev_Str : constant String :=
-                       (if Have_Rev then Positionals.First_Element else "");
-                     Tip  : constant Version.Objects.Hex_Object_Id :=
-                       (if Have_Rev
-                        then Version.Revisions.Resolve_Commit (Repo, Rev_Str)
-                        else Version.Objects.To_Object_Id
-                               (Version.Refs.Current_Commit_Id (Repo)));
-                     --  blame names its file from the directory it was run
-                     --  in, like every other path operand -- so ".." reaches
-                     --  above it. git reads the magic prefixes literally
-                     --  here, so resolve the path without parsing them.
-                     Typed : constant String := Positionals.Last_Element;
-                     File : constant String :=
-                       Version.Pathspec.Resolve_Against_Prefix
-                         (Repo_Prefix, Typed);
+                  Show_Progress := 0;
+               end if;
+               if Abbrev = 0 then
+                  Abbrev := 40;
+               end if;
+               if Is_Annotate then
+                  Date_Mode := To_Unbounded_String ("iso");
+               end if;
+               if Copies_Harder then
+                  Opts.Find_Moves := True;
+                  if Opts.Copies < 2 then
+                     Opts.Copies := 2;
+                  end if;
+               end if;
 
-                     --  git blames only a path it tracks. One in the index
-                     --  but not yet in any commit is fine -- every line is
-                     --  simply uncommitted -- but an untracked file is a
-                     --  die(), not a file of uncommitted lines.
-                     function Is_Tracked return Boolean is
-                     begin
-                        for P of Index_Candidates loop
-                           if P = File then
-                              return True;
-                           end if;
-                        end loop;
+               --  The maximum width used to show the dates.
+               declare
+                  M    : constant String := To_String (Date_Mode);
+                  Base : constant String :=
+                    (if M'Length > 6 and then M (M'Last - 5 .. M'Last) = "-local"
+                     then M (M'First .. M'Last - 6) else M);
+                  Date_Width : Natural;
 
-                        for P of Tree_Candidates (Tip) loop
-                           if P = File then
-                              return True;
-                           end if;
-                        end loop;
+                  --  Operands: `[<rev>...] [--] <path>`, or `<path> <rev>`.
+                  Path      : Unbounded_String;
+                  Rev_Args  : Version.Trailers.String_Vectors.Vector;
+                  Include, Exclude : Version.History.Commit_Id_Vectors.Vector;
+                  Include_Names, Exclude_Names :
+                    Version.Blame.String_Vectors.Vector;
 
-                        return False;
-                     end Is_Tracked;
+                  function Is_A_Rev (Name : String) return Boolean is
                   begin
-                     if not Is_Tracked then
-                        Stderr_Line
-                          ("fatal: no such path '" & Typed & "' in HEAD");
-                        Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
-                        return;
-                     end if;
+                     return Version.Objects.Id_Length
+                              (Version.Revisions.Resolve (Repo, Name)) > 0;
+                  exception
+                     when others => return False;
+                  end Is_A_Rev;
 
-                     declare
-                        --  Without a revision git blames the file as it stands
-                        --  in the working tree, so lines edited but not yet
-                        --  committed show up as "Not Committed Yet" rather than
-                        --  as whatever HEAD happens to hold. Named a revision,
-                        --  it blames that revision's copy instead.
-                        Working : constant String :=
-                          Version.Files.Join
-                            (Version.Repository.Root_Path (Repo), File);
-                        Use_Working : constant Boolean :=
-                          not Have_Rev
-                          and then Version.Files.Is_Ordinary_File (Working);
-                        Lines : constant Version.Blame.Blame_Vectors.Vector :=
-                          (if Use_Working
-                           then Version.Blame.Blame_Working_File
-                                  (Repo, Tip, File,
-                                   Version.Files.Read_Binary_File (Working),
-                                   Ignore_Whitespace => Ignore_WS)
-                           else Version.Blame.Blame_File
-                                  (Repo, Tip, File,
-                                   Ignore_Whitespace => Ignore_WS));
+                  --  git names the whole operand in its complaint, not the
+                  --  half of a range that failed.
+                  function Commit_Of (Name, Operand : String) return
+                    Version.Objects.Hex_Object_Id
+                  is
+                  begin
+                     return Version.Revisions.Resolve_Commit (Repo, Name);
+                  exception
+                     when others =>
+                        Die ("bad revision '" & Operand & "'");
+                        return Version.Objects.Zero_Object_Id;
+                  end Commit_Of;
 
-                        --  Per-commit metadata (author name, iso date, boundary),
-                        --  cached so each distinct commit is read once.
-                        type Meta is record
-                           Hex      : Unbounded_String;
-                           Author   : Unbounded_String;
-                           Email    : Unbounded_String;   --  "<addr>"
-                           Date     : Unbounded_String;   --  iso
-                           Raw_Date : Unbounded_String;   --  "<sec> <tz>"
-                           Boundary : Boolean := False;
-                        end record;
-                        package Meta_Vectors is new Ada.Containers.Vectors
-                          (Index_Type => Positive, Element_Type => Meta);
-                        Cache : Meta_Vectors.Vector;
-
-                        function Is_Zero (Hex : String) return Boolean is
-                          (for all C of Hex => C = '0');
-
-                        function Meta_For (Hex : String) return Meta is
+                  --  setup_revisions on the rev operands: A..B, ^A, A.
+                  procedure Add_Rev (Text : String) is
+                     DD : constant Natural := Ada.Strings.Fixed.Index (Text, "..");
+                  begin
+                     if DD > 0 then
+                        declare
+                           A : constant String := Text (Text'First .. DD - 1);
+                           B_Start : constant Natural :=
+                             (if DD + 2 <= Text'Last and then Text (DD + 2) = '.'
+                              then DD + 3 else DD + 2);
+                           B : constant String := Text (B_Start .. Text'Last);
+                           AN : constant String := (if A = "" then "HEAD" else A);
+                           BN : constant String := (if B = "" then "HEAD" else B);
                         begin
-                           for M of Cache loop
-                              if To_String (M.Hex) = Hex then
-                                 return M;
-                              end if;
-                           end loop;
-
-                           --  A line not in any commit: there is no object to
-                           --  read, and git labels it with the current time.
-                           if Is_Zero (Hex) then
+                           if B_Start = DD + 3 then
+                              --  A...B: both sides, minus their merge base.
                               declare
-                                 Result : Meta;
-                                 Raw_Now : constant String :=
-                                   Ada.Strings.Fixed.Trim
-                                     (Long_Long_Integer'Image
-                                        (Version.Timestamps.Unix_Now),
-                                      Ada.Strings.Left)
-                                   & " " & Version.Timestamps.Local_Zone;
+                                 CA : constant Version.Objects.Hex_Object_Id :=
+                                   Commit_Of (AN, Text);
+                                 CB : constant Version.Objects.Hex_Object_Id :=
+                                   Commit_Of (BN, Text);
                               begin
-                                 Result.Hex := To_Unbounded_String (Hex);
-                                 Result.Author :=
-                                   To_Unbounded_String ("Not Committed Yet");
-                                 Result.Email :=
-                                   To_Unbounded_String ("<not.committed.yet>");
-                                 Result.Raw_Date := To_Unbounded_String (Raw_Now);
-                                 Result.Date := To_Unbounded_String
-                                   (Version.Ref_Format.Git_Date (Raw_Now, "iso"));
-                                 Cache.Append (Result);
-                                 return Result;
+                                 if Length (Fatal) > 0 then
+                                    return;
+                                 end if;
+                                 Include.Append (CA);
+                                 Include_Names.Append (AN);
+                                 Include.Append (CB);
+                                 Include_Names.Append (BN);
+                                 for MB of Version.History.Merge_Bases (Repo, CA, CB)
+                                 loop
+                                    Exclude.Append (MB);
+                                    Exclude_Names.Append (Text);
+                                 end loop;
+                              end;
+                           else
+                              declare
+                                 CA : constant Version.Objects.Hex_Object_Id :=
+                                   Commit_Of (AN, Text);
+                                 CB : constant Version.Objects.Hex_Object_Id :=
+                                   Commit_Of (BN, Text);
+                              begin
+                                 if Length (Fatal) > 0 then
+                                    return;
+                                 end if;
+                                 Exclude.Append (CA);
+                                 Exclude_Names.Append (AN);
+                                 Include.Append (CB);
+                                 Include_Names.Append (BN);
                               end;
                            end if;
-
-                           declare
-                              Obj : constant Version.Objects.Git_Object :=
-                                Version.Objects.Read_Object
-                                  (Repo, Version.Objects.To_Object_Id (Hex));
-                              C   : constant String := Version.Objects.Content (Obj);
-                              P   : constant Natural :=
-                                Ada.Strings.Fixed.Index (C, "author ");
-                              EOL : Natural :=
-                                (if P = 0 then 0
-                                 else Ada.Strings.Fixed.Index
-                                        (C (P .. C'Last), "" & LF));
-                              Result : Meta;
-                           begin
-                              Result.Hex := To_Unbounded_String (Hex);
-                              Result.Boundary :=
-                                Version.Objects.Commit_Parent_Ids (Obj).Is_Empty;
-                              if P /= 0 then
-                                 if EOL = 0 then
-                                    EOL := C'Last + 1;
-                                 end if;
-                                 declare
-                                    Ident : constant String := C (P + 7 .. EOL - 1);
-                                    Lt : constant Natural :=
-                                      Ada.Strings.Fixed.Index (Ident, " <");
-                                    Gt : constant Natural :=
-                                      Ada.Strings.Fixed.Index (Ident, "> ");
-                                 begin
-                                    Result.Author := To_Unbounded_String
-                                      (if Lt > 0
-                                       then Ident (Ident'First .. Lt - 1)
-                                       else Ident);
-                                    --  "<addr>" spans the "<" (at Lt+1) to the
-                                    --  ">" (at Gt); the raw "<sec> <tz>" follows.
-                                    if Lt > 0 and then Gt > 0 then
-                                       Result.Email := To_Unbounded_String
-                                         (Ident (Lt + 1 .. Gt));
-                                    end if;
-                                    if Gt > 0 then
-                                       Result.Raw_Date := To_Unbounded_String
-                                         (Ident (Gt + 2 .. Ident'Last));
-                                       Result.Date := To_Unbounded_String
-                                         (Version.Ref_Format.Git_Date
-                                            (Ident (Gt + 2 .. Ident'Last), "iso"));
-                                    end if;
-                                 end;
-                              end if;
-                              Cache.Append (Result);
-                              return Result;
-                           end;
-                        end Meta_For;
-
-                        Ident_W : Natural := 0;
-                        --  Displayed id width: -l shows the full id, --abbrev=<n>
-                        --  shows n+1 hex, and the default is 8; the boundary "^"
-                        --  takes the place of one hex digit.
-                        Sha_W : constant Natural :=
-                          (if Long_Sha then 40
-                           else Natural'Min (Abbrev_Val + 1, 40));
-                        --  git blames the whole file, then shows only -L's
-                        --  range, clamping an over-long end to the last line.
-                        First : constant Positive := (if L_Set then L_First else 1);
-                        Last  : constant Natural :=
-                          (if not L_Set or else L_Last = 0
-                           then Natural (Lines.Length)
-                           else Natural'Min (L_Last, Natural (Lines.Length)));
-                        --  The line-number column is sized from the largest
-                        --  number actually shown, not the whole file.
-                        Line_W : constant Natural := Img (Last)'Length;
-
-                        Orig_W : Natural := 0;
-
-                        function Ident_Of (M : Meta) return String is
-                          (if Show_Email then To_String (M.Email)
-                           else To_String (M.Author));
-
-                        --  The value of a "<key> ..." header line of Content.
-                        function Hdr (Content, Key : String) return String is
-                           Pat : constant String := LF & Key;
-                           P   : constant Natural :=
-                             Ada.Strings.Fixed.Index (Content, Pat);
+                        end;
+                     elsif Text'Length > 1 and then Text (Text'First) = '^' then
+                        declare
+                           N : constant String := Text (Text'First + 1 .. Text'Last);
+                           C : constant Version.Objects.Hex_Object_Id :=
+                             Commit_Of (N, Text);
                         begin
-                           if P = 0 then
-                              return "";
+                           if Length (Fatal) = 0 then
+                              Exclude.Append (C);
+                              Exclude_Names.Append (N);
                            end if;
-                           declare
-                              VS : constant Natural := P + Pat'Length;
-                              VE : Natural :=
-                                Ada.Strings.Fixed.Index
-                                  (Content (VS .. Content'Last), "" & LF);
-                           begin
-                              if VE = 0 then
-                                 VE := Content'Last + 1;
-                              end if;
-                              return Content (VS .. VE - 1);
-                           end;
-                        end Hdr;
-
-                        --  Split "Name <mail> <sec> <tz>" into its parts.
-                        procedure Split_Ident
-                          (Ident               : String;
-                           Name, Mail, Sec, Tz : out Unbounded_String)
-                        is
-                           Lt : constant Natural :=
-                             Ada.Strings.Fixed.Index (Ident, " <");
-                           Gt : Natural := 0;
+                        end;
+                     else
+                        declare
+                           C : constant Version.Objects.Hex_Object_Id :=
+                             Commit_Of (Text, Text);
                         begin
-                           Name := Null_Unbounded_String;
-                           Mail := Null_Unbounded_String;
-                           Sec  := Null_Unbounded_String;
-                           Tz   := Null_Unbounded_String;
-                           for K in reverse Ident'Range loop
-                              if Ident (K) = '>' then
-                                 Gt := K;
-                                 exit;
+                           if Length (Fatal) = 0 then
+                              Include.Append (C);
+                              Include_Names.Append (Text);
+                           end if;
+                        end;
+                     end if;
+                  end Add_Rev;
+               begin
+                  if Base = "rfc2822" or else Base = "rfc" then
+                     Date_Width := 31;
+                  elsif Base = "iso8601-strict" or else Base = "iso-strict" then
+                     Date_Width := 25;
+                  elsif Base = "iso8601" or else Base = "iso" then
+                     Date_Width := 25;
+                  elsif Base = "raw" then
+                     Date_Width := 16;
+                  elsif Base = "unix" then
+                     Date_Width := 10;
+                  elsif Base = "short" then
+                     Date_Width := 10;
+                  elsif Base = "relative" then
+                     Date_Width := 22;
+                  elsif Base = "human" then
+                     Date_Width := 16;
+                  elsif Has_Prefix (M, "format") then
+                     Date_Width :=
+                       Str_Width (Version.Pretty_Format.Format_Date ("0 +0000", M));
+                  else
+                     Date_Width := 30;
+                  end if;
+
+                  --  cmd_blame's operand rules.
+                  declare
+                     N : constant Natural := Natural (Operands.Length);
+                  begin
+                     if Have_Dashdash then
+                        case N - (Dashdash_At - 1) is
+                           when 2 =>
+                              --  "blame -- <path> <rev>"
+                              if N /= 2 then
+                                 Usage_Error ("bad operands", Usage);
+                                 goto Blame_Done;
                               end if;
+                              Path := To_Unbounded_String (Operands (1));
+                              Rev_Args.Append (Operands (2));
+                           when 1 =>
+                              Path := To_Unbounded_String (Operands (N));
+                              for K in 1 .. N - 1 loop
+                                 Rev_Args.Append (Operands (K));
+                              end loop;
+                           when others =>
+                              Usage_Error
+                                ((if N - (Dashdash_At - 1) = 0
+                                  then Command & " requires a file"
+                                  else "bad operands"), Usage);
+                              goto Blame_Done;
+                        end case;
+                     else
+                        if N < 1 then
+                           Usage_Error (Command & " requires a file", Usage);
+                           goto Blame_Done;
+                        end if;
+                        if N = 2 and then Is_A_Rev (Operands (2)) then
+                           --  "blame <path> <rev>"
+                           Path := To_Unbounded_String (Operands (1));
+                           Rev_Args.Append (Operands (2));
+                        else
+                           Path := To_Unbounded_String (Operands (N));
+                           for K in 1 .. N - 1 loop
+                              Rev_Args.Append (Operands (K));
                            end loop;
-                           if Lt = 0 or else Gt = 0 then
-                              Name := To_Unbounded_String (Ident);
-                              return;
-                           end if;
-                           Name :=
-                             To_Unbounded_String (Ident (Ident'First .. Lt - 1));
-                           Mail := To_Unbounded_String (Ident (Lt + 1 .. Gt));
-                           declare
-                              Rest : constant String :=
-                                (if Gt + 2 <= Ident'Last
-                                 then Ident (Gt + 2 .. Ident'Last) else "");
-                              Sp : constant Natural :=
-                                Ada.Strings.Fixed.Index (Rest, " ");
-                           begin
-                              if Sp = 0 then
-                                 Sec := To_Unbounded_String (Rest);
-                              else
-                                 Sec := To_Unbounded_String
-                                   (Rest (Rest'First .. Sp - 1));
-                                 Tz := To_Unbounded_String
-                                   (Rest (Sp + 1 .. Rest'Last));
-                              end if;
-                           end;
-                        end Split_Ident;
+                        end if;
+                     end if;
+                  end;
 
-                        --  git's porcelain per-commit block: identities, times,
-                        --  summary, and either "boundary" (a root) or "previous"
-                        --  (the first parent that still has the file).
-                        function Porc_Block (Hex : String) return String is
-                           R : Unbounded_String;
+                  for R of Rev_Args loop
+                     Add_Rev (R);
+                  end loop;
+
+                  --  The path is named from the directory blame ran in.
+                  declare
+                     Typed : constant String := To_String (Path);
+                  begin
+                     Path := To_Unbounded_String
+                       (Version.Pathspec.Resolve_Against_Prefix (Repo_Prefix, Typed));
+                  end;
+
+                  --  --ignore-rev / --ignore-revs-file (build_ignorelist)
+                  for F of Ignore_Revs_Files loop
+                     if F = "" then
+                        Opts.Ignore_Revs.Clear;
+                     else
+                        declare
+                           Full : constant String :=
+                             (if GNAT.OS_Lib.Is_Absolute_Path (F) then F
+                              else Version.Files.Join
+                                     (Version.Repository.Root_Path (Repo),
+                                      Version.Pathspec.Resolve_Against_Prefix
+                                        (Repo_Prefix, F)));
                         begin
-                           if Is_Zero (Hex) then
+                           if not Ada.Directories.Exists (Full) then
+                              Die ("could not open object name list: " & F);
+                           else
                               declare
-                                 Now : constant String :=
-                                   Ada.Strings.Fixed.Trim
-                                     (Long_Long_Integer'Image
-                                        (Version.Timestamps.Unix_Now),
-                                      Ada.Strings.Left);
-                                 Tz  : constant String :=
-                                   Version.Timestamps.Local_Zone;
+                                 Text  : constant String :=
+                                   Version.Files.Read_Binary_File (Full);
+                                 Start : Positive := Text'First;
                               begin
-                                 Append (R, "author Not Committed Yet" & LF);
-                                 Append
-                                   (R, "author-mail <not.committed.yet>" & LF);
-                                 Append (R, "author-time " & Now & LF);
-                                 Append (R, "author-tz " & Tz & LF);
-                                 Append (R, "committer Not Committed Yet" & LF);
-                                 Append
-                                   (R,
-                                    "committer-mail <not.committed.yet>" & LF);
-                                 Append (R, "committer-time " & Now & LF);
-                                 Append (R, "committer-tz " & Tz & LF);
-                                 Append (R, "summary Version of " & File
-                                            & " from " & File & LF);
-                                 --  An uncommitted line would blame next to the
-                                 --  tip, if the file is there.
-                                 declare
-                                    Has : Boolean := False;
-                                 begin
-                                    for P of Tree_Candidates (Tip) loop
-                                       if P = File then
-                                          Has := True;
-                                          exit;
-                                       end if;
-                                    end loop;
-                                    if Has then
-                                       Append (R, "previous "
-                                                  & Version.Objects.To_String
-                                                      (Tip)
-                                                  & " " & File & LF);
+                                 for K in Text'First .. Text'Last + 1 loop
+                                    if K > Text'Last or else Text (K) = LF then
+                                       declare
+                                          Line : constant String :=
+                                            Text (Start .. K - 1);
+                                          Last : Natural := Line'Last;
+                                          Hash : constant Natural :=
+                                            Ada.Strings.Fixed.Index (Line, "#");
+                                       begin
+                                          if Hash > 0 then
+                                             Last := Hash - 1;
+                                          end if;
+                                          while Last >= Line'First
+                                            and then (Line (Last) = ' '
+                                                      or else Line (Last) = HT
+                                                      or else Line (Last) = ASCII.CR)
+                                          loop
+                                             Last := Last - 1;
+                                          end loop;
+                                          declare
+                                             V : constant String :=
+                                               Ada.Strings.Fixed.Trim
+                                                 (Line (Line'First .. Last),
+                                                  Ada.Strings.Both);
+                                          begin
+                                             if V /= ""
+                                               and then Version.Objects
+                                                 .Is_Valid_Hex_Object_Id (V)
+                                             then
+                                                Opts.Ignore_Revs.Append
+                                                  (Version.Objects.To_Object_Id (V));
+                                             elsif V /= "" then
+                                                Die ("invalid object name: " & V);
+                                             end if;
+                                          end;
+                                       end;
+                                       Start := K + 1;
                                     end if;
-                                 end;
-                                 Append (R, "filename " & File & LF);
+                                 end loop;
+                              end;
+                           end if;
+                        end;
+                     end if;
+                  end loop;
+                  for R of Ignore_Rev_List loop
+                     begin
+                        Opts.Ignore_Revs.Append
+                          (Version.Revisions.Resolve_Commit (Repo, R));
+                     exception
+                        when others =>
+                           Die ("cannot find revision " & R & " to ignore");
+                     end;
+                  end loop;
+
+                  --  -S <file>: grafts, "commit parent...".
+                  if Length (Revs_File) > 0 then
+                     declare
+                        F : constant String := To_String (Revs_File);
+                     begin
+                        if not Ada.Directories.Exists (F) then
+                           Die ("reading graft file '" & F
+                                & "' failed: No such file or directory");
+                        else
+                           declare
+                              Text  : constant String :=
+                                Version.Files.Read_Binary_File (F);
+                              Start : Positive := Text'First;
+                           begin
+                              for K in Text'First .. Text'Last + 1 loop
+                                 if K > Text'Last or else Text (K) = LF then
+                                    declare
+                                       Line  : constant String :=
+                                         Text (Start .. K - 1);
+                                       G     : Version.Blame.Graft;
+                                       First : Boolean := True;
+                                       WS    : Positive := Line'First;
+                                    begin
+                                       for J in Line'First .. Line'Last + 1 loop
+                                          if J > Line'Last or else Line (J) = ' '
+                                          then
+                                             declare
+                                                W : constant String :=
+                                                  Line (WS .. J - 1);
+                                             begin
+                                                if W /= ""
+                                                  and then Version.Objects
+                                                    .Is_Valid_Hex_Object_Id (W)
+                                                then
+                                                   if First then
+                                                      G.Commit :=
+                                                        Version.Objects
+                                                          .To_Object_Id (W);
+                                                      First := False;
+                                                   else
+                                                      G.Parents.Append
+                                                        (Version.Objects
+                                                           .To_Object_Id (W));
+                                                   end if;
+                                                end if;
+                                             end;
+                                             WS := J + 1;
+                                          end if;
+                                       end loop;
+                                       if not First then
+                                          Opts.Grafts.Append (G);
+                                       end if;
+                                    end;
+                                    Start := K + 1;
+                                 end if;
+                              end loop;
+                           end;
+                        end if;
+                     end;
+                  end if;
+
+                  --  --contents <file> ("-" is stdin).
+                  if Have_Contents then
+                     declare
+                        F : constant String := To_String (Contents_From);
+                     begin
+                        Opts.Have_Contents := True;
+                        if F = "-" then
+                           Opts.Contents := To_Unbounded_String (Read_All_Stdin);
+                           Opts.Contents_Name :=
+                             To_Unbounded_String ("standard input");
+                        elsif not Ada.Directories.Exists (F) then
+                           Die ("Cannot stat '" & F & "': No such file or directory");
+                        else
+                           Opts.Contents := To_Unbounded_String
+                             (Version.Files.Read_Binary_File (F));
+                           Opts.Contents_Name := Contents_From;
+                        end if;
+                     end;
+                  end if;
+
+                  if Length (Fatal) > 0 then
+                     Stderr_Line ("fatal: " & To_String (Fatal));
+                     Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                     goto Blame_Done;
+                  end if;
+
+                  declare
+                     Result : Version.Blame.Blame_Result;
+                     Failed : Boolean := False;
+                     Mailmap : constant Version.Mailmap.Entries :=
+                       Version.Mailmap.Load (Repo);
+                     File_Path : constant String := To_String (Path);
+
+                     --  Per-commit output details (get_commit_info), cached.
+                     type Commit_Info is record
+                        Hex            : Unbounded_String;
+                        Author         : Unbounded_String;
+                        Author_Mail    : Unbounded_String;   --  <addr>
+                        Author_Time    : Long_Long_Integer := 0;
+                        Author_Tz      : Unbounded_String;
+                        Committer      : Unbounded_String;
+                        Committer_Mail : Unbounded_String;
+                        Committer_Time : Long_Long_Integer := 0;
+                        Committer_Tz   : Unbounded_String;
+                        Summary        : Unbounded_String;
+                        Shown          : Boolean := False;   --  METAINFO_SHOWN
+                     end record;
+                     package Info_Vectors is new Ada.Containers.Vectors
+                       (Index_Type => Positive, Element_Type => Commit_Info);
+                     Infos : Info_Vectors.Vector;
+
+                     function Is_Zero (Hex : String) return Boolean is
+                       (for all C of Hex => C = '0');
+
+                     procedure Split_Ident
+                       (Ident : String;
+                        Name, Mail : out Unbounded_String;
+                        Time : out Long_Long_Integer;
+                        Tz : out Unbounded_String)
+                     is
+                        Lt : constant Natural := Ada.Strings.Fixed.Index (Ident, "<");
+                        Gt : Natural := 0;
+                     begin
+                        Name := To_Unbounded_String ("(unknown)");
+                        Mail := To_Unbounded_String ("(unknown)");
+                        Tz := To_Unbounded_String ("(unknown)");
+                        Time := 0;
+                        for K in reverse Ident'Range loop
+                           if Ident (K) = '>' then
+                              Gt := K;
+                              exit;
+                           end if;
+                        end loop;
+                        if Lt = 0 or else Gt = 0 or else Gt < Lt then
+                           return;
+                        end if;
+                        declare
+                           N : constant String :=
+                             Ada.Strings.Fixed.Trim
+                               (Ident (Ident'First .. Lt - 1), Ada.Strings.Both);
+                           E : constant String := Ident (Lt + 1 .. Gt - 1);
+                           Rest : constant String :=
+                             Ada.Strings.Fixed.Trim
+                               (Ident (Gt + 1 .. Ident'Last), Ada.Strings.Both);
+                           Sp : constant Natural :=
+                             Ada.Strings.Fixed.Index (Rest, " ");
+                           MN, ME : Unbounded_String;
+                        begin
+                           Version.Mailmap.Apply (Mailmap, N, E, MN, ME);
+                           Name := MN;
+                           Mail := To_Unbounded_String ("<" & To_String (ME) & ">");
+                           begin
+                              Time := Long_Long_Integer'Value
+                                (if Sp = 0 then Rest else Rest (Rest'First .. Sp - 1));
+                           exception
+                              when others => Time := 0;
+                           end;
+                           if Sp > 0 then
+                              Tz := To_Unbounded_String (Rest (Sp + 1 .. Rest'Last));
+                           end if;
+                        end;
+                     end Split_Ident;
+
+                     function Info_Index (Hex : String) return Positive is
+                     begin
+                        for I in 1 .. Natural (Infos.Length) loop
+                           if To_String (Infos (I).Hex) = Hex then
+                              return I;
+                           end if;
+                        end loop;
+                        declare
+                           CI : Commit_Info;
+                        begin
+                           CI.Hex := To_Unbounded_String (Hex);
+                           if Is_Zero (Hex) then
+                              --  The fake commit: "Not Committed Yet" (or the
+                              --  --contents ident) at the time of the run.
+                              declare
+                                 Who  : constant String :=
+                                   (if Opts.Have_Contents
+                                    then "External file (--contents)"
+                                    else "Not Committed Yet");
+                                 Mail : constant String :=
+                                   (if Opts.Have_Contents
+                                    then "<external.file>"
+                                    else "<not.committed.yet>");
+                                 MN, ME : Unbounded_String;
+                              begin
+                                 Version.Mailmap.Apply
+                                   (Mailmap, Who, Mail (Mail'First + 1 .. Mail'Last - 1),
+                                    MN, ME);
+                                 CI.Author := MN;
+                                 CI.Author_Mail :=
+                                   To_Unbounded_String ("<" & To_String (ME) & ">");
+                                 CI.Author_Time := Result.Fake_Time;
+                                 CI.Author_Tz := To_Unbounded_String
+                                   (Version.Timestamps.Local_Zone);
+                                 CI.Committer := CI.Author;
+                                 CI.Committer_Mail := CI.Author_Mail;
+                                 CI.Committer_Time := CI.Author_Time;
+                                 CI.Committer_Tz := CI.Author_Tz;
+                                 CI.Summary := To_Unbounded_String
+                                   ("Version of " & File_Path & " from "
+                                    & (if Opts.Have_Contents
+                                       then To_String (Opts.Contents_Name)
+                                       else File_Path));
                               end;
                            else
                               declare
                                  Obj : constant Version.Objects.Git_Object :=
                                    Version.Objects.Read_Object
                                      (Repo, Version.Objects.To_Object_Id (Hex));
-                                 Content : constant String :=
-                                   Version.Objects.Content (Obj);
-                                 A_Name, A_Mail, A_Sec, A_Tz : Unbounded_String;
-                                 C_Name, C_Mail, C_Sec, C_Tz : Unbounded_String;
-                                 Blank : constant Natural :=
-                                   Ada.Strings.Fixed.Index (Content, LF & LF);
                                  Msg : constant String :=
-                                   (if Blank = 0 then ""
-                                    else Content (Blank + 2 .. Content'Last));
-                                 Nl : constant Natural :=
-                                   Ada.Strings.Fixed.Index (Msg, "" & LF);
-                                 Summary : constant String :=
-                                   (if Msg'Length = 0 then ""
-                                    elsif Nl = 0 then Msg
-                                    else Msg (Msg'First .. Nl - 1));
-                                 Parents :
-                                   constant Version.Objects.Object_Id_Vectors
-                                     .Vector :=
-                                   Version.Objects.Commit_Parent_Ids (Obj);
+                                   Version.Objects.Commit_Message (Obj);
+                                 P   : Natural := Msg'First;
                               begin
                                  Split_Ident
-                                   (Hdr (Content, "author "),
-                                    A_Name, A_Mail, A_Sec, A_Tz);
+                                   (Version.Objects.Commit_Header_Value (Obj, "author"),
+                                    CI.Author, CI.Author_Mail, CI.Author_Time,
+                                    CI.Author_Tz);
                                  Split_Ident
-                                   (Hdr (Content, "committer "),
-                                    C_Name, C_Mail, C_Sec, C_Tz);
-                                 Append (R, "author " & To_String (A_Name) & LF);
-                                 Append (R, "author-mail " & To_String (A_Mail)
-                                            & LF);
-                                 Append (R, "author-time " & To_String (A_Sec)
-                                            & LF);
-                                 Append (R, "author-tz " & To_String (A_Tz) & LF);
-                                 Append (R, "committer " & To_String (C_Name)
-                                            & LF);
-                                 Append (R, "committer-mail "
-                                            & To_String (C_Mail) & LF);
-                                 Append (R, "committer-time "
-                                            & To_String (C_Sec) & LF);
-                                 Append (R, "committer-tz " & To_String (C_Tz)
-                                            & LF);
-                                 Append (R, "summary " & Summary & LF);
-                                 if Parents.Is_Empty then
-                                    Append (R, "boundary" & LF);
-                                 else
-                                    declare
-                                       Par : constant String :=
-                                         Version.Objects.To_String
-                                           (Parents.First_Element);
-                                       Has : Boolean := False;
-                                    begin
-                                       for P of
-                                         Tree_Candidates (Parents.First_Element)
-                                       loop
-                                          if P = File then
-                                             Has := True;
-                                             exit;
-                                          end if;
-                                       end loop;
-                                       if Has then
-                                          Append (R, "previous " & Par & " "
-                                                     & File & LF);
-                                       end if;
-                                    end;
-                                 end if;
-                                 Append (R, "filename " & File & LF);
+                                   (Version.Objects.Commit_Header_Value
+                                      (Obj, "committer"),
+                                    CI.Committer, CI.Committer_Mail,
+                                    CI.Committer_Time, CI.Committer_Tz);
+                                 --  find_commit_subject: the first line after
+                                 --  any leading blank lines.
+                                 while P <= Msg'Last and then Msg (P) = LF loop
+                                    P := P + 1;
+                                 end loop;
+                                 declare
+                                    E : Natural := P;
+                                 begin
+                                    while E <= Msg'Last and then Msg (E) /= LF loop
+                                       E := E + 1;
+                                    end loop;
+                                    if E > P then
+                                       CI.Summary :=
+                                         To_Unbounded_String (Msg (P .. E - 1));
+                                    else
+                                       CI.Summary :=
+                                         To_Unbounded_String ("(" & Hex & ")");
+                                    end if;
+                                 end;
                               end;
                            end if;
-                           return To_String (R);
-                        end Porc_Block;
+                           Infos.Append (CI);
+                           return Infos.Last_Index;
+                        end;
+                     end Info_Index;
+
+                     --  format_time
+                     function Format_Time
+                       (Time : Long_Long_Integer; Tz : String) return String
+                     is
+                        Raw : constant String :=
+                          Ada.Strings.Fixed.Trim
+                            (Long_Long_Integer'Image (Time), Ada.Strings.Left)
+                          & " " & Tz;
                      begin
-                        --  Size the ident/orig columns over every line (git
-                        --  sizes them from the whole file, not the shown range).
-                        for L of Lines loop
-                           Ident_W :=
-                             Natural'Max
-                               (Ident_W,
-                                Ident_Of (Meta_For (To_String (L.Commit)))'Length);
-                           Orig_W :=
-                             Natural'Max (Orig_W, Img (L.Orig_Line)'Length);
+                        if Out_Raw_Time then
+                           return Raw;
+                        end if;
+                        declare
+                           S : constant String :=
+                             Version.Pretty_Format.Format_Date
+                               (Raw, To_String (Date_Mode));
+                        begin
+                           return S & Spaces (Date_Width - Str_Width (S));
+                        end;
+                     end Format_Time;
+
+                     Output_Buf : Unbounded_String;
+
+                     procedure Put (S : String) is
+                     begin
+                        Append (Output_Buf, S);
+                     end Put;
+
+                     --  The lines of an entry, each with its newline (the
+                     --  last one gets one even when the file lacks it).
+                     function Entry_Line
+                       (E : Version.Blame.Blame_Entry; K : Natural) return String
+                     is
+                        L : constant String :=
+                          Version.Blame.Nth_Line (Result, E.Lno + K);
+                     begin
+                        if L'Length = 0 or else L (L'Last) /= LF then
+                           return L & LF;
+                        end if;
+                        return L;
+                     end Entry_Line;
+
+                     procedure Write_Filename_Info (E : Version.Blame.Blame_Entry)
+                     is
+                     begin
+                        if E.Has_Previous then
+                           Put ("previous "
+                                & Version.Objects.To_String (E.Previous_Commit)
+                                & " " & To_String (E.Previous_Path) & LF);
+                        end if;
+                        Put ("filename " & To_String (E.Path) & LF);
+                     end Write_Filename_Info;
+
+                     function Emit_One_Suspect_Detail
+                       (E : Version.Blame.Blame_Entry; Repeat : Boolean)
+                        return Boolean
+                     is
+                        I : constant Positive :=
+                          Info_Index (Version.Objects.To_String (E.Commit));
+                        CI : constant Commit_Info := Infos (I);
+                     begin
+                        if not Repeat and then CI.Shown then
+                           return False;
+                        end if;
+                        Infos.Reference (I).Shown := True;
+                        Put ("author " & To_String (CI.Author) & LF);
+                        Put ("author-mail " & To_String (CI.Author_Mail) & LF);
+                        Put ("author-time "
+                             & Ada.Strings.Fixed.Trim
+                                 (Long_Long_Integer'Image (CI.Author_Time),
+                                  Ada.Strings.Left) & LF);
+                        Put ("author-tz " & To_String (CI.Author_Tz) & LF);
+                        Put ("committer " & To_String (CI.Committer) & LF);
+                        Put ("committer-mail " & To_String (CI.Committer_Mail)
+                             & LF);
+                        Put ("committer-time "
+                             & Ada.Strings.Fixed.Trim
+                                 (Long_Long_Integer'Image (CI.Committer_Time),
+                                  Ada.Strings.Left) & LF);
+                        Put ("committer-tz " & To_String (CI.Committer_Tz) & LF);
+                        Put ("summary " & To_String (CI.Summary) & LF);
+                        if E.Boundary then
+                           Put ("boundary" & LF);
+                        end if;
+                        return True;
+                     end Emit_One_Suspect_Detail;
+
+                     procedure Emit_Porcelain_Details
+                       (E : Version.Blame.Blame_Entry; Repeat : Boolean) is
+                     begin
+                        if Emit_One_Suspect_Detail (E, Repeat) or else E.Multi_Path
+                        then
+                           Write_Filename_Info (E);
+                        end if;
+                     end Emit_Porcelain_Details;
+
+                     procedure Emit_Per_Line_Details (E : Version.Blame.Blame_Entry)
+                     is
+                     begin
+                        if Mark_Unblamable and then E.Unblamable then
+                           Put ("unblamable" & LF);
+                        end if;
+                        if Mark_Ignored and then E.Ignored then
+                           Put ("ignored" & LF);
+                        end if;
+                     end Emit_Per_Line_Details;
+
+                     procedure Emit_Porcelain (E : Version.Blame.Blame_Entry) is
+                        Hex : constant String := Version.Objects.To_String (E.Commit);
+                     begin
+                        Put (Hex & " " & Img (E.S_Lno + 1) & " " & Img (E.Lno + 1)
+                             & " " & Img (E.Num_Lines) & LF);
+                        Emit_Porcelain_Details (E, Out_Line_Porc);
+                        Emit_Per_Line_Details (E);
+                        for K in 0 .. E.Num_Lines - 1 loop
+                           if K > 0 then
+                              Put (Hex & " " & Img (E.S_Lno + 1 + K) & " "
+                                   & Img (E.Lno + 1 + K) & LF);
+                              if Out_Line_Porc then
+                                 Emit_Porcelain_Details (E, True);
+                              end if;
+                              Emit_Per_Line_Details (E);
+                           end if;
+                           Put (HT & Entry_Line (E, K));
                         end loop;
+                     end Emit_Porcelain;
 
-                        if Porcelain or else Line_Porc then
+                     --  Column widths (find_alignment).
+                     Longest_File   : Natural := 0;
+                     Longest_Author : Natural := 0;
+                     Max_Orig_Digits : Natural := 1;
+                     Max_Digits     : Natural := 1;
+                     Max_Score_Digits : Natural := 1;
+                     Hex_Width      : Natural := 40;
+
+                     function Marks (E : Version.Blame.Blame_Entry) return String is
+                       ((if E.Boundary and then not Blank_Boundary
+                           and then not Out_Compat then "^" else "")
+                        & (if Mark_Unblamable and then E.Unblamable then "*" else "")
+                        & (if Mark_Ignored and then E.Ignored then "?" else ""));
+
+                     function Line_Heat (CI : Commit_Info) return String is
+                        I : Positive := 1;
+                     begin
+                        while I < Natural (Fields.Length)
+                          and then CI.Author_Time > Fields (I).Hop
+                        loop
+                           I := I + 1;
+                        end loop;
+                        return To_String (Fields (I).Col);
+                     end Line_Heat;
+
+                     procedure Emit_Other
+                       (E : Version.Blame.Blame_Entry;
+                        Prev : Version.Blame.Blame_Entry;
+                        Has_Prev : Boolean)
+                     is
+                        CI  : constant Commit_Info :=
+                          Infos (Info_Index (Version.Objects.To_String (E.Commit)));
+                        Hex : constant String :=
+                          (if E.Boundary and then Blank_Boundary
+                           then Spaces (40)
+                           else Version.Objects.To_String (E.Commit));
+                        Default_Color : Unbounded_String;
+                        Color, Reset  : Unbounded_String;
+                        Name : constant String :=
+                          (if Out_Email then To_String (CI.Author_Mail)
+                           else To_String (CI.Author));
+                     begin
+                        if Out_Age_Color then
+                           Default_Color := To_Unbounded_String (Line_Heat (CI));
+                           Color := Default_Color;
+                           Reset := To_Unbounded_String (Reset_Color);
+                        end if;
+                        for K in 0 .. E.Num_Lines - 1 loop
                            declare
-                              Emitted : Version.Trailers.String_Vectors.Vector;
-                              function Seen (H : String) return Boolean is
-                                (for some X of Emitted => X = H);
-                              --  git limits porcelain output to -L's range too,
-                              --  so iterate only First .. Last and clamp each
-                              --  group (and its line count) to Last.
-                              I  : Natural := First;
+                              Hex_Len : Integer :=
+                                (if Out_Long then 40 else Hex_Width);
+                              M      : constant String := Marks (E);
                            begin
-                              while I <= Last loop
+                              if Out_Color_Line then
+                                 if K > 0
+                                   or else (Has_Prev and then E.Commit = Prev.Commit)
+                                 then
+                                    Color := Repeated_Color;
+                                    Reset := To_Unbounded_String (Reset_Color);
+                                 else
+                                    Color := Default_Color;
+                                    Reset :=
+                                      (if Length (Default_Color) > 0
+                                       then To_Unbounded_String (Reset_Color)
+                                       else Null_Unbounded_String);
+                                 end if;
+                              end if;
+                              Put (To_String (Color));
+                              Hex_Len := Hex_Len - M'Length;
+                              Put (M);
+                              Put (Hex (Hex'First
+                                        .. Hex'First + Integer'Min (Hex_Len, 40) - 1));
+                              if Out_Compat then
+                                 Put (HT & "(" & Pad_Left (Name, 10) & HT
+                                      & Pad_Left
+                                          (Format_Time
+                                             (CI.Author_Time,
+                                              To_String (CI.Author_Tz)), 10)
+                                      & HT & Img (E.Lno + 1 + K) & ")");
+                              else
+                                 if Out_Score then
+                                    Put (" " & Pad_Left (Img (E.Score), Max_Score_Digits)
+                                         & " "
+                                         & (if E.Refcnt < 10 then "0" else "")
+                                         & Img (E.Refcnt));
+                                 end if;
+                                 if Out_Name then
+                                    declare
+                                       P : constant String := To_String (E.Path);
+                                    begin
+                                       Put (" " & P
+                                            & Spaces (Longest_File - P'Length));
+                                    end;
+                                 end if;
+                                 if Out_Number then
+                                    Put (" " & Pad_Left (Img (E.S_Lno + 1 + K),
+                                                         Max_Orig_Digits));
+                                 end if;
+                                 if not Out_No_Author then
+                                    Put (" (" & Name
+                                         & Spaces (Longest_Author - Str_Width (Name))
+                                         & " "
+                                         & Pad_Left
+                                             (Format_Time
+                                                (CI.Author_Time,
+                                                 To_String (CI.Author_Tz)), 10));
+                                 end if;
+                                 Put (" " & Pad_Left (Img (E.Lno + 1 + K), Max_Digits)
+                                      & ") ");
+                              end if;
+                              Put (To_String (Reset));
+                              Put (Entry_Line (E, K));
+                           end;
+                        end loop;
+                     end Emit_Other;
+                  begin
+                     begin
+                        Result := Version.Blame.Blame
+                          (Repo, File_Path, Include, Exclude,
+                           Include_Names, Exclude_Names, Opts);
+                     exception
+                        when E : Version.Blame.Blame_Error =>
+                           Stderr_Line
+                             ("fatal: " & Ada.Exceptions.Exception_Message (E));
+                           Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                           Failed := True;
+                        when Version.Blame.Range_Error =>
+                           Stderr_Line ("usage: " & Usage);
+                           Set_Usage_Failure;
+                           Failed := True;
+                     end;
+
+                     if not Failed then
+                        if Incremental then
+                           for E of Result.Found_Order loop
+                              Put (Version.Objects.To_String (E.Commit) & " "
+                                   & Img (E.S_Lno + 1) & " " & Img (E.Lno + 1)
+                                   & " " & Img (E.Num_Lines) & LF);
+                              if Emit_One_Suspect_Detail (E, False) then
+                                 null;
+                              end if;
+                              Write_Filename_Info (E);
+                           end loop;
+                           Version.Console.Put (To_String (Output_Buf));
+                           goto Blame_Done;
+                        end if;
+
+                        if not Out_Color_Line and then not Out_Age_Color then
+                           Out_Color_Line := Coloring_Lines;
+                           Out_Age_Color := Coloring_Age;
+                        end if;
+
+                        if not Out_Porcelain then
+                           --  find_alignment
+                           declare
+                              Longest_Src, Longest_Dst : Natural := 0;
+                              Largest_Score : Natural := 0;
+                              Auto_Abbrev   : Natural := 7;
+                           begin
+                              for E of Result.Entries loop
+                                 if Abbrev < 0 then
+                                    Auto_Abbrev := Natural'Max
+                                      (Auto_Abbrev,
+                                       (if Is_Zero (Version.Objects.To_String
+                                                      (E.Commit))
+                                        then Auto_Abbrev
+                                        else Version.Revisions.Unique_Abbrev_Length
+                                               (Repo, E.Commit, Auto_Abbrev)));
+                                 end if;
+                                 if To_String (E.Path) /= File_Path then
+                                    Out_Name := True;
+                                 end if;
+                                 Longest_File :=
+                                   Natural'Max (Longest_File, Length (E.Path));
                                  declare
-                                    Hex_I : constant String :=
-                                      To_String (Lines (I).Commit);
-                                    GE : Natural := I;
+                                    I : constant Positive :=
+                                      Info_Index (Version.Objects.To_String (E.Commit));
                                  begin
-                                    while GE < Last
-                                      and then To_String (Lines (GE + 1).Commit)
-                                               = Hex_I
-                                      and then Lines (GE + 1).Orig_Line
-                                               = Lines (GE).Orig_Line + 1
-                                    loop
-                                       GE := GE + 1;
-                                    end loop;
-
-                                    for K in I .. GE loop
-                                       Version.Console.Put
-                                         (Hex_I & " "
-                                          & Img (Lines (K).Orig_Line) & " "
-                                          & Img (K)
-                                          & (if K = I
-                                             then " " & Img (GE - I + 1)
-                                             else "")
-                                          & LF);
-                                       if Line_Porc
-                                         or else (K = I and then not Seen (Hex_I))
-                                       then
-                                          Version.Console.Put (Porc_Block (Hex_I));
-                                       end if;
-                                       Version.Console.Put
-                                         (Character'Val (9)
-                                          & To_String (Lines (K).Text) & LF);
-                                    end loop;
-
-                                    if not Seen (Hex_I) then
-                                       Emitted.Append (Hex_I);
+                                    if not Infos (I).Shown then
+                                       Infos.Reference (I).Shown := True;
+                                       Longest_Author := Natural'Max
+                                         (Longest_Author,
+                                          Str_Width
+                                            (if Out_Email
+                                             then To_String (Infos (I).Author_Mail)
+                                             else To_String (Infos (I).Author)));
                                     end if;
-                                    I := GE + 1;
                                  end;
+                                 Longest_Src :=
+                                   Natural'Max (Longest_Src, E.S_Lno + E.Num_Lines);
+                                 Longest_Dst :=
+                                   Natural'Max (Longest_Dst, E.Lno + E.Num_Lines);
+                                 Largest_Score := Natural'Max (Largest_Score, E.Score);
                               end loop;
-                           end;
-                        elsif Compat then
-                           --  git's -c (annotate-compat) format: tab-separated,
-                           --  the id at its plain width (no "^" boundary), the
-                           --  ident right-aligned to a minimum of 10, then the
-                           --  date and final line number; -s/-n do not apply.
-                           declare
-                              HT : constant Character := Character'Val (9);
-                              N  : Natural := 0;
-                           begin
-                              for L of Lines loop
-                                 N := N + 1;
-                                 if N >= First and then N <= Last then
-                                    declare
-                                       M   : constant Meta :=
-                                         Meta_For (To_String (L.Commit));
-                                       Hex : constant String :=
-                                         To_String (L.Commit);
-                                    begin
-                                       Success_Line
-                                         (Hex (1 .. Sha_W) & HT
-                                          & "(" & Pad_Left (Ident_Of (M), 10)
-                                          & HT
-                                          & (if Raw_Time then To_String (M.Raw_Date)
-                                             else To_String (M.Date))
-                                          & HT & Img (N) & ")"
-                                          & To_String (L.Text));
-                                    end;
-                                 end if;
-                              end loop;
-                           end;
-                        else
-                           declare
-                              N : Natural := 0;
-                           begin
-                              for L of Lines loop
-                                 N := N + 1;
-                                 if N >= First and then N <= Last then
-                                    declare
-                                       M   : constant Meta :=
-                                         Meta_For (To_String (L.Commit));
-                                       Hex : constant String :=
-                                         To_String (L.Commit);
-                                       Sha : constant String :=
-                                         (if M.Boundary
-                                          then "^" & Hex (1 .. Sha_W - 1)
-                                          else Hex (1 .. Sha_W));
-                                       Name_Col : constant String :=
-                                         (if Show_Name then " " & File else "");
-                                       Orig_Col : constant String :=
-                                         (if Show_Num
-                                          then " "
-                                             & Pad_Left (Img (L.Orig_Line), Orig_W)
-                                          else "");
-                                       Attrib : constant String :=
-                                         (if Short then ""
-                                          else " ("
-                                            & Pad_Right (Ident_Of (M), Ident_W)
-                                            & " "
-                                            & (if Raw_Time
-                                               then To_String (M.Raw_Date)
-                                               else To_String (M.Date))
-                                            & " ");
-                                    begin
-                                       Success_Line
-                                         (Sha & Name_Col & Orig_Col & Attrib
-                                          & (if Short then " " else "")
-                                          & Pad_Left (Img (N), Line_W)
-                                          & ") " & To_String (L.Text));
-                                    end;
-                                 end if;
-                              end loop;
+                              Max_Orig_Digits := Decimal_Width (Longest_Src);
+                              Max_Digits := Decimal_Width (Longest_Dst);
+                              Max_Score_Digits := Decimal_Width (Largest_Score);
+                              --  git widens the id by one for the marks
+                              --  column, whether or not a mark is shown.
+                              Hex_Width :=
+                                (if Abbrev < 0 then Auto_Abbrev
+                                 else Natural'Max (Abbrev, 4));
+                              if Hex_Width < 40 then
+                                 Hex_Width := Hex_Width + 1;
+                              end if;
+                              if Length (Repeated_Color) = 0 and then Out_Color_Line
+                              then
+                                 Repeated_Color :=
+                                   To_Unbounded_String (ASCII.ESC & "[36m");
+                              end if;
                            end;
                         end if;
-                     end;
+                        if Out_Compat then
+                           Out_Color_Line := False;
+                           Out_Age_Color := False;
+                        end if;
+
+                        --  output
+                        declare
+                           Prev     : Version.Blame.Blame_Entry;
+                           Has_Prev : Boolean := False;
+                        begin
+                           for E of Result.Entries loop
+                              if Out_Porcelain then
+                                 Emit_Porcelain (E);
+                              else
+                                 Emit_Other (E, Prev, Has_Prev);
+                                 Prev := E;
+                                 Has_Prev := True;
+                              end if;
+                           end loop;
+                        end;
+                        if Show_Stats then
+                           Put ("num read blob: " & Img (Result.Num_Read_Blob) & LF);
+                           Put ("num get patch: " & Img (Result.Num_Get_Patch) & LF);
+                           Put ("num commits: " & Img (Result.Num_Commits) & LF);
+                        end if;
+                        Version.Console.Put (To_String (Output_Buf));
+                     end if;
                   end;
-               end if;
+               end;
+               <<Blame_Done>>
+               null;
             end;
 
          elsif Command = "cat-file" then
