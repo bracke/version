@@ -6417,6 +6417,379 @@ package body CLI_Integration_Tests is
       Run_Parity_Transcript (Root, Scenario, "shortlog");
    end Shortlog_Option_Surface_Matches_Git;
 
+   --  `grep`: git's option surface over the grep.c port -- the pattern
+   --  expression, every output layout, context and function context,
+   --  binary handling, quoting, pathspecs and depth, revisions and blobs,
+   --  --cached/--untracked/--no-index, config, the error texts, and the
+   --  edge cases of context merging, -w, -o and --column.
+   procedure Grep_Option_Surface_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Scenario : constant String :=
+          "git init -q; git config user.email a@b; git config user.name A" & LF
+        & "cat > a.c <<'X'" & LF
+        & "int main(void)" & LF
+        & "{" & LF
+        & "" & Character'Val (9) & "int foo = 1;" & LF
+        & "" & Character'Val (9) & "foo += bar();" & LF
+        & "" & Character'Val (9) & "return foo;" & LF
+        & "}" & LF
+        & "" & LF
+        & "static int bar(void)" & LF
+        & "{" & LF
+        & "" & Character'Val (9) & "/* helper */" & LF
+        & "" & Character'Val (9) & "return 42;" & LF
+        & "}" & LF
+        & "" & LF
+        & "void FOO_upper(void) {}" & LF
+        & "X" & LF
+        & "cat > b.txt <<'X'" & LF
+        & "first line" & LF
+        & "second foo line" & LF
+        & "third line with Foo and foo again" & LF
+        & "fourth" & LF
+        & "fifth foobar" & LF
+        & "sixth" & LF
+        & "" & LF
+        & "eighth line" & LF
+        & "X" & LF
+        & "mkdir -p sub/deep; printf 'foo in sub\nnothing\n' > sub/s.txt; printf 'foo in"
+        & " deep\n' > sub/deep/d.txt" & LF
+        & "printf 'binary\0foo\n' > bin.dat" & LF
+        & "printf 'no newline foo' > nonl.txt" & LF
+        & "printf 'foo\n' > 'sp ace.txt'" & LF
+        & "printf 'utf8 föö line\n' > utf.txt" & LF
+        & "printf '*.dat -diff\nutf.txt diff\n' > .gitattributes" & LF
+        & "printf 'ignored foo\n' > ignored.txt; printf 'ignored.txt\n' > .gitignore" & LF
+        & "git add . ; git commit -qm one" & LF
+        & "printf 'untracked foo\n' > untracked.txt" & LF
+        & "printf 'changed foo in worktree\n' >> b.txt" & LF
+        & "git tag v1" & LF
+        & "t 'plain' grep foo" & LF
+        & "t 'no match' grep zzz" & LF
+        & "t '-n' grep -n foo" & LF
+        & "t '-c' grep -c foo" & LF
+        & "t '-l' grep -l foo" & LF
+        & "t '-L' grep -L foo" & LF
+        & "t '-h' grep -h foo" & LF
+        & "t '-H -h' grep -H -h foo" & LF
+        & "t '-i' grep -i foo" & LF
+        & "t '-w' grep -w foo" & LF
+        & "t '-w -n' grep -wn foo" & LF
+        & "t '-v' grep -v foo a.c" & LF
+        & "t '-v -c' grep -vc foo" & LF
+        & "t '-o' grep -o foo" & LF
+        & "t '-o -n' grep -on foo" & LF
+        & "t '-o -i' grep -oi foo b.txt" & LF
+        & "t '-o --column' grep -o --column foo b.txt" & LF
+        & "t '--column' grep --column foo b.txt" & LF
+        & "t '--column -n' grep --column -n foo" & LF
+        & "t '-e twice' grep -e foo -e bar" & LF
+        & "t '--and' grep -e foo --and -e bar" & LF
+        & "t '--and -n' grep -n -e foo --and -e again" & LF
+        & "t '--or' grep -e foo --or -e third" & LF
+        & "t '--not' grep -e foo --and --not -e bar b.txt" & LF
+        & "t 'parens' grep -n \( -e foo --or -e third \) --and -e line b.txt" & LF
+        & "t '--all-match' grep --all-match -e foo -e bar" & LF
+        & "t '--all-match -l' grep -l --all-match -e foo -e third" & LF
+        & "t 'unmatched paren' grep \( -e foo" & LF
+        & "t 'incomplete' grep -e foo \)" & LF
+        & "t '--and missing' grep -e foo --and" & LF
+        & "t '--not missing' grep --not" & LF
+        & "t '-E' grep -E 'fo+' b.txt" & LF
+        & "t '-E alt' grep -E 'second|fourth' b.txt" & LF
+        & "t '-F' grep -F 'fo+' b.txt" & LF
+        & "t '-F dot' grep -F 'e.' b.txt" & LF
+        & "t '-G' grep -G 'fo\+' b.txt" & LF
+        & "t '-P' grep -P 'fo{2}' b.txt" & LF
+        & "t 'BRE group' grep '\(foo\)' b.txt" & LF
+        & "t 'BRE brace' grep 'o\{2\}' b.txt" & LF
+        & "t 'class' grep '[[:digit:]]' a.c" & LF
+        & "t 'anchor' grep -n '^int' a.c" & LF
+        & "t 'anchor end' grep -n 'line$' b.txt" & LF
+        & "t 'empty pattern' grep -c ''" & LF
+        & "t 'empty -o' grep -o '' b.txt" & LF
+        & "t 'bad regex' grep '['" & LF
+        & "t 'bad regex -E' grep -E '('" & LF
+        & "t '-A1' grep -A1 -n foo a.c" & LF
+        & "t '-B1' grep -B1 -n foo a.c" & LF
+        & "t '-C1' grep -C1 -n foo a.c" & LF
+        & "t '-2' grep -2 foo a.c" & LF
+        & "t '-C1 multi' grep -C1 foo a.c b.txt" & LF
+        & "t '-A1 -o' grep -A1 -o foo b.txt" & LF
+        & "t '--context=2' grep --context=2 foo b.txt" & LF
+        & "t '-p' grep -p foo a.c" & LF
+        & "t '-p -n' grep -pn return a.c" & LF
+        & "t '-W' grep -W helper a.c" & LF
+        & "t '-W -n' grep -Wn 'return 42' a.c" & LF
+        & "t '-W main' grep -W 'foo +=' a.c" & LF
+        & "t '-p -B1' grep -p -B1 -n 'return 42' a.c" & LF
+        & "t '--break' grep --break foo a.c b.txt" & LF
+        & "t '--heading' grep --heading foo a.c b.txt" & LF
+        & "t '--heading -n' grep --heading -n foo a.c b.txt" & LF
+        & "t '--break --heading' grep --break --heading -n foo" & LF
+        & "t '--break -C1' grep --break -C1 foo a.c b.txt" & LF
+        & "t '-z' grep -z -l foo" & LF
+        & "t '-z -n' grep -z -n foo a.c" & LF
+        & "t '-z -c' grep -zc foo" & LF
+        & "t '-m1' grep -m1 -n foo" & LF
+        & "t '-m2' grep -m 2 foo b.txt" & LF
+        & "t '-m0' grep -m0 foo" & LF
+        & "t '-m1 -c' grep -m1 -c foo" & LF
+        & "t '-m1 -A1' grep -m1 -A1 -n foo b.txt" & LF
+        & "t '-q' grep -q foo" & LF
+        & "t '-q none' grep -q zzz" & LF
+        & "t '--color' grep --color=always -n foo b.txt" & LF
+        & "t '--color -o' grep --color=always -o foo b.txt" & LF
+        & "t '--color -C1' grep --color=always -C1 foo a.c" & LF
+        & "t '--color -p' grep --color=always -p foo a.c" & LF
+        & "t '--color --heading' grep --color=always --heading foo b.txt" & LF
+        & "t '--color -c' grep --color=always -c foo b.txt" & LF
+        & "t '--color -l' grep --color=always -l foo" & LF
+        & "t '--color -v' grep --color=always -v foo b.txt" & LF
+        & "t '--color --column' grep --color=always --column foo b.txt" & LF
+        & "t '--no-color' grep --color=never foo b.txt" & LF
+        & "t 'binary default' grep foo bin.dat" & LF
+        & "t 'binary -a' grep -a foo bin.dat" & LF
+        & "t 'binary -I' grep -I foo bin.dat" & LF
+        & "t 'binary -c' grep -c foo bin.dat" & LF
+        & "t 'binary -l' grep -l foo bin.dat" & LF
+        & "t 'binary -o' grep -o foo bin.dat" & LF
+        & "t 'attr text' grep -n 'o' utf.txt" & LF
+        & "t 'nonl' grep -n foo nonl.txt" & LF
+        & "t 'nonl -o' grep -o foo nonl.txt" & LF
+        & "t 'space name' grep foo 'sp ace.txt'" & LF
+        & "t 'space -l' grep -l foo 'sp ace.txt'" & LF
+        & "t 'space -z' grep -z -l foo 'sp ace.txt'" & LF
+        & "t 'utf8' grep -n 'f..' utf.txt" & LF
+        & "t 'utf8 -o' grep -o 'f..' utf.txt" & LF
+        & "t 'path dir' grep foo sub" & LF
+        & "t 'path glob' grep foo '*.txt'" & LF
+        & "t 'path glob2' grep -n foo -- '*.c'" & LF
+        & "t '--max-depth=0' grep --max-depth=0 foo" & LF
+        & "t '--max-depth=0 sub' grep --max-depth=0 foo sub" & LF
+        & "t '--max-depth=1' grep --max-depth=1 foo" & LF
+        & "t '--max-depth=1 sub' grep --max-depth=1 foo sub" & LF
+        & "t '-r' grep -r foo sub" & LF
+        & "t '--cached' grep --cached foo b.txt" & LF
+        & "t '--cached -c' grep --cached -c foo" & LF
+        & "t 'rev' grep -n foo HEAD" & LF
+        & "t 'rev v1' grep foo v1 -- b.txt" & LF
+        & "t 'rev two' grep -c foo HEAD v1" & LF
+        & "t 'rev cached' grep --cached foo HEAD" & LF
+        & "t 'rev -l' grep -l foo HEAD" & LF
+        & "t 'rev -z' grep -z -l foo HEAD" & LF
+        & "t 'rev -c' grep -c foo HEAD" & LF
+        & "t 'rev blob' grep foo HEAD:b.txt" & LF
+        & "t 'rev tree' grep foo HEAD^{tree}" & LF
+        & "t 'rev bad' grep foo nope" & LF
+        & "t 'rev bad dashdash' grep foo nope -- b.txt" & LF
+        & "t 'path bad' grep foo b.txt nope" & LF
+        & "t 'path bad dashdash' grep foo -- nope" & LF
+        & "git tag b.txt; t 'ambiguous both' grep foo b.txt; git tag -d b.txt >/dev/null" & LF
+        & "t '--untracked' grep --untracked foo" & LF
+        & "t '--untracked -l' grep --untracked -l foo" & LF
+        & "t '--no-index' grep --no-index -l foo" & LF
+        & "t '--no-index --exclude-standard' grep --no-index --exclude-standard -l foo" & LF
+        & "t '--untracked --no-exclude-standard' grep --untracked --no-exclude-standard -l"
+        & " foo" & LF
+        & "t '--exclude-standard tracked' grep --exclude-standard foo" & LF
+        & "t '--no-index rev' grep --no-index foo HEAD -- b.txt" & LF
+        & "t '--cached --untracked' grep --cached --untracked foo" & LF
+        & "t '--full-name' grep --full-name foo b.txt" & LF
+        & "printf 'foo\n\nbar\n' > pats.txt" & LF
+        & "t '-f real' grep -f pats.txt -c" & LF
+        & "t '-f missing' grep -f nofile" & LF
+        & "t '-f -e' grep -f pats.txt -e third -n b.txt" & LF
+        & "t 'no pattern' grep" & LF
+        & "t 'only -e' grep -e" & LF
+        & "t 'bad -C' grep -Cx foo" & LF
+        & "t 'bad -A' grep -A foo" & LF
+        & "t '--threads' grep --threads=2 -c foo b.txt" & LF
+        & "t 'option after pattern' grep foo -n" & LF
+        & "t 'dashdash first' grep -- foo b.txt" & LF
+        & "t '-e then dashdash' grep -e foo -- b.txt" & LF
+        & "t 'pattern then rev then path' grep -n foo HEAD b.txt" & LF
+        & "t '-i -w' grep -iw foo" & LF
+        & "t '-w -o' grep -wo foo b.txt" & LF
+        & "t '-w -o -i' grep -woi foo b.txt" & LF
+        & "t '-w -c' grep -wc 'foo'" & LF
+        & "t '-w mid' grep -w 'oo' b.txt" & LF
+        & "t '-w -v' grep -wv foo b.txt" & LF
+        & "t '--textconv' grep --textconv foo bin.dat" & LF
+        & "git config grep.lineNumber true" & LF
+        & "t 'config linenumber' grep foo b.txt" & LF
+        & "t 'config -n override' grep --no-line-number foo b.txt" & LF
+        & "git config --unset grep.lineNumber" & LF
+        & "git config grep.extendedRegexp true" & LF
+        & "t 'config ere' grep 'second|fourth' b.txt" & LF
+        & "t 'config ere -G' grep -G 'second|fourth' b.txt" & LF
+        & "git config --unset grep.extendedRegexp" & LF
+        & "git config grep.patternType fixed" & LF
+        & "t 'config fixed' grep 'fo+' b.txt" & LF
+        & "git config --unset grep.patternType" & LF
+        & "git config grep.column true" & LF
+        & "t 'config column' grep foo b.txt" & LF
+        & "git config --unset grep.column" & LF
+        & "git config grep.fullName true" & LF
+        & "t 'config fullname' grep foo b.txt" & LF
+        & "git config --unset grep.fullName" & LF
+        & "git config color.grep.match 'bold blue'" & LF
+        & "git config color.grep.filename yellow" & LF
+        & "t 'config colors' grep --color=always foo b.txt" & LF
+        & "git config --unset color.grep.match; git config --unset color.grep.filename" & LF
+        & "cd sub" & LF
+        & "t 'subdir' grep foo" & LF
+        & "t 'subdir -l' grep -l foo" & LF
+        & "t 'subdir full' grep --full-name -l foo" & LF
+        & "t 'subdir rev' grep -l foo HEAD" & LF
+        & "t 'subdir path up' grep -c foo ../b.txt" & LF
+        & "t 'subdir -z' grep -z -l foo" & LF
+        & "t 'subdir glob' grep -l foo '*.txt'" & LF
+        & "cd .." & LF
+        & "mkdir ""../${NAME}_2"" && cd ""../${NAME}_2""" & LF
+        & "git init -q; git config user.email a@b; git config user.name A" & LF
+        & "cat > f.py <<'X'" & LF
+        & "def alpha():" & LF
+        & "    x = 1" & LF
+        & "    y = 2" & LF
+        & "    return x + y" & LF
+        & "" & LF
+        & "def beta():" & LF
+        & "    """"""doc foo""""""" & LF
+        & "    z = foo(3)" & LF
+        & "" & LF
+        & "    return z" & LF
+        & "" & LF
+        & "class Gamma:" & LF
+        & "    def m(self):" & LF
+        & "        foo = 4" & LF
+        & "        return foo" & LF
+        & "X" & LF
+        & "printf 'l1 foo\nl2\nl3 foo\nl4\nl5\nl6 foo\nl7\nl8\nl9\nl10 foo\nl11\n' >"
+        & " ctx.txt" & LF
+        & "printf 'foofoo foo fo\nafooa foo\nfoo\n' > w.txt" & LF
+        & "printf 'a foo b bar c\nfoo bar foo\nbar\n' > ab.txt" & LF
+        & "printf 'crlf foo\r\nline two\r\n' > crlf.txt" & LF
+        & ": > empty.txt" & LF
+        & "printf '\n\n\n' > blanks.txt" & LF
+        & "printf 'digits 123 and 45\nno digits\n' > num.txt" & LF
+        & "printf 'MiXeD foo FOO Foo\n' > case.txt" & LF
+        & "git add .; git commit -qm one" & LF
+        & "t 'ctx overlap' grep -n -C1 foo ctx.txt" & LF
+        & "t 'ctx -A2' grep -n -A2 foo ctx.txt" & LF
+        & "t 'ctx -B2' grep -n -B2 foo ctx.txt" & LF
+        & "t 'ctx -C3' grep -n -C3 foo ctx.txt" & LF
+        & "t 'ctx -A1 -B2' grep -n -A1 -B2 foo ctx.txt" & LF
+        & "t 'ctx -c' grep -c -C2 foo ctx.txt" & LF
+        & "t 'ctx -l' grep -l -C2 foo ctx.txt" & LF
+        & "t 'ctx -o' grep -o -C1 foo ctx.txt" & LF
+        & "t 'ctx -v' grep -n -v -C1 foo ctx.txt" & LF
+        & "t 'ctx -m2' grep -n -m2 -C1 foo ctx.txt" & LF
+        & "t 'ctx two files' grep -n -C1 foo ctx.txt w.txt" & LF
+        & "t 'ctx --break' grep -n -C1 --break foo ctx.txt w.txt" & LF
+        & "t 'ctx --heading' grep -n -C1 --heading foo ctx.txt w.txt" & LF
+        & "t 'ctx --break --heading' grep -n -C1 --break --heading foo ctx.txt w.txt" & LF
+        & "t 'ctx color' grep -n -C1 --color=always foo ctx.txt" & LF
+        & "t '-p py' grep -p foo f.py" & LF
+        & "t '-p -n py' grep -pn return f.py" & LF
+        & "t '-W py' grep -W 'z = foo' f.py" & LF
+        & "t '-W return' grep -W 'return' f.py" & LF
+        & "t '-W -n class' grep -Wn 'foo = 4' f.py" & LF
+        & "t '-W -C1' grep -W -C1 'x = 1' f.py" & LF
+        & "t '-W def' grep -W 'def beta' f.py" & LF
+        & "t '-W first' grep -W 'def alpha' f.py" & LF
+        & "t '-W -p' grep -W -p 'return z' f.py" & LF
+        & "t '-p -A1' grep -p -A1 -n 'x = 1' f.py" & LF
+        & "t '-p multi' grep -p -n 'return' f.py ctx.txt" & LF
+        & "t '-w foofoo' grep -wn foo w.txt" & LF
+        & "t '-w -o foofoo' grep -wo foo w.txt" & LF
+        & "t '-w -c' grep -wc foo w.txt" & LF
+        & "t '-w fo' grep -w fo w.txt" & LF
+        & "t '-w -v' grep -wv foo w.txt" & LF
+        & "t '-w regex' grep -w 'fo*' w.txt" & LF
+        & "t '-w --column' grep -w --column foo w.txt" & LF
+        & "t '-o multi' grep -o -e foo -e bar ab.txt" & LF
+        & "t '-o overlap' grep -o -e foo -e 'foo b' ab.txt" & LF
+        & "t '-o --column multi' grep -o --column -e foo -e bar ab.txt" & LF
+        & "t '--column --and' grep --column -e foo --and -e bar ab.txt" & LF
+        & "t '--column --not' grep --column -e foo --and --not -e bar ab.txt" & LF
+        & "t '--column -v' grep --column -v foo ab.txt" & LF
+        & "t '--column --or' grep --column -e bar --or -e foo ab.txt" & LF
+        & "t '--column -e2' grep --column -e bar -e foo ab.txt" & LF
+        & "t 'and color' grep --color=always -e foo --and -e bar ab.txt" & LF
+        & "t 'not color' grep --color=always -e foo --and --not -e 'c$' ab.txt" & LF
+        & "t 'crlf' grep -n foo crlf.txt" & LF
+        & "t 'crlf $' grep -n 'foo$' crlf.txt" & LF
+        & "t 'crlf -o' grep -o 'foo.' crlf.txt" & LF
+        & "t 'empty file' grep -c '' empty.txt" & LF
+        & "t 'empty file -L' grep -L foo empty.txt" & LF
+        & "t 'blanks' grep -n '^$' blanks.txt" & LF
+        & "t 'blanks -c' grep -c '' blanks.txt" & LF
+        & "t 'blanks -v' grep -vn 'x' blanks.txt" & LF
+        & "t '-P digits' grep -P '\d+' num.txt" & LF
+        & "t '-P -o' grep -oP '\d+' num.txt" & LF
+        & "t '-E digits' grep -E '[0-9]+' num.txt" & LF
+        & "t '-E -o' grep -oE '[0-9]+' num.txt" & LF
+        & "t '-i color' grep --color=always -i foo case.txt" & LF
+        & "t '-i -o' grep -io foo case.txt" & LF
+        & "t '-i -c' grep -ic foo case.txt" & LF
+        & "t '-i -w' grep -iw foo case.txt" & LF
+        & "t 'icase class' grep -i '[a-c]' case.txt" & LF
+        & "t '-L' grep -L foo" & LF
+        & "t '-L -v' grep -L -v foo" & LF
+        & "t '-l -v' grep -l -v foo" & LF
+        & "t '-c -v' grep -c -v foo w.txt" & LF
+        & "t '-c -m1' grep -c -m1 foo w.txt" & LF
+        & "t '-c -o' grep -c -o foo w.txt" & LF
+        & "t '-q -l' grep -q -l foo" & LF
+        & "t '-h -n' grep -hn foo w.txt ab.txt" & LF
+        & "t '-H -l' grep -Hl foo w.txt" & LF
+        & "t '-z -o' grep -zo foo w.txt" & LF
+        & "t '--heading -o' grep --heading -o foo ab.txt w.txt" & LF
+        & "t '--heading -c' grep --heading -c foo ab.txt w.txt" & LF
+        & "t '--heading --column' grep --heading --column -n foo ab.txt" & LF
+        & "t '--break -l' grep --break -l foo" & LF
+        & "t '--break -c' grep --break -c foo" & LF
+        & "t 'rev path' grep -n foo HEAD -- w.txt ab.txt" & LF
+        & "t 'rev ctx' grep -n -C1 foo HEAD -- ctx.txt" & LF
+        & "t 'rev -p' grep -p foo HEAD -- f.py" & LF
+        & "t 'rev heading' grep --heading -n foo HEAD -- w.txt ab.txt" & LF
+        & "t 'rev -z' grep -z -n foo HEAD -- w.txt" & LF
+        & "t 'rev -o' grep -o --column foo HEAD -- ab.txt" & LF
+        & "t 'rev -c' grep -c foo HEAD HEAD^{tree}" & LF
+        & "t 'rev -l -h' grep -lh foo HEAD" & LF
+        & "t '-e -- path' grep -n -e foo -- w.txt" & LF
+        & "t 'double dash pattern' grep -- -n" & LF
+        & "t 'literal dash pattern' grep -e -n" & LF
+        & "t '-F dash' grep -F -- '-n'" & LF
+        & "t 'unknown after --' grep -n foo -- --bogus" & LF
+        & "t 'after pattern option' grep foo -n w.txt" & LF
+        & "t '--all-match --and' grep -l --all-match -e foo --and -e bar -e l1" & LF
+        & "t '--all-match none' grep -l --all-match -e foo -e zzz" & LF
+        & "printf 'foo\nbar\n' > p1; printf 'l1\n' > p2" & LF
+        & "t '-f twice' grep -c -f p1 -f p2" & LF
+        & "t '-f -F' grep -F -f p1 -c" & LF
+        & "printf 'ok\n[\n' > p3" & LF
+        & "t '-f bad line' grep -f p3 w.txt" & LF
+        & "t '-e bad' grep -e 'a\{1'" & LF
+        & "t '-E bad' grep -E 'a{'" & LF
+        & "t '--and bad' grep -e foo --and -e '['" & LF
+        & "t 'max-count neg' grep -m -1 -c foo w.txt" & LF
+        & "t 'max-count=x' grep --max-count=x foo" & LF
+        & "t '-A=' grep --after-context=x foo" & LF
+        & "t '-B bad' grep -B x foo" & LF
+        & "t '--context bad' grep --context=x foo" & LF
+        & "t '-C -1' grep -C -1 foo w.txt" & LF
+        & "t 'nested parens' grep -n \( \( -e l1 --or -e l3 \) --and -e foo \) ctx.txt" & LF
+        & "t 'not not' grep -n --not --not -e foo w.txt" & LF
+        & "t 'or then and' grep -n -e l1 --or -e l3 --and -e foo ctx.txt" & LF;
+   begin
+      Run_Parity_Transcript (Root, Scenario, "grep");
+   end Grep_Option_Surface_Matches_Git;
+
    procedure Bisect_Run_And_Patch_Id_Match_Git
      (T : in out AUnit.Test_Cases.Test_Case'Class)
    is
@@ -7828,6 +8201,9 @@ package body CLI_Integration_Tests is
       Register_Routine
         (T, Shortlog_Option_Surface_Matches_Git'Access,
          "Shortlog: git's option surface, groups, wrapping, stdin records");
+      Register_Routine
+        (T, Grep_Option_Surface_Matches_Git'Access,
+         "Grep: git's option surface, expressions, context, sources, errors");
       Register_Routine
         (T, Fast_Import_Stream_Matches_Git'Access,
          "Fast-import: author defaults to committer, short modes are files");

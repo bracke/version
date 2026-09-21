@@ -179,6 +179,11 @@ version log --stdin | -g [<ref>] | --merge
 version show [OPTIONS] [<commit>|<tag>|<tree>|<blob>|REV:PATH ...] [--] [PATH...]
   OPTIONS: log's whole surface with show's defaults (no walk, -p, merges as --cc);
   -c, --cc, -m, --first-parent, --dd, --diff-merges=MODE
+version grep [<options>] [-e <pattern>]... [-f <file>] [--and|--not|(|)] [<rev>...] [[--] <path>...]
+  OPTIONS: git's grep surface -- -i, -w, -v, -E/-F/-G/-P, -n, --column, -h/-H, --full-name,
+  -l, -L, -c, -o, -q, -z, -m N, --color[=WHEN], --break, --heading, -A/-B/-C N, -N, -p, -W,
+  -a, -I, --textconv, --cached, --untracked, --no-index, --[no-]exclude-standard,
+  --max-depth N, -r, --all-match
 version shortlog [-s] [-n] [-e] [-c] [--group=FIELD]... [-w[W[,I1[,I2]]]] [--format=FMT]
   [<rev-opts>: --all, --no-merges, --first-parent, -N, --since=, --author=, --grep=, ...]
   [<revision-range>] [[--] <path>...]

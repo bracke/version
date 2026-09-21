@@ -366,6 +366,15 @@ package body Version.CLI is
       return False;
    end Has_Path_Argument;
 
+   --  The worktree root, "" outside a repository.
+   function Repo_Root_Or_Empty return String is
+   begin
+      return Version.Repository.Root_Path (Version.Repository.Open);
+   exception
+      when others =>
+         return "";
+   end Repo_Root_Or_Empty;
+
    function Repo_Prefix return String is
    begin
       --  The directory this command was run in, relative to the worktree
@@ -29560,301 +29569,990 @@ package body Version.CLI is
             end;
 
          elsif Command = "grep" then
+            --  builtin/grep.c: the option surface, the pattern expression
+            --  (-e/-f, --and/--or/--not/( )), the rev-or-path DWIM, and
+            --  the index / working tree / tree / untracked / no-index
+            --  sources, over Version.Grep's port of grep.c.
             declare
-               Usage      : constant String :=
-                 "version grep [-n] [-c] [-l] [-h] [-i] [-w] [-v]"
-                 & " [-E|-F|-G|-P] [--cached] PATTERN [<tree-ish>...]"
-                 & " [--] [PATH...]";
-               Show_Lines : Boolean := False;
-               Count_Mode : Boolean := False;
-               Files_Mode : Boolean := False;
-               H_Suppress : Boolean := False;   --  -h: drop the path prefix
-               Cached     : Boolean := False;   --  --cached: grep the index
-               Opts       : Version.Grep.Options;
-               Bad_Opt    : Boolean := False;
-               Bad_Text   : Unbounded_String;
-               Pat_Idx    : Natural := 0;
-               I          : Positive := 2;
+               Usage : constant String :=
+                 "version grep [<options>] [-e] <pattern> [<rev>...] [[--] <path>...]";
+               LF    : constant Character := Character'Val (10);
+               use type Version.Grep.Pattern_Token;
+               use type Version.Grep.Binary_Mode;
+               Opts  : Version.Grep.Grep_Options;
+               Cached, Untracked, No_Index : Boolean := False;
+               Exclude_Std : Integer := -1;   --  --[no-]exclude-standard
+               Max_Depth   : Integer := -1;
+               Full_Name   : Boolean := False;
+               Color_Mode  : Unbounded_String := To_Unbounded_String ("auto");
+               Kind_Set    : Boolean := False;
+               Ext_Config  : Boolean := False;   --  grep.extendedRegexp
+               Textconv    : Boolean := False;
+               Have_Pattern : Boolean := False;
+               Bad         : Boolean := False;
+               Fatal       : Unbounded_String;
+               Rest_Start  : Natural := 0;   --  first non-option argument
+               I           : Positive := 2;
 
-               function Img (N : Natural) return String is
-                  S : constant String := Natural'Image (N);
+               procedure Die (Text : String) is
                begin
-                  return S (S'First + 1 .. S'Last);
-               end Img;
+                  if Length (Fatal) = 0 then
+                     Fatal := To_Unbounded_String (Text);
+                  end if;
+               end Die;
+
+               procedure Add_Item
+                 (Token   : Version.Grep.Pattern_Token;
+                  Pattern : String := "";
+                  Origin  : String := "command line";
+                  Line    : Natural := 0) is
+               begin
+                  Opts.Items.Append
+                    (Version.Grep.Pattern_Item'
+                       (Token   => Token,
+                        Pattern => To_Unbounded_String (Pattern),
+                        Origin  => To_Unbounded_String (Origin),
+                        Line    => Line));
+                  if Token = Version.Grep.Tok_Pattern then
+                     Have_Pattern := True;
+                  end if;
+               end Add_Item;
+
+               --  -f <file>: one pattern per line, empty lines ignored.
+               procedure Add_Pattern_File (Name : String) is
+                  function Read return String is
+                    (if Name = "-" then Read_All_Stdin
+                     else Version.Files.Read_Binary_File
+                            (Version.Pathspec.Resolve_Against_Prefix (Repo_Prefix, Name)));
+               begin
+                  declare
+                     Text  : constant String := Read;
+                     Start : Positive := Text'First;
+                     Lno   : Natural := 0;
+                  begin
+                     for K in Text'First .. Text'Last + 1 loop
+                        if K > Text'Last or else Text (K) = LF then
+                           if K > Start then
+                              declare
+                                 Last : Natural := K - 1;
+                              begin
+                                 if Text (Last) = ASCII.CR then
+                                    Last := Last - 1;
+                                 end if;
+                                 if Last >= Start then
+                                    Lno := Lno + 1;
+                                    Add_Item
+                                      (Version.Grep.Tok_Pattern, Text (Start .. Last),
+                                       Name, Lno);
+                                 end if;
+                              end;
+                           end if;
+                           Start := K + 1;
+                        end if;
+                     end loop;
+                  end;
+               exception
+                  when others =>
+                     Die ("cannot open '" & Name & "': No such file or directory");
+               end Add_Pattern_File;
+
+               function Numeric (V : String) return Boolean is
+                 (V'Length > 0 and then (for all C of V => C in '0' .. '9'));
+
+               --  The value of an option: attached (`--opt=v`, `-Cv`) or
+               --  the next word.
+               function Value_Of (Attached : String; Name : String)
+                  return String is
+               begin
+                  if Attached'Length > 0 then
+                     return Attached;
+                  elsif I < Count then
+                     I := I + 1;
+                     return Arg (I);
+                  end if;
+                  Error_Line
+                    ((if Name'Length = 1 then "switch `" else "option `")
+                     & Name & "' requires a value");
+                  Bad := True;
+                  return "";
+               end Value_Of;
+
+               --  -C/--context go through git's context_callback, -A/-B
+               --  through its unsigned parser: different complaints.
+               procedure Set_Context (Which : Character; V : String; Long : Boolean)
+               is
+                  --  A negative count wraps git's unsigned context into
+                  --  "everything".
+                  Negative : constant Boolean :=
+                    Which = 'C' and then V'Length > 1 and then V (V'First) = '-'
+                    and then Numeric (V (V'First + 1 .. V'Last));
+               begin
+                  if Negative then
+                     Opts.Pre_Context := 1_000_000_000;
+                     Opts.Post_Context := 1_000_000_000;
+                     return;
+                  end if;
+                  if not Numeric (V) then
+                     if Which = 'C' then
+                        Error_Line ("switch `C' expects a numerical value");
+                     elsif Long then
+                        Error_Line
+                          ("option `" & (if Which = 'A' then "after-context"
+                                         else "before-context")
+                           & "' expects a non-negative integer value with an"
+                           & " optional k/m/g suffix");
+                     else
+                        Error_Line
+                          ("switch `" & Which & "' expects a non-negative integer"
+                           & " value with an optional k/m/g suffix");
+                     end if;
+                     Bad := True;
+                     return;
+                  end if;
+                  case Which is
+                     when 'A' => Opts.Post_Context := Natural'Value (V);
+                     when 'B' => Opts.Pre_Context := Natural'Value (V);
+                     when others =>
+                        Opts.Pre_Context := Natural'Value (V);
+                        Opts.Post_Context := Natural'Value (V);
+                  end case;
+               end Set_Context;
+
+               Repo : constant Version.Repository.Repository_Handle :=
+                 Version.Repository.Open;
+
+               function Config_Value (Key : String) return String is
+                 (if Version.Config.Has_Key (Repo, Key)
+                  then Version.Config.Get_Value (Repo, Key) else "");
+               function Config_Bool (Key : String) return Boolean is
+                  OK : Boolean;
+               begin
+                  return Version.Config.Has_Key (Repo, Key)
+                    and then Config_Bool_Norm (Config_Value (Key), OK) = "true";
+               end Config_Bool;
             begin
-               while I <= Count and then Arg (I)'Length >= 1
-                 and then Arg (I) (Arg (I)'First) = '-'
-               loop
+               Opts.Colors := Version.Grep.Default_Colors;
+
+               --  grep_cmd_config / grep_config
+               Ext_Config := Config_Bool ("grep.extendedregexp");
+               if Version.Config.Has_Key (Repo, "grep.patterntype") then
+                  declare
+                     V : constant String := Config_Value ("grep.patterntype");
+                  begin
+                     Kind_Set := True;
+                     if V = "basic" then
+                        Opts.Kind := Version.Grep.Basic_Regex;
+                     elsif V = "extended" then
+                        Opts.Kind := Version.Grep.Extended_Regex;
+                     elsif V = "fixed" then
+                        Opts.Kind := Version.Grep.Fixed_String;
+                     elsif V = "perl" then
+                        Opts.Kind := Version.Grep.Perl_Regex;
+                     elsif V = "default" then
+                        Kind_Set := False;
+                     else
+                        Die ("invalid pattern type: " & V);
+                     end if;
+                  end;
+               end if;
+               Opts.Line_Number := Config_Bool ("grep.linenumber");
+               Opts.Column := Config_Bool ("grep.column");
+               Full_Name := Config_Bool ("grep.fullname");
+               if Version.Config.Has_Key (Repo, "color.grep") then
+                  Color_Mode := To_Unbounded_String (Config_Value ("color.grep"));
+               elsif Version.Config.Has_Key (Repo, "color.ui") then
+                  Color_Mode := To_Unbounded_String (Config_Value ("color.ui"));
+               end if;
+               declare
+                  procedure Slot (Key : String; S : Version.Grep.Color_Slot) is
+                  begin
+                     if Version.Config.Has_Key (Repo, "color.grep." & Key) then
+                        Opts.Colors (S) := To_Unbounded_String
+                          (Version.Color.To_Ansi (Config_Value ("color.grep." & Key)));
+                     end if;
+                  end Slot;
+               begin
+                  if Version.Config.Has_Key (Repo, "color.grep.match") then
+                     Slot ("match", Version.Grep.Color_Match_Context);
+                     Slot ("match", Version.Grep.Color_Match_Selected);
+                  end if;
+                  Slot ("context", Version.Grep.Color_Context);
+                  Slot ("filename", Version.Grep.Color_Filename);
+                  Slot ("function", Version.Grep.Color_Function);
+                  Slot ("linenumber", Version.Grep.Color_Lineno);
+                  Slot ("column", Version.Grep.Color_Columnno);
+                  Slot ("matchcontext", Version.Grep.Color_Match_Context);
+                  Slot ("matchselected", Version.Grep.Color_Match_Selected);
+                  Slot ("selected", Version.Grep.Color_Selected);
+                  Slot ("separator", Version.Grep.Color_Sep);
+               end;
+
+               --  Options stop at the first non-option (parse_options with
+               --  STOP_AT_NON_OPTION); "(" and ")" are option tokens.
+               while I <= Count and then not Bad loop
                   declare
                      A : constant String := Arg (I);
                   begin
-                     if A = "--" then
-                        I := I + 1;
+                     if A = "(" then
+                        Add_Item (Version.Grep.Tok_Open_Paren, "(");
+                     elsif A = ")" then
+                        Add_Item (Version.Grep.Tok_Close_Paren, ")");
+                     elsif A = "--" then
                         exit;
-                     elsif A = "--cached" then
-                        Cached := True;
-                     elsif A'Length >= 2 and then A (A'First + 1) = '-' then
-                        --  Any other long option is unknown.
-                        Bad_Opt := True;
-                        Bad_Text := To_Unbounded_String (A);
-                        exit;
+                     elsif A'Length > 2 and then A (A'First .. A'First + 1) = "--" then
+                        declare
+                           Negated : constant Boolean := Has_Prefix (A, "--no-");
+                           Name    : constant String :=
+                             (if Negated then A (A'First + 5 .. A'Last)
+                              else A (A'First + 2 .. A'Last));
+                           Eq      : constant Natural :=
+                             Ada.Strings.Fixed.Index (Name, "=");
+                           Base    : constant String :=
+                             (if Eq = 0 then Name else Name (Name'First .. Eq - 1));
+                           Val     : constant String :=
+                             (if Eq = 0 then "" else Name (Eq + 1 .. Name'Last));
+                        begin
+                           if Base = "cached" then
+                              Cached := not Negated;
+                           elsif Base = "index" then
+                              No_Index := Negated;
+                           elsif Base = "untracked" then
+                              Untracked := not Negated;
+                           elsif Base = "exclude-standard" then
+                              Exclude_Std := (if Negated then 0 else 1);
+                           elsif Base = "recurse-submodules" or else Base = "ext-grep"
+                             or else Base = "open-files-in-pager"
+                           then
+                              null;   --  accepted without effect
+                           elsif Base = "threads" then
+                              declare
+                                 V : constant String := Value_Of (Val, "threads");
+                              begin
+                                 if not Bad and then not Numeric (V) then
+                                    Error_Line ("option `threads' expects a numerical value");
+                                    Bad := True;
+                                 end if;
+                              end;
+                           elsif Base = "invert-match" then
+                              Opts.Invert := not Negated;
+                           elsif Base = "ignore-case" then
+                              Opts.Ignore_Case := not Negated;
+                           elsif Base = "word-regexp" then
+                              Opts.Word_Regexp := not Negated;
+                           elsif Base = "text" then
+                              Opts.Binary :=
+                                (if Negated then Version.Grep.Binary_Default
+                                 else Version.Grep.Binary_Text);
+                           elsif Base = "textconv" then
+                              Textconv := not Negated;
+                           elsif Base = "recursive" then
+                              Max_Depth := (if Negated then 0 else -1);
+                           elsif Base = "max-depth" then
+                              declare
+                                 V : constant String := Value_Of (Val, "max-depth");
+                              begin
+                                 if not Bad then
+                                    if Numeric (V) then
+                                       Max_Depth := Natural'Value (V);
+                                    elsif V'Length > 1 and then V (V'First) = '-'
+                                      and then Numeric (V (V'First + 1 .. V'Last))
+                                    then
+                                       Max_Depth := -1;
+                                    else
+                                       Error_Line
+                                         ("option `max-depth' expects a numerical value");
+                                       Bad := True;
+                                    end if;
+                                 end if;
+                              end;
+                           elsif Base = "extended-regexp" then
+                              Opts.Kind := Version.Grep.Extended_Regex;
+                              Kind_Set := True;
+                           elsif Base = "basic-regexp" then
+                              Opts.Kind := Version.Grep.Basic_Regex;
+                              Kind_Set := True;
+                           elsif Base = "fixed-strings" then
+                              Opts.Kind := Version.Grep.Fixed_String;
+                              Kind_Set := True;
+                           elsif Base = "perl-regexp" then
+                              Opts.Kind := Version.Grep.Perl_Regex;
+                              Kind_Set := True;
+                           elsif Base = "line-number" then
+                              Opts.Line_Number := not Negated;
+                           elsif Base = "column" then
+                              Opts.Column := not Negated;
+                           elsif Base = "full-name" then
+                              Full_Name := not Negated;
+                           elsif Base = "files-with-matches" or else Base = "name-only" then
+                              Opts.Name_Only := not Negated;
+                           elsif Base = "files-without-match" then
+                              Opts.Unmatch_Name_Only := not Negated;
+                           elsif Base = "null" then
+                              Opts.Null_Following := not Negated;
+                           elsif Base = "only-matching" then
+                              Opts.Only_Matching := not Negated;
+                           elsif Base = "count" then
+                              Opts.Count := not Negated;
+                           elsif Base = "color" or else Base = "colour" then
+                              Color_Mode := To_Unbounded_String
+                                (if Negated then "never"
+                                 elsif Eq = 0 then "always" else Val);
+                           elsif Base = "break" then
+                              Opts.File_Break := not Negated;
+                           elsif Base = "heading" then
+                              Opts.Heading := not Negated;
+                           elsif Base = "context" then
+                              if Negated then
+                                 Opts.Pre_Context := 0;
+                                 Opts.Post_Context := 0;
+                              else
+                                 Set_Context ('C', Value_Of (Val, "context"), True);
+                              end if;
+                           elsif Base = "before-context" then
+                              Set_Context ('B', Value_Of (Val, "before-context"), True);
+                           elsif Base = "after-context" then
+                              Set_Context ('A', Value_Of (Val, "after-context"), True);
+                           elsif Base = "show-function" then
+                              Opts.Funcname := not Negated;
+                           elsif Base = "function-context" then
+                              Opts.Funcbody := not Negated;
+                           elsif Base = "and" then
+                              Add_Item (Version.Grep.Tok_And, "--and");
+                           elsif Base = "or" then
+                              null;
+                           elsif Base = "not" then
+                              Add_Item (Version.Grep.Tok_Not, "--not");
+                           elsif Base = "quiet" then
+                              Opts.Status_Only := not Negated;
+                           elsif Base = "all-match" then
+                              Opts.All_Match := not Negated;
+                           elsif Base = "max-count" then
+                              declare
+                                 V : constant String := Value_Of (Val, "max-count");
+                              begin
+                                 if not Bad then
+                                    if Numeric (V) then
+                                       Opts.Max_Count := Natural'Value (V);
+                                    elsif V'Length > 1 and then V (V'First) = '-'
+                                      and then Numeric (V (V'First + 1 .. V'Last))
+                                    then
+                                       Opts.Max_Count := -1;
+                                    else
+                                       Error_Line
+                                         ("option `max-count' expects an integer value"
+                                          & " with an optional k/m/g suffix");
+                                       Bad := True;
+                                    end if;
+                                 end if;
+                              end;
+                           else
+                              Usage_Error ("unknown grep option: " & A, Usage);
+                              Bad := True;
+                           end if;
+                        end;
+                     elsif A'Length >= 2 and then A (A'First) = '-' then
+                        --  Bundled short options; those with a value take
+                        --  the rest of the word or the next one.
+                        declare
+                           K : Positive := A'First + 1;
+                        begin
+                           if Numeric (A (A'First + 1 .. A'Last)) then
+                              Set_Context ('C', A (A'First + 1 .. A'Last), False);
+                           else
+                              while K <= A'Last and then not Bad loop
+                                 declare
+                                    C    : constant Character := A (K);
+                                    Rest : constant String := A (K + 1 .. A'Last);
+                                 begin
+                                    case C is
+                                       when 'v' => Opts.Invert := True;
+                                       when 'i' => Opts.Ignore_Case := True;
+                                       when 'w' => Opts.Word_Regexp := True;
+                                       when 'a' => Opts.Binary := Version.Grep.Binary_Text;
+                                       when 'I' => Opts.Binary := Version.Grep.Binary_No_Match;
+                                       when 'r' => Max_Depth := -1;
+                                       when 'E' =>
+                                          Opts.Kind := Version.Grep.Extended_Regex;
+                                          Kind_Set := True;
+                                       when 'G' =>
+                                          Opts.Kind := Version.Grep.Basic_Regex;
+                                          Kind_Set := True;
+                                       when 'F' =>
+                                          Opts.Kind := Version.Grep.Fixed_String;
+                                          Kind_Set := True;
+                                       when 'P' =>
+                                          Opts.Kind := Version.Grep.Perl_Regex;
+                                          Kind_Set := True;
+                                       when 'n' => Opts.Line_Number := True;
+                                       when 'h' => Opts.Pathname := False;
+                                       when 'H' => Opts.Pathname := True;
+                                       when 'l' => Opts.Name_Only := True;
+                                       when 'L' => Opts.Unmatch_Name_Only := True;
+                                       when 'z' => Opts.Null_Following := True;
+                                       when 'o' => Opts.Only_Matching := True;
+                                       when 'c' => Opts.Count := True;
+                                       when 'p' => Opts.Funcname := True;
+                                       when 'W' => Opts.Funcbody := True;
+                                       when 'q' => Opts.Status_Only := True;
+                                       when 'C' | 'A' | 'B' =>
+                                          Set_Context (C, Value_Of (Rest, "" & C), False);
+                                          exit;
+                                       when 'm' =>
+                                          declare
+                                             V : constant String :=
+                                               Value_Of (Rest, "max-count");
+                                          begin
+                                             if not Bad then
+                                                if Numeric (V) then
+                                                   Opts.Max_Count := Natural'Value (V);
+                                                elsif V'Length > 1 and then V (V'First) = '-'
+                                                  and then Numeric (V (V'First + 1 .. V'Last))
+                                                then
+                                                   Opts.Max_Count := -1;
+                                                else
+                                                   Error_Line
+                                                     ("switch `m' expects an integer value"
+                                                      & " with an optional k/m/g suffix");
+                                                   Bad := True;
+                                                end if;
+                                             end if;
+                                          end;
+                                          exit;
+                                       when 'e' =>
+                                          Add_Item
+                                            (Version.Grep.Tok_Pattern,
+                                             Value_Of (Rest, "e"), "-e option");
+                                          exit;
+                                       when 'f' =>
+                                          Add_Pattern_File (Value_Of (Rest, "f"));
+                                          exit;
+                                       when 'O' =>
+                                          exit;   --  pager: accepted, no effect
+                                       when others =>
+                                          Usage_Error ("unknown grep option: " & A, Usage);
+                                          Bad := True;
+                                    end case;
+                                 end;
+                                 K := K + 1;
+                              end loop;
+                           end if;
+                        end;
                      else
-                        --  A cluster of single-letter flags -- git bundles them
-                        --  (`-niw` == `-n -i -w`); every grep flag version knows
-                        --  is a boolean toggle, so a cluster never takes a value.
-                        for K in A'First + 1 .. A'Last loop
-                           case A (K) is
-                              when 'n' => Show_Lines := True;
-                              when 'c' => Count_Mode := True;
-                              when 'l' => Files_Mode := True;
-                              when 'h' => H_Suppress := True;
-                              when 'i' => Opts.Ignore_Case := True;
-                              when 'w' => Opts.Word_Match := True;
-                              when 'v' => Opts.Invert := True;
-                              when 'E' => Opts.Kind := Version.Grep.Extended_Regex;
-                              when 'F' => Opts.Kind := Version.Grep.Fixed_String;
-                              when 'G' => Opts.Kind := Version.Grep.Basic_Regex;
-                              when 'P' => Opts.Kind := Version.Grep.Perl_Regex;
-                              when others =>
-                                 Bad_Opt := True;
-                                 Bad_Text := To_Unbounded_String (A);
-                           end case;
-                           exit when Bad_Opt;
-                        end loop;
-                        exit when Bad_Opt;
+                        Rest_Start := I;
+                        exit;
                      end if;
                   end;
                   I := I + 1;
                end loop;
 
-               if not Bad_Opt and then I <= Count then
-                  Pat_Idx := I;
-                  I := I + 1;
+               if Bad then
+                  Set_Usage_Failure;
+                  goto Grep_Done;
+               end if;
+               if Rest_Start = 0 then
+                  Rest_Start := I;   --  at "--" or past the end
                end if;
 
-               if Bad_Opt then
-                  Usage_Error ("unknown grep option: " & To_String (Bad_Text),
-                               Usage);
-               elsif Pat_Idx = 0 then
-                  Usage_Error ("grep requires a pattern", Usage);
-               else
-                  declare
-                     Repo : constant Version.Repository.Repository_Handle :=
-                       Version.Repository.Open;
+               --  A "--" before any pattern is just skipped; the first
+               --  non-option is the pattern when none came from -e/-f.
+               if Rest_Start <= Count and then not Have_Pattern
+                 and then Arg (Rest_Start) = "--"
+               then
+                  Rest_Start := Rest_Start + 1;
+               end if;
+               if Rest_Start <= Count and then not Have_Pattern then
+                  Add_Item (Version.Grep.Tok_Pattern, Arg (Rest_Start));
+                  Rest_Start := Rest_Start + 1;
+               end if;
+               if not Have_Pattern and then Opts.Items.Is_Empty then
+                  Die ("no pattern given");
+               end if;
+               if Opts.Invert then
+                  Opts.Only_Matching := False;
+               end if;
+               if not Kind_Set then
+                  Opts.Kind :=
+                    (if Ext_Config then Version.Grep.Extended_Regex
+                     else Version.Grep.Basic_Regex);
+               end if;
+               declare
+                  M : constant String := To_String (Color_Mode);
+               begin
+                  Opts.Color :=
+                    M = "always" or else M = "true" or else M = "1"
+                    or else ((M = "auto" or else M = "") and then C_Isatty (1) /= 0);
+               end;
 
-                     --  A "--"-free operand is a revision (`grep PAT <tree>`),
-                     --  an existing path, or -- if neither -- an error git dies
-                     --  on rather than reporting the no-match a typo would look
-                     --  like. Revisions come first and are grepped in the
-                     --  object store; the rest are pathspecs.
-                     Rev_Names : Version.Trailers.String_Vectors.Vector;
-                     Rev_Trees : Version.Trailers.String_Vectors.Vector;
-                     Pathspec_Start : Positive := Count + 1;
-                     Unresolvable   : Natural := 0;
-                     Any_Match      : Boolean := False;
+               declare
+                  Seen_Dashdash : Boolean := False;
+                  Allow_Revs : constant Boolean := not No_Index and then not Untracked;
+                  type Rev_Item is record
+                     Name : Unbounded_String;
+                     Id   : Version.Objects.Object_Id_Storage;
+                     Path : Unbounded_String;   --  the ":path" of a blob rev
+                  end record;
+                  package Rev_Vectors is new Ada.Containers.Vectors
+                    (Index_Type => Positive, Element_Type => Rev_Item);
+                  Revs      : Rev_Vectors.Vector;
+                  Path_From : Natural := Count + 1;
+                  J         : Natural := Rest_Start;
+                  Prefix    : constant String := Repo_Prefix;
+               begin
+                  if Length (Fatal) > 0 then
+                     goto Grep_Report;
+                  end if;
+                  for K in Rest_Start .. Count loop
+                     if Arg (K) = "--" then
+                        Seen_Dashdash := True;
+                        exit;
+                     end if;
+                  end loop;
 
-                     --  grep searches the current directory's subtree and
-                     --  names the files from there, as ls-files does.
-                     GR_Prefix : constant String := Repo_Prefix;
-
-                     function Shown (Path : Unbounded_String) return String is
-                       (Version.Files.Relative_To_Prefix
-                          (To_String (Path), GR_Prefix));
-
-                     --  Emit one search's matches. Rev_Prefix is "" for the
-                     --  working tree and "<rev>:" for a tree grep, prepended to
-                     --  every path git-style (-h drops the whole line prefix).
-                     --  Matches outside the cwd subtree are filtered out first.
-                     procedure Emit_Group
-                       (Rev_Prefix : String;
-                        Ms         : Version.Grep.Match_Vectors.Vector)
-                     is
-                        function In_Prefix (P : String) return Boolean is
-                          (GR_Prefix = ""
-                           or else (P'Length > GR_Prefix'Length
-                                    and then P (P'First
-                                                .. P'First + GR_Prefix'Length - 1)
-                                             = GR_Prefix));
-                        function Loc (Path : Unbounded_String) return String is
-                          (if H_Suppress then ""
-                           else Rev_Prefix & Shown (Path) & ":");
-                        Kept : Version.Grep.Match_Vectors.Vector;
-                     begin
-                        for M of Ms loop
-                           if In_Prefix (To_String (M.Path)) then
-                              Kept.Append (M);
-                           end if;
-                        end loop;
-                        if Kept.Is_Empty then
-                           return;
-                        end if;
-                        Any_Match := True;
-
-                        if Files_Mode then
-                           --  git -l: each matching file once, in match order.
-                           declare
-                              Prev : Unbounded_String;
-                              Seen : Boolean := False;
-                           begin
-                              for M of Kept loop
-                                 if not Seen or else M.Path /= Prev then
-                                    Success_Line
-                                      (Rev_Prefix & Shown (M.Path));
-                                    Prev := M.Path;
-                                    Seen := True;
-                                 end if;
-                              end loop;
-                           end;
-                        elsif Count_Mode then
-                           --  git -c: "<path>:<count>" per file with matches.
-                           declare
-                              Prev  : Unbounded_String;
-                              Cnt   : Natural := 0;
-                              Seen  : Boolean := False;
-                              procedure Flush is
-                              begin
-                                 if Seen then
-                                    Success_Line
-                                      (Rev_Prefix & Shown (Prev) & ":"
-                                       & Img (Cnt));
-                                 end if;
-                              end Flush;
-                           begin
-                              for M of Kept loop
-                                 if not Seen or else M.Path /= Prev then
-                                    Flush;
-                                    Prev := M.Path;
-                                    Cnt := 0;
-                                    Seen := True;
-                                 end if;
-                                 Cnt := Cnt + 1;
-                              end loop;
-                              Flush;
-                           end;
-                        else
-                           declare
-                              Prev_Bin : Unbounded_String;
-                              Bin_Seen : Boolean := False;
-                           begin
-                              for M of Kept loop
-                                 if M.Binary then
-                                    --  git prints one "Binary file <p> matches"
-                                    --  per binary file, never the line content.
-                                    if not Bin_Seen
-                                      or else M.Path /= Prev_Bin
-                                    then
-                                       Success_Line
-                                         ("Binary file " & Rev_Prefix
-                                          & Shown (M.Path) & " matches");
-                                       Prev_Bin := M.Path;
-                                       Bin_Seen := True;
-                                    end if;
-                                 elsif Show_Lines then
-                                    Success_Line
-                                      (Loc (M.Path) & Img (M.Line_No)
-                                       & ":" & To_String (M.Text));
-                                 else
-                                    Success_Line
-                                      (Loc (M.Path) & To_String (M.Text));
-                                 end if;
-                              end loop;
-                           end;
-                        end if;
-                     end Emit_Group;
-                  begin
-                     --  Classify the trailing operands: leading revisions (each
-                     --  resolving to a tree) until the first non-revision, which
-                     --  and everything after it is a pathspec.
+                  --  Resolve rev arguments: everything up to "--" must be
+                  --  one when there is a "--"; otherwise the first
+                  --  non-rev starts the paths.
+                  while J <= Count loop
                      declare
-                        J : Positive := Pat_Idx + 1;
+                        A : constant String := Arg (J);
                      begin
-                        while J <= Count loop
-                           exit when Arg (J) = "--";
-                           declare
-                              Tree : Version.Objects.Hex_Object_Id;
-                              Is_Rev : Boolean := True;
+                        if A = "--" then
+                           J := J + 1;
+                           exit;
+                        end if;
+                        if not Allow_Revs then
+                           if Seen_Dashdash then
+                              Die ("--no-index or --untracked cannot be used with revs");
+                              goto Grep_Report;
+                           end if;
+                           exit;
+                        end if;
+                        declare
+                           Id : Version.Objects.Hex_Object_Id;
+                           Resolved : Boolean := True;
+                           Colon : constant Natural := Ada.Strings.Fixed.Index (A, ":");
+                        begin
                            begin
-                              begin
-                                 Tree := Version.Revisions.Resolve_Tree
-                                           (Repo, Arg (J));
-                              exception
-                                 when others => Is_Rev := False;
-                              end;
-                              if Is_Rev then
-                                 Rev_Names.Append (Arg (J));
-                                 Rev_Trees.Append
-                                   (Version.Objects.To_String (Tree));
-                                 J := J + 1;
+                              Id := Version.Revisions.Resolve (Repo, A);
+                           exception
+                              when others => Resolved := False;
+                           end;
+                           if not Resolved then
+                              if Seen_Dashdash then
+                                 Die ("unable to resolve revision: " & A);
+                                 goto Grep_Report;
+                              end if;
+                              exit;
+                           end if;
+                           if not Seen_Dashdash
+                             and then Ada.Directories.Exists
+                                        (Version.Files.Join
+                                           (Version.Repository.Root_Path (Repo),
+                                            Version.Pathspec.Resolve_Against_Prefix
+                                              (Prefix, A)))
+                           then
+                              Die ("ambiguous argument '" & A
+                                   & "': both revision and filename" & LF
+                                   & "Use '--' to separate paths from revisions, like this:"
+                                   & LF & "'git <command> [<revision>...] -- [<file>...]'");
+                              goto Grep_Report;
+                           end if;
+                           Revs.Append
+                             (Rev_Item'
+                                (Name => To_Unbounded_String (A),
+                                 Id   => Id,
+                                 Path => To_Unbounded_String
+                                           (if Colon > 0 then A (Colon + 1 .. A'Last)
+                                            else "")));
+                        end;
+                        J := J + 1;
+                     end;
+                  end loop;
+                  Path_From := J;
+
+                  --  Whatever is left is a path; without "--" it must exist
+                  --  (verify_filename: pathspec magic and wildcards pass, a
+                  --  dash is a misplaced option).
+                  if not Seen_Dashdash then
+                     for K in Path_From .. Count loop
+                        declare
+                           A : constant String := Arg (K);
+                        begin
+                           if A'Length > 0 and then A (A'First) = '-' then
+                              Die ("option '" & A & "' must come before non-option arguments");
+                              goto Grep_Report;
+                           end if;
+                           if A'Length > 0 and then A (A'First) /= ':'
+                             and then (for all C of A => C /= '*' and then C /= '?'
+                                       and then C /= '[')
+                             and then not Ada.Directories.Exists
+                                            (Version.Files.Join
+                                               (Version.Repository.Root_Path (Repo),
+                                                Version.Pathspec.Resolve_Against_Prefix
+                                                  (Prefix, A)))
+                           then
+                              if K = Path_From and then Allow_Revs then
+                                 Die ("ambiguous argument '" & A
+                                      & "': unknown revision or path not in the working tree."
+                                      & LF
+                                      & "Use '--' to separate paths from revisions, like this:"
+                                      & LF & "'git <command> [<revision>...] -- [<file>...]'");
                               else
-                                 exit;
+                                 Die (A & ": no such path in the working tree." & LF
+                                      & "Use 'git <command> -- <path>...' to specify paths"
+                                      & " that do not exist locally.");
+                              end if;
+                              goto Grep_Report;
+                           end if;
+                        end;
+                     end loop;
+                  end if;
+
+                  if Opts.Max_Count = 0 then
+                     Set_Command_Failure;
+                     goto Grep_Done;
+                  end if;
+
+                  if Boolean'Pos (No_Index) + Boolean'Pos (Untracked)
+                    + Boolean'Pos (Cached) > 1
+                  then
+                     --  die_for_incompatible_opt3: only the ones given.
+                     if No_Index and then Untracked and then Cached then
+                        Die ("options '--no-index', '--untracked', and '--cached'"
+                             & " cannot be used together");
+                     elsif No_Index and then Untracked then
+                        Die ("options '--no-index' and '--untracked'"
+                             & " cannot be used together");
+                     elsif No_Index then
+                        Die ("options '--no-index' and '--cached'"
+                             & " cannot be used together");
+                     else
+                        Die ("options '--untracked' and '--cached'"
+                             & " cannot be used together");
+                     end if;
+                     goto Grep_Report;
+                  end if;
+                  if Exclude_Std >= 0 and then not No_Index and then not Untracked then
+                     Die ("--[no-]exclude-standard cannot be used for tracked contents");
+                     goto Grep_Report;
+                  end if;
+                  if Cached and then not Revs.Is_Empty then
+                     Die ("both --cached and trees are given");
+                     goto Grep_Report;
+                  end if;
+
+                  declare
+                     Pathspecs : Version.Pathspec.Pathspec_Vectors.Vector :=
+                       Pathspecs_From_Args (Path_From);
+                     State  : Version.Grep.Grep_State;
+                     Output : Unbounded_String;
+                     Hit    : Boolean := False;
+
+                     --  pathspec max_depth: the slashes past the matching
+                     --  pathspec's directory.
+                     function Within_Depth (Path : String) return Boolean is
+                        function Depth_After (Base : String) return Natural is
+                           Rest : constant String :=
+                             (if Base'Length = 0 then Path
+                              elsif Path'Length > Base'Length
+                              then Path (Path'First + Base'Length .. Path'Last)
+                              else "");
+                           Start : Natural := Rest'First;
+                           D : Natural := 0;
+                        begin
+                           if Start <= Rest'Last and then Rest (Start) = '/' then
+                              Start := Start + 1;
+                           end if;
+                           for K in Start .. Rest'Last loop
+                              if Rest (K) = '/' then
+                                 D := D + 1;
+                              end if;
+                           end loop;
+                           return D;
+                        end Depth_After;
+                     begin
+                        if Max_Depth < 0 then
+                           return True;
+                        end if;
+                        if Pathspecs.Is_Empty then
+                           return Depth_After ("") <= Max_Depth;
+                        end if;
+                        for P of Pathspecs loop
+                           declare
+                              T : constant String := Version.Pathspec.To_Text (P);
+                              B : constant String :=
+                                (if T'Length > 0 and then T (T'Last) = '/'
+                                 then T (T'First .. T'Last - 1) else T);
+                           begin
+                              if Path = B then
+                                 return True;
+                              end if;
+                              if Has_Prefix (Path, B & "/") or else B'Length = 0 then
+                                 if Depth_After (B) <= Max_Depth then
+                                    return True;
+                                 end if;
                               end if;
                            end;
                         end loop;
-                        Pathspec_Start := J;
-                     end;
+                        return False;
+                     end Within_Depth;
 
-                     --  git refuses to grep the index and a tree at once.
-                     if Cached and then not Rev_Names.Is_Empty then
-                        Ada.Text_IO.Put_Line
-                          (Ada.Text_IO.Standard_Error,
-                           "fatal: both --cached and trees are given");
-                        Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
-                        return;
-                     end if;
+                     function Selected (Path : String) return Boolean is
+                       ((Pathspecs.Is_Empty
+                         or else Version.Pathspec.Matches_Any (Pathspecs, Path))
+                        and then Within_Depth (Path));
 
-                     for J in Pathspec_Start .. Count loop
-                        exit when Arg (J) = "--";
-                        if Arg (J)'Length > 0
-                          and then Arg (J) (Arg (J)'First) /= ':'
-                          and then not Ada.Directories.Exists (Arg (J))
-                        then
-                           Unresolvable := J;
-                           exit;
-                        end if;
-                     end loop;
-
-                     if Unresolvable /= 0 then
-                        Ada.Text_IO.Put_Line
-                          (Ada.Text_IO.Standard_Error,
-                           "fatal: ambiguous argument '"
-                           & Arg (Unresolvable)
-                           & "': unknown revision or path not in the "
-                           & "working tree.");
-                        Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
-                        return;
-                     end if;
-
-                     declare
-                        Pathspecs :
-                          constant Version.Pathspec.Pathspec_Vectors.Vector :=
-                            Pathspecs_From_Args (Pathspec_Start);
+                     --  grep_source_name: relative to the prefix unless
+                     --  --full-name, quoted unless -z, "rev:" first.
+                     function Shown (Rev_Prefix, Path : String) return String is
+                        Rel : constant String :=
+                          (if Full_Name then Path
+                           else Version.Files.Relative_To_Prefix (Path, Prefix));
                      begin
-                        if Rev_Names.Is_Empty then
-                           --  Working tree (or, with --cached, the tracked
-                           --  content), named without a rev prefix.
-                           Emit_Group
-                             ("",
-                              Version.Grep.Search
-                                (Repo, Arg (Pat_Idx), Opts, Pathspecs));
-                        else
-                           for K in Rev_Names.First_Index
-                                      .. Rev_Names.Last_Index
-                           loop
-                              Emit_Group
-                                (Rev_Names (K) & ":",
-                                 Version.Grep.Search_Tree
-                                   (Repo,
-                                    Version.Objects.To_Object_Id (Rev_Trees (K)),
-                                    Arg (Pat_Idx), Opts, Pathspecs));
-                           end loop;
+                        if Opts.Null_Following then
+                           return Rev_Prefix & Rel;
                         end if;
+                        return Rev_Prefix & Version.Path_Quoting.Quote_C_Style (Rel);
+                     end Shown;
+
+                     --  The `diff` attribute's binary verdict, else the
+                     --  content's.
+                     function Binary_Of (Path, Content : String) return Boolean is
+                        use type Version.Attributes.Attribute_State;
+                        R : constant Version.Attributes.Attribute_Result :=
+                          Version.Attributes.Lookup (Repo, Path, "diff");
+                     begin
+                        if R.State = Version.Attributes.Attribute_Unset then
+                           return True;
+                        elsif R.State = Version.Attributes.Attribute_Set then
+                           return False;
+                        end if;
+                        return Version.Grep.Looks_Binary (Content);
+                     end Binary_Of;
+
+                     procedure Grep_One
+                       (Name, Path, Content : String; Check_Attr : Boolean)
+                     is
+                        Cmd : constant String :=
+                          (if Textconv then Version.Diff.Textconv_Command (Repo, Path)
+                           else "");
+                     begin
+                        if Cmd /= "" then
+                           --  A textconv result is text.
+                           if Version.Grep.Grep_Buffer
+                                (State, Opts, Name,
+                                 Version.Diff.Run_Textconv (Cmd, Content), False, Output)
+                           then
+                              Hit := True;
+                           end if;
+                           return;
+                        end if;
+                        declare
+                           Bin : constant Boolean :=
+                             (if Opts.Binary = Version.Grep.Binary_Text then False
+                              elsif Check_Attr then Binary_Of (Path, Content)
+                              else Version.Grep.Looks_Binary (Content));
+                        begin
+                           if Version.Grep.Grep_Buffer
+                                (State, Opts, Name, Content, Bin, Output)
+                           then
+                              Hit := True;
+                           end if;
+                        end;
+                     end Grep_One;
+
+                     Index : constant Version.Staging.Index_Entry_Vectors.Vector :=
+                       Version.Staging.Load (Repo);
+                  begin
+                     if Pathspecs.Is_Empty and then Prefix /= "" then
+                        Version.Pathspec.Append_Parse (Pathspecs, ".", Prefix);
+                     end if;
+                     begin
+                        State := Version.Grep.Prepare (Opts);
+                     exception
+                        when E : Ada.IO_Exceptions.Data_Error =>
+                           Die (Ada.Exceptions.Exception_Message (E));
+                           goto Grep_Report;
                      end;
 
-                     if not Any_Match then
+                     if No_Index or else Untracked then
+                        --  grep_directory: the files on disk, the excludes
+                        --  applied by default only with --untracked.
+                        declare
+                           Use_Exclude : constant Boolean :=
+                             (if Exclude_Std < 0 then not No_Index else Exclude_Std = 1);
+                           Rules : constant Version.Ignore.Ignore_Rules :=
+                             (if Use_Exclude then Version.Ignore.Load (Repo)
+                              else Version.Ignore.Rules_From_Text
+                                     (Version.Repository.Root_Path (Repo), ""));
+                           Files : constant Version.Working_Tree.Working_File_Vectors.Vector :=
+                             Version.Working_Tree.Scan (Repo, Rules, Index);
+                           Names : Version.Trailers.String_Vectors.Vector;
+                        begin
+                           for F of Files loop
+                              Names.Append (To_String (F.Path));
+                           end loop;
+                           if Untracked then
+                              for E of Index loop
+                                 if E.Stage = 0 and then Has_Prefix (To_String (E.Mode), "100")
+                                 then
+                                    Names.Append (To_String (E.Path));
+                                 end if;
+                              end loop;
+                           end if;
+                           declare
+                              package Sorting is new
+                                Version.Trailers.String_Vectors.Generic_Sorting;
+                              Prev : Unbounded_String;
+                              Seen : Boolean := False;
+                           begin
+                              Sorting.Sort (Names);
+                              for P of Names loop
+                                 if (not Seen or else P /= To_String (Prev))
+                                   and then Selected (P)
+                                 then
+                                    declare
+                                       Full : constant String :=
+                                         Version.Files.Join
+                                           (Version.Repository.Root_Path (Repo), P);
+                                    begin
+                                       if GNAT.OS_Lib.Is_Regular_File (Full)
+                                         and then not GNAT.OS_Lib.Is_Symbolic_Link (Full)
+                                       then
+                                          Grep_One
+                                            (Shown ("", P), P,
+                                             Version.Files.Read_Binary_File (Full), True);
+                                       end if;
+                                    end;
+                                    exit when Hit and then Opts.Status_Only;
+                                 end if;
+                                 Prev := To_Unbounded_String (P);
+                                 Seen := True;
+                              end loop;
+                           end;
+                        end;
+                     elsif Revs.Is_Empty then
+                        --  grep_cache: the index, or the working files.
+                        declare
+                           Prev_Path : Unbounded_String;
+                           K : Natural := Index.First_Index;
+                        begin
+                           while K <= Index.Last_Index loop
+                              declare
+                                 E : constant Version.Staging.Index_Entry := Index (K);
+                                 P : constant String := To_String (E.Path);
+                              begin
+                                 if (not Cached and then E.Skip_Worktree)
+                                   or else not Has_Prefix (To_String (E.Mode), "100")
+                                   or else not Selected (P)
+                                 then
+                                    null;
+                                 elsif Cached then
+                                    if E.Stage = 0 and then not E.Intent_To_Add then
+                                       Grep_One
+                                         (Shown ("", P), P,
+                                          Version.Objects.Content
+                                            (Version.Objects.Read_Object (Repo, E.Id)),
+                                          True);
+                                    end if;
+                                 elsif E.Stage = 0 or else Prev_Path /= E.Path then
+                                    declare
+                                       Full : constant String :=
+                                         Version.Files.Join
+                                           (Version.Repository.Root_Path (Repo), P);
+                                    begin
+                                       if GNAT.OS_Lib.Is_Regular_File (Full)
+                                         and then not GNAT.OS_Lib.Is_Symbolic_Link (Full)
+                                       then
+                                          Grep_One
+                                            (Shown ("", P), P,
+                                             Version.Files.Read_Binary_File (Full), True);
+                                       end if;
+                                    end;
+                                 end if;
+                                 Prev_Path := E.Path;
+                              end;
+                              exit when Hit and then Opts.Status_Only;
+                              K := K + 1;
+                           end loop;
+                        end;
+                     else
+                        --  grep_objects: each tree (or blob) argument.
+                        for R of Revs loop
+                           declare
+                              Obj : constant Version.Objects.Git_Object :=
+                                Version.Objects.Read_Object (Repo, R.Id);
+                              Kind : constant Version.Objects.Object_Kind :=
+                                Version.Objects.Kind (Obj);
+                              Name : constant String := To_String (R.Name);
+                           begin
+                              if Kind = Version.Objects.Blob_Object then
+                                 Grep_One
+                                   (Name, To_String (R.Path),
+                                    Version.Objects.Content (Obj), True);
+                              elsif Kind = Version.Objects.Commit_Object
+                                or else Kind = Version.Objects.Tree_Object
+                                or else Kind = Version.Objects.Tag_Object
+                              then
+                                 declare
+                                    Tree : constant Version.Objects.Hex_Object_Id :=
+                                      Version.Revisions.Resolve_Tree (Repo, Name);
+                                    Is_Commit : constant Boolean :=
+                                      Kind = Version.Objects.Commit_Object
+                                      or else (Kind = Version.Objects.Tag_Object
+                                               and then Version.Objects.Kind
+                                                 (Version.Objects.Read_Object
+                                                    (Repo, Version.Revisions.Resolve_Commit
+                                                       (Repo, Name)))
+                                                 = Version.Objects.Commit_Object);
+                                 begin
+                                    for E of Version.Objects.Flatten_Tree (Repo, Tree) loop
+                                       declare
+                                          P : constant String := To_String (E.Path);
+                                       begin
+                                          if E.Kind = Version.Objects.Tree_Blob
+                                            and then Has_Prefix (To_String (E.Mode), "100")
+                                            and then Selected (P)
+                                          then
+                                             Grep_One
+                                               (Shown (Name & ":", P), P,
+                                                Version.Objects.Content
+                                                  (Version.Objects.Read_Object (Repo, E.Id)),
+                                                Is_Commit);
+                                          end if;
+                                       end;
+                                       exit when Hit and then Opts.Status_Only;
+                                    end loop;
+                                 exception
+                                    when Ada.IO_Exceptions.Data_Error =>
+                                       Die ("unable to grep from object of type tag");
+                                       goto Grep_Report;
+                                 end;
+                              else
+                                 Die ("unable to grep from object of type "
+                                      & (case Kind is
+                                            when Version.Objects.Tree_Object => "tree",
+                                            when others => "commit"));
+                                 goto Grep_Report;
+                              end if;
+                           end;
+                           exit when Hit and then Opts.Status_Only;
+                        end loop;
+                     end if;
+
+                     Version.Console.Put (To_String (Output));
+                     if not Hit then
                         Set_Command_Failure;
                      end if;
                   end;
+               end;
+
+               <<Grep_Report>>
+               if Length (Fatal) > 0 then
+                  Stderr_Line ("fatal: " & To_String (Fatal));
+                  Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
                end if;
+               <<Grep_Done>>
+               null;
             end;
 
          elsif Command = "describe" then
@@ -45124,9 +45822,31 @@ package body Version.CLI is
    exception
       when E : Version.Pathspec.Outside_Repository =>
          --  git's die() for a pathspec above the worktree root: exit 128,
-         --  not the ordinary failure status.
-         Ada.Text_IO.Put_Line
-           (Ada.Text_IO.Standard_Error, "fatal: " & User_Error_Text (E));
+         --  not the ordinary failure status, worded as git 2.55 does:
+         --  "<arg>: '<arg>' is outside repository at '<root>'".
+         declare
+            Msg    : constant String := User_Error_Text (E);
+            Suffix : constant String := " is outside repository";
+            Root   : constant String := Repo_Root_Or_Empty;
+         begin
+            if Msg'Length > Suffix'Length
+              and then Msg (Msg'Last - Suffix'Length + 1 .. Msg'Last) = Suffix
+              and then Root /= ""
+            then
+               declare
+                  Arg : constant String :=
+                    Msg (Msg'First .. Msg'Last - Suffix'Length);
+               begin
+                  Ada.Text_IO.Put_Line
+                    (Ada.Text_IO.Standard_Error,
+                     "fatal: " & Arg & ": '" & Arg & "' is outside repository at '"
+                     & Root & "'");
+               end;
+            else
+               Ada.Text_IO.Put_Line
+                 (Ada.Text_IO.Standard_Error, "fatal: " & Msg);
+            end if;
+         end;
          Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
 
       when E : Version.Apply.Malformed_Patch =>

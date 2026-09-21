@@ -579,6 +579,7 @@ package body Version.CLI.Help is
         or else Name = "annotate"
         or else Name = "describe"
         or else Name = "shortlog"
+        or else Name = "grep"
         or else Name = "restore"
         or else Name = "checkout"
         or else Name = "branch"
@@ -925,6 +926,19 @@ package body Version.CLI.Help is
          Line ("defaults: no walk, the patch on, and a merge as a dense combined");
          Line ("diff (--cc; -c for the full one, -m per parent, --first-parent,");
          Line ("--dd, --diff-merges=<mode>), plus every diff switch.");
+      elsif Name = "grep" then
+         Line ("Usage:");
+         Line ("  version grep [<options>] [-e] <pattern> [<rev>...] [[--] <path>...]");
+         Line;
+         Line ("Search tracked content for patterns, as git does.");
+         Line ("Patterns: -e <pat> (repeatable), -f <file>, --and, --or, --not,");
+         Line ("  ( ), --all-match; -G (basic, default), -E, -F, -P; -i, -w, -v.");
+         Line ("Output: -n, --column, -h/-H, --full-name, -l, -L, -c, -o, -q, -z,");
+         Line ("  -m <n>, --color[=<when>], --break, --heading, -A/-B/-C <n>, -<n>,");
+         Line ("  -p (function line), -W (whole function), -a, -I, --textconv.");
+         Line ("Sources: the working files (default), --cached, <rev>... (trees or");
+         Line ("  rev:path blobs), --untracked, --no-index, --[no-]exclude-standard,");
+         Line ("  --max-depth <n> / -r, pathspecs after --.");
       elsif Name = "shortlog" then
          Line ("Usage:");
          Line ("  version shortlog [<options>] [<revision-range>] [[--] <path>...]");
