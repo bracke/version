@@ -6295,6 +6295,128 @@ package body CLI_Integration_Tests is
       Run_Parity_Transcript (Root, Scenario, "describe");
    end Describe_Option_Surface_Matches_Git;
 
+   --  `shortlog`: git's option surface over the shortlog.c port -- the
+   --  groupings (-c, --group=author|committer|trailer:|format:), -s/-n/-e,
+   --  -w wrapping, --format records, the subject rules ([PATCH], folding,
+   --  <none>), .mailmap, the walk options, and the log-on-stdin form.
+   procedure Shortlog_Option_Surface_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Scenario : constant String :=
+          "git init -q; git config user.email a@b; git config user.name A" & LF
+        & "n=0" & LF
+        & "c() { n=$((n+1)); export GIT_AUTHOR_DATE=""@$((1000000000 + n*86400)) +0000"""
+        & " GIT_COMMITTER_DATE=""@$((1000000000 + n*86400)) +0000""; echo ""$n"" >> ""f_$1""; git add"
+        & " ""f_$1""; git -c user.name=""$2"" -c user.email=""$3"" commit -q -m ""$4"" ""${@:5}""; }" & LF
+        & "c main A a@b 'first commit'" & LF
+        & "c main 'Bob Builder' bob@x.org 'Bob adds a thing'" & LF
+        & "c main A a@b '[PATCH 3/7] patch-style subject'" & LF
+        & "c main 'Carol' carol@x.org $'multi line subject\nsecond line\n\nbody text'" & LF
+        & "c main A a@b $'   leading spaces subject   '" & LF
+        & "c main 'Bob Builder' bob@x.org $'Signed off work\n\nSigned-off-by: Carol"
+        & " <carol@x.org>\nReviewed-by: Dan <dan@x.org>\nSigned-off-by: Bob Builder <bob@x.org>'" & LF
+        & "c main 'Émile Zola' emile@x.org 'Accented author with a very long subject line that"
+        & " will certainly need wrapping at seventy six columns or so'" & LF
+        & "git checkout -qb side" & LF
+        & "c side Dan dan@x.org 'side one'" & LF
+        & "c side Dan dan@x.org 'side two'" & LF
+        & "git checkout -q main" & LF
+        & "n=$((n+1)); export GIT_AUTHOR_DATE=""@$((1000000000 + n*86400)) +0000"""
+        & " GIT_COMMITTER_DATE=""@$((1000000000 + n*86400)) +0000""; git -c user.name=Merger -c"
+        & " user.email=m@x.org merge -q --no-ff side -m 'merge side'" & LF
+        & "c main A a@b 'empty-ish'" & LF
+        & "git commit -q --allow-empty --allow-empty-message -m '' 2>/dev/null || true" & LF
+        & "GIT_COMMITTER_NAME=Other GIT_COMMITTER_EMAIL=o@x.org c main A a@b 'committer differs'" & LF
+        & "printf 'Robert Builder <bob@x.org>\n' > .mailmap; git add .mailmap; c main A a@b"
+        & " 'mailmap'" & LF
+        & "t 'plain' shortlog HEAD" & LF
+        & "t 'HEAD' shortlog HEAD" & LF
+        & "t '-s' shortlog -s HEAD" & LF
+        & "t '-n' shortlog -n HEAD" & LF
+        & "t '-sn' shortlog -sn HEAD" & LF
+        & "t '-sne' shortlog -sne HEAD" & LF
+        & "t '-e' shortlog -e HEAD" & LF
+        & "t '-c' shortlog -c HEAD" & LF
+        & "t '-cs' shortlog -cs HEAD" & LF
+        & "t '--committer' shortlog --committer -s HEAD" & LF
+        & "t '--numbered --summary --email' shortlog --numbered --summary --email HEAD" & LF
+        & "t '--group=author' shortlog --group=author -s HEAD" & LF
+        & "t '--group=committer' shortlog --group=committer -s HEAD" & LF
+        & "t '--group both' shortlog --group=author --group=committer -s HEAD" & LF
+        & "t '--group both -e' shortlog --group=author --group=committer -se HEAD" & LF
+        & "t '--group=trailer' shortlog --group=trailer:Signed-off-by HEAD" & LF
+        & "t '--group=trailer -s' shortlog -s --group=trailer:signed-off-by HEAD" & LF
+        & "t '--group=trailer two' shortlog -s --group=trailer:Signed-off-by"
+        & " --group=trailer:Reviewed-by HEAD" & LF
+        & "t '--group=trailer + author' shortlog -s --group=trailer:Signed-off-by --group=author"
+        & " HEAD" & LF
+        & "t '--group=format' shortlog --group=format:%an HEAD" & LF
+        & "t '--group=format -s' shortlog -s --group='%cn <%ce>'" & LF
+        & "t '--group=format two' shortlog -s --group=format:%an --group=format:%cn HEAD" & LF
+        & "t '--group bad' shortlog --group=nope HEAD" & LF
+        & "t '--no-group' shortlog --group=committer --no-group -s HEAD" & LF
+        & "t '-w' shortlog -w HEAD" & LF
+        & "t '-w40' shortlog -w40 HEAD" & LF
+        & "t '-w40,2,4' shortlog -w40,2,4 HEAD" & LF
+        & "t '-w,3' shortlog -w,3 HEAD" & LF
+        & "t '-w0' shortlog -w0 HEAD" & LF
+        & "t '-w20,25' shortlog -w20,25 HEAD" & LF
+        & "t '-wx' shortlog -wx HEAD" & LF
+        & "t '-w -e' shortlog -we HEAD" & LF
+        & "t '--format' shortlog --format='%h %s'" & LF
+        & "t '--format=%s' shortlog --format=%s HEAD" & LF
+        & "t '--pretty=format:' shortlog --pretty='format:%an: %s'" & LF
+        & "t '--pretty=short' shortlog --pretty=short HEAD" & LF
+        & "t '--pretty=oneline' shortlog --pretty=oneline HEAD" & LF
+        & "t '--format=%ad --date=short' shortlog --format='%ad %s' --date=short" & LF
+        & "t '--format=%ad' shortlog --format='%ad' HEAD" & LF
+        & "t '--no-merges' shortlog --no-merges HEAD" & LF
+        & "t '--merges' shortlog --merges HEAD" & LF
+        & "t '--first-parent' shortlog --first-parent HEAD" & LF
+        & "t '--all' shortlog --all -s" & LF
+        & "t '--branches' shortlog --branches -s" & LF
+        & "t 'range' shortlog HEAD~5..HEAD" & LF
+        & "t 'range2' shortlog -s side..main" & LF
+        & "t '^rev' shortlog -s ^side main" & LF
+        & "t '-3' shortlog -3 HEAD" & LF
+        & "t '--max-count=2' shortlog --max-count=2 HEAD" & LF
+        & "t '--skip=2 -3' shortlog --skip=2 -3 HEAD" & LF
+        & "t '--since' shortlog --since=2001-09-12 HEAD" & LF
+        & "t '--until' shortlog --until=2001-09-12 HEAD" & LF
+        & "t '--author' shortlog --author=Bob HEAD" & LF
+        & "t '--author -i' shortlog --author=bob -i HEAD" & LF
+        & "t '--grep' shortlog --grep=side HEAD" & LF
+        & "t '--grep two --all-match' shortlog --grep=side --grep=one --all-match HEAD" & LF
+        & "t '--invert-grep' shortlog --grep=side --invert-grep -s HEAD" & LF
+        & "t '--reverse' shortlog --reverse HEAD" & LF
+        & "t '-- path' shortlog -- f_side" & LF
+        & "t 'path' shortlog f_main -s" & LF
+        & "t 'bad rev' shortlog nope" & LF
+        & "t '--output' shortlog --output=out.txt -s HEAD" & LF
+        & "t '--group=trailer -e' shortlog -se --group=trailer:Signed-off-by HEAD" & LF
+        & "t '-c --group=trailer' shortlog -s -c --group=trailer:Reviewed-by HEAD" & LF
+        & "git log --pretty=short > log_short.txt; git log > log_full.txt; git log --pretty=raw"
+        & " > log_raw.txt; git log --format=%H > ids.txt" & LF
+        & "ts() { l=$1; shift; f=$1; shift; echo ""\$ $l"" >> ""$TF""; ""$TOOL"" ""$@"" >> ""$TF"" 2>&1 <"
+        & " ""$f""; echo ""[rc=$?]"" >> ""$TF""; }" & LF
+        & "ts 'stdin short' log_short.txt shortlog" & LF
+        & "ts 'stdin short -s' log_short.txt shortlog -s" & LF
+        & "ts 'stdin short -sne' log_short.txt shortlog -sne" & LF
+        & "ts 'stdin full' log_full.txt shortlog" & LF
+        & "ts 'stdin raw' log_raw.txt shortlog -s" & LF
+        & "ts 'stdin raw -c' log_raw.txt shortlog -sc" & LF
+        & "ts 'stdin full -c' log_full.txt shortlog -sc" & LF
+        & "ts 'stdin ids' ids.txt shortlog" & LF
+        & "ts 'stdin -w' log_short.txt shortlog -w30" & LF
+        & "ts 'stdin --group=trailer' log_short.txt shortlog --group=trailer:x" & LF
+        & "ts 'stdin --group=format' log_short.txt shortlog --group=%an" & LF
+        & "ts 'stdin multi' log_short.txt shortlog --group=author --group=committer" & LF;
+   begin
+      Run_Parity_Transcript (Root, Scenario, "shortlog");
+   end Shortlog_Option_Surface_Matches_Git;
+
    procedure Bisect_Run_And_Patch_Id_Match_Git
      (T : in out AUnit.Test_Cases.Test_Case'Class)
    is
@@ -7703,6 +7825,9 @@ package body CLI_Integration_Tests is
       Register_Routine
         (T, Describe_Option_Surface_Matches_Git'Access,
          "Describe: git's option surface, candidates, contains, blobs, dirty");
+      Register_Routine
+        (T, Shortlog_Option_Surface_Matches_Git'Access,
+         "Shortlog: git's option surface, groups, wrapping, stdin records");
       Register_Routine
         (T, Fast_Import_Stream_Matches_Git'Access,
          "Fast-import: author defaults to committer, short modes are files");

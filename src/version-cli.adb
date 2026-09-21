@@ -28978,61 +28978,316 @@ package body Version.CLI is
             end;
 
          elsif Command = "shortlog" then
+            --  builtin/shortlog.c: the grouping options (-c, --group=...,
+            --  -s, -n, -e, -w) over the log walk's revision options, or the
+            --  records read from a `git log` on stdin.
             declare
                Usage    : constant String :=
-                 "version shortlog [-s] [-n] [-e] [--no-merges]"
-                 & " [REV|RANGE...] [-- PATH...]";
-               Summary  : Boolean := False;
-               By_Count : Boolean := False;
-               Email    : Boolean := False;
-               No_Merges : Boolean := False;
-               Seed_All : Boolean := False;
-               Bad_Opt  : Boolean := False;
-               Bad_Text : Unbounded_String;
+                 "version shortlog [<options>] [<revision-range>] [[--] <path>...]";
+               LF       : constant Character := Character'Val (10);
+               HT       : constant Character := Character'Val (9);
+               Opts     : Version.Shortlog.Shortlog_Options;
+               Numbered : Boolean := False;
+               Wrap_Lines : Boolean := False;
+               Wrap_W   : Natural := 76;
+               Wrap_I1  : Natural := 6;
+               Wrap_I2  : Natural := 9;
+               Seed_All, Seed_Heads, Seed_Tags, Seed_Remotes : Boolean := False;
+               Walk     : Version.History.Rev_List_Options;
+               Max_Count : Natural := 0;
+               Skip     : Natural := 0;
+               Oldest_First : Boolean := False;
+               Since_Set, Until_Set : Boolean := False;
+               Since_Time, Until_Time : Long_Long_Integer := 0;
+               Author_Pat : Unbounded_String;
+               Grep_List  : Version.Trailers.String_Vectors.Vector;
+               Grep_Kind  : Version.Grep.Pattern_Kind := Version.Grep.Basic_Regex;
+               Ignore_Case, All_Match, Invert_Grep : Boolean := False;
+               Output_File : Unbounded_String;
                Operands : Version.Rev_Args.String_Vectors.Vector;
                Seen_Sep : Boolean := False;
+               Bad      : Boolean := False;
                I        : Positive := 2;
 
                function Img (N : Natural) return String is
-                  S : constant String := Natural'Image (N);
+                 (Ada.Strings.Fixed.Trim (Natural'Image (N), Ada.Strings.Left));
+
+               --  parse_wrap_args: -w[<width>[,<indent1>[,<indent2>]]]
+               procedure Parse_Wrap (Text : String) is
+                  Pos : Natural := Text'First;
+
+                  function Field (Default : Natural; OK : in out Boolean)
+                     return Integer
+                  is
+                     Start : constant Natural := Pos;
+                     V     : Natural := 0;
+                  begin
+                     while Pos <= Text'Last and then Text (Pos) in '0' .. '9' loop
+                        V := V * 10 + Character'Pos (Text (Pos)) - Character'Pos ('0');
+                        Pos := Pos + 1;
+                     end loop;
+                     if Pos <= Text'Last and then Text (Pos) /= ',' then
+                        OK := False;
+                        return -1;
+                     end if;
+                     declare
+                        Had : constant Boolean := Pos > Start;
+                     begin
+                        if Pos <= Text'Last then
+                           Pos := Pos + 1;   --  the comma
+                        end if;
+                        return (if Had then V else Default);
+                     end;
+                  end Field;
+
+                  OK : Boolean := True;
+                  W, I1, I2 : Integer;
                begin
-                  return S (S'First + 1 .. S'Last);
-               end Img;
+                  Wrap_Lines := True;
+                  if Text'Length = 0 then
+                     Wrap_W := 76;
+                     Wrap_I1 := 6;
+                     Wrap_I2 := 9;
+                     return;
+                  end if;
+                  W := Field (76, OK);
+                  I1 := (if OK then Field (6, OK) else -1);
+                  I2 := (if OK then Field (9, OK) else -1);
+                  if not OK or else W < 0 or else I1 < 0 or else I2 < 0
+                    or else (W > 0
+                             and then ((I1 > 0 and then W <= I1)
+                                       or else (I2 > 0 and then W <= I2)))
+                  then
+                     Error_Line ("-w[<width>[,<indent1>[,<indent2>]]]");
+                     Bad := True;
+                     return;
+                  end if;
+                  Wrap_W := W;
+                  Wrap_I1 := I1;
+                  Wrap_I2 := I2;
+               end Parse_Wrap;
+
+               --  parse_group_option
+               procedure Parse_Group (Text : String) is
+                  Lower : constant String :=
+                    Ada.Characters.Handling.To_Lower (Text);
+               begin
+                  if Lower = "author" then
+                     Opts.By_Author := True;
+                  elsif Lower = "committer" then
+                     Opts.By_Committer := True;
+                  elsif Has_Prefix (Text, "trailer:") then
+                     Opts.Trailers.Append (Text (Text'First + 8 .. Text'Last));
+                  elsif Has_Prefix (Text, "format:") then
+                     Opts.Formats.Append (Text (Text'First + 7 .. Text'Last));
+                  elsif Ada.Strings.Fixed.Index (Text, "%") > 0 then
+                     Opts.Formats.Append (Text);
+                  else
+                     Error_Line ("unknown group type: " & Text);
+                     Bad := True;
+                  end if;
+               end Parse_Group;
+
+               --  An option's value: attached after '=' or the next word.
+               function Value_Of (A, Name : String) return String is
+               begin
+                  if A'Length > Name'Length + 2
+                    and then A (A'First + Name'Length + 2) = '='
+                  then
+                     return A (A'First + Name'Length + 3 .. A'Last);
+                  elsif I < Count then
+                     I := I + 1;
+                     return Arg (I);
+                  end if;
+                  Error_Line ("option `" & Name & "' requires a value");
+                  Bad := True;
+                  return "";
+               end Value_Of;
+
+               function Is_Digits (S : String) return Boolean is
+                 (S'Length > 0 and then (for all C of S => C in '0' .. '9'));
             begin
-               while I <= Count loop
+               while I <= Count and then not Bad loop
                   declare
                      A : constant String := Arg (I);
+                     Negated : constant Boolean := Has_Prefix (A, "--no-");
+                     Name : constant String :=
+                       (if Negated then A (A'First + 5 .. A'Last)
+                        elsif Has_Prefix (A, "--") then A (A'First + 2 .. A'Last)
+                        else "");
+                     Eq   : constant Natural :=
+                       (if Name = "" then 0 else Ada.Strings.Fixed.Index (Name, "="));
+                     Base : constant String :=
+                       (if Eq = 0 then Name else Name (Name'First .. Eq - 1));
                   begin
                      if Seen_Sep then
                         Operands.Append (A);
                      elsif A = "--" then
                         Seen_Sep := True;
                         Operands.Append (A);
-                     elsif A = "--no-merges" then
-                        No_Merges := True;
-                     elsif A = "--all" then
-                        Seed_All := True;
-                     elsif A'Length >= 2 and then A (A'First) = '-'
-                       and then A (A'First + 1) /= '-'
-                     then
-                        --  Short flags, possibly bundled (git accepts -sne).
-                        for K in A'First + 1 .. A'Last loop
-                           if A (K) = 's' then
-                              Summary := True;
-                           elsif A (K) = 'n' then
-                              By_Count := True;
-                           elsif A (K) = 'e' then
-                              Email := True;
+                     elsif Name /= "" then
+                        if Base = "committer" then
+                           Opts.By_Committer := not Negated;
+                        elsif Base = "numbered" then
+                           Numbered := not Negated;
+                        elsif Base = "summary" then
+                           Opts.Summary := not Negated;
+                        elsif Base = "email" then
+                           Opts.Email := not Negated;
+                        elsif Base = "group" then
+                           if Negated then
+                              Opts.By_Author := False;
+                              Opts.By_Committer := False;
+                              Opts.Trailers.Clear;
+                              Opts.Formats.Clear;
                            else
-                              Bad_Opt := True;
-                              Bad_Text := To_Unbounded_String (A);
+                              Parse_Group (Value_Of (A, "group"));
                            end if;
-                        end loop;
-                        exit when Bad_Opt;
-                     elsif A'Length >= 1 and then A (A'First) = '-' then
-                        Bad_Opt := True;
-                        Bad_Text := To_Unbounded_String (A);
-                        exit;
+                        elsif Base = "all" then
+                           Seed_All := not Negated;
+                        elsif Base = "branches" then
+                           Seed_Heads := not Negated;
+                        elsif Base = "tags" then
+                           Seed_Tags := not Negated;
+                        elsif Base = "remotes" then
+                           Seed_Remotes := not Negated;
+                        elsif Base = "merges" then
+                           if Negated then
+                              Walk.No_Merges := True;
+                           else
+                              Walk.Min_Parents := 2;
+                           end if;
+                        elsif Base = "first-parent" then
+                           Walk.First_Parent := not Negated;
+                        elsif Base = "reverse" then
+                           Oldest_First := not Negated;
+                        elsif Base = "max-count" then
+                           declare
+                              V : constant String := Value_Of (A, "max-count");
+                           begin
+                              if Is_Digits (V) then
+                                 Max_Count := Natural'Value (V);
+                              elsif not Bad then
+                                 Error_Line ("option `max-count' expects a numerical value");
+                                 Bad := True;
+                              end if;
+                           end;
+                        elsif Base = "skip" then
+                           declare
+                              V : constant String := Value_Of (A, "skip");
+                           begin
+                              if Is_Digits (V) then
+                                 Skip := Natural'Value (V);
+                              elsif not Bad then
+                                 Error_Line ("option `skip' expects a numerical value");
+                                 Bad := True;
+                              end if;
+                           end;
+                        elsif Base = "min-parents" or else Base = "max-parents" then
+                           declare
+                              V : constant String := Value_Of (A, Base);
+                           begin
+                              if Is_Digits (V) then
+                                 if Base = "min-parents" then
+                                    Walk.Min_Parents := Natural'Value (V);
+                                 else
+                                    Walk.Max_Parents := Natural'Value (V);
+                                 end if;
+                              elsif not Bad then
+                                 Error_Line ("option `" & Base & "' expects a numerical value");
+                                 Bad := True;
+                              end if;
+                           end;
+                        elsif Base = "since" or else Base = "after" then
+                           Since_Time := Version.Approxidate.Value (Value_Of (A, Base));
+                           Since_Set := True;
+                        elsif Base = "until" or else Base = "before" then
+                           Until_Time := Version.Approxidate.Value (Value_Of (A, Base));
+                           Until_Set := True;
+                        elsif Base = "author" then
+                           Author_Pat := To_Unbounded_String (Value_Of (A, "author"));
+                        elsif Base = "grep" then
+                           Grep_List.Append (Value_Of (A, "grep"));
+                        elsif Base = "regexp-ignore-case" then
+                           Ignore_Case := not Negated;
+                        elsif Base = "all-match" then
+                           All_Match := not Negated;
+                        elsif Base = "invert-grep" then
+                           Invert_Grep := not Negated;
+                        elsif Base = "extended-regexp" then
+                           Grep_Kind := Version.Grep.Extended_Regex;
+                        elsif Base = "fixed-strings" then
+                           Grep_Kind := Version.Grep.Fixed_String;
+                        elsif Base = "perl-regexp" then
+                           Grep_Kind := Version.Grep.Perl_Regex;
+                        elsif Base = "basic-regexp" then
+                           Grep_Kind := Version.Grep.Basic_Regex;
+                        elsif Base = "format" or else Base = "pretty" then
+                           --  Only a user format changes the record; the
+                           --  named layouts keep the subject.
+                           declare
+                              V : constant String :=
+                                (if Base = "pretty" and then Eq = 0 then "medium"
+                                 else Value_Of (A, Base));
+                           begin
+                              if Has_Prefix (V, "format:")
+                                or else Has_Prefix (V, "tformat:")
+                              then
+                                 Opts.Has_User_Format := True;
+                                 Opts.User_Format := To_Unbounded_String
+                                   (V (V'First + (if V (V'First) = 't' then 8 else 7)
+                                       .. V'Last));
+                              elsif Base = "format"
+                                or else Ada.Strings.Fixed.Index (V, "%") > 0
+                              then
+                                 Opts.Has_User_Format := True;
+                                 Opts.User_Format := To_Unbounded_String (V);
+                              else
+                                 Opts.Has_User_Format := False;
+                              end if;
+                           end;
+                        elsif Base = "date" then
+                           Opts.Date_Mode := To_Unbounded_String (Value_Of (A, "date"));
+                        elsif Base = "abbrev" then
+                           null;   --  accepted: no id is printed here
+                        elsif Base = "output" then
+                           Output_File := To_Unbounded_String (Value_Of (A, "output"));
+                        elsif Base = "use-mailmap" or else Base = "mailmap" then
+                           null;   --  shortlog always maps
+                        else
+                           Usage_Error ("unknown shortlog option: " & A, Usage);
+                           Bad := True;
+                        end if;
+                     elsif A'Length >= 2 and then A (A'First) = '-'
+                       and then Is_Digits (A (A'First + 1 .. A'Last))
+                     then
+                        Max_Count := Natural'Value (A (A'First + 1 .. A'Last));
+                     elsif A'Length >= 2 and then A (A'First) = '-' then
+                        --  Bundled short flags; -w takes the rest of the word.
+                        declare
+                           K : Positive := A'First + 1;
+                        begin
+                           while K <= A'Last and then not Bad loop
+                              case A (K) is
+                                 when 'c' => Opts.By_Committer := True;
+                                 when 'n' => Numbered := True;
+                                 when 's' => Opts.Summary := True;
+                                 when 'e' => Opts.Email := True;
+                                 when 'i' => Ignore_Case := True;
+                                 when 'E' => Grep_Kind := Version.Grep.Extended_Regex;
+                                 when 'F' => Grep_Kind := Version.Grep.Fixed_String;
+                                 when 'P' => Grep_Kind := Version.Grep.Perl_Regex;
+                                 when 'w' =>
+                                    Parse_Wrap (A (K + 1 .. A'Last));
+                                    exit;
+                                 when others =>
+                                    Usage_Error
+                                      ("unknown shortlog option: " & A, Usage);
+                                    Bad := True;
+                              end case;
+                              K := K + 1;
+                           end loop;
+                        end;
                      else
                         Operands.Append (A);   --  a rev, a range or ^exclusion
                      end if;
@@ -29040,127 +29295,268 @@ package body Version.CLI is
                   I := I + 1;
                end loop;
 
-               if Bad_Opt then
-                  Usage_Error
-                    ("unknown shortlog argument: " & To_String (Bad_Text),
-                     Usage);
-               else
-                  declare
-                     Repo : constant Version.Repository.Repository_Handle :=
-                       Version.Repository.Open;
-                     Parsed : constant Version.Rev_Args.Revision_Arguments :=
-                       Version.Rev_Args.Parse (Repo, Operands);
-                     Include : Version.History.Commit_Id_Vectors.Vector :=
-                       Parsed.Include;
-                     Selection : Version.History.Rev_List_Options :=
-                       (No_Merges => No_Merges, others => <>);
-                     Groups : Version.Shortlog.Group_Vectors.Vector;
+               if Bad then
+                  Set_Usage_Failure;
+                  goto Shortlog_Done;
+               end if;
 
-                     --  git -n sorts by descending count, breaking ties by the
-                     --  group's (alphabetical) name so the sort is stable.
-                     function Fewer
-                       (L, R : Version.Shortlog.Author_Group) return Boolean is
-                       (if Natural (L.Subjects.Length)
-                           /= Natural (R.Subjects.Length)
-                        then Natural (L.Subjects.Length)
-                             > Natural (R.Subjects.Length)
-                        else L.Name < R.Name);
-                     package Sorter is new
-                       Version.Shortlog.Group_Vectors.Generic_Sorting (Fewer);
+               declare
+                  Repo : constant Version.Repository.Repository_Handle :=
+                    Version.Repository.Open;
+                  Log  : Version.Shortlog.Shortlog;
+                  Text : Unbounded_String;
+                  Parsed : Version.Rev_Args.Revision_Arguments;
+                  Include : Version.History.Commit_Id_Vectors.Vector;
+                  Seeded : Boolean := False;
+               begin
                   begin
-                     --  git's --all seeds every ref tip (branches, tags,
-                     --  remotes) in addition to any named revisions.
-                     if Seed_All then
-                        for Tip of Version.Rev_Args.Ref_Tips (Repo) loop
-                           Include.Append (Tip);
-                        end loop;
-                     end if;
+                     Parsed := Version.Rev_Args.Parse (Repo, Operands);
+                  exception
+                     when E : Ada.IO_Exceptions.Data_Error =>
+                        --  An operand that is neither a revision nor a
+                        --  path is git's die(), with its hint.
+                        Stderr_Line ("fatal: " & User_Error_Text (E));
+                        if Has_Prefix (User_Error_Text (E), "ambiguous argument") then
+                           Stderr_Line
+                             ("Use '--' to separate paths from revisions, like this:");
+                           Stderr_Line ("'git <command> [<revision>...] -- [<file>...]'");
+                        end if;
+                        Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                        goto Shortlog_Done;
+                  end;
+                  Include := Parsed.Include;
+                  if Seed_All then
+                     for Tip of Version.Rev_Args.Ref_Tips (Repo) loop
+                        Include.Append (Tip);
+                     end loop;
+                     Seeded := True;
+                  end if;
+                  if Seed_Heads then
+                     for Tip of Version.Rev_Args.Ref_Tips (Repo, "refs/heads/") loop
+                        Include.Append (Tip);
+                     end loop;
+                     Seeded := True;
+                  end if;
+                  if Seed_Tags then
+                     for Tip of Version.Rev_Args.Ref_Tips (Repo, "refs/tags/") loop
+                        Include.Append (Tip);
+                     end loop;
+                     Seeded := True;
+                  end if;
+                  if Seed_Remotes then
+                     for Tip of Version.Rev_Args.Ref_Tips (Repo, "refs/remotes/") loop
+                        Include.Append (Tip);
+                     end loop;
+                     Seeded := True;
+                  end if;
 
-                     --  Bare shortlog summarizes HEAD interactively, but git
-                     --  reads the commit list from stdin when stdin is not a
-                     --  terminal (as `git log | git shortlog` does); an empty
-                     --  stdin then names no commits and prints nothing. The
-                     --  leading token of each line carries the id (rev-list
-                     --  form). A pathspec restricts the walk either way.
-                     if Include.Is_Empty and then Parsed.Exclude.Is_Empty then
-                        if Stdin_Is_A_Tty then
-                           Include.Append
-                             (Version.Objects.To_Object_Id
-                                (Version.Refs.Current_Commit_Id (Repo)));
-                        else
-                           declare
-                              Text : constant String := Read_All_Stdin;
-                              Pos  : Natural := Text'First;
-                           begin
-                              while Pos <= Text'Last loop
-                                 declare
-                                    Stop : Natural := Pos;
-                                 begin
-                                    while Stop <= Text'Last
-                                      and then Text (Stop) /= ASCII.LF
+                  if Include.Is_Empty and then Parsed.Exclude.Is_Empty
+                    and then not Seeded
+                  then
+                     if Stdin_Is_A_Tty then
+                        Include.Append
+                          (Version.Objects.To_Object_Id
+                             (Version.Refs.Current_Commit_Id (Repo)));
+                     else
+                        --  read_from_stdin: a `git log` stream -- each
+                        --  "Author: "/"author " (or committer) line names
+                        --  the group, the headers end at a blank line, and
+                        --  the next non-blank line is the subject.
+                        if Boolean'Pos (Opts.By_Author)
+                          + Boolean'Pos (Opts.By_Committer)
+                          + Boolean'Pos (not Opts.Trailers.Is_Empty)
+                          + Boolean'Pos (not Opts.Formats.Is_Empty) > 1
+                        then
+                           Stderr_Line
+                             ("fatal: using multiple --group options with stdin"
+                              & " is not supported");
+                           Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                           goto Shortlog_Done;
+                        elsif not Opts.Trailers.Is_Empty then
+                           Stderr_Line
+                             ("fatal: using --group=trailer with stdin is not supported");
+                           Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                           goto Shortlog_Done;
+                        elsif not Opts.Formats.Is_Empty then
+                           Stderr_Line
+                             ("fatal: using --group=format with stdin is not supported");
+                           Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                           goto Shortlog_Done;
+                        end if;
+                        declare
+                           In_Text : constant String := Read_All_Stdin;
+                           Lines   : Version.Trailers.String_Vectors.Vector;
+                           Start   : Positive := In_Text'First;
+                           Mailmap : constant Version.Mailmap.Entries :=
+                             Version.Mailmap.Load (Repo);
+                           Match_A : constant String :=
+                             (if Opts.By_Committer then "Commit: " else "Author: ");
+                           Match_B : constant String :=
+                             (if Opts.By_Committer then "committer " else "author ");
+                           L : Natural;
+                        begin
+                           for K in In_Text'First .. In_Text'Last + 1 loop
+                              if K > In_Text'Last or else In_Text (K) = LF then
+                                 if K > In_Text'Last and then K = Start then
+                                    null;
+                                 else
+                                    Lines.Append (In_Text (Start .. K - 1));
+                                 end if;
+                                 Start := K + 1;
+                              end if;
+                           end loop;
+                           L := 1;
+                           while L <= Natural (Lines.Length) loop
+                              declare
+                                 Line  : constant String := Lines (L);
+                                 Ident : constant String :=
+                                   (if Has_Prefix (Line, Match_A)
+                                    then Line (Line'First + Match_A'Length .. Line'Last)
+                                    elsif Has_Prefix (Line, Match_B)
+                                    then Line (Line'First + Match_B'Length .. Line'Last)
+                                    else "");
+                              begin
+                                 L := L + 1;
+                                 if Has_Prefix (Line, Match_A)
+                                   or else Has_Prefix (Line, Match_B)
+                                 then
+                                    --  Discard the headers, then the blanks.
+                                    while L <= Natural (Lines.Length)
+                                      and then Lines.Element (L)'Length > 0
                                     loop
-                                       Stop := Stop + 1;
+                                       L := L + 1;
+                                    end loop;
+                                    while L <= Natural (Lines.Length)
+                                      and then Lines.Element (L)'Length = 0
+                                    loop
+                                       L := L + 1;
                                     end loop;
                                     declare
-                                       Line : constant String :=
-                                         Text (Pos .. Stop - 1);
-                                       Sp   : constant Natural :=
-                                         Ada.Strings.Fixed.Index (Line, " ");
-                                       Tok  : constant String :=
-                                         (if Sp = 0 then Line
-                                          else Line (Line'First .. Sp - 1));
+                                       Oneline : constant String :=
+                                         (if L <= Natural (Lines.Length)
+                                          then Lines (L) else "");
+                                       Lt : constant Natural :=
+                                         Ada.Strings.Fixed.Index (Ident, "<");
+                                       Gt : constant Natural :=
+                                         Ada.Strings.Fixed.Index (Ident, ">");
                                     begin
-                                       if Version.Objects
-                                            .Is_Valid_Hex_Object_Id (Tok)
-                                       then
-                                          Include.Append
-                                            (Version.Objects.To_Object_Id (Tok));
+                                       if L <= Natural (Lines.Length) then
+                                          L := L + 1;
+                                       end if;
+                                       if Lt > 0 and then Gt > Lt then
+                                          declare
+                                             MN, ME : Unbounded_String;
+                                          begin
+                                             Version.Mailmap.Apply
+                                               (Mailmap,
+                                                Ada.Strings.Fixed.Trim
+                                                  (Ident (Ident'First .. Lt - 1),
+                                                   Ada.Strings.Both),
+                                                Ident (Lt + 1 .. Gt - 1), MN, ME);
+                                             Version.Shortlog.Add_Record
+                                               (Log,
+                                                To_String (MN)
+                                                & (if Opts.Email
+                                                   then " <" & To_String (ME) & ">"
+                                                   else ""),
+                                                Oneline, Opts);
+                                          end;
                                        end if;
                                     end;
-                                    Pos := Stop + 1;
-                                 end;
-                              end loop;
-                           end;
-                        end if;
-                     end if;
-                     for P of Parsed.Paths loop
-                        Selection.Paths.Append (New_Item => P);
-                     end loop;
-
-                     Groups := Version.Shortlog.Summarize
-                       (Repo,
-                        Version.History.Rev_List
-                          (Repo, Include, Parsed.Exclude, Selection),
-                        With_Email => Email);
-
-                     if By_Count then
-                        Sorter.Sort (Groups);
-                     end if;
-                     for G of Groups loop
-                        if Summary then
-                           declare
-                              Cnt : constant String :=
-                                Img (Natural (G.Subjects.Length));
-                              Pad : constant String :=
-                                [1 .. (if Cnt'Length < 6 then 6 - Cnt'Length
-                                       else 0) => ' '];
-                           begin
-                              Success_Line
-                                (Pad & Cnt & Character'Val (9)
-                                 & To_String (G.Name));
-                           end;
-                        else
-                           Success_Line
-                             (To_String (G.Name) & " ("
-                              & Img (Natural (G.Subjects.Length)) & "):");
-                           for S of G.Subjects loop
-                              Success_Line ("      " & To_String (S));
+                                 end if;
+                              end;
                            end loop;
-                           Success_Line ("");
-                        end if;
+                        end;
+                        goto Shortlog_Output;
+                     end if;
+                  end if;
+
+                  for P of Parsed.Paths loop
+                     Walk.Paths.Append (New_Item => P);
+                  end loop;
+
+                  declare
+                     Commits : Version.History.Commit_Id_Vectors.Vector :=
+                       Version.History.Rev_List (Repo, Include, Parsed.Exclude, Walk);
+                     Caps : Version.History.Rev_List_Options;
+                  begin
+                     if Length (Author_Pat) > 0 or else not Grep_List.Is_Empty then
+                        Commits :=
+                          Filter_Commits
+                            (Repo, Commits,
+                             Author_Pattern    => To_String (Author_Pat),
+                             Grep_Pattern      => "",
+                             Grep_Patterns     => Grep_List,
+                             Ignore_Case       => Ignore_Case,
+                             Invert_Grep       => Invert_Grep,
+                             All_Match         => All_Match,
+                             Pattern_Kind      => Grep_Kind);
+                     end if;
+                     if Since_Set or else Until_Set then
+                        declare
+                           Kept : Version.History.Commit_Id_Vectors.Vector;
+                        begin
+                           for C of Commits loop
+                              declare
+                                 T : constant Long_Long_Integer :=
+                                   Version.Objects.Commit_Committer_Time
+                                     (Version.Objects.Read_Object (Repo, C));
+                              begin
+                                 if (not Since_Set or else T >= Since_Time)
+                                   and then (not Until_Set or else T <= Until_Time)
+                                 then
+                                    Kept.Append (C);
+                                 end if;
+                              end;
+                           end loop;
+                           Commits := Kept;
+                        end;
+                     end if;
+                     Caps.Skip := Skip;
+                     Caps.Max_Count := Max_Count;
+                     Caps.Oldest_First := Oldest_First;
+                     Commits := Version.History.Apply_Limits (Commits, Caps);
+                     for C of Commits loop
+                        Version.Shortlog.Add_Commit (Log, Repo, C, Opts);
                      end loop;
                   end;
-               end if;
+
+                  <<Shortlog_Output>>
+                  for G of Version.Shortlog.Groups (Log, Numbered) loop
+                     if Opts.Summary then
+                        declare
+                           Cnt : constant String := Img (G.Count);
+                        begin
+                           Append (Text,
+                                   [1 .. (if Cnt'Length < 6 then 6 - Cnt'Length
+                                          else 0) => ' ']
+                                   & Cnt & HT & To_String (G.Name) & LF);
+                        end;
+                     else
+                        Append (Text, To_String (G.Name) & " (" & Img (G.Count) & "):" & LF);
+                        for S of G.Subjects loop
+                           if Wrap_Lines then
+                              Append (Text,
+                                      Version.Shortlog.Wrapped_Text
+                                        (To_String (S), Wrap_I1, Wrap_I2, Wrap_W) & LF);
+                           else
+                              Append (Text, "      " & To_String (S) & LF);
+                           end if;
+                        end loop;
+                        Append (Text, LF);
+                     end if;
+                  end loop;
+                  if Length (Output_File) > 0 then
+                     Version.Files.Write_Binary_File
+                       (Version.Pathspec.Resolve_Against_Prefix
+                          (Repo_Prefix, To_String (Output_File)),
+                        To_String (Text));
+                  else
+                     Version.Console.Put (To_String (Text));
+                  end if;
+               end;
+               <<Shortlog_Done>>
+               null;
             end;
 
          elsif Command = "grep" then

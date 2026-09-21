@@ -179,6 +179,9 @@ version log --stdin | -g [<ref>] | --merge
 version show [OPTIONS] [<commit>|<tag>|<tree>|<blob>|REV:PATH ...] [--] [PATH...]
   OPTIONS: log's whole surface with show's defaults (no walk, -p, merges as --cc);
   -c, --cc, -m, --first-parent, --dd, --diff-merges=MODE
+version shortlog [-s] [-n] [-e] [-c] [--group=FIELD]... [-w[W[,I1[,I2]]]] [--format=FMT]
+  [<rev-opts>: --all, --no-merges, --first-parent, -N, --since=, --author=, --grep=, ...]
+  [<revision-range>] [[--] <path>...]
 version describe [--all] [--tags] [--contains] [--long] [--first-parent] [--abbrev[=N]]
   [--candidates N|--exact-match] [--match GLOB]... [--exclude GLOB]... [--always] [--debug]
   [--dirty[=MARK]] [--broken[=MARK]] [<commit-ish>... | <blob>]

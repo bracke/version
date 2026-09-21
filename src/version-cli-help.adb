@@ -578,6 +578,7 @@ package body Version.CLI.Help is
         or else Name = "blame"
         or else Name = "annotate"
         or else Name = "describe"
+        or else Name = "shortlog"
         or else Name = "restore"
         or else Name = "checkout"
         or else Name = "branch"
@@ -924,6 +925,19 @@ package body Version.CLI.Help is
          Line ("defaults: no walk, the patch on, and a merge as a dense combined");
          Line ("diff (--cc; -c for the full one, -m per parent, --first-parent,");
          Line ("--dd, --diff-merges=<mode>), plus every diff switch.");
+      elsif Name = "shortlog" then
+         Line ("Usage:");
+         Line ("  version shortlog [<options>] [<revision-range>] [[--] <path>...]");
+         Line ("  version log --pretty=short | version shortlog [<options>]");
+         Line;
+         Line ("Summarize history grouped by author, as git does.");
+         Line ("Grouping: -c/--committer, --group=author|committer|trailer:<key>|");
+         Line ("  format:<fmt> (repeatable), -e/--email, .mailmap always applied.");
+         Line ("Output: -s/--summary (counts), -n/--numbered (by count),");
+         Line ("  -w[<w>[,<i1>[,<i2>]]] (wrap), --format=<fmt>, --output=<file>.");
+         Line ("Walk: ranges, --all, --branches, --tags, --remotes, --no-merges,");
+         Line ("  --first-parent, -<n>, --skip, --since/--until, --author, --grep, ...");
+         Line ("With no revision and stdin not a terminal, reads a log on stdin.");
       elsif Name = "describe" then
          Line ("Usage:");
          Line ("  version describe [<options>] [<commit-ish>...]");
