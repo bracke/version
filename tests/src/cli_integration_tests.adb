@@ -6790,6 +6790,289 @@ package body CLI_Integration_Tests is
       Run_Parity_Transcript (Root, Scenario, "grep");
    end Grep_Option_Surface_Matches_Git;
 
+   --  `notes`: git's option surface and state machines -- the message
+   --  pieces (-m/-F/-C/-c, separators, stripspace), the editor template
+   --  (add/edit/append, the empty-message removal), --ref and the
+   --  GIT_NOTES_REF/core.notesRef defaults, copy (including --stdin and
+   --  --for-rewrite with notes.rewrite* config), remove --stdin, prune
+   --  -n/-v, and merge with every strategy plus the manual worktree,
+   --  --commit and --abort flow.
+   procedure Notes_Option_Surface_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Scenario : constant String :=
+          "state() { :; }" & LF
+        & "git init -q; git config user.email a@b; git config user.name A" & LF
+        & "printf 'a\n' > f; git add f; git commit -qm one" & LF
+        & "printf 'b\n' >> f; git commit -qam two" & LF
+        & "printf 'c\n' >> f; git commit -qam three" & LF
+        & "git tag -a -m 'tag msg' v1 HEAD~1" & LF
+        & "C3=$(git rev-parse HEAD); C2=$(git rev-parse HEAD~1); C1=$(git " & "rev-parse HEAD~2)" & LF
+        & "t 'list empty' notes list" & LF
+        & "t 'bare' notes" & LF
+        & "t 'show none' notes show" & LF
+        & "t 'get-ref' notes get-ref" & LF
+        & "t 'get-ref --ref x' notes --ref x get-ref" & LF
+        & "t 'get-ref --ref sep' notes --ref refs/notes/y get-ref" & LF
+        & "t 'get-ref notes/z' notes --ref notes/z get-ref" & LF
+        & "t 'get-ref refs/heads' notes --ref refs/heads/main get-ref" & LF
+        & "t 'add -m' notes add -m 'first note'" & LF
+        & "t 'show' notes show" & LF
+        & "t 'list' notes list" & LF
+        & "t 'list one' notes list HEAD" & LF
+        & "t 'list bad' notes list nonexist" & LF
+        & "t 'add exists' notes add -m 'again'" & LF
+        & "t 'add -f' notes add -f -m 'again'" & LF
+        & "t 'show again' notes show HEAD" & LF
+        & "t 'add two -m' notes add -m 'para one' -m 'para two' HEAD~1" & LF
+        & "t 'show two' notes show HEAD~1" & LF
+        & "t 'add separator' notes add -f -m 'p1' -m 'p2' --separator='---' " & "HEAD~1" & LF
+        & "t 'show sep' notes show HEAD~1" & LF
+        & "t 'add no-separator' notes add -f -m 'p1' -m 'p2' --no-separator " & "HEAD~1" & LF
+        & "t 'show nosep' notes show HEAD~1" & LF
+        & "t 'add separator nl' notes add -f -m 'p1' -m 'p2' --separator HEAD~1" & LF
+        & "t 'show sepnl' notes show HEAD~1" & LF
+        & "t 'add no-stripspace' notes add -f --no-stripspace -m '  spaced  ' -m " & "'x' HEAD~1" & LF
+        & "to() { l=$1; shift; echo ""\$ $l"" >> ""$TF""; ""$TOOL"" ""$@"" 2>>""$TF"" < "
+          & "/dev/null | od -c >> ""$TF""; echo ""[rc=$?]"" >> ""$TF""; }" & LF
+        & "to 'show nostrip' notes show HEAD~1" & LF
+        & "t 'add stripspace' notes add -f --stripspace -m '  spaced  ' -m 'x' " & "HEAD~1" & LF
+        & "to 'show strip' notes show HEAD~1" & LF
+        & "t 'append' notes append -m 'appended' HEAD~1" & LF
+        & "t 'show appended' notes show HEAD~1" & LF
+        & "t 'append sep' notes append --separator='***' -m 'more' HEAD~1" & LF
+        & "t 'show appended2' notes show HEAD~1" & LF
+        & "t 'append new' notes append -m 'fresh' HEAD~2" & LF
+        & "t 'show fresh' notes show HEAD~2" & LF
+        & "t 'append allow-empty' notes append --allow-empty HEAD~2" & LF
+        & "t 'list all' notes list" & LF
+        & "t 'copy' notes copy HEAD~2 v1" & LF
+        & "t 'copy exists' notes copy HEAD~2 HEAD" & LF
+        & "t 'copy -f' notes copy -f HEAD~2 HEAD" & LF
+        & "t 'copy missing' notes copy v1^{} HEAD" & LF
+        & "t 'copy to head' notes copy -f HEAD~1" & LF
+        & "t 'show head' notes show" & LF
+        & "t 'remove' notes remove HEAD~2" & LF
+        & "t 'remove again' notes remove HEAD~2" & LF
+        & "t 'remove ignore' notes remove --ignore-missing HEAD~2" & LF
+        & "t 'remove bad' notes remove bogus" & LF
+        & "t 'remove bad2' notes remove --ignore-missing bogus HEAD" & LF
+        & "t 'list after' notes list" & LF
+        & "printf '%s\n%s\n\n' ""$C1"" ""$C2"" > rm.txt" & LF
+        & "ts() { l=$1; f=$2; shift 2; echo ""\$ $l"" >> ""$TF""; ""$TOOL"" ""$@"" >> "
+          & """$TF"" 2>&1 < ""$f""; echo ""[rc=$?]"" >> ""$TF""; state; }" & LF
+        & "ts 'remove stdin' rm.txt notes remove --stdin" & LF
+        & "printf '%s \n' ""$C3"" > rm2.txt" & LF
+        & "ts 'remove stdin2' rm2.txt notes remove --stdin" & LF
+        & "t 'list after2' notes list" & LF
+        & "t 'log notes' log --format='%h %s%n%N' refs/notes/commits" & LF
+        & "t 'reflog' reflog refs/notes/commits" & LF
+        & "t 'add allow-empty' notes add --allow-empty" & LF
+        & "t 'show empty' notes show" & LF
+        & "t 'list empty note' notes list HEAD" & LF
+        & "t 'add -C' notes add -f -C HEAD:f" & LF
+        & "to 'show -C' notes show" & LF
+        & "t 'add -C nonblob' notes add -f -C HEAD" & LF
+        & "t 'add -C bad' notes add -f -C bogus" & LF
+        & "t 'add -m -C' notes add -f -m 'lead' -C HEAD:f" & LF
+        & "to 'show m-C' notes show" & LF
+        & "printf 'file content\n\n\n' > msg.txt" & LF
+        & "t 'add -F' notes add -f -F msg.txt" & LF
+        & "to 'show -F' notes show" & LF
+        & "t 'add -F missing' notes add -f -F nope.txt" & LF
+        & "ts 'add -F -' msg.txt notes add -f -F -" & LF
+        & "t 'show bad' notes show bogus" & LF
+        & "t 'prune -n' notes prune -n" & LF
+        & "t 'prune -v' notes prune -v" & LF
+        & "t 'prune' notes prune" & LF
+        & "t 'ref outside' notes --ref refs/heads/main list" & LF
+        & "GIT_NOTES_REF=refs/heads/main t 'env outside add' notes add -m x" & LF
+        & "GIT_NOTES_REF=refs/notes/env t 'env add' notes add -m envnote" & LF
+        & "GIT_NOTES_REF=refs/notes/env t 'env get-ref' notes get-ref" & LF
+        & "t 'env list' notes --ref env list" & LF
+        & "git config core.notesRef refs/notes/cfg" & LF
+        & "t 'cfg get-ref' notes get-ref" & LF
+        & "t 'cfg add' notes add -m cfgnote" & LF
+        & "t 'cfg list' notes list" & LF
+        & "git config --unset core.notesRef" & LF
+        & "t 'ref sep add' notes --ref sep add -m sepnote HEAD~1" & LF
+        & "t 'ref sep list' notes --ref sep list" & LF
+        & "t 'for-each-ref' for-each-ref refs/notes" & LF
+        & "# --- editor flows: an editor that captures the template and writes a " & "note" & LF
+        & "cat > ed.sh <<'X'" & LF
+        & "#!/bin/sh" & LF
+        & "cat ""$1"" > ""$(dirname ""$1"")/../captured.txt""" & LF
+        & "printf 'edited note\n# a comment line\n\n\n' > ""$1""" & LF
+        & "X" & LF
+        & "chmod +x ed.sh" & LF
+        & "x() { l=$1; shift; echo ""\$ $l"" >> ""$TF""; ""$@"" >> ""$TF"" 2>&1; echo "
+          & """[rc=$?]"" >> ""$TF""; }" & LF
+        & "tE() { l=$1; e=$2; shift 2; echo ""\$ $l"" >> ""$TF""; GIT_EDITOR=""$e"" "
+          & """$TOOL"" ""$@"" >> ""$TF"" 2>&1 < /dev/null; echo ""[rc=$?]"" >> ""$TF""; }" & LF
+        & "tE 'add editor' ./ed.sh notes add" & LF
+        & "x 'captured' cat captured.txt" & LF
+        & "t 'show edited' notes show" & LF
+        & "tE 'add editor existing -> edit' ./ed.sh notes add" & LF
+        & "x 'captured2' cat captured.txt" & LF
+        & "tE 'edit -e -m' ./ed.sh notes edit -m 'msg via edit'" & LF
+        & "t 'show edit -m' notes show" & LF
+        & "tE 'add -e -m' ./ed.sh notes add -f -e -m 'seed msg'" & LF
+        & "x 'captured3' cat captured.txt" & LF
+        & "t 'show add -e' notes show" & LF
+        & "tE 'append -e' ./ed.sh notes append -e HEAD~1" & LF
+        & "x 'captured4' cat captured.txt" & LF
+        & "t 'show append -e' notes show HEAD~1" & LF
+        & "tE 'edit no-stripspace' ./ed.sh notes edit --no-stripspace HEAD~1" & LF
+        & "to() { l=$1; shift; echo ""\$ $l"" >> ""$TF""; ""$TOOL"" ""$@"" 2>>""$TF"" < "
+          & "/dev/null | od -c >> ""$TF""; echo ""[rc=$?]"" >> ""$TF""; }" & LF
+        & "to 'show nostrip' notes show HEAD~1" & LF
+        & "tE 'edit empty -> remove' true notes edit HEAD~1" & LF
+        & "t 'list after remove' notes list" & LF
+        & "tE 'add editor fails' false notes add HEAD~2" & LF
+        & "tE 'add -c' ./ed.sh notes add -f -c HEAD:f" & LF
+        & "x 'captured5' cat captured.txt" & LF
+        & "tE 'edit allow-empty' true notes edit --allow-empty HEAD~2" & LF
+        & "t 'list allow-empty' notes list" & LF
+        & "# --- merge" & LF
+        & "t 'merge abort nothing' notes merge --abort" & LF
+        & "t 'merge commit nothing' notes merge --commit" & LF
+        & "t 'merge missing remote' notes merge nosuch" & LF
+        & "t 'merge bad remote name' notes merge 'bad..name'" & LF
+        & "git notes add -f -m base HEAD; git notes add -f -m base1 HEAD~1; git "
+          & "notes add -f -m base2 HEAD~2" & LF
+        & "git update-ref refs/notes/other refs/notes/commits" & LF
+        & "t 'merge same' notes merge other" & LF
+        & "t 'merge same -v' notes merge -v other" & LF
+        & "t 'merge same -vv' notes merge -vv other" & LF
+        & "t 'merge same -q' notes merge -q other" & LF
+        & "git notes --ref other add -f -m theirs HEAD" & LF
+        & "t 'merge ff' notes merge other" & LF
+        & "t 'show after ff' notes show" & LF
+        & "t 'reflog ff' reflog refs/notes/commits" & LF
+        & "git notes add -f -m ours HEAD; git notes --ref other add -f -m theirs2 "
+          & "HEAD; git notes --ref other add -f -m t1 HEAD~1; git notes --ref other "
+          & "remove HEAD~2; git notes add -f -m o2 HEAD~2" & LF
+        & "t 'merge conflict' notes merge other" & LF
+        & "x 'worktree' ls .git/NOTES_MERGE_WORKTREE" & LF
+        & "x 'conflict file' cat .git/NOTES_MERGE_WORKTREE/$C3" & LF
+        & "x 'conflict file2' cat .git/NOTES_MERGE_WORKTREE/$C1" & LF
+        & "t 'partial' cat-file -p NOTES_MERGE_PARTIAL" & LF
+        & "x 'merge ref' cat .git/NOTES_MERGE_REF" & LF
+        & "t 'merge again' notes merge other" & LF
+        & "t 'merge again -s ours' notes merge -s ours other" & LF
+        & "printf 'resolved\n' > .git/NOTES_MERGE_WORKTREE/$C3" & LF
+        & "/bin/rm .git/NOTES_MERGE_WORKTREE/$C1" & LF
+        & "t 'merge commit' notes merge --commit" & LF
+        & "t 'show resolved' notes show" & LF
+        & "t 'show t1' notes show HEAD~1" & LF
+        & "t 'list resolved' notes list" & LF
+        & "t 'log merged' log --format='%h %p %s%n%b' refs/notes/commits" & LF
+        & "t 'reflog merged' reflog refs/notes/commits" & LF
+        & "x 'state gone' ls .git/NOTES_MERGE_WORKTREE .git/NOTES_MERGE_REF " & ".git/NOTES_MERGE_PARTIAL" & LF
+        & "t 'merge commit again' notes merge --commit" & LF
+        & "t 'merge abort again' notes merge --abort" & LF
+        & "# strategies" & LF
+        & "git notes add -f -m 'l1\nshared' HEAD; git notes --ref other add -f -m " & "'r1\nshared' HEAD" & LF
+        & "t 'merge ours' notes merge -s ours other" & LF
+        & "t 'show ours' notes show" & LF
+        & "git notes --ref other add -f -m 'r2' HEAD" & LF
+        & "t 'merge theirs' notes merge -s theirs other" & LF
+        & "t 'show theirs' notes show" & LF
+        & "git notes add -f -m 'l3' HEAD; git notes --ref other add -f -m 'r3' " & "HEAD" & LF
+        & "t 'merge union' notes merge -s union other" & LF
+        & "t 'show union' notes show" & LF
+        & "git notes add -f -m 'b line" & LF
+        & "a line" & LF
+        & "b line' HEAD; git notes --ref other add -f -m 'c line" & LF
+        & "a line' HEAD" & LF
+        & "t 'merge csu' notes merge -s cat_sort_uniq other" & LF
+        & "t 'show csu' notes show" & LF
+        & "git notes add -f -m 'l4' HEAD; git notes --ref other add -f -m 'r4' " & "HEAD" & LF
+        & "git config notes.mergeStrategy union" & LF
+        & "t 'merge cfg union' notes merge other" & LF
+        & "t 'show cfg union' notes show" & LF
+        & "git notes add -f -m 'l5' HEAD; git notes --ref other add -f -m 'r5' " & "HEAD" & LF
+        & "git config notes.commits.mergeStrategy theirs" & LF
+        & "t 'merge cfg theirs' notes merge other" & LF
+        & "t 'show cfg theirs' notes show" & LF
+        & "git config --unset notes.commits.mergeStrategy; git config --unset " & "notes.mergeStrategy" & LF
+        & "# manual conflict then abort" & LF
+        & "git notes add -f -m 'l6' HEAD; git notes --ref other add -f -m 'r6' " & "HEAD" & LF
+        & "t 'merge conflict2' notes merge other" & LF
+        & "t 'merge abort' notes merge --abort" & LF
+        & "x 'state after abort' ls .git/NOTES_MERGE_WORKTREE "
+          & ".git/NOTES_MERGE_REF .git/NOTES_MERGE_PARTIAL" & LF
+        & "t 'show after abort' notes show" & LF
+        & "# merge into unborn / from unborn" & LF
+        & "t 'merge into unborn' notes --ref fresh merge other" & LF
+        & "t 'fresh list' notes --ref fresh list" & LF
+        & "t 'merge from unborn' notes merge unborn" & LF
+        & "t 'merge empty into empty' notes --ref e1 merge e2" & LF
+        & "# merge a commit id directly" & LF
+        & "t 'merge by id' notes --ref byid merge $(git rev-parse " & "refs/notes/other)" & LF
+        & "t 'byid list' notes --ref byid list" & LF
+        & "# delete/modify conflict" & LF
+        & "git notes add -f -m 'dm' HEAD~2; git update-ref refs/notes/dm "
+          & "refs/notes/commits; git notes --ref dm remove HEAD~2; git notes add -f " & "-m 'dm2' HEAD~2" & LF
+        & "t 'merge del/mod' notes merge dm" & LF
+        & "x 'del/mod file' cat .git/NOTES_MERGE_WORKTREE/$C1" & LF
+        & "t 'abort2' notes merge --abort" & LF
+        & "git notes add -f -m 'dm3' HEAD~2; git update-ref refs/notes/dm "
+          & "refs/notes/commits; git notes --ref dm add -f -m 'dm4' HEAD~2; git " & "notes remove HEAD~2" & LF
+        & "t 'merge mod/del' notes merge dm" & LF
+        & "x 'mod/del file' cat .git/NOTES_MERGE_WORKTREE/$C1" & LF
+        & "t 'abort3' notes merge --abort" & LF
+        & "# add/add conflict" & LF
+        & "git notes add -f -m 'aa1' HEAD~2; git update-ref refs/notes/aa "
+          & "HEAD^{}; git notes --ref aa add -f -m 'aa2' HEAD~2" & LF
+        & "t 'merge add/add' notes merge -v aa" & LF
+        & "x 'add/add file' cat .git/NOTES_MERGE_WORKTREE/$C1" & LF
+        & "t 'abort4' notes merge --abort" & LF
+        & "# --- copy --stdin and --for-rewrite" & LF
+        & "printf '%s %s\n' ""$C3"" ""$C2"" > cp.txt" & LF
+        & "ts 'copy stdin exists' cp.txt notes copy --stdin" & LF
+        & "ts 'copy stdin -f' cp.txt notes copy -f --stdin" & LF
+        & "t 'show copied' notes show HEAD~1" & LF
+        & "printf 'bogus\n' > cp2.txt" & LF
+        & "ts 'copy stdin malformed' cp2.txt notes copy --stdin" & LF
+        & "printf 'nope %s\n' ""$C2"" > cp3.txt" & LF
+        & "ts 'copy stdin unresolvable' cp3.txt notes copy --stdin" & LF
+        & "t 'rewrite no config' notes copy --for-rewrite=amend" & LF
+        & "git config notes.rewriteRef refs/notes/commits" & LF
+        & "ts 'rewrite default' cp.txt notes copy --for-rewrite=amend" & LF
+        & "t 'show rewrite' notes show HEAD~1" & LF
+        & "git config notes.rewriteMode overwrite" & LF
+        & "ts 'rewrite overwrite' cp.txt notes copy --for-rewrite=amend" & LF
+        & "t 'show rewrite2' notes show HEAD~1" & LF
+        & "git config notes.rewrite.amend false" & LF
+        & "ts 'rewrite disabled' cp.txt notes copy --for-rewrite=amend" & LF
+        & "git config notes.rewrite.amend true" & LF
+        & "git config notes.rewriteMode cat_sort_uniq" & LF
+        & "git notes add -f -m 'z" & LF
+        & "a' HEAD~1" & LF
+        & "ts 'rewrite csu' cp.txt notes copy --for-rewrite=amend" & LF
+        & "t 'show rewrite3' notes show HEAD~1" & LF
+        & "git config notes.rewriteMode ignore" & LF
+        & "ts 'rewrite ignore' cp.txt notes copy --for-rewrite=amend" & LF
+        & "t 'show rewrite4' notes show HEAD~1" & LF
+        & "git config notes.rewriteMode bogus" & LF
+        & "ts 'rewrite bad mode' cp.txt notes copy --for-rewrite=amend" & LF
+        & "git config notes.rewriteMode concatenate" & LF
+        & "git config --add notes.rewriteRef refs/notes/other" & LF
+        & "git config --add notes.rewriteRef refs/heads/main" & LF
+        & "ts 'rewrite two refs' cp.txt notes copy --for-rewrite=amend" & LF
+        & "t 'show other rewrite' notes --ref other show HEAD~1" & LF
+        & "GIT_NOTES_REWRITE_REF=refs/notes/x1:refs/notes/x2 "
+          & "GIT_NOTES_REWRITE_MODE=overwrite ts 'rewrite env' cp.txt notes copy " & "--for-rewrite=amend" & LF
+        & "t 'x1 list' notes --ref x1 list" & LF
+        & "t 'log commits' log --format='%h %s' refs/notes/commits" & LF
+        & "t 'log other' log --format='%h %s' refs/notes/other" & LF;
+   begin
+      Run_Parity_Transcript (Root, Scenario, "notes");
+   end Notes_Option_Surface_Matches_Git;
+
    procedure Bisect_Run_And_Patch_Id_Match_Git
      (T : in out AUnit.Test_Cases.Test_Case'Class)
    is
@@ -8204,6 +8487,9 @@ package body CLI_Integration_Tests is
       Register_Routine
         (T, Grep_Option_Surface_Matches_Git'Access,
          "Grep: git's option surface, expressions, context, sources, errors");
+      Register_Routine
+        (T, Notes_Option_Surface_Matches_Git'Access,
+         "Notes: git's option surface, editor, copy/rewrite, merge strategies");
       Register_Routine
         (T, Fast_Import_Stream_Matches_Git'Access,
          "Fast-import: author defaults to committer, short modes are files");

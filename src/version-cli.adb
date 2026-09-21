@@ -95,6 +95,7 @@ with Version.Ref_Transaction;
 with Version.Hash;
 with Version.Describe;
 with Version.Notes;
+with Version.Notes_Merge;
 with Version.Blame;
 with Version.Bisect;
 with Version.Show_Branch;
@@ -30948,426 +30949,1409 @@ package body Version.CLI is
             end;
 
          elsif Command = "notes" then
+            --  A port of git's builtin/notes.c: `--ref` precedes the
+            --  subcommand, each subcommand parses its own options anywhere
+            --  among its operands, and every edit goes through a Notes_Tree
+            --  that is committed only when it changed.
             declare
                Usage : constant String :=
-                 "version notes [--ref=REF] (list [REV] | show [REV]"
-                 & " | add [-f] -m MSG [REV] | append -m MSG [REV]"
-                 & " | copy [-f] FROM TO | remove [--stdin] [REV...] | prune)";
+                 "version notes [--ref <notes-ref>] [list [<object>]]"
+                 & " | add [-f] [--allow-empty] [--[no-]separator|--separator=<paragraph-break>]"
+                 & " [--[no-]stripspace] [-m <msg> | -F <file> | (-c | -C) <object>] [<object>] [-e]"
+                 & " | copy [-f] <from-object> <to-object>"
+                 & " | append [--allow-empty] [--[no-]separator|--separator=<paragraph-break>]"
+                 & " [--[no-]stripspace] [-m <msg> | -F <file> | (-c | -C) <object>] [<object>] [-e]"
+                 & " | edit [--allow-empty] [<object>]"
+                 & " | show [<object>]"
+                 & " | merge [-v | -q] [-s <strategy>] <notes-ref>"
+                 & " | merge --commit [-v | -q] | merge --abort [-v | -q]"
+                 & " | remove [<object>...] | prune [-n] [-v] | get-ref";
 
-               --  `--ref=<name>` precedes the subcommand, so the operands are
-               --  collected rather than read at fixed positions.
-               Notes_Ref : Unbounded_String :=
-                 To_Unbounded_String (Version.Notes.Default_Ref);
-               Sub       : Unbounded_String;
-               --  git builds the note from the -m/-C/-c/-F pieces in the order
-               --  given (see Build_Message for the exact join). Each entry is a
-               --  kind char followed by its value: 'm' a literal, 'C' a reused
-               --  object's content (verbatim), 'c' a reedited object's content
-               --  (stripspaced, as git's editor path leaves it), 'F' a file.
-               Msg_Pieces : Version.Trailers.String_Vectors.Vector;
-               Allow_Empty : Boolean := False;
-               Force     : Boolean := False;
-               Ignore_Missing : Boolean := False;
-               Dry_Run   : Boolean := False;
-               Stdin     : Boolean := False;
-               Ops       : Version.Trailers.String_Vectors.Vector;
-               Bad       : Boolean := False;
-               Bad_Text  : Unbounded_String;
-               I         : Positive := 2;
+               Repo : constant Version.Repository.Repository_Handle :=
+                 Version.Repository.Open;
+
+               LF : constant Character := ASCII.LF;
+
+               Ref_Override : Unbounded_String;   --  --ref
+               Sub          : Unbounded_String;
+               Sub_Args     : Version.Trailers.String_Vectors.Vector;
+               Bad          : Boolean := False;
+               --  git dies (128) with one message; the first one wins.
+               Fatal        : Unbounded_String;
+               I            : Positive := 2;
+
+               procedure Die (Text : String) is
+               begin
+                  if Length (Fatal) = 0 then
+                     Fatal := To_Unbounded_String (Text);
+                  end if;
+               end Die;
+
+               --  Something git reports as a usage error: the error line,
+               --  the usage, exit 129.
+               procedure Bad_Usage (Text : String) is
+               begin
+                  if not Bad then
+                     Usage_Error (Text, Usage);
+                     Bad := True;
+                  end if;
+               end Bad_Usage;
+
+               --  git's parse-options wording: long options lose their
+               --  dashes, short ones are "switches".
+               procedure Unknown_Option (A : String) is
+               begin
+                  if Has_Prefix (A, "--") then
+                     Bad_Usage ("unknown option `" & A (A'First + 2 .. A'Last) & "'");
+                  else
+                     Bad_Usage ("unknown switch `" & A (A'First + 1 .. A'First + 1) & "'");
+                  end if;
+               end Unknown_Option;
+
+               procedure Missing_Value (A : String) is
+               begin
+                  if Has_Prefix (A, "--") then
+                     Bad_Usage ("option `" & A (A'First + 2 .. A'Last)
+                                & "' requires a value");
+                  else
+                     Bad_Usage ("switch `" & A (A'First + 1 .. A'Last)
+                                & "' requires a value");
+                  end if;
+               end Missing_Value;
             begin
+               --  Top level: `--ref <x>` / `--ref=<x>`, then the subcommand
+               --  (which takes the rest verbatim); a bare `notes` lists.
                while I <= Count loop
                   declare
                      A : constant String := Arg (I);
                   begin
-                     if A'Length > 6
-                       and then A (A'First .. A'First + 5) = "--ref="
-                     then
-                        Notes_Ref := To_Unbounded_String
-                          (A (A'First + 6 .. A'Last));
-                     elsif A = "--stdin" then
-                        Stdin := True;
-                     elsif A = "--allow-empty" then
-                        Allow_Empty := True;
-                     elsif A = "-m" then
+                     if Has_Prefix (A, "--ref=") then
+                        Ref_Override :=
+                          To_Unbounded_String (A (A'First + 6 .. A'Last));
+                     elsif A = "--ref" then
                         if I = Count then
-                           Bad := True;
-                           Bad_Text := To_Unbounded_String ("-m");
+                           Missing_Value (A);
                            exit;
                         end if;
-                        Msg_Pieces.Append ("m" & Arg (I + 1));
+                        Ref_Override := To_Unbounded_String (Arg (I + 1));
                         I := I + 1;
-                     elsif Has_Prefix (A, "--message=") then
-                        Msg_Pieces.Append
-                          ("m" & A (A'First + 10 .. A'Last));
-                     elsif A = "-C" or else A = "-c" then
-                        --  Reuse (-C, verbatim) or reedit (-c, stripspaced) a
-                        --  note object's content. version has no editor, so a
-                        --  reedit yields the seed content cleaned up, which is
-                        --  what git's editor leaves when it makes no change.
-                        if I = Count then
-                           Bad := True;
-                           Bad_Text := To_Unbounded_String (A);
-                           exit;
-                        end if;
-                        Msg_Pieces.Append
-                          ((if A = "-C" then "C" else "c") & Arg (I + 1));
+                     elsif A = "--" then
                         I := I + 1;
-                     elsif Has_Prefix (A, "--reuse-message=") then
-                        Msg_Pieces.Append
-                          ("C" & A (Ada.Strings.Fixed.Index (A, "=") + 1
-                                    .. A'Last));
-                     elsif Has_Prefix (A, "--reedit-message=") then
-                        Msg_Pieces.Append
-                          ("c" & A (Ada.Strings.Fixed.Index (A, "=") + 1
-                                    .. A'Last));
-                     elsif A = "-F" or else A = "--file" then
-                        if I = Count then
-                           Bad := True;
-                           Bad_Text := To_Unbounded_String (A);
-                           exit;
-                        end if;
-                        Msg_Pieces.Append ("F" & Arg (I + 1));
-                        I := I + 1;
-                     elsif Has_Prefix (A, "--file=") then
-                        Msg_Pieces.Append ("F" & A (A'First + 7 .. A'Last));
-                     elsif A = "-f" or else A = "--force" then
-                        Force := True;
-                     elsif A = "--ignore-missing" then
-                        Ignore_Missing := True;
-                     elsif A = "-n" or else A = "--dry-run" then
-                        Dry_Run := True;
-                     elsif A = "-v" or else A = "--verbose"
-                       or else A = "-q" or else A = "--quiet"
-                     then
-                        null;   --  verbosity does not change what is emitted
-                     elsif A'Length >= 1 and then A (A'First) = '-' then
-                        Bad := True;
-                        Bad_Text := To_Unbounded_String (A);
                         exit;
-                     elsif Sub = Null_Unbounded_String then
-                        Sub := To_Unbounded_String (A);
+                     elsif A'Length > 1 and then A (A'First) = '-' then
+                        Unknown_Option (A);
+                        exit;
                      else
-                        Ops.Append (A);
+                        Sub := To_Unbounded_String (A);
+                        I := I + 1;
+                        exit;
                      end if;
                   end;
                   I := I + 1;
                end loop;
+               while not Bad and then I <= Count loop
+                  Sub_Args.Append (Arg (I));
+                  I := I + 1;
+               end loop;
 
-               if Bad then
-                  Usage_Error
-                    ("unknown notes argument: " & To_String (Bad_Text), Usage);
-               else
+               if not Bad
+                 and then To_String (Sub) not in "" | "list" | "add" | "copy"
+                                              | "append" | "edit" | "show"
+                                              | "merge" | "remove" | "prune"
+                                              | "get-ref"
+               then
+                  Bad_Usage ("unknown subcommand: `" & To_String (Sub) & "'");
+               end if;
+
+               if not Bad then
                   declare
-                     Repo : constant Version.Repository.Repository_Handle :=
-                       Version.Repository.Open;
-                     Ref  : constant String := To_String (Notes_Ref);
-                     Name : constant String := To_String (Sub);
+                     Name : constant String :=
+                       (if Length (Sub) = 0 then "list" else To_String (Sub));
+
+                     --  git's default_notes_ref with `--ref` exported as
+                     --  GIT_NOTES_REF (expanded to refs/notes/ first).
+                     Notes_Ref : constant String :=
+                       (if Length (Ref_Override) > 0
+                        then Version.Notes.Qualify_Ref (To_String (Ref_Override))
+                        else Version.Notes.Default_Notes_Ref (Repo));
+
+                     Tree : Version.Notes.Notes_Tree;
+
+                     --  Per-subcommand options.
+                     Force       : Boolean := False;
+                     Allow_Empty : Boolean := False;
+                     Use_Editor  : Boolean := False;
+                     From_Stdin  : Boolean := False;
+                     Ignore_Missing : Boolean := False;
+                     Dry_Run     : Boolean := False;
+                     Verbose     : Boolean := False;
+                     Verbosity   : Integer := 0;   --  merge's -v/-q counter
+                     Do_Commit   : Boolean := False;
+                     Do_Abort    : Boolean := False;
+                     Strategy    : Unbounded_String;
+                     Have_Strategy : Boolean := False;
+                     Rewrite_Cmd : Unbounded_String;
+                     Have_Rewrite : Boolean := False;
+                     --  git's separator: "\n" by default, NULL after
+                     --  --no-separator, and the given text (newline
+                     --  appended) after --separator=<text>.
+                     Separator   : Unbounded_String := To_Unbounded_String ("" & LF);
+                     Have_Separator : Boolean := True;
+                     --  git's note_data.stripspace: -1 unspecified, 0/1.
+                     Stripspace  : Integer := -1;
+                     --  The -m/-F/-c/-C pieces in order; each is the content
+                     --  with a leading 'S' (stripspace) or 'V' (verbatim).
+                     Pieces      : Version.Trailers.String_Vectors.Vector;
+                     Operands    : Version.Trailers.String_Vectors.Vector;
+
+                     Edit_Path   : constant String :=
+                       Version.Files.Join
+                         (Version.Repository.Git_Dir (Repo), "NOTES_EDITMSG");
+                     Have_Edit_File : Boolean := False;
+
+                     Msg : Unbounded_String;   --  git's d.buf
+
+                     --  git's init_notes_check: a notes ref must live under
+                     --  refs/notes/.
+                     procedure Init_Notes_Check (Sub_Name : String) is
+                     begin
+                        if not Has_Prefix (Notes_Ref, "refs/notes/") then
+                           Die ("refusing to " & Sub_Name & " notes in "
+                                & Notes_Ref & " (outside of refs/notes/)");
+                        else
+                           Version.Notes.Load (Repo, Notes_Ref, Tree);
+                        end if;
+                     end Init_Notes_Check;
+
+                     --  git's repo_get_oid: the object an operand names
+                     --  (not peeled -- notes attach to the object itself),
+                     --  a full hex id taken as is.
+                     function Object_Of (Spec : String) return String is
+                     begin
+                        if Spec'Length in 40 | 64
+                          and then (for all Ch of Spec =>
+                                      Ch in '0' .. '9' | 'a' .. 'f' | 'A' .. 'F')
+                        then
+                           return Ada.Characters.Handling.To_Lower (Spec);
+                        end if;
+                        return Version.Objects.To_String
+                          (Version.Revisions.Resolve (Repo, Spec));
+                     exception
+                        when Ada.IO_Exceptions.Data_Error
+                            | Ada.IO_Exceptions.Name_Error =>
+                           return "";
+                     end Object_Of;
+
+                     --  Resolve or die with git's message.
+                     function Object_Or_Die (Spec : String) return String is
+                        Id : constant String := Object_Of (Spec);
+                     begin
+                        if Id'Length = 0 then
+                           Die ("failed to resolve '" & Spec & "' as a valid ref.");
+                        end if;
+                        return Id;
+                     end Object_Or_Die;
 
                      function Operand (N : Positive) return String is
-                       (if Natural (Ops.Length) >= N then Ops (N) else "");
+                       (if Natural (Operands.Length) >= N then Operands (N)
+                        else "");
 
-                     --  The object an operand names, defaulting to HEAD --
-                     --  which is what every notes subcommand does when the
-                     --  revision is left out. git notes attach to the object
-                     --  the revision names *directly* (so `notes ... v2` acts
-                     --  on the annotated-tag object, not the commit it peels
-                     --  to), hence Resolve rather than Resolve_Commit.
-                     function Rev_Or_Head (Text : String)
-                       return Version.Objects.Hex_Object_Id is
-                       (if Text'Length > 0
-                        then Version.Revisions.Resolve (Repo, Text)
-                        else Version.Objects.To_Object_Id
-                               (Version.Refs.Current_Commit_Id (Repo)));
-
-                     Have_Message : constant Boolean :=
-                       (not Msg_Pieces.Is_Empty) or else Allow_Empty;
-
-                     --  git dies (128) when -C/-c names a non-blob object.
-                     Note_Fatal : exception;
-
-                     --  Assemble the note from the pieces in order, exactly as
-                     --  git does: an -m/-F/-c piece is run through stripspace
-                     --  (which trims each line, collapses blank runs and
-                     --  newline-terminates a non-empty piece), a -C piece is
-                     --  kept verbatim. Pieces are joined by a single LF inserted
-                     --  before every piece after the first -- so a stripspaced
-                     --  piece (already LF-terminated) is followed by a blank
-                     --  line, but a verbatim -C piece is not. The result is the
-                     --  exact note blob and is written without further cleanup.
-                     function Build_Message return String is
-                        Result : Unbounded_String;
-
-                        procedure Add_Piece (Text : String; Clean : Boolean) is
-                           Piece : constant String :=
-                             (if Clean then Version.Stripspace.Clean (Text)
-                              else Text);
-                        begin
-                           if Length (Result) > 0 then
-                              Append (Result, ASCII.LF);
-                           end if;
-                           Append (Result, Piece);
-                        end Add_Piece;
-
-                        --  The blob content of a -C/-c object; git refuses any
-                        --  other object type here.
-                        function Reuse_Content (Spec : String) return String is
+                     --  git's parse_reuse_arg: a -C/-c object's blob content.
+                     function Reuse_Content (Spec : String) return String is
+                        Id : constant String := Object_Of (Spec);
+                     begin
+                        if Id'Length = 0 then
+                           Die ("failed to resolve '" & Spec & "' as a valid ref.");
+                           return "";
+                        end if;
+                        declare
                            Obj : constant Version.Objects.Git_Object :=
                              Version.Objects.Read_Object
-                               (Repo, Version.Revisions.Resolve (Repo, Spec));
+                               (Repo, Version.Objects.To_Object_Id (Id));
                         begin
                            if Version.Objects.Kind (Obj)
                               /= Version.Objects.Blob_Object
                            then
-                              raise Note_Fatal with
-                                "cannot read note data from non-blob object '"
-                                & Spec & "'.";
+                              Die ("cannot read note data from non-blob object '"
+                                   & Spec & "'.");
+                              return "";
                            end if;
                            return Version.Objects.Content (Obj);
-                        end Reuse_Content;
+                        end;
+                     exception
+                        when Ada.IO_Exceptions.Data_Error
+                            | Ada.IO_Exceptions.Name_Error =>
+                           Die ("failed to read object '" & Spec & "'.");
+                           return "";
+                     end Reuse_Content;
+
+                     --  git's parse_file_arg.
+                     function File_Content (Path : String) return String is
                      begin
-                        for P of Msg_Pieces loop
-                           declare
-                              Value : constant String := P (P'First + 1 .. P'Last);
-                           begin
-                              case P (P'First) is
-                                 when 'm' =>
-                                    Add_Piece (Value, Clean => True);
-                                 when 'C' =>
-                                    Add_Piece (Reuse_Content (Value),
-                                               Clean => False);
-                                 when 'c' =>
-                                    Add_Piece (Reuse_Content (Value),
-                                               Clean => True);
-                                 when others =>   --  'F': a file, "-" is stdin
-                                    Add_Piece
-                                      ((if Value = "-" then Read_All_Stdin
-                                        else Version.Files.Read_Binary_File
-                                               (Value)),
-                                       Clean => True);
-                              end case;
-                           end;
+                        if Path = "-" then
+                           return Read_All_Stdin;
+                        end if;
+                        return Version.Files.Read_Binary_File (Path);
+                     exception
+                        when Ada.IO_Exceptions.Name_Error
+                            | Ada.IO_Exceptions.Use_Error
+                            | Ada.IO_Exceptions.Device_Error =>
+                           Die ("could not open or read '" & Path
+                                & "': No such file or directory");
+                           return "";
+                     end File_Content;
+
+                     --  Parse the message/editor options shared by add,
+                     --  append and edit; True when A was consumed (Skip
+                     --  says whether the next argument was its value).
+                     function Message_Option
+                       (A : String; K : Positive; Skip : out Boolean)
+                        return Boolean
+                     is
+                        function Value return String is
+                          (if K < Natural (Sub_Args.Length)
+                           then Sub_Args (K + 1) else "");
+                        Has_Value : constant Boolean :=
+                          K < Natural (Sub_Args.Length);
+                     begin
+                        Skip := False;
+                        if A = "-m" or else A = "--message" then
+                           if not Has_Value then
+                              Missing_Value (A);
+                           else
+                              Pieces.Append ("S" & Value);
+                              Skip := True;
+                           end if;
+                        elsif Has_Prefix (A, "--message=") then
+                           Pieces.Append ("S" & A (A'First + 10 .. A'Last));
+                        elsif A'Length > 2 and then A (A'First .. A'First + 1) = "-m"
+                        then
+                           Pieces.Append ("S" & A (A'First + 2 .. A'Last));
+                        elsif A = "-F" or else A = "--file" then
+                           if not Has_Value then
+                              Missing_Value (A);
+                           else
+                              Pieces.Append ("S" & File_Content (Value));
+                              Skip := True;
+                           end if;
+                        elsif Has_Prefix (A, "--file=") then
+                           Pieces.Append
+                             ("S" & File_Content (A (A'First + 7 .. A'Last)));
+                        elsif A'Length > 2 and then A (A'First .. A'First + 1) = "-F"
+                        then
+                           Pieces.Append
+                             ("S" & File_Content (A (A'First + 2 .. A'Last)));
+                        elsif A = "-C" or else A = "--reuse-message" then
+                           if not Has_Value then
+                              Missing_Value (A);
+                           else
+                              Pieces.Append ("V" & Reuse_Content (Value));
+                              Skip := True;
+                           end if;
+                        elsif Has_Prefix (A, "--reuse-message=") then
+                           Pieces.Append
+                             ("V" & Reuse_Content (A (A'First + 16 .. A'Last)));
+                        elsif A'Length > 2 and then A (A'First .. A'First + 1) = "-C"
+                        then
+                           Pieces.Append
+                             ("V" & Reuse_Content (A (A'First + 2 .. A'Last)));
+                        elsif A = "-c" or else A = "--reedit-message" then
+                           if not Has_Value then
+                              Missing_Value (A);
+                           else
+                              Use_Editor := True;
+                              Pieces.Append ("V" & Reuse_Content (Value));
+                              Skip := True;
+                           end if;
+                        elsif Has_Prefix (A, "--reedit-message=") then
+                           Use_Editor := True;
+                           Pieces.Append
+                             ("V" & Reuse_Content (A (A'First + 17 .. A'Last)));
+                        elsif A'Length > 2 and then A (A'First .. A'First + 1) = "-c"
+                        then
+                           Use_Editor := True;
+                           Pieces.Append
+                             ("V" & Reuse_Content (A (A'First + 2 .. A'Last)));
+                        elsif A = "-e" or else A = "--edit" then
+                           Use_Editor := True;
+                        elsif A = "--no-edit" then
+                           Use_Editor := False;
+                        elsif A = "--allow-empty" then
+                           Allow_Empty := True;
+                        elsif A = "--no-allow-empty" then
+                           Allow_Empty := False;
+                        elsif A = "--separator" then
+                           Separator := To_Unbounded_String ("" & LF);
+                           Have_Separator := True;
+                        elsif Has_Prefix (A, "--separator=") then
+                           Separator := To_Unbounded_String (A (A'First + 12 .. A'Last));
+                           Have_Separator := True;
+                        elsif A = "--no-separator" then
+                           Have_Separator := False;
+                        elsif A = "--stripspace" then
+                           Stripspace := 1;
+                        elsif A = "--no-stripspace" then
+                           Stripspace := 0;
+                        else
+                           return False;
+                        end if;
+                        return True;
+                     end Message_Option;
+
+                     --  git's append_separator.
+                     procedure Append_Separator (Buf : in out Unbounded_String) is
+                     begin
+                        if not Have_Separator then
+                           return;
+                        end if;
+                        Append (Buf, Separator);
+                        if Length (Separator) = 0
+                          or else Element (Separator, Length (Separator)) /= LF
+                        then
+                           Append (Buf, LF);
+                        end if;
+                     end Append_Separator;
+
+                     --  git's concat_messages: the pieces joined by the
+                     --  separator, the accumulated text stripspaced after a
+                     --  -m/-F piece (or always with --stripspace).
+                     procedure Concat_Messages is
+                     begin
+                        for P of Pieces loop
+                           if Length (Msg) > 0 then
+                              Append_Separator (Msg);
+                           end if;
+                           Append (Msg, P (P'First + 1 .. P'Last));
+                           if (Stripspace = -1 and then P (P'First) = 'S')
+                             or else Stripspace = 1
+                           then
+                              Msg := To_Unbounded_String
+                                (Version.Stripspace.Clean (To_String (Msg)));
+                           end if;
                         end loop;
-                        return To_String (Result);
-                     end Build_Message;
-                  begin
-                     --  Bare `notes` lists, as git does.
-                     if Name = "" or else Name = "list" then
-                        if Name = "list" and then Operand (1) /= "" then
-                           declare
-                              C : constant Version.Objects.Hex_Object_Id :=
-                                Rev_Or_Head (Operand (1));
-                              Found : Boolean := False;
+                     end Concat_Messages;
+
+                     --  git's write_commented_object: `show --stat --no-notes`
+                     --  of the object, every line commented.
+                     function Commented_Object (Object : String) return String is
+                        Out_Path : constant String := Edit_Path & ".show";
+                        --  This executable, by an absolute path so the shell
+                        --  finds it whatever the current directory.
+                        Self     : constant String :=
+                          (if (for some Ch of Ada.Command_Line.Command_Name => Ch = '/')
+                           then Ada.Directories.Full_Name
+                                  (Ada.Command_Line.Command_Name)
+                           else Ada.Command_Line.Command_Name);
+                        Args     : GNAT.OS_Lib.Argument_List :=
+                          [1 => new String'("-c"),
+                           2 => new String'
+                             ("'" & Self & "' show --stat --no-notes " & Object
+                              & " > '" & Out_Path & "'")];
+                        Ok       : Boolean;
+                     begin
+                        GNAT.OS_Lib.Spawn ("/bin/sh", Args, Ok);
+                        GNAT.OS_Lib.Free (Args (1));
+                        GNAT.OS_Lib.Free (Args (2));
+                        if not Ok then
+                           Version.Files.Delete_File_If_Exists (Out_Path);
+                           Die ("failed to finish 'show' for object '" & Object & "'");
+                           return "";
+                        end if;
+                        declare
+                           Text : constant String :=
+                             Version.Files.Read_Binary_File (Out_Path);
+                        begin
+                           Version.Files.Delete_File_If_Exists (Out_Path);
+                           return Version.Stripspace.Clean
+                             (Text, Version.Stripspace.Comment_Lines);
+                        end;
+                     end Commented_Object;
+
+                     --  git's prepare_note_data: open the editor when asked
+                     --  to or when no message was given, seeding it with the
+                     --  message so far (or Old_Note's content) and a
+                     --  commented description of the object.
+                     procedure Prepare_Note_Data (Object, Old_Note : String) is
+                     begin
+                        if not (Use_Editor or else Pieces.Is_Empty) then
+                           return;
+                        end if;
+                        declare
+                           Seed : Unbounded_String;
+                        begin
+                           if not Pieces.Is_Empty then
+                              Seed := Msg;
+                           elsif Old_Note'Length > 0 then
+                              Append
+                                (Seed,
+                                 Version.Objects.Content
+                                   (Version.Objects.Read_Object
+                                      (Repo,
+                                       Version.Objects.To_Object_Id (Old_Note))));
+                           end if;
+                           Append (Seed, "" & LF);
+                           Append (Seed, "#" & LF);
+                           Append (Seed,
+                                   "# Write/edit the notes for the following "
+                                   & "object:" & LF);
+                           Append (Seed, "#" & LF);
+                           Append (Seed, Commented_Object (Object));
+                           if Length (Fatal) > 0 then
+                              return;
+                           end if;
+                           Have_Edit_File := True;
                            begin
-                              for E of Version.Notes.List (Repo, Ref) loop
-                                 if To_String (E.Commit)
-                                    = Version.Objects.To_String (C)
-                                 then
-                                    Success_Line (To_String (E.Note_Blob));
-                                    Found := True;
+                              Msg := To_Unbounded_String
+                                (Version.Editor.Edit_File
+                                   (Repo, Edit_Path, To_String (Seed)));
+                           exception
+                              when E : Ada.IO_Exceptions.Data_Error =>
+                                 --  git 2.55: "there was a problem with the
+                                 --  editor '<ed>'" (lower case, no period).
+                                 declare
+                                    M : constant String :=
+                                      Ada.Exceptions.Exception_Message (E);
+                                    L : constant Natural :=
+                                      (if M'Length > 0 and then M (M'Last) = '.'
+                                       then M'Last - 1 else M'Last);
+                                 begin
+                                    Error_Line
+                                      (Ada.Characters.Handling.To_Lower
+                                         (M (M'First .. M'First))
+                                       & M (M'First + 1 .. L));
+                                 end;
+                                 Die ("please supply the note contents using "
+                                      & "either -m or -F option");
+                                 return;
+                           end;
+                           if Stripspace /= 0 then
+                              Msg := To_Unbounded_String
+                                (Version.Stripspace.Clean
+                                   (To_String (Msg),
+                                    Version.Stripspace.Strip_Comments));
+                           end if;
+                        end;
+                     end Prepare_Note_Data;
+
+                     --  The subcommand's arguments: options anywhere, "--"
+                     --  ending them; unknown options are usage errors.
+                     procedure Parse_Sub_Options is
+                        K        : Positive := 1;
+                        No_More  : Boolean := False;
+                        Skip     : Boolean;
+                        Rescan   : Boolean := False;
+
+                        --  The flags that take no value, per subcommand:
+                        --  git's parse-options lets them bundle (-vv, -fe).
+                        function Is_Bundled_Flag (Ch : Character) return Boolean is
+                          (case Ch is
+                              when 'v' | 'q' => Name = "merge",
+                              when 'n'       => Name = "prune",
+                              when 'e'       => Name in "add" | "append" | "edit",
+                              when 'f'       => Name in "add" | "copy",
+                              when others    => Name = "prune" and then Ch = 'v');
+                     begin
+                        while K <= Natural (Sub_Args.Length) loop
+                           declare
+                              A : constant String := Sub_Args (K);
+                           begin
+                              if No_More or else A = "-"
+                                or else A'Length < 2 or else A (A'First) /= '-'
+                              then
+                                 Operands.Append (A);
+                              elsif A = "--" then
+                                 No_More := True;
+                              elsif A'Length > 2 and then A (A'First + 1) /= '-'
+                                and then Is_Bundled_Flag (A (A'First + 1))
+                              then
+                                 --  Split "-vv" into "-v" "-v" in place and
+                                 --  look at the first part again.
+                                 Sub_Args.Replace_Element
+                                   (K, "-" & A (A'First + 1));
+                                 Sub_Args.Insert (K + 1, "-" & A (A'First + 2 .. A'Last));
+                                 Rescan := True;
+                              elsif Name in "add" | "append" | "edit"
+                                and then Message_Option (A, K, Skip)
+                              then
+                                 if Skip then
+                                    K := K + 1;
                                  end if;
-                              end loop;
-                              if not Found then
-                                 --  git names the object it could not find.
-                                 Error_Line
-                                   ("no note found for object "
-                                    & Version.Objects.To_String (C) & ".");
-                                 Set_Command_Failure;
+                              elsif Name = "add"
+                                and then (A = "-f" or else A = "--force")
+                              then
+                                 Force := True;
+                              elsif Name = "add" and then A = "--no-force" then
+                                 Force := False;
+                              elsif Name = "copy"
+                                and then (A = "-f" or else A = "--force")
+                              then
+                                 Force := True;
+                              elsif Name = "copy" and then A = "--stdin" then
+                                 From_Stdin := True;
+                              elsif Name = "copy" and then Has_Prefix (A, "--for-rewrite=")
+                              then
+                                 Rewrite_Cmd := To_Unbounded_String
+                                   (A (A'First + 14 .. A'Last));
+                                 Have_Rewrite := True;
+                              elsif Name = "copy" and then A = "--for-rewrite" then
+                                 if K = Natural (Sub_Args.Length) then
+                                    Missing_Value (A);
+                                 else
+                                    Rewrite_Cmd := To_Unbounded_String (Sub_Args (K + 1));
+                                    Have_Rewrite := True;
+                                    K := K + 1;
+                                 end if;
+                              elsif Name = "remove" and then A = "--ignore-missing" then
+                                 Ignore_Missing := True;
+                              elsif Name = "remove" and then A = "--stdin" then
+                                 From_Stdin := True;
+                              elsif Name = "prune"
+                                and then (A = "-n" or else A = "--dry-run")
+                              then
+                                 Dry_Run := True;
+                              elsif Name = "prune"
+                                and then (A = "-v" or else A = "--verbose")
+                              then
+                                 Verbose := True;
+                              elsif Name = "merge"
+                                and then (A = "-v" or else A = "--verbose")
+                              then
+                                 Verbosity := (if Verbosity >= 0 then Verbosity + 1 else 1);
+                              elsif Name = "merge"
+                                and then (A = "-q" or else A = "--quiet")
+                              then
+                                 Verbosity := (if Verbosity <= 0 then Verbosity - 1 else -1);
+                              elsif Name = "merge"
+                                and then (A = "--no-verbose" or else A = "--no-quiet")
+                              then
+                                 Verbosity := 0;
+                              elsif Name = "merge"
+                                and then (A = "-s" or else A = "--strategy")
+                              then
+                                 if K = Natural (Sub_Args.Length) then
+                                    Missing_Value (A);
+                                 else
+                                    Strategy := To_Unbounded_String (Sub_Args (K + 1));
+                                    Have_Strategy := True;
+                                    K := K + 1;
+                                 end if;
+                              elsif Name = "merge" and then Has_Prefix (A, "--strategy=") then
+                                 Strategy := To_Unbounded_String (A (A'First + 11 .. A'Last));
+                                 Have_Strategy := True;
+                              elsif Name = "merge" and then A'Length > 2
+                                and then A (A'First .. A'First + 1) = "-s"
+                              then
+                                 Strategy := To_Unbounded_String (A (A'First + 2 .. A'Last));
+                                 Have_Strategy := True;
+                              elsif Name = "merge" and then A = "--commit" then
+                                 Do_Commit := True;
+                              elsif Name = "merge" and then A = "--abort" then
+                                 Do_Abort := True;
+                              elsif A = "-h" then
+                                 Bad_Usage ("usage");
+                              else
+                                 Unknown_Option (A);
                               end if;
                            end;
+                           exit when Bad or else Length (Fatal) > 0;
+                           if Rescan then
+                              Rescan := False;
+                           else
+                              K := K + 1;
+                           end if;
+                        end loop;
+                     end Parse_Sub_Options;
+
+                     --  git's remove_one_note.
+                     function Remove_One (Spec : String) return Boolean is
+                        Id : constant String := Object_Of (Spec);
+                     begin
+                        if Id'Length = 0 then
+                           Error_Line ("Failed to resolve '" & Spec & "' as a valid ref.");
+                           return False;
+                        end if;
+                        if Version.Notes.Remove_Note (Tree, Id) then
+                           Stderr_Line ("Removing note for object " & Spec);
+                           return True;
+                        end if;
+                        Stderr_Line ("Object " & Spec & " has no note");
+                        return Ignore_Missing;
+                     end Remove_One;
+
+                     --  The commit message a subcommand records.
+                     function Log_Message (Added : Boolean) return String is
+                       ("Notes " & (if Added then "added" else "removed")
+                        & " by 'git notes " & Name & "'");
+
+                     Merge_Output : Unbounded_String;
+                     Pruned       : Boolean with Unreferenced;
+                  begin
+                     Parse_Sub_Options;
+
+                     if Bad or else Length (Fatal) > 0 then
+                        null;
+
+                     elsif Name = "list" then
+                        if Natural (Operands.Length) > 1 then
+                           Bad_Usage ("too many arguments");
                         else
-                           for E of Version.Notes.List (Repo, Ref) loop
-                              Success_Line
-                                (To_String (E.Note_Blob) & " "
-                                 & To_String (E.Commit));
-                           end loop;
+                           Init_Notes_Check ("list");
+                           if Length (Fatal) > 0 then
+                              null;
+                           elsif Natural (Operands.Length) = 1 then
+                              declare
+                                 Id : constant String := Object_Or_Die (Operand (1));
+                              begin
+                                 if Id'Length > 0 then
+                                    declare
+                                       Note : constant String :=
+                                         Version.Notes.Note_Of (Tree, Id);
+                                    begin
+                                       if Note'Length > 0 then
+                                          Success_Line (Note);
+                                       else
+                                          Error_Line
+                                            ("no note found for object " & Id & ".");
+                                          Set_Command_Failure;
+                                       end if;
+                                    end;
+                                 end if;
+                              end;
+                           else
+                              for E of Version.Notes.Entries (Tree) loop
+                                 Success_Line
+                                   (To_String (E.Note_Blob) & " " & To_String (E.Commit));
+                              end loop;
+                           end if;
                         end if;
 
                      elsif Name = "show" then
-                        declare
-                           C : constant Version.Objects.Hex_Object_Id :=
-                             Rev_Or_Head (Operand (1));
-                        begin
-                           --  An empty note is still a note: git prints nothing
-                           --  and succeeds, so the presence test is Has_Note,
-                           --  not a non-empty blob (which --allow-empty defeats).
-                           if not Version.Notes.Has_Note (Repo, C, Ref) then
-                              Error_Line
-                                ("no note found for "
-                                 & Version.Objects.To_String (C));
-                              Set_Command_Failure;
-                           else
-                              --  Emit the blob verbatim, like git. Console.Put
-                              --  avoids GNAT Text_IO's spurious terminator,
-                              --  which doubled the note's own final newline.
-                              Version.Console.Put
-                                (Version.Notes.Show (Repo, C, Ref));
-                           end if;
-                        end;
-
-                     elsif Name = "add" then
-                        if not Have_Message then
-                           Usage_Error ("notes add requires -m", Usage);
+                        if Natural (Operands.Length) > 1 then
+                           Bad_Usage ("too many arguments");
                         else
                            declare
-                              C : constant Version.Objects.Hex_Object_Id :=
-                                Rev_Or_Head (Operand (1));
-                              Existing : constant Boolean :=
-                                Version.Notes.Has_Note (Repo, C, Ref);
+                              Id : constant String :=
+                                Object_Or_Die
+                                  (if Operand (1) = "" then "HEAD" else Operand (1));
                            begin
-                              if Existing and then not Force then
-                                 Error_Line
-                                   ("Cannot add notes. Found existing notes "
-                                    & "for object "
-                                    & Version.Objects.To_String (C)
-                                    & ". Use '-f' to overwrite existing notes");
+                              if Id'Length > 0 then
+                                 Init_Notes_Check ("show");
+                              end if;
+                              if Length (Fatal) > 0 then
+                                 null;
+                              elsif Version.Notes.Note_Of (Tree, Id)'Length = 0 then
+                                 Error_Line ("no note found for object " & Id & ".");
                                  Set_Command_Failure;
                               else
-                                 if Existing then
-                                    Stderr_Line
-                                      ("Overwriting existing notes for object "
-                                       & Version.Objects.To_String (C));
-                                 end if;
-                                 Version.Notes.Add
-                                   (Repo, C, Build_Message, Ref,
-                                    Cleanup_Message => False);
+                                 --  The blob verbatim, as `git show <note>`
+                                 --  prints it; Console.Put avoids Text_IO's
+                                 --  spurious final newline.
+                                 Version.Console.Put
+                                   (Version.Objects.Content
+                                      (Version.Objects.Read_Object
+                                         (Repo,
+                                          Version.Objects.To_Object_Id
+                                            (Version.Notes.Note_Of (Tree, Id)))));
                               end if;
                            end;
                         end if;
 
-                     elsif Name = "append" then
-                        if not Have_Message then
-                           Usage_Error ("notes append requires -m", Usage);
+                     elsif Name in "add" | "append" | "edit" then
+                        if Natural (Operands.Length) > 1 then
+                           Bad_Usage ("too many arguments");
                         else
-                           Version.Notes.Append
-                             (Repo, Rev_Or_Head (Operand (1)),
-                              Build_Message, Ref, Cleanup_Message => False);
+                           declare
+                              Is_Edit : Boolean := Name = "edit";
+                              Sub_Name : Unbounded_String := To_Unbounded_String (Name);
+                              Id : Unbounded_String;
+                           begin
+                              if not Pieces.Is_Empty then
+                                 Concat_Messages;
+                                 if Is_Edit then
+                                    Stderr_Line
+                                      ("The -m/-F/-c/-C options have been deprecated "
+                                       & "for the 'edit' subcommand.");
+                                    Stderr_Line
+                                      ("Please use 'git notes add -f -m/-F/-c/-C' "
+                                       & "instead.");
+                                 end if;
+                              end if;
+
+                              Id := To_Unbounded_String
+                                (Object_Or_Die
+                                   (if Operand (1) = "" then "HEAD" else Operand (1)));
+                              if Length (Fatal) = 0 then
+                                 Init_Notes_Check (Name);
+                              end if;
+
+                              if Length (Fatal) = 0 then
+                                 declare
+                                    Object : constant String := To_String (Id);
+                                    Note   : constant String :=
+                                      Version.Notes.Note_Of (Tree, Object);
+                                    Proceed : Boolean := True;
+                                 begin
+                                    if Name = "add" and then Note'Length > 0 then
+                                       if not Force then
+                                          if not Pieces.Is_Empty then
+                                             Error_Line
+                                               ("Cannot add notes. Found existing notes "
+                                                & "for object " & Object
+                                                & ". Use '-f' to overwrite existing notes");
+                                             Set_Command_Failure;
+                                             Proceed := False;
+                                          else
+                                             --  git redirects a bare `add` on a
+                                             --  noted object to `edit`.
+                                             Is_Edit := True;
+                                             Sub_Name := To_Unbounded_String ("edit");
+                                          end if;
+                                       else
+                                          Stderr_Line
+                                            ("Overwriting existing notes for object "
+                                             & Object);
+                                       end if;
+                                    end if;
+
+                                    if Proceed then
+                                       Prepare_Note_Data
+                                         (Object,
+                                          (if Is_Edit or else Name = "add" then Note
+                                           else ""));
+                                    end if;
+
+                                    if Proceed and then Length (Fatal) = 0 then
+                                       if Name = "append" and then Note'Length > 0 then
+                                          --  Append to the previous content, a
+                                          --  separator between when both are
+                                          --  non-empty.
+                                          declare
+                                             Prev : Unbounded_String :=
+                                               To_Unbounded_String
+                                                 (Version.Objects.Content
+                                                    (Version.Objects.Read_Object
+                                                       (Repo,
+                                                        Version.Objects.To_Object_Id
+                                                          (Note))));
+                                          begin
+                                             if Length (Msg) > 0 and then Length (Prev) > 0
+                                             then
+                                                Append_Separator (Prev);
+                                             end if;
+                                             Msg := Prev & Msg;
+                                          end;
+                                       end if;
+
+                                       declare
+                                          Log_Sub : constant String :=
+                                            To_String (Sub_Name);
+                                       begin
+                                          if Length (Msg) > 0 or else Allow_Empty then
+                                             Version.Notes.Add_Note
+                                               (Repo, Tree, Object,
+                                                Version.Objects.To_String
+                                                  (Version.Write.Write_Blob
+                                                     (Repo, To_String (Msg))));
+                                             Version.Notes.Commit_Notes
+                                               (Repo, Tree,
+                                                "Notes added by 'git notes "
+                                                & Log_Sub & "'");
+                                          else
+                                             Stderr_Line
+                                               ("Removing note for object " & Object);
+                                             Pruned :=
+                                               Version.Notes.Remove_Note (Tree, Object);
+                                             Version.Notes.Commit_Notes
+                                               (Repo, Tree,
+                                                "Notes removed by 'git notes "
+                                                & Log_Sub & "'");
+                                          end if;
+                                       end;
+                                    end if;
+                                 end;
+                              end if;
+                           end;
                         end if;
 
                      elsif Name = "copy" then
-                        if Natural (Ops.Length) < 2 then
-                           Usage_Error ("notes copy requires FROM and TO",
-                                        Usage);
+                        if From_Stdin or else Have_Rewrite then
+                           if not Operands.Is_Empty then
+                              Bad_Usage ("too many arguments");
+                           else
+                              --  git's notes_copy_from_stdin: "<from> <to>"
+                              --  lines, into the notes ref -- or, for
+                              --  --for-rewrite=<cmd>, into every ref
+                              --  notes.rewriteRef names when
+                              --  notes.rewrite.<cmd> allows.
+                              declare
+                                 Trees   : Version.Trailers.String_Vectors.Vector;
+                                 Loaded  : array (1 .. 64) of Version.Notes.Notes_Tree;
+                                 N_Trees : Natural := 0;
+                                 Combine : Version.Notes.Combine_Mode :=
+                                   Version.Notes.Combine_Concatenate;
+                                 Enabled : Boolean := True;
+                                 Failed  : Boolean := False;
+
+                                 procedure Add_Ref (R : String) is
+                                 begin
+                                    for T of Trees loop
+                                       if T = R then
+                                          return;
+                                       end if;
+                                    end loop;
+                                    Trees.Append (R);
+                                 end Add_Ref;
+
+                                 --  git's string_list_add_refs_by_glob.
+                                 procedure Add_Refs_By_Glob (Glob : String) is
+                                 begin
+                                    if (for some Ch of Glob => Ch in '*' | '?' | '[')
+                                    then
+                                       declare
+                                          Pats : Version.Ref_Format.String_Vectors.Vector;
+                                       begin
+                                          Pats.Append (Glob);
+                                          for L of Version.Ref_Format.For_Each_Ref
+                                                     (Repo, Pats, "%(refname)")
+                                          loop
+                                             Add_Ref (L);
+                                          end loop;
+                                       end;
+                                    else
+                                       if Object_Of (Glob) = "" then
+                                          Stderr_Line
+                                            ("warning: notes ref " & Glob & " is invalid");
+                                       end if;
+                                       Add_Ref (Glob);
+                                    end if;
+                                 end Add_Refs_By_Glob;
+
+                                 procedure Add_Refs_Colon_Separated (Text : String) is
+                                    First : Positive := Text'First;
+                                 begin
+                                    for K in Text'Range loop
+                                       if Text (K) = ':' then
+                                          if K > First then
+                                             Add_Refs_By_Glob (Text (First .. K - 1));
+                                          end if;
+                                          First := K + 1;
+                                       end if;
+                                    end loop;
+                                    if Text'Last >= First then
+                                       Add_Refs_By_Glob (Text (First .. Text'Last));
+                                    end if;
+                                 end Add_Refs_Colon_Separated;
+                              begin
+                                 if Have_Rewrite then
+                                    declare
+                                       Cmd : constant String := To_String (Rewrite_Cmd);
+                                       Mode_From_Env : Boolean := False;
+                                       Refs_From_Env : Boolean := False;
+                                    begin
+                                       if Ada.Environment_Variables.Exists
+                                            ("GIT_NOTES_REWRITE_MODE")
+                                       then
+                                          Mode_From_Env := True;
+                                          if not Version.Notes.Parse_Combine_Mode
+                                                   (Ada.Environment_Variables.Value
+                                                      ("GIT_NOTES_REWRITE_MODE"),
+                                                    Combine)
+                                          then
+                                             Error_Line
+                                               ("Bad GIT_NOTES_REWRITE_MODE value: '"
+                                                & Ada.Environment_Variables.Value
+                                                    ("GIT_NOTES_REWRITE_MODE") & "'");
+                                             --  git carries on with no combine
+                                             --  function, which the trees'
+                                             --  default (ignore) then supplies.
+                                             Combine := Version.Notes.Combine_Ignore;
+                                          end if;
+                                       end if;
+                                       if Ada.Environment_Variables.Exists
+                                            ("GIT_NOTES_REWRITE_REF")
+                                       then
+                                          Refs_From_Env := True;
+                                          Add_Refs_Colon_Separated
+                                            (Ada.Environment_Variables.Value
+                                               ("GIT_NOTES_REWRITE_REF"));
+                                       end if;
+                                       for Item of Version.Config.Read_All (Repo) loop
+                                          declare
+                                             --  Section and key fold case; the
+                                             --  subsection (the command) does not.
+                                             Full : constant String :=
+                                               Version.Config.Config_Entry_Name (Item);
+                                             Key  : constant String :=
+                                               Ada.Characters.Handling.To_Lower (Full);
+                                             Val  : constant String :=
+                                               To_String (Item.Value);
+                                             OK   : Boolean;
+                                          begin
+                                             if Has_Prefix (Key, "notes.rewrite.")
+                                               and then Full (Full'First + 14 .. Full'Last)
+                                                        = Cmd
+                                             then
+                                                Enabled :=
+                                                  Config_Bool_Norm (Val, OK) = "true";
+                                             elsif not Mode_From_Env
+                                               and then Key = "notes.rewritemode"
+                                             then
+                                                if not Version.Notes.Parse_Combine_Mode
+                                                         (Val, Combine)
+                                                then
+                                                   --  git's callback returns 1
+                                                   --  here, which ends the config
+                                                   --  read with no combine
+                                                   --  function (so: ignore).
+                                                   Error_Line
+                                                     ("Bad notes.rewriteMode value: '"
+                                                      & Val & "'");
+                                                   Combine :=
+                                                     Version.Notes.Combine_Ignore;
+                                                   exit;
+                                                end if;
+                                             elsif not Refs_From_Env
+                                               and then Key = "notes.rewriteref"
+                                             then
+                                                if Has_Prefix (Val, "refs/notes/") then
+                                                   Add_Refs_By_Glob (Val);
+                                                else
+                                                   Stderr_Line
+                                                     ("warning: Refusing to rewrite "
+                                                      & "notes in " & Val
+                                                      & " (outside of refs/notes/)");
+                                                end if;
+                                             end if;
+                                          end;
+                                       end loop;
+                                    end;
+                                 else
+                                    Init_Notes_Check ("copy");
+                                    Combine := Version.Notes.Combine_Overwrite;
+                                    if Length (Fatal) = 0 then
+                                       Add_Ref (Notes_Ref);
+                                    end if;
+                                 end if;
+
+                                 if Length (Fatal) = 0 and then Enabled
+                                   and then not Trees.Is_Empty
+                                 then
+                                    for R of Trees loop
+                                       exit when N_Trees = Loaded'Last;
+                                       N_Trees := N_Trees + 1;
+                                       Version.Notes.Load (Repo, R, Loaded (N_Trees));
+                                    end loop;
+
+                                    declare
+                                       Data  : constant String := Read_All_Stdin;
+                                       First : Positive := Data'First;
+
+                                       procedure Copy_Line (Line : String) is
+                                          --  Whitespace-split; the first two
+                                          --  tokens are from and to.
+                                          From, To : Unbounded_String;
+                                          Tokens   : Natural := 0;
+                                          Start    : Natural := 0;
+
+                                          procedure Take (T : String) is
+                                          begin
+                                             Tokens := Tokens + 1;
+                                             if Tokens = 1 then
+                                                From := To_Unbounded_String (T);
+                                             elsif Tokens = 2 then
+                                                To := To_Unbounded_String (T);
+                                             end if;
+                                          end Take;
+                                       begin
+                                          for K in Line'Range loop
+                                             if Line (K) = ' ' then
+                                                if Start > 0 then
+                                                   Take (Line (Start .. K - 1));
+                                                   Start := 0;
+                                                end if;
+                                             elsif Start = 0 then
+                                                Start := K;
+                                             end if;
+                                          end loop;
+                                          if Start > 0 then
+                                             Take (Line (Start .. Line'Last));
+                                          end if;
+                                          if Tokens < 2 then
+                                             Die ("malformed input line: '" & Line & "'.");
+                                             return;
+                                          end if;
+                                          declare
+                                             From_Id : constant String :=
+                                               Object_Or_Die (To_String (From));
+                                             To_Id   : constant String :=
+                                               (if From_Id'Length > 0
+                                                then Object_Or_Die (To_String (To))
+                                                else "");
+                                             Err     : Boolean := False;
+                                          begin
+                                             if Length (Fatal) > 0 then
+                                                return;
+                                             end if;
+                                             for T in 1 .. N_Trees loop
+                                                Err :=
+                                                  Version.Notes.Copy_Note
+                                                    (Repo, Loaded (T), From_Id, To_Id,
+                                                     Force or else Have_Rewrite, Combine)
+                                                  or else Err;
+                                             end loop;
+                                             if Err then
+                                                Error_Line
+                                                  ("failed to copy notes from '"
+                                                   & To_String (From) & "' to '"
+                                                   & To_String (To) & "'");
+                                                Failed := True;
+                                             end if;
+                                          end;
+                                       end Copy_Line;
+                                    begin
+                                       for K in Data'Range loop
+                                          if Data (K) = LF then
+                                             Copy_Line (Data (First .. K - 1));
+                                             First := K + 1;
+                                             exit when Length (Fatal) > 0;
+                                          end if;
+                                       end loop;
+                                       if Length (Fatal) = 0 and then Data'Last >= First
+                                       then
+                                          Copy_Line (Data (First .. Data'Last));
+                                       end if;
+                                    end;
+
+                                    if Length (Fatal) = 0 then
+                                       for T in 1 .. N_Trees loop
+                                          Version.Notes.Commit_Notes
+                                            (Repo, Loaded (T),
+                                             "Notes added by 'git notes copy'");
+                                       end loop;
+                                       if Failed then
+                                          Set_Command_Failure;
+                                       end if;
+                                    end if;
+                                 end if;
+                              end;
+                           end if;
+                        elsif Operands.Is_Empty then
+                           Bad_Usage ("too few arguments");
+                        elsif Natural (Operands.Length) > 2 then
+                           Bad_Usage ("too many arguments");
                         else
                            declare
-                              Dest : constant Version.Objects.Hex_Object_Id :=
-                                Rev_Or_Head (Operand (2));
+                              From_Id : constant String := Object_Or_Die (Operand (1));
+                              To_Id   : constant String :=
+                                (if From_Id'Length = 0 then ""
+                                 else Object_Or_Die
+                                        (if Operand (2) = "" then "HEAD"
+                                         else Operand (2)));
                            begin
-                              if Force
-                                and then Version.Notes.Has_Note
-                                           (Repo, Dest, Ref)
-                              then
-                                 Stderr_Line
-                                   ("Overwriting existing notes for object "
-                                    & Version.Objects.To_String (Dest));
+                              if Length (Fatal) = 0 then
+                                 Init_Notes_Check ("copy");
                               end if;
-
-                              Version.Notes.Copy
-                                (Repo,
-                                 From  => Rev_Or_Head (Operand (1)),
-                                 To    => Dest,
-                                 Force => Force,
-                                 Ref   => Ref);
+                              if Length (Fatal) = 0 then
+                                 if Version.Notes.Note_Of (Tree, To_Id)'Length > 0 then
+                                    if not Force then
+                                       Error_Line
+                                         ("Cannot copy notes. Found existing notes for "
+                                          & "object " & To_Id
+                                          & ". Use '-f' to overwrite existing notes");
+                                       Set_Command_Failure;
+                                       goto Notes_Done;
+                                    end if;
+                                    Stderr_Line
+                                      ("Overwriting existing notes for object " & To_Id);
+                                 end if;
+                                 if Version.Notes.Note_Of (Tree, From_Id)'Length = 0 then
+                                    Error_Line
+                                      ("missing notes on source object " & From_Id
+                                       & ". Cannot copy.");
+                                    Set_Command_Failure;
+                                    goto Notes_Done;
+                                 end if;
+                                 Version.Notes.Add_Note
+                                   (Repo, Tree, To_Id,
+                                    Version.Notes.Note_Of (Tree, From_Id));
+                                 Version.Notes.Commit_Notes
+                                   (Repo, Tree, "Notes added by 'git notes copy'");
+                              end if;
                            end;
                         end if;
 
                      elsif Name = "remove" then
-                        declare
-                           --  git's `remove` takes the object from the operand
-                           --  (default HEAD), or -- with --stdin -- one per
-                           --  whitespace-separated token on stdin, in addition
-                           --  to any operands.
-                           Specs : Version.Trailers.String_Vectors.Vector;
-
-                           procedure Remove_One (Spec : String) is
-                              --  A full object id names its target directly
-                              --  (git does not require it to exist -- a note
-                              --  can sit on any id); anything else is resolved.
-                              C : constant Version.Objects.Hex_Object_Id :=
-                                (if Spec'Length in 40 | 64
-                                   and then (for all Ch of Spec =>
-                                               Ch in '0' .. '9' | 'a' .. 'f'
-                                                   | 'A' .. 'F')
-                                 then Version.Objects.To_Object_Id (Spec)
-                                 else Rev_Or_Head (Spec));
+                        Init_Notes_Check ("remove");
+                        if Length (Fatal) = 0 then
+                           declare
+                              OK : Boolean := True;
                            begin
-                              if not Version.Notes.Has_Note (Repo, C, Ref) then
-                                 --  git reports the absence either way; with
-                                 --  --ignore-missing it is no longer an error.
-                                 Stderr_Line
-                                   ("Object "
-                                    & (if Spec /= "" then Spec
-                                       else Version.Objects.To_String (C))
-                                    & " has no note");
-                                 if not Ignore_Missing then
-                                    Set_Command_Failure;
-                                 end if;
+                              if Operands.Is_Empty and then not From_Stdin then
+                                 OK := Remove_One ("HEAD");
                               else
-                                 --  git names the object as the caller wrote it.
-                                 Stderr_Line
-                                   ("Removing note for object "
-                                    & (if Spec /= "" then Spec
-                                       else Version.Objects.To_String (C)));
-                                 Version.Notes.Remove (Repo, C, Ref);
-                              end if;
-                           end Remove_One;
-                        begin
-                           for Op of Ops loop
-                              Specs.Append (Op);
-                           end loop;
-
-                           if Stdin then
-                              declare
-                                 Data  : constant String := Read_All_Stdin;
-                                 First : Natural := Data'First;
-                              begin
-                                 for K in Data'Range loop
-                                    if Data (K) in ' ' | ASCII.HT | ASCII.LF
-                                                 | ASCII.CR
-                                    then
-                                       if K > First then
-                                          Specs.Append (Data (First .. K - 1));
-                                       end if;
-                                       First := K + 1;
-                                    end if;
+                                 for Op of Operands loop
+                                    OK := Remove_One (Op) and then OK;
                                  end loop;
-                                 if Data'Last >= First then
-                                    Specs.Append (Data (First .. Data'Last));
-                                 end if;
-                              end;
-                           end if;
+                              end if;
+                              if From_Stdin then
+                                 declare
+                                    Data  : constant String := Read_All_Stdin;
+                                    First : Positive := Data'First;
 
-                           if Specs.Is_Empty and then not Stdin then
-                              Remove_One ("");   --  default HEAD
-                           else
-                              --  With --stdin the operands are exactly what was
-                              --  read (empty stdin removes nothing).
-                              for S of Specs loop
-                                 Remove_One (S);
-                              end loop;
-                           end if;
-                        end;
+                                    --  git rtrims each line and takes the
+                                    --  rest as one name.
+                                    procedure One_Line (Line : String) is
+                                       Last : Natural := Line'Last;
+                                    begin
+                                       while Last >= Line'First
+                                         and then Line (Last) in ' ' | ASCII.HT
+                                                                | ASCII.CR | LF
+                                       loop
+                                          Last := Last - 1;
+                                       end loop;
+                                       OK := Remove_One (Line (Line'First .. Last))
+                                         and then OK;
+                                    end One_Line;
+                                 begin
+                                    for K in Data'Range loop
+                                       if Data (K) = LF then
+                                          One_Line (Data (First .. K - 1));
+                                          First := K + 1;
+                                       end if;
+                                    end loop;
+                                    if Data'Last >= First then
+                                       One_Line (Data (First .. Data'Last));
+                                    end if;
+                                 end;
+                              end if;
+                              if OK then
+                                 Version.Notes.Commit_Notes
+                                   (Repo, Tree, Log_Message (Added => False));
+                              else
+                                 Set_Command_Failure;
+                              end if;
+                           end;
+                        end if;
 
                      elsif Name = "prune" then
-                        --  -n/--dry-run reports what would be pruned (the note
-                        --  targets that no longer exist) without removing.
-                        if not Dry_Run then
-                           Version.Notes.Prune (Repo, Ref);
+                        if not Operands.Is_Empty then
+                           Bad_Usage ("too many arguments");
+                        else
+                           Init_Notes_Check ("prune");
+                           if Length (Fatal) = 0 then
+                              for E of Version.Notes.Prune_Candidates (Repo, Tree) loop
+                                 if Verbose or else Dry_Run then
+                                    Success_Line (To_String (E.Commit));
+                                 end if;
+                                 if not Dry_Run then
+                                    Pruned := Version.Notes.Remove_Note
+                                                (Tree, To_String (E.Commit));
+                                 end if;
+                              end loop;
+                              if not Dry_Run then
+                                 Version.Notes.Commit_Notes
+                                   (Repo, Tree, Log_Message (Added => False));
+                              end if;
+                           end if;
                         end if;
 
                      elsif Name = "get-ref" then
-                        --  The fully-qualified notes ref in effect.
-                        Success_Line (Ref);
+                        if not Operands.Is_Empty then
+                           Bad_Usage ("too many arguments");
+                        else
+                           Success_Line (Notes_Ref);
+                        end if;
 
-                     else
-                        Usage_Error
-                          ("unknown notes subcommand: " & Name, Usage);
+                     elsif Name = "merge" then
+                        declare
+                           Do_Merge : constant Boolean :=
+                             Have_Strategy or else not (Do_Commit or else Do_Abort);
+                           Modes : constant Natural :=
+                             Boolean'Pos (Do_Merge) + Boolean'Pos (Do_Commit)
+                             + Boolean'Pos (Do_Abort);
+                           Opts  : Version.Notes_Merge.Merge_Options;
+                           Errors : Version.Ref_Format.String_Vectors.Vector;
+                           Warnings : Version.Ref_Format.String_Vectors.Vector;
+                        begin
+                           Opts.Verbosity :=
+                             Verbosity + Version.Notes_Merge.Default_Verbosity;
+                           if Modes /= 1 then
+                              Bad_Usage ("cannot mix --commit, --abort or -s/--strategy");
+                           elsif Do_Merge and then Natural (Operands.Length) /= 1 then
+                              Bad_Usage ("must specify a notes ref to merge");
+                           elsif not Do_Merge and then not Operands.Is_Empty then
+                              Bad_Usage ("too many arguments");
+                           elsif Do_Abort then
+                              Version.Notes_Merge.Clear_Merge_State
+                                (Repo, Opts, Merge_Output, Errors);
+                              for E of Errors loop
+                                 Error_Line (E);
+                              end loop;
+                              if not Errors.Is_Empty then
+                                 Set_Command_Failure;
+                              end if;
+                           elsif Do_Commit then
+                              declare
+                                 Result_Id : Version.Objects.Hex_Object_Id;
+                              begin
+                                 Version.Notes_Merge.Merge_Commit
+                                   (Repo, Opts, Result_Id, Merge_Output);
+                                 Version.Notes_Merge.Clear_Merge_State
+                                   (Repo, Opts, Merge_Output, Errors);
+                                 for E of Errors loop
+                                    Error_Line (E);
+                                 end loop;
+                                 if not Errors.Is_Empty then
+                                    Set_Command_Failure;
+                                 end if;
+                              end;
+                           else
+                              --  git's expand_loose_notes_ref: an operand
+                              --  that names an object is taken as is,
+                              --  anything else is a notes ref name.
+                              Opts.Local_Ref := To_Unbounded_String (Notes_Ref);
+                              Opts.Remote_Ref := To_Unbounded_String
+                                (if Object_Of (Operand (1)) /= "" then Operand (1)
+                                 else Version.Notes.Qualify_Ref (Operand (1)));
+                              Init_Notes_Check ("merge");
+                              if Length (Fatal) = 0 then
+                                 if Have_Strategy then
+                                    if not Version.Notes_Merge.Parse_Strategy
+                                             (To_String (Strategy), Opts.Strategy)
+                                    then
+                                       Bad_Usage
+                                         ("unknown -s/--strategy: " & To_String (Strategy));
+                                    end if;
+                                 else
+                                    --  notes.<ref>.mergeStrategy, else
+                                    --  notes.mergeStrategy.
+                                    declare
+                                       Short : constant String :=
+                                         Notes_Ref (Notes_Ref'First + 11 .. Notes_Ref'Last);
+                                       Keys  : constant array (1 .. 2) of Unbounded_String :=
+                                         [To_Unbounded_String
+                                            ("notes." & Short & ".mergeStrategy"),
+                                          To_Unbounded_String ("notes.mergeStrategy")];
+                                    begin
+                                       for Key of Keys loop
+                                          if Version.Config.Has_Key (Repo, To_String (Key))
+                                          then
+                                             declare
+                                                V : constant String :=
+                                                  Version.Config.Get_Value
+                                                    (Repo, To_String (Key));
+                                             begin
+                                                if not Version.Notes_Merge.Parse_Strategy
+                                                         (V, Opts.Strategy)
+                                                then
+                                                   Error_Line
+                                                     ("unknown notes merge strategy " & V);
+                                                   Die ("bad config variable '"
+                                                        & To_String (Key) & "'");
+                                                end if;
+                                             end;
+                                             exit;
+                                          end if;
+                                       end loop;
+                                    end;
+                                 end if;
+                              end if;
+
+                              if not Bad and then Length (Fatal) = 0 then
+                                 declare
+                                    Msg : constant String :=
+                                      "Merged notes from " & To_String (Opts.Remote_Ref)
+                                      & " into " & Notes_Ref;
+                                    Result_Id : Version.Objects.Hex_Object_Id;
+                                    Result    : Version.Notes_Merge.Merge_Result;
+                                    use type Version.Notes_Merge.Merge_Result;
+                                 begin
+                                    Opts.Commit_Msg := To_Unbounded_String (Msg);
+                                    Version.Notes_Merge.Merge
+                                      (Repo, Opts, Tree, Result_Id, Result,
+                                       Merge_Output, Warnings);
+                                    for W of Warnings loop
+                                       Stderr_Line ("warning: " & W);
+                                    end loop;
+                                    if Result /= Version.Notes_Merge.Conflicted then
+                                       --  Point the notes ref at the result,
+                                       --  logging the merge; an unchanged
+                                       --  ref is left alone.
+                                       if not Version.Refs.Ref_Exists (Repo, Notes_Ref)
+                                         or else Version.Objects.To_String
+                                                   (Version.Refs.Resolve_Ref
+                                                      (Repo, Notes_Ref))
+                                                 /= Version.Objects.To_String (Result_Id)
+                                       then
+                                          declare
+                                             Old : constant String :=
+                                               (if Version.Refs.Ref_Exists (Repo, Notes_Ref)
+                                                then Version.Objects.To_String
+                                                       (Version.Refs.Resolve_Ref
+                                                          (Repo, Notes_Ref))
+                                                else "");
+                                             Tx  : Version.Ref_Transaction.Transaction;
+                                          begin
+                                             Version.Ref_Transaction.Start (Tx, Repo);
+                                             Version.Ref_Transaction.Add_Update
+                                               (Tx, Notes_Ref, Result_Id, Old);
+                                             Version.Ref_Transaction.Commit (Tx);
+                                             Version.Reflog.Append
+                                               (Repo, Notes_Ref,
+                                                (if Old'Length > 0 then Old
+                                                 else Version.Objects.To_String
+                                                        (Version.Objects.Zero_Object_Id)),
+                                                Version.Objects.To_String (Result_Id),
+                                                "notes: " & Msg);
+                                          end;
+                                       end if;
+                                    else
+                                       Version.Notes_Merge.Record_Partial_Merge
+                                         (Repo, Result_Id, Notes_Ref);
+                                       Stderr_Line
+                                         ("Automatic notes merge failed. Fix conflicts in "
+                                          & Version.Notes_Merge.Worktree_Path (Repo)
+                                          & " and commit the result with 'git notes "
+                                          & "merge --commit', or abort the merge with "
+                                          & "'git notes merge --abort'.");
+                                       Set_Command_Failure;
+                                    end if;
+                                 end;
+                              end if;
+                           end if;
+                        end;
+                     end if;
+
+                     <<Notes_Done>>
+                     if Have_Edit_File then
+                        Version.Files.Delete_File_If_Exists (Edit_Path);
+                     end if;
+                     if Length (Fatal) > 0 then
+                        Stderr_Line ("fatal: " & To_String (Fatal));
+                        Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                     end if;
+                     --  Anything the merge printed on stdout comes after the
+                     --  diagnostics, as git's block-buffered stdout does.
+                     if Length (Merge_Output) > 0 then
+                        Version.Console.Put (To_String (Merge_Output));
                      end if;
                   exception
-                     when E : Note_Fatal =>
-                        Ada.Text_IO.Put_Line
-                          (Ada.Text_IO.Standard_Error,
-                           "fatal: " & Ada.Exceptions.Exception_Message (E));
+                     when E : Version.Notes.Notes_Error =>
+                        if Have_Edit_File then
+                           Version.Files.Delete_File_If_Exists (Edit_Path);
+                        end if;
+                        if Ada.Exceptions.Exception_Message (E)
+                           = Version.Notes_Merge.Unconcluded_Merge_Key
+                        then
+                           Stderr_Line
+                             ("fatal: " & Version.Notes_Merge.Unconcluded_Merge_Message);
+                        else
+                           Stderr_Line ("fatal: " & Ada.Exceptions.Exception_Message (E));
+                        end if;
                         Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                        if Length (Merge_Output) > 0 then
+                           Version.Console.Put (To_String (Merge_Output));
+                        end if;
                   end;
                end if;
             end;

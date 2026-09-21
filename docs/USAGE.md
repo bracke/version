@@ -198,6 +198,15 @@ version annotate [OPTIONS] [<rev-opts>] [<rev>] [--] <file>
   --ignore-rev REV, --ignore-revs-file FILE, --contents FILE, --reverse, --first-parent,
   --since=DATE, --no-follow, --diff-algorithm=ALGO, --minimal, --[no-]indent-heuristic,
   --color-lines, --color-by-age, -S FILE, --progress, --encoding=
+version notes [--ref <notes-ref>] [list [<object>] | show [<object>] | get-ref]
+version notes [--ref <notes-ref>] add|append [-f] [-e] [--allow-empty] [--[no-]separator[=<text>]]
+  [--[no-]stripspace] [-m <msg> | -F <file> | -C <object> | -c <object>]... [<object>]
+version notes [--ref <notes-ref>] edit [--allow-empty] [<object>]
+version notes [--ref <notes-ref>] copy [-f] <from-object> [<to-object>] | copy [-f] --stdin | copy --for-rewrite=<cmd>
+version notes [--ref <notes-ref>] remove [--ignore-missing] [--stdin] [<object>...]
+version notes [--ref <notes-ref>] prune [-n] [-v]
+version notes [--ref <notes-ref>] merge [-v | -q] [-s manual|ours|theirs|union|cat_sort_uniq] <notes-ref>
+version notes merge --commit [-v | -q] | merge --abort [-v | -q]
 version checkout [-q] [-f] [-m] [-t|--no-track] [--[no-]guess] [<branch>|<commit>|-]
 version checkout [-q] [-f] -b|-B NEW-BRANCH [START-POINT]
 version checkout [-q] --orphan NEW-BRANCH [START-POINT]

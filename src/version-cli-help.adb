@@ -580,6 +580,7 @@ package body Version.CLI.Help is
         or else Name = "describe"
         or else Name = "shortlog"
         or else Name = "grep"
+        or else Name = "notes"
         or else Name = "restore"
         or else Name = "checkout"
         or else Name = "branch"
@@ -939,6 +940,31 @@ package body Version.CLI.Help is
          Line ("Sources: the working files (default), --cached, <rev>... (trees or");
          Line ("  rev:path blobs), --untracked, --no-index, --[no-]exclude-standard,");
          Line ("  --max-depth <n> / -r, pathspecs after --.");
+      elsif Name = "notes" then
+         Line ("Usage:");
+         Line ("  version notes [--ref <notes-ref>] [list [<object>]]");
+         Line ("  version notes [--ref <notes-ref>] add [-f] [--allow-empty]");
+         Line ("    [--[no-]separator|--separator=<paragraph-break>] [--[no-]stripspace]");
+         Line ("    [-m <msg> | -F <file> | (-c | -C) <object>] [<object>] [-e]");
+         Line ("  version notes [--ref <notes-ref>] copy [-f] <from-object> <to-object>");
+         Line ("  version notes [--ref <notes-ref>] copy [-f] --stdin | --for-rewrite=<cmd>");
+         Line ("  version notes [--ref <notes-ref>] append [--allow-empty] [...] [<object>] [-e]");
+         Line ("  version notes [--ref <notes-ref>] edit [--allow-empty] [<object>]");
+         Line ("  version notes [--ref <notes-ref>] show [<object>]");
+         Line ("  version notes [--ref <notes-ref>] merge [-v | -q] [-s <strategy>] <notes-ref>");
+         Line ("  version notes merge --commit [-v | -q]");
+         Line ("  version notes merge --abort [-v | -q]");
+         Line ("  version notes [--ref <notes-ref>] remove [--ignore-missing] [--stdin] [<object>...]");
+         Line ("  version notes [--ref <notes-ref>] prune [-n] [-v]");
+         Line ("  version notes [--ref <notes-ref>] get-ref");
+         Line;
+         Line ("Attach, show and manage notes on objects, as git does. The notes ref");
+         Line ("is refs/notes/commits unless --ref, GIT_NOTES_REF or core.notesRef");
+         Line ("says otherwise. add/append/edit open the editor when no -m/-F/-c/-C");
+         Line ("is given (or with -e); an empty result removes the note. merge");
+         Line ("strategies: manual (conflicts left in .git/NOTES_MERGE_WORKTREE for");
+         Line ("--commit/--abort), ours, theirs, union, cat_sort_uniq; also from");
+         Line ("notes.<ref>.mergeStrategy / notes.mergeStrategy.");
       elsif Name = "shortlog" then
          Line ("Usage:");
          Line ("  version shortlog [<options>] [<revision-range>] [[--] <path>...]");
