@@ -476,14 +476,21 @@ package body Version.CLI.Help is
             "remote prune reports stale remote-tracking refs.");
       elsif Name = "tag" then
          Append_Line (Text, "Usage:");
-         Append_Line (Text, "  version tag [-a|-s|-u KEY] [-f] [-m MSG] NAME [REV]");
-         Append_Line (Text, "  version tag -d NAME...");
-         Append_Line (Text, "  version tag -v NAME...");
-         Append_Line (Text, "  version tag [-n[NUM]] [-l] [PATTERN...]");
-         Append_Line (Text, "  version tag --contains REV");
-         Append_Line (Text, "  version tag --merged REV");
-         Append_Line (Text, "  version tag --points-at REV");
-         Append_Line (Text, "  version tag --sort=KEY");
+         Append_Line
+           (Text, "  version tag [-a | -s | -u <key-id>] [-f] [-m <msg> | -F <file>] [-e]");
+         Append_Line
+           (Text, "          [(--trailer <token>[(=|:)<value>])...] [--cleanup=<mode>]");
+         Append_Line (Text, "          [--create-reflog] <tagname> [<commit> | <object>]");
+         Append_Line (Text, "  version tag -d <tagname>...");
+         Append_Line
+           (Text, "  version tag [-n[<num>]] -l [--contains <commit>] [--no-contains <commit>]");
+         Append_Line
+           (Text, "          [--points-at <object>] [--column[=<options>] | --no-column]");
+         Append_Line
+           (Text, "          [--sort=<key>] [--format=<format>] [--merged <commit>]");
+         Append_Line
+           (Text, "          [--no-merged <commit>] [-i] [--omit-empty] [--color] [<pattern>...]");
+         Append_Line (Text, "  version tag -v [--format=<format>] <tagname>...");
          Append_Line (Text, "  version tag create NAME");
          Append_Line (Text, "  version tag create NAME REV");
          Append_Line (Text, "  version tag create -a NAME -m MESSAGE");

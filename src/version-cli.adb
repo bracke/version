@@ -58,6 +58,7 @@ with Version.Merge;
 with Version.Merge_State;
 with Version.Remove;
 with Version.Tags;
+with Version.Column;
 with Version.Remotes;
 with Version.Dumb_Http;
 with Version.Fetch;
@@ -38664,18 +38665,30 @@ package body Version.CLI is
                end if;
 
             else
-               --  git's own `tag` grammar. One parse pass fixes the mode and
-               --  the list filters, so the combinations git accepts --
-               --  `tag -n --contains REV`, `tag -l PAT --sort=-refname` --
-               --  work here too. At the subcommand slot, `list`, `delete` and
-               --  `remove` are taken as this CLI's word spellings of -l and
-               --  -d; elsewhere they are ordinary operands, so a tag really
-               --  named "delete" still lists.
+               --  git's own `tag` grammar, a port of builtin/tag.c: one
+               --  parse pass with git's parse-options rules (bundled short
+               --  flags, `--opt=value` and `--opt value`, `--no-` negations,
+               --  the last-argument default of the commit filters), then the
+               --  mode -- list, delete, verify, or create -- git chooses.
+               --  At the subcommand slot `list`, `delete` and `remove` are
+               --  this CLI's word spellings of -l and -d; elsewhere they are
+               --  ordinary operands, so a tag really named "delete" still
+               --  lists.
                declare
                   Usage : constant String :=
-                    "version tag [-a|-s|-u KEY] [-f] [-m MSG] NAME [REV]";
+                    "version tag [-a | -s | -u <key-id>] [-f] [-m <msg> | -F <file>] [-e]"
+                    & " [(--trailer <token>[(=|:)<value>])...] <tagname> [<commit> | <object>]"
+                    & " | -d <tagname>..."
+                    & " | [-n[<num>]] -l [--contains <commit>] [--no-contains <commit>]"
+                    & " [--points-at <object>] [--column[=<options>] | --no-column]"
+                    & " [--create-reflog] [--sort=<key>] [--format=<format>]"
+                    & " [--merged <commit>] [--no-merged <commit>] [<pattern>...]"
+                    & " | -v [--format=<format>] <tagname>...";
 
-                  type Tag_Mode is (Listing, Creating, Deleting, Verifying);
+                  Repo : constant Version.Repository.Repository_Handle :=
+                    Version.Repository.Open;
+
+                  LF : constant Character := ASCII.LF;
 
                   function Starts (S, P : String) return Boolean is
                     (S'Length >= P'Length
@@ -38683,528 +38696,980 @@ package body Version.CLI is
                   function After (S, P : String) return String is
                     (S (S'First + P'Length .. S'Last));
 
-                  Repo : constant Version.Repository.Repository_Handle :=
-                    Version.Repository.Open;
-
-                  Mode        : Tag_Mode := Listing;
-                  Chose_Mode  : Boolean := False;
-                  Annotated   : Boolean := False;
-                  Force       : Boolean := False;
-                  Has_Message : Boolean := False;
-                  Lines       : Natural := 0;
-                  Signing_Key : Unbounded_String;
-                  Message     : Unbounded_String;
-                  Sort_Key    : Unbounded_String;
-                  Contains    : Unbounded_String;
-                  No_Contains : Unbounded_String;
-                  Merged      : Unbounded_String;
-                  No_Merged   : Unbounded_String;
-                  Points_At   : Unbounded_String;
-                  Format_Str  : Unbounded_String;
-                  Has_Format  : Boolean := False;
-                  Operands    : Version.Ref_Format.String_Vectors.Vector;
-                  I           : Positive := 2;
-                  OK          : Boolean := True;
-
-                  procedure Fatal (Text : String) is
-                  begin
-                     Ada.Text_IO.Put_Line
-                       (Ada.Text_IO.Standard_Error, "fatal: " & Text);
-                     Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
-                  end Fatal;
-
-                  function Abbrev
-                    (Id : Version.Objects.Hex_Object_Id) return String
+                  function Config_Value (Key : String) return String is
+                    (if Version.Config.Has_Key (Repo, Key)
+                     then Version.Config.Get_Value (Repo, Key) else "");
+                  function Config_Bool (Key : String; Default : Boolean)
+                     return Boolean
                   is
-                     Full : constant String := To_String (Id);
+                     OK : Boolean;
                   begin
-                     return Full
-                       (Full'First .. Full'First
-                        + Version.Revisions.Unique_Abbrev_Length
-                            (Repo, Id, 7) - 1);
-                  end Abbrev;
-
-                  --  git's tag globbing is fnmatch over the short tag name.
-                  function Matches (Name, Pattern : String) return Boolean is
-                     function Walk (P, N : Natural) return Boolean is
-                       (if P > Pattern'Last then N > Name'Last
-                        elsif Pattern (P) = '*' then
-                          (for some K in N - 1 .. Name'Last =>
-                             Walk (P + 1, K + 1))
-                        elsif Pattern (P) = '?' then
-                          N <= Name'Last and then Walk (P + 1, N + 1)
-                        else
-                          N <= Name'Last and then Pattern (P) = Name (N)
-                          and then Walk (P + 1, N + 1));
-                  begin
-                     return Walk (Pattern'First, Name'First);
-                  end Matches;
-
-                  function Selected_By_Patterns (Name : String) return Boolean
-                  is
-                  begin
-                     if Mode /= Listing or else Operands.Is_Empty then
-                        return True;
+                     if not Version.Config.Has_Key (Repo, Key) then
+                        return Default;
                      end if;
+                     return Config_Bool_Norm (Config_Value (Key), OK) = "true";
+                  end Config_Bool;
 
-                     for P of Operands loop
-                        if Matches (Name, P) then
-                           return True;
-                        end if;
-                     end loop;
+                  --  git's cmdmode: ' ' (none), 'l', 'd' or 'v', with the
+                  --  spelling that chose it for the conflict message.
+                  Cmd_Mode  : Character := ' ';
+                  Mode_Flag : Unbounded_String;
 
-                     return False;
-                  end Selected_By_Patterns;
+                  Lines         : Integer := -1;   --  -n[<num>]; -1 unset
+                  Annotate      : Boolean := False;
+                  Force         : Boolean := False;
+                  Edit          : Boolean := False;
+                  Create_Reflog : Boolean := False;
+                  Icase         : Boolean := False;
+                  Sign          : Integer := -1;   --  -1 unspecified, 0, 1
+                  Msg           : Unbounded_String;   --  the -m pieces
+                  Msg_Given     : Boolean := False;
+                  Msg_File      : Unbounded_String;
+                  Have_File     : Boolean := False;
+                  Trailer_Args  : Version.Trailers.String_Vectors.Vector;
+                  Cleanup_Arg   : Unbounded_String;
+                  Have_Cleanup  : Boolean := False;
+                  Key_Id        : Unbounded_String;
+                  Have_Key      : Boolean := False;
+                  Col_Opts      : Version.Column.Options;
+                  Filter        : Version.Ref_Format.Ref_Filter;
+                  Sort_Keys     : Version.Ref_Format.String_Vectors.Vector;
+                  Format_Str    : Unbounded_String;
+                  Has_Format    : Boolean := False;
+                  Color_Mode    : Unbounded_String;   --  --color[=<when>]
+                  Operands      : Version.Ref_Format.String_Vectors.Vector;
+                  Bad           : Boolean := False;
+                  Fatal         : Unbounded_String;
+                  Args          : Version.Ref_Format.String_Vectors.Vector;
+                  I             : Positive := 1;
 
-                  function Holds
-                    (V    : Version.Tags.Tag_Name_Vectors.Vector;
-                     Name : String) return Boolean
-                  is
+                  procedure Die (Text : String) is
                   begin
-                     for E of V loop
-                        if To_String (E) = Name then
-                           return True;
-                        end if;
-                     end loop;
+                     if Length (Fatal) = 0 then
+                        Fatal := To_Unbounded_String (Text);
+                     end if;
+                  end Die;
 
-                     return False;
-                  end Holds;
-
-                  procedure Take_Value
-                    (Flag : String;
-                     Into : out Unbounded_String)
-                  is
+                  procedure Bad_Usage (Text : String) is
                   begin
-                     --  Both `--flag=VALUE` and `--flag VALUE` spellings.
-                     if Starts (Arg (I), Flag & "=") then
-                        Into :=
-                          To_Unbounded_String (After (Arg (I), Flag & "="));
-                        I := I + 1;
-                     elsif I < Count then
-                        Into := To_Unbounded_String (Arg (I + 1));
-                        I := I + 2;
+                     if not Bad then
+                        if Text'Length > 0 then
+                           Error_Line (Text);
+                        end if;
+                        Expected (Usage);
+                        Bad := True;
+                     end if;
+                  end Bad_Usage;
+
+                  --  git's OPT_CMDMODE: a second, different mode is an error.
+                  procedure Set_Mode (Mode : Character; Flag : String) is
+                  begin
+                     if Cmd_Mode /= ' ' and then Cmd_Mode /= Mode then
+                        Bad_Usage
+                          ("options '" & Flag & "' and '" & To_String (Mode_Flag)
+                           & "' cannot be used together");
                      else
-                        Into := Null_Unbounded_String;
-                        Usage_Error (Flag & " requires a value", Usage);
-                        OK := False;
+                        Cmd_Mode := Mode;
+                        Mode_Flag := To_Unbounded_String (Flag);
+                     end if;
+                  end Set_Mode;
+
+                  --  git's parse_opt_commits: a commit-ish for the filters;
+                  --  a failure is an option error (usage, exit 129).
+                  function Commit_Arg (Text : String) return String is
+                  begin
+                     declare
+                        use type Version.Objects.Object_Kind;
+                        Any : constant String :=
+                          Version.Objects.To_String
+                            (Version.Revisions.Resolve (Repo, Text));
+                        Obj : constant Version.Objects.Git_Object :=
+                          Version.Objects.Read_Object
+                            (Repo, Version.Objects.To_Object_Id (Any));
+                     begin
+                        if Version.Objects.Kind (Obj)
+                           in Version.Objects.Blob_Object | Version.Objects.Tree_Object
+                        then
+                           Error_Line
+                             ("object " & Any & " is a "
+                              & (if Version.Objects.Kind (Obj) = Version.Objects.Blob_Object
+                                 then "blob" else "tree")
+                              & ", not a commit");
+                        end if;
+                        return Version.Objects.To_String
+                          (Version.Revisions.Resolve_Commit (Repo, Any));
+                     exception
+                        when Ada.IO_Exceptions.Data_Error =>
+                           Bad_Usage ("no such commit " & Text);
+                           return "";
+                     end;
+                  exception
+                     when Ada.IO_Exceptions.Data_Error
+                         | Ada.IO_Exceptions.Name_Error =>
+                        Bad_Usage ("malformed object name " & Text);
+                        return "";
+                  end Commit_Arg;
+
+                  --  git's parse_opt_object_name (--points-at).
+                  function Object_Arg (Text : String) return String is
+                  begin
+                     return Version.Objects.To_String
+                       (Version.Revisions.Resolve (Repo, Text));
+                  exception
+                     when Ada.IO_Exceptions.Data_Error
+                         | Ada.IO_Exceptions.Name_Error =>
+                        Bad_Usage ("malformed object name '" & Text & "'");
+                        return "";
+                  end Object_Arg;
+
+                  --  The value of an option at Args (I): `--opt=v` gives it
+                  --  inline (Inline non-empty), else the next argument; a
+                  --  missing one is git's "option `x' requires a value".
+                  --  With Last_Default, git's PARSE_OPT_LASTARG_DEFAULT: an
+                  --  option that is the last argument takes Default instead.
+                  function Take_Value
+                    (Flag         : String;
+                     Inline       : String;
+                     Has_Inline   : Boolean;
+                     Last_Default : String := "";
+                     Use_Default  : Boolean := False) return String is
+                  begin
+                     if Has_Inline then
+                        return Inline;
+                     elsif I < Natural (Args.Length) then
+                        I := I + 1;
+                        return Args (I);
+                     elsif Use_Default then
+                        return Last_Default;
+                     else
+                        Bad_Usage
+                          ((if Starts (Flag, "--")
+                            then "option `" & After (Flag, "--") & "' requires a value"
+                            else "switch `" & After (Flag, "-") & "' requires a value"));
+                        return "";
                      end if;
                   end Take_Value;
 
-                  --  git's --merged/--no-merged take an optional commit: bare
-                  --  (or followed by an option) defaults to HEAD; a following
-                  --  non-option word is consumed as the commit.
-                  procedure Take_Optional
-                    (Flag : String;
-                     Into : out Unbounded_String)
-                  is
+                  --  A short option's value: the rest of the bundle, else
+                  --  the next argument.
+                  function Short_Value (Flag : Character; Rest : String)
+                     return String is
                   begin
-                     if Starts (Arg (I), Flag & "=") then
-                        Into :=
-                          To_Unbounded_String (After (Arg (I), Flag & "="));
+                     if Rest'Length > 0 then
+                        return Rest;
+                     elsif I < Natural (Args.Length) then
                         I := I + 1;
-                     elsif I < Count and then Arg (I + 1)'Length > 0
-                       and then Arg (I + 1) (Arg (I + 1)'First) /= '-'
-                     then
-                        Into := To_Unbounded_String (Arg (I + 1));
-                        I := I + 2;
+                        return Args (I);
                      else
-                        Into := To_Unbounded_String ("HEAD");
-                        I := I + 1;
+                        Bad_Usage ("switch `" & Flag & "' requires a value");
+                        return "";
                      end if;
-                  end Take_Optional;
+                  end Short_Value;
+
+                  procedure Add_Message (Text : String) is
+                  begin
+                     if Length (Msg) > 0 then
+                        Append (Msg, LF & LF);
+                     end if;
+                     Append (Msg, Text);
+                     Msg_Given := True;
+                  end Add_Message;
+
+                  --  Apply one long option (A is the whole argument).
+                  --  Returns False when A is not a known long option.
+                  function Long_Option (A : String) return Boolean is
+                     Eq   : constant Natural := Ada.Strings.Fixed.Index (A, "=");
+                     Name : constant String :=
+                       (if Eq = 0 then A else A (A'First .. Eq - 1));
+                     Val  : constant String :=
+                       (if Eq = 0 then "" else A (Eq + 1 .. A'Last));
+                     Has_Val : constant Boolean := Eq /= 0;
+                     Last    : constant Boolean := I = Natural (Args.Length);
+                  begin
+                     if Name = "--list" then
+                        Set_Mode ('l', "-l");
+                     elsif Name = "--delete" then
+                        Set_Mode ('d', "-d");
+                     elsif Name = "--verify" then
+                        Set_Mode ('v', "-v");
+                     elsif Name = "--annotate" then
+                        Annotate := True;
+                     elsif Name = "--no-annotate" then
+                        Annotate := False;
+                     elsif Name = "--message" then
+                        Add_Message (Take_Value (Name, Val, Has_Val));
+                     elsif Name = "--file" then
+                        Msg_File := To_Unbounded_String (Take_Value (Name, Val, Has_Val));
+                        Have_File := True;
+                     elsif Name = "--no-file" then
+                        Have_File := False;
+                     elsif Name = "--trailer" then
+                        Trailer_Args.Append (Take_Value (Name, Val, Has_Val));
+                     elsif Name = "--no-trailer" then
+                        Trailer_Args.Clear;
+                     elsif Name = "--edit" then
+                        Edit := True;
+                     elsif Name = "--no-edit" then
+                        Edit := False;
+                     elsif Name = "--sign" then
+                        Sign := 1;
+                     elsif Name = "--no-sign" then
+                        Sign := 0;
+                     elsif Name = "--cleanup" then
+                        Cleanup_Arg := To_Unbounded_String (Take_Value (Name, Val, Has_Val));
+                        Have_Cleanup := True;
+                     elsif Name = "--no-cleanup" then
+                        Have_Cleanup := False;
+                     elsif Name = "--local-user" then
+                        Key_Id := To_Unbounded_String (Take_Value (Name, Val, Has_Val));
+                        Have_Key := True;
+                     elsif Name = "--no-local-user" then
+                        Have_Key := False;
+                     elsif Name = "--force" then
+                        Force := True;
+                     elsif Name = "--no-force" then
+                        Force := False;
+                     elsif Name = "--create-reflog" then
+                        Create_Reflog := True;
+                     elsif Name = "--no-create-reflog" then
+                        Create_Reflog := False;
+                     elsif Name = "--column" then
+                        declare
+                           Bad_Word : Unbounded_String;
+                        begin
+                           Version.Column.Apply_Command_Line
+                             (Col_Opts, Val, Negated => False, Bad_Word => Bad_Word);
+                           if Length (Bad_Word) > 0 then
+                              Error_Line ("unsupported option '" & To_String (Bad_Word) & "'");
+                              Bad_Usage ("");
+                           end if;
+                        end;
+                     elsif Name = "--no-column" then
+                        declare
+                           Bad_Word : Unbounded_String;
+                        begin
+                           Version.Column.Apply_Command_Line
+                             (Col_Opts, "", Negated => True, Bad_Word => Bad_Word);
+                        end;
+                     elsif Name = "--contains" or else Name = "--with" then
+                        Filter.With_Commits.Append
+                          (Commit_Arg (Take_Value (Name, Val, Has_Val, "HEAD", Last)));
+                     elsif Name = "--no-contains" or else Name = "--without" then
+                        Filter.No_Commits.Append
+                          (Commit_Arg (Take_Value (Name, Val, Has_Val, "HEAD", Last)));
+                     elsif Name = "--merged" then
+                        Filter.Reachable_From.Append
+                          (Commit_Arg (Take_Value (Name, Val, Has_Val, "HEAD", Last)));
+                     elsif Name = "--no-merged" then
+                        Filter.Unreachable_From.Append
+                          (Commit_Arg (Take_Value (Name, Val, Has_Val, "HEAD", Last)));
+                     elsif Name = "--points-at" then
+                        Filter.Points_At.Append
+                          (Object_Arg (Take_Value (Name, Val, Has_Val, "HEAD", Last)));
+                     elsif Name = "--no-points-at" then
+                        Filter.Points_At.Clear;
+                     elsif Name = "--omit-empty" then
+                        Filter.Omit_Empty := True;
+                     elsif Name = "--no-omit-empty" then
+                        Filter.Omit_Empty := False;
+                     elsif Name = "--sort" then
+                        Sort_Keys.Append (Take_Value (Name, Val, Has_Val));
+                     elsif Name = "--no-sort" then
+                        Sort_Keys.Clear;
+                     elsif Name = "--format" then
+                        Format_Str := To_Unbounded_String (Take_Value (Name, Val, Has_Val));
+                        Has_Format := True;
+                     elsif Name = "--no-format" then
+                        Has_Format := False;
+                     elsif Name = "--color" then
+                        Color_Mode := To_Unbounded_String
+                          (if Has_Val then Val else "always");
+                     elsif Name = "--no-color" then
+                        Color_Mode := To_Unbounded_String ("never");
+                     elsif Name = "--ignore-case" then
+                        Icase := True;
+                     elsif Name = "--no-ignore-case" then
+                        Icase := False;
+                     else
+                        return False;
+                     end if;
+                     return True;
+                  end Long_Option;
+
+                  --  Apply a bundle of short options ("-am" is -a -m).
+                  procedure Short_Options (A : String) is
+                     K : Positive := A'First + 1;
+                  begin
+                     while K <= A'Last and then not Bad loop
+                        declare
+                           C    : constant Character := A (K);
+                           Rest : constant String := A (K + 1 .. A'Last);
+                        begin
+                           case C is
+                              when 'l' => Set_Mode ('l', "-l");
+                              when 'd' => Set_Mode ('d', "-d");
+                              when 'v' => Set_Mode ('v', "-v");
+                              when 'a' => Annotate := True;
+                              when 'e' => Edit := True;
+                              when 's' => Sign := 1;
+                              when 'f' => Force := True;
+                              when 'i' => Icase := True;
+                              when 'n' =>
+                                 --  OPTARG: only an attached number counts.
+                                 if Rest'Length = 0 then
+                                    Lines := 1;
+                                 elsif (for all Ch of Rest => Ch in '0' .. '9') then
+                                    Lines := Integer'Value (Rest);
+                                 else
+                                    Error_Line ("switch `n' expects a numerical value");
+                                    Bad_Usage ("");
+                                 end if;
+                                 return;
+                              when 'm' =>
+                                 Add_Message (Short_Value ('m', Rest));
+                                 return;
+                              when 'F' =>
+                                 Msg_File := To_Unbounded_String (Short_Value ('F', Rest));
+                                 Have_File := True;
+                                 return;
+                              when 'u' =>
+                                 Key_Id := To_Unbounded_String (Short_Value ('u', Rest));
+                                 Have_Key := True;
+                                 return;
+                              when others =>
+                                 Bad_Usage ("unknown switch `" & C & "'");
+                                 return;
+                           end case;
+                        end;
+                        K := K + 1;
+                     end loop;
+                  end Short_Options;
+
+                  --  git's create_reflog_msg.
+                  function Reflog_Message (Object : String) return String is
+                     use type Version.Objects.Object_Kind;
+                     Prefix : constant String :=
+                       (if Ada.Environment_Variables.Exists ("GIT_REFLOG_ACTION")
+                        then Ada.Environment_Variables.Value ("GIT_REFLOG_ACTION")
+                        else "tag: tagging "
+                             & Object (Object'First .. Object'First
+                                       + Version.Revisions.Unique_Abbrev_Length
+                                           (Repo, Version.Objects.To_Object_Id (Object), 7)
+                                       - 1));
+                     Obj : constant Version.Objects.Git_Object :=
+                       Version.Objects.Read_Object
+                         (Repo, Version.Objects.To_Object_Id (Object));
+                  begin
+                     case Version.Objects.Kind (Obj) is
+                        when Version.Objects.Commit_Object =>
+                           declare
+                              Stamp : constant String :=
+                                Ada.Strings.Fixed.Trim
+                                  (Long_Long_Integer'Image
+                                     (Version.Objects.Commit_Committer_Time (Obj)),
+                                   Ada.Strings.Both);
+                           begin
+                              --  The subject, then the committer date in UTC.
+                              return Prefix & " ("
+                                & Version.Objects.Commit_Message_First_Line (Obj)
+                                & ", "
+                                & Version.Ref_Format.Git_Date (Stamp & " +0000", "short")
+                                & ")";
+                           end;
+                        when Version.Objects.Tree_Object =>
+                           return Prefix & " (tree object)";
+                        when Version.Objects.Blob_Object =>
+                           return Prefix & " (blob object)";
+                        when Version.Objects.Tag_Object =>
+                           return Prefix & " (other tag object)";
+                        when others =>
+                           return Prefix & " (object of unknown type)";
+                     end case;
+                  end Reflog_Message;
+
+                  function Abbrev (Id : String) return String is
+                    (Id (Id'First .. Id'First
+                         + Version.Revisions.Unique_Abbrev_Length
+                             (Repo, Version.Objects.To_Object_Id (Id), 7) - 1));
+
+                  Edit_Path : constant String :=
+                    Version.Files.Join
+                      (Version.Repository.Git_Dir (Repo), "TAG_EDITMSG");
                begin
-                  while OK and then I <= Count loop
+                  --  Config: tag.sort keys (each a --sort), column.ui/tag.
+                  for Item of Version.Config.Read_All (Repo) loop
                      declare
-                        A : constant String := Arg (I);
+                        Key : constant String :=
+                          Ada.Characters.Handling.To_Lower
+                            (Version.Config.Config_Entry_Name (Item));
+                        Bad_Word : Unbounded_String;
                      begin
-                        if A = "-l" or else A = "--list"
-                          or else (I = 2 and then A = "list")
-                        then
-                           Mode := Listing;
-                           Chose_Mode := True;
-                           I := I + 1;
-
-                        elsif A = "-d" or else A = "--delete"
-                          or else (I = 2
-                                   and then (A = "delete" or else A = "remove"))
-                        then
-                           Mode := Deleting;
-                           Chose_Mode := True;
-                           I := I + 1;
-
-                        elsif A = "-v" or else A = "--verify" then
-                           Mode := Verifying;
-                           Chose_Mode := True;
-                           I := I + 1;
-
-                        elsif A = "-n"
-                          or else (Starts (A, "-n")
-                                   and then A'Length > 2
-                                   and then (for all C of After (A, "-n") =>
-                                               C in '0' .. '9'))
-                        then
-                           Lines :=
-                             (if A = "-n" then 1
-                              else Natural'Value (After (A, "-n")));
-                           Mode := Listing;
-                           Chose_Mode := True;
-                           I := I + 1;
-
-                        elsif A = "--contains"
-                          or else Starts (A, "--contains=")
-                        then
-                           Take_Value ("--contains", Contains);
-                           Mode := Listing;
-                           Chose_Mode := True;
-
-                        elsif A = "--no-contains"
-                          or else Starts (A, "--no-contains=")
-                        then
-                           Take_Value ("--no-contains", No_Contains);
-                           Mode := Listing;
-                           Chose_Mode := True;
-
-                        elsif A = "--merged" or else Starts (A, "--merged=")
-                        then
-                           Take_Optional ("--merged", Merged);
-                           Mode := Listing;
-                           Chose_Mode := True;
-
-                        elsif A = "--no-merged"
-                          or else Starts (A, "--no-merged=")
-                        then
-                           Take_Optional ("--no-merged", No_Merged);
-                           Mode := Listing;
-                           Chose_Mode := True;
-
-                        elsif A = "--format" or else Starts (A, "--format=")
-                        then
-                           Take_Value ("--format", Format_Str);
-                           Has_Format := True;
-                           Mode := Listing;
-                           Chose_Mode := True;
-
-                        elsif A = "--points-at"
-                          or else Starts (A, "--points-at=")
-                        then
-                           Take_Value ("--points-at", Points_At);
-                           Mode := Listing;
-                           Chose_Mode := True;
-
-                        elsif A = "--sort" or else Starts (A, "--sort=") then
-                           Take_Value ("--sort", Sort_Key);
-                           Mode := Listing;
-                           Chose_Mode := True;
-
-                        elsif A = "-a" or else A = "--annotate" then
-                           Annotated := True;
-                           I := I + 1;
-
-                        elsif A = "-s" or else A = "--sign" then
-                           Annotated := True;
-                           Signing_Key := To_Unbounded_String ("default");
-                           I := I + 1;
-
-                        elsif A = "-f" or else A = "--force" then
-                           Force := True;
-                           I := I + 1;
-
-                        elsif A = "-u" or else Starts (A, "--local-user=") then
-                           Take_Value
-                             ((if A = "-u" then "-u" else "--local-user"),
-                              Signing_Key);
-                           Annotated := True;
-
-                        elsif Starts (A, "-u") and then A'Length > 2 then
-                           Annotated := True;
-                           Signing_Key :=
-                             To_Unbounded_String (After (A, "-u"));
-                           I := I + 1;
-
-                        elsif A = "-m" or else A = "--message"
-                          or else Starts (A, "--message=")
-                        then
-                           Take_Value
-                             ((if A = "-m" then "-m" else "--message"),
-                              Message);
-                           --  git: -m implies -a.
-                           Has_Message := True;
-                           Annotated := True;
-
-                        elsif A'Length > 0 and then A (A'First) = '-' then
-                           Usage_Error ("unknown tag option: " & A, Usage);
-                           OK := False;
-
-                        else
-                           Operands.Append (A);
-                           I := I + 1;
+                        if Key = "tag.sort" then
+                           Sort_Keys.Append (To_String (Item.Value));
+                        elsif Key = "column.ui" or else Key = "column.tag" then
+                           Version.Column.Parse
+                             (To_String (Item.Value), Col_Opts, Bad_Word);
+                           if Length (Bad_Word) > 0 then
+                              Error_Line
+                                ("unsupported option '" & To_String (Bad_Word) & "'");
+                              Die ("invalid column." & Key (Key'First + 7 .. Key'Last)
+                                   & " mode " & To_String (Item.Value));
+                           end if;
                         end if;
                      end;
                   end loop;
 
-                  if not OK then
-                     return;
-                  end if;
+                  --  The arguments, with the word spellings translated.
+                  for K in 2 .. Count loop
+                     if K = 2 and then Arg (K) = "list" then
+                        Args.Append ("-l");
+                     elsif K = 2 and then (Arg (K) = "delete" or else Arg (K) = "remove")
+                     then
+                        Args.Append ("-d");
+                     else
+                        Args.Append (Arg (K));
+                     end if;
+                  end loop;
 
-                  --  With no mode flag, operands mean "create"; bare `tag`
-                  --  lists.
-                  if not Chose_Mode and then not Operands.Is_Empty then
-                     Mode := Creating;
-                  end if;
-
-                  case Mode is
-                     when Listing =>
+                  declare
+                     No_More : Boolean := False;
+                  begin
+                     while I <= Natural (Args.Length) and then not Bad
+                       and then Length (Fatal) = 0
+                     loop
                         declare
-                           Names : Version.Tags.Tag_Name_Vectors.Vector;
-                           Use_Points : constant Boolean :=
-                             Points_At /= Null_Unbounded_String;
-                           Use_Contains : constant Boolean :=
-                             Contains /= Null_Unbounded_String;
-                           Use_Merged : constant Boolean :=
-                             Merged /= Null_Unbounded_String;
-                           Use_No_Contains : constant Boolean :=
-                             No_Contains /= Null_Unbounded_String;
-                           Use_No_Merged : constant Boolean :=
-                             No_Merged /= Null_Unbounded_String;
-                           Pointed  : Version.Tags.Tag_Name_Vectors.Vector;
-                           Held     : Version.Tags.Tag_Name_Vectors.Vector;
-                           Held_No  : Version.Tags.Tag_Name_Vectors.Vector;
-                           Target   : Version.Objects.Hex_Object_Id;
-                           Target_N : Version.Objects.Hex_Object_Id;
+                           A : constant String := Args (I);
                         begin
-                           --  Ordering is for-each-ref's job; without --sort,
-                           --  git lists in refname order, which List_Tags
-                           --  already yields.
-                           if Sort_Key = Null_Unbounded_String then
-                              Names := Version.Tags.List_Tags;
+                           if No_More or else A'Length < 2 or else A (A'First) /= '-'
+                           then
+                              Operands.Append (A);
+                           elsif A = "--" then
+                              No_More := True;
+                           elsif Starts (A, "--") then
+                              if not Long_Option (A) then
+                                 Bad_Usage
+                                   ("unknown option `" & After (A, "--") & "'");
+                              end if;
                            else
-                              declare
-                                 Pat :
-                                   Version.Ref_Format.String_Vectors.Vector;
+                              Short_Options (A);
+                           end if;
+                        end;
+                        I := I + 1;
+                     end loop;
+                  end;
+
+                  if Bad or else Length (Fatal) > 0 then
+                     goto Tag_Report;
+                  end if;
+
+                  --  git's mode choice: no operands list; a filter lists.
+                  if Cmd_Mode = ' ' then
+                     if Operands.Is_Empty
+                       or else not Filter.With_Commits.Is_Empty
+                       or else not Filter.No_Commits.Is_Empty
+                       or else not Filter.Reachable_From.Is_Empty
+                       or else not Filter.Unreachable_From.Is_Empty
+                       or else not Filter.Points_At.Is_Empty
+                       or else Lines /= -1
+                     then
+                        Cmd_Mode := 'l';
+                     end if;
+                  end if;
+
+                  if Sign = -1 then
+                     Sign := (if Cmd_Mode /= ' ' then 0
+                              elsif Config_Bool ("tag.gpgSign", False) then 1 else 0);
+                  end if;
+                  if Have_Key then
+                     Sign := 1;
+                  end if;
+
+                  declare
+                     Create_Object : constant Boolean :=
+                       Sign = 1 or else Annotate or else Msg_Given or else Have_File
+                       or else Edit or else not Trailer_Args.Is_Empty;
+                  begin
+                     if (Create_Object or else Force) and then Cmd_Mode /= ' ' then
+                        Bad_Usage ("");
+                        goto Tag_Report;
+                     end if;
+
+                     Version.Column.Finalize (Col_Opts, Stdout_Is_Tty => False);
+                     if Cmd_Mode = 'l' and then Lines /= -1 then
+                        if Col_Opts.From_Command_Line
+                          and then Version.Column.Active (Col_Opts)
+                        then
+                           Die ("options '--column' and '-n' cannot be used together");
+                           goto Tag_Report;
+                        end if;
+                        Col_Opts.Enable := Version.Column.Disabled;
+                     end if;
+                     Filter.Ignore_Case := Icase;
+                     Filter.Match_As_Path := False;
+                     Filter.Under := To_Unbounded_String ("refs/tags/");
+                     Filter.Use_Color :=
+                       To_String (Color_Mode) = "always";
+
+                     if Cmd_Mode = 'l' then
+                        declare
+                           Fmt : constant String :=
+                             (if Has_Format then To_String (Format_Str)
+                              elsif Lines > 0
+                              then "%(align:15)%(refname:lstrip=2)%(end) %(contents:lines="
+                                   & Ada.Strings.Fixed.Trim
+                                       (Integer'Image (Lines), Ada.Strings.Both)
+                                   & ")"
+                              else "%(refname:lstrip=2)");
+                           Items : Version.Ref_Format.String_Vectors.Vector;
+                           Pats  : Version.Ref_Format.String_Vectors.Vector;
+                        begin
+                           --  The patterns apply to the short tag names, and
+                           --  only refs/tags/ takes part.
+                           for Op of Operands loop
+                              Pats.Append (Op);
+                           end loop;
+                           begin
+                              for Line of Version.Ref_Format.For_Each_Ref
+                                            (Repo, Pats, Fmt, Sort_Keys, Filter)
+                              loop
+                                 Items.Append (Line);
+                              end loop;
+                           exception
+                              when E : Constraint_Error
+                                     | Ada.IO_Exceptions.Data_Error =>
+                                 Die (User_Error_Text (E));
+                                 goto Tag_Report;
+                           end;
+                           if Version.Column.Active (Col_Opts) then
+                              Version.Console.Put
+                                (Version.Column.Render
+                                   (Items, Col_Opts, Padding => 2));
+                           else
+                              for Line of Items loop
+                                 Success_Line (Line);
+                              end loop;
+                           end if;
+                        end;
+                        goto Tag_Report;
+                     end if;
+
+                     --  git's only_in_list refusals.
+                     if Lines /= -1 then
+                        Die ("the '-n' option is only allowed in list mode");
+                     elsif not Filter.With_Commits.Is_Empty then
+                        Die ("the '--contains' option is only allowed in list mode");
+                     elsif not Filter.No_Commits.Is_Empty then
+                        Die ("the '--no-contains' option is only allowed in list mode");
+                     elsif not Filter.Points_At.Is_Empty then
+                        Die ("the '--points-at' option is only allowed in list mode");
+                     elsif not Filter.Reachable_From.Is_Empty then
+                        Die ("the '--merged' option is only allowed in list mode");
+                     elsif not Filter.Unreachable_From.Is_Empty then
+                        Die ("the '--no-merged' option is only allowed in list mode");
+                     end if;
+                     if Length (Fatal) > 0 then
+                        goto Tag_Report;
+                     end if;
+
+                     if Cmd_Mode = 'd' then
+                        --  git's delete_tags: resolve them all, delete, then
+                        --  report each that is gone.
+                        declare
+                           Failed : Boolean := False;
+                           Names  : Version.Ref_Format.String_Vectors.Vector;
+                           Ids    : Version.Ref_Format.String_Vectors.Vector;
+                        begin
+                           for N of Operands loop
+                              if Version.Tags.Tag_Exists (N) then
+                                 Names.Append (N);
+                                 Ids.Append
+                                   (Version.Objects.To_String
+                                      (Version.Tags.Resolve_Tag (N)));
+                              else
+                                 Error_Line ("tag '" & N & "' not found.");
+                                 Failed := True;
+                              end if;
+                           end loop;
+                           for K in 1 .. Natural (Names.Length) loop
                               begin
-                                 Pat.Append ("refs/tags/");
-                                 for Line of Version.Ref_Format.For_Each_Ref
-                                   (Repo, Pat,
-                                    Format   => "%(refname:short)",
-                                    Sort_Key => To_String (Sort_Key))
-                                 loop
-                                    Names.Append
-                                      (To_Unbounded_String (Line));
-                                 end loop;
-                              end;
-                           end if;
-
-                           if Use_Points then
-                              Pointed := Version.Tags.List_Tags_Points_At
-                                (To_String (Points_At));
-                           end if;
-
-                           if Use_Contains then
-                              Held := Version.Tags.List_Tags_Containing
-                                (To_String (Contains));
-                           end if;
-
-                           if Use_Merged then
-                              Target := Version.Revisions.Resolve_Commit
-                                (Repo, To_String (Merged));
-                           end if;
-
-                           if Use_No_Contains then
-                              Held_No := Version.Tags.List_Tags_Containing
-                                (To_String (No_Contains));
-                           end if;
-
-                           if Use_No_Merged then
-                              Target_N := Version.Revisions.Resolve_Commit
-                                (Repo, To_String (No_Merged));
-                           end if;
-
-                           for T of Names loop
-                              declare
-                                 Name : constant String := To_String (T);
-                                 Keep : Boolean := Selected_By_Patterns (Name);
-                              begin
-                                 if Keep and then Use_Points then
-                                    Keep := Holds (Pointed, Name);
-                                 end if;
-
-                                 if Keep and then Use_Contains then
-                                    Keep := Holds (Held, Name);
-                                 end if;
-
-                                 if Keep and then Use_No_Contains then
-                                    Keep := not Holds (Held_No, Name);
-                                 end if;
-
-                                 if Keep and then Use_Merged then
-                                    --  --merged REV: tags reachable from REV.
-                                    Keep := Version.History.Is_Ancestor
-                                      (Repo,
-                                       Version.Revisions.Resolve_Commit
-                                         (Repo, Name),
-                                       Target);
-                                 end if;
-
-                                 if Keep and then Use_No_Merged then
-                                    Keep := not Version.History.Is_Ancestor
-                                      (Repo,
-                                       Version.Revisions.Resolve_Commit
-                                         (Repo, Name),
-                                       Target_N);
-                                 end if;
-
-                                 if Keep and then Has_Format then
-                                    --  Expand git's --format template for this
-                                    --  tag through the ref-format engine.
-                                    declare
-                                       Pat :
-                                         Version.Ref_Format.String_Vectors
-                                           .Vector;
-                                    begin
-                                       Pat.Append ("refs/tags/" & Name);
-                                       for Line of
-                                         Version.Ref_Format.For_Each_Ref
-                                           (Repo, Pat,
-                                            Format => To_String (Format_Str))
-                                       loop
-                                          Success_Line (Line);
-                                       end loop;
-                                    end;
-                                 elsif Keep and then Lines = 0 then
-                                    Success_Line (Name);
-                                 elsif Keep then
-                                    --  git aligns the name in 15 columns and
-                                    --  follows it with a single space.
-                                    declare
-                                       Pad : constant String
-                                         (1 .. Natural'Max
-                                                 (0, 15 - Name'Length)) :=
-                                         (others => ' ');
-                                    begin
-                                       Success_Line
-                                         (Name & Pad & " "
-                                          & Version.Tags.Tag_Message_Lines
-                                              (Name, Lines));
-                                    end;
-                                 end if;
+                                 Version.Tags.Delete_Tag (Names (K));
+                                 Success_Line
+                                   ("Deleted tag '" & Names (K) & "' (was "
+                                    & Abbrev (Ids (K)) & ")");
                               exception
-                                 when others =>
-                                    --  A tag whose target is missing simply
-                                    --  does not match a reachability filter.
-                                    null;
+                                 when E : others =>
+                                    Error_Line (User_Error_Text (E));
+                                    Failed := True;
                               end;
                            end loop;
+                           if Failed then
+                              Set_Command_Failure;
+                           end if;
                         end;
+                        goto Tag_Report;
+                     end if;
 
-                     when Creating =>
-                        if Operands.Is_Empty then
-                           Usage_Error ("missing tag name", Usage);
-                           return;
-                        elsif Natural (Operands.Length) > 2 then
-                           Usage_Error ("too many tag arguments", Usage);
-                           return;
-                        elsif Annotated and then not Has_Message then
-                           Usage_Error
-                             ("annotated tag requires -m MESSAGE", Usage);
-                           return;
-                        elsif Has_Message and then not Annotated then
-                           Usage_Error
-                             ("-m requires annotated tag option -a", Usage);
-                           return;
+                     if Cmd_Mode = 'v' then
+                        declare
+                           Failed : Boolean := False;
+                        begin
+                           for N of Operands loop
+                              if not Version.Tags.Tag_Exists (N) then
+                                 Error_Line ("tag '" & N & "' not found.");
+                                 Failed := True;
+                              else
+                                 declare
+                                    use type Version.Objects.Object_Kind;
+                                    Id  : constant Version.Objects.Hex_Object_Id :=
+                                      Version.Tags.Resolve_Tag (N);
+                                    Obj : constant Version.Objects.Git_Object :=
+                                      Version.Objects.Read_Object (Repo, Id);
+                                 begin
+                                    if Version.Objects.Kind (Obj)
+                                       /= Version.Objects.Tag_Object
+                                    then
+                                       Error_Line
+                                         (N & ": cannot verify a non-tag object of type "
+                                          & (case Version.Objects.Kind (Obj) is
+                                                when Version.Objects.Commit_Object => "commit",
+                                                when Version.Objects.Tree_Object => "tree",
+                                                when Version.Objects.Blob_Object => "blob",
+                                                when others => "unknown")
+                                          & ".");
+                                       Failed := True;
+                                    elsif not Version.Tags.Tag_Is_Signed (N) then
+                                       --  git's verbose verification prints
+                                       --  the object, then the verdict.
+                                       if not Has_Format then
+                                          Version.Console.Put
+                                            (Version.Tags.Tag_Object_Text (N));
+                                       end if;
+                                       Error_Line ("no signature found");
+                                       Failed := True;
+                                    else
+                                       if not Has_Format then
+                                          Version.Console.Put
+                                            (Version.Tags.Tag_Object_Text (N));
+                                       else
+                                          declare
+                                             Pats : Version.Ref_Format.String_Vectors.Vector;
+                                          begin
+                                             Pats.Append ("refs/tags/" & N);
+                                             for Line of Version.Ref_Format.For_Each_Ref
+                                                           (Repo, Pats, To_String (Format_Str))
+                                             loop
+                                                Success_Line (Line);
+                                             end loop;
+                                          end;
+                                       end if;
+                                    end if;
+                                 end;
+                              end if;
+                           end loop;
+                           if Failed then
+                              Set_Command_Failure;
+                           end if;
+                        end;
+                        goto Tag_Report;
+                     end if;
+
+                     --  Creation.
+                     declare
+                        Buf : Unbounded_String;
+                        Have_Edit_File : Boolean := False;
+                     begin
+                        if Msg_Given and then Have_File then
+                           Die ("options '-F' and '-m' cannot be used together");
+                           goto Tag_Report;
+                        end if;
+                        if Msg_Given then
+                           Buf := Msg;
+                        elsif Have_File then
+                           declare
+                              Path : constant String := To_String (Msg_File);
+                           begin
+                              if Path = "-" then
+                                 Buf := To_Unbounded_String (Read_All_Stdin);
+                              else
+                                 Buf := To_Unbounded_String
+                                   (Version.Files.Read_Binary_File (Path));
+                              end if;
+                           exception
+                              when Ada.IO_Exceptions.Name_Error
+                                  | Ada.IO_Exceptions.Use_Error =>
+                                 Die ("could not open or read '" & Path
+                                      & "': No such file or directory");
+                                 goto Tag_Report;
+                           end;
+                        end if;
+
+                        if Natural (Operands.Length) > 2 then
+                           Die ("too many arguments");
+                           goto Tag_Report;
                         end if;
 
                         declare
-                           Name : constant String := Operands.First_Element;
-                           Rev  : constant String :=
-                             (if Natural (Operands.Length) = 2
-                              then Operands.Last_Element else "");
-                           Existed : constant Boolean :=
-                             Version.Tags.Tag_Exists (Name);
-                           Old_Id  : Version.Objects.Hex_Object_Id;
+                           Tag_Name   : constant String := Operands (1);
+                           Object_Ref : constant String :=
+                             (if Natural (Operands.Length) = 2 then Operands (2)
+                              else "HEAD");
+                           Object     : Unbounded_String;
+                           Prev       : Unbounded_String;
+                           Cleanup    : constant String :=
+                             (if not Have_Cleanup then "strip"
+                              else To_String (Cleanup_Arg));
+                           Message_Given : constant Boolean :=
+                             Msg_Given or else Have_File;
                         begin
-                           if Existed and then not Force then
-                              Fatal ("tag '" & Name & "' already exists");
-                              return;
+                           begin
+                              Object := To_Unbounded_String
+                                (Version.Objects.To_String
+                                   (Version.Revisions.Resolve (Repo, Object_Ref)));
+                           exception
+                              when Ada.IO_Exceptions.Data_Error
+                                  | Ada.IO_Exceptions.Name_Error =>
+                                 Die ("Failed to resolve '" & Object_Ref
+                                      & "' as a valid ref.");
+                                 goto Tag_Report;
+                           end;
+
+                           --  git's check_tag_ref: no leading dash, and a
+                           --  well-formed refs/tags/<name>.
+                           if Tag_Name (Tag_Name'First) = '-'
+                             or else not Version.Ref_Names.Is_Valid_Tag_Name (Tag_Name)
+                           then
+                              Die ("'" & Tag_Name & "' is not a valid tag name.");
+                              goto Tag_Report;
                            end if;
 
-                           if Existed then
-                              Old_Id := Version.Tags.Resolve_Tag (Name);
-                              Version.Tags.Delete_Tag (Name);
+                           if Version.Tags.Tag_Exists (Tag_Name) then
+                              Prev := To_Unbounded_String
+                                (Version.Objects.To_String
+                                   (Version.Tags.Resolve_Tag (Tag_Name)));
+                              if not Force then
+                                 Die ("tag '" & Tag_Name & "' already exists");
+                                 goto Tag_Report;
+                              end if;
                            end if;
 
-                           if Annotated and then Rev = "" then
-                              Version.Tags.Create_Annotated_Tag
-                                (Name        => Name,
-                                 Message     => To_String (Message),
-                                 Signing_Key => To_String (Signing_Key));
-                           elsif Annotated then
-                              Version.Tags.Create_Annotated_Tag
-                                (Name        => Name,
-                                 Revision    => Rev,
-                                 Message     => To_String (Message),
-                                 Signing_Key => To_String (Signing_Key));
-                           elsif Rev = "" then
-                              Version.Tags.Create_Tag (Name);
-                           else
-                              Version.Tags.Create_Tag
-                                (Name => Name, Revision => Rev);
+                           if Cleanup not in "strip" | "verbatim" | "whitespace" then
+                              Die ("Invalid cleanup mode " & Cleanup);
+                              goto Tag_Report;
                            end if;
 
-                           --  Creating is silent in git. Replacing reports the
-                           --  old target, but only when the ref actually
-                           --  moved -- `tag -f` onto the same commit says
-                           --  nothing.
-                           if Existed
-                             and then Version.Tags.Resolve_Tag (Name) /= Old_Id
+                           if Create_Object then
+                              declare
+                                 use type Version.Objects.Object_Kind;
+                                 Target : constant Version.Objects.Git_Object :=
+                                   Version.Objects.Read_Object
+                                     (Repo, Version.Objects.To_Object_Id
+                                              (To_String (Object)));
+                                 Kind   : constant Version.Objects.Object_Kind :=
+                                   Version.Objects.Kind (Target);
+                                 Should_Edit : constant Boolean :=
+                                   Edit or else not Message_Given;
+                                 Do_Sign : Boolean := Sign = 1;
+                              begin
+                                 if Kind = Version.Objects.Unknown_Object then
+                                    Die ("bad object type.");
+                                    goto Tag_Report;
+                                 end if;
+                                 if Config_Bool ("tag.forceSignAnnotated", False)
+                                   and then not Annotate
+                                 then
+                                    Do_Sign := True;
+                                 end if;
+                                 if Kind = Version.Objects.Tag_Object
+                                   and then Config_Bool ("advice.nestedTag", True)
+                                 then
+                                    Stderr_Line
+                                      ("hint: You have created a nested tag. The object "
+                                       & "referred to by your new tag is");
+                                    Stderr_Line
+                                      ("hint: already a tag. If you meant to tag the "
+                                       & "object that it points to, use:");
+                                    Stderr_Line ("hint:");
+                                    Stderr_Line
+                                      ("hint: " & ASCII.HT & "git tag -f " & Tag_Name
+                                       & " " & Object_Ref & "^{}");
+                                    Stderr_Line
+                                      ("hint: Disable this message with ""git config "
+                                       & "set advice.nestedTag false""");
+                                 end if;
+
+                                 if Should_Edit or else not Trailer_Args.Is_Empty then
+                                    --  git's template: the message so far,
+                                    --  the previous tag's body under -f, or
+                                    --  the commented instructions.
+                                    declare
+                                       Seed : Unbounded_String;
+                                    begin
+                                       if Message_Given and then Length (Buf) > 0 then
+                                          Seed := Buf;
+                                          if Element (Seed, Length (Seed)) /= LF then
+                                             Append (Seed, LF);
+                                          end if;
+                                          Buf := Null_Unbounded_String;
+                                       elsif Length (Prev) > 0 then
+                                          declare
+                                             P : constant Version.Objects.Git_Object :=
+                                               Version.Objects.Read_Object
+                                                 (Repo, Version.Objects.To_Object_Id
+                                                          (To_String (Prev)));
+                                          begin
+                                             if Version.Objects.Kind (P)
+                                                = Version.Objects.Tag_Object
+                                             then
+                                                Seed := To_Unbounded_String
+                                                  (Version.Tags.Tag_Message
+                                                     (Version.Objects.Content (P)));
+                                             end if;
+                                          end;
+                                       else
+                                          Append (Seed, "" & LF);
+                                          Append (Seed, "#" & LF);
+                                          Append (Seed, "# Write a message for tag:" & LF);
+                                          Append (Seed, "#   " & Tag_Name & LF);
+                                          if Cleanup = "strip" then
+                                             Append
+                                               (Seed,
+                                                "# Lines starting with '#' will be "
+                                                & "ignored." & LF);
+                                          else
+                                             Append
+                                               (Seed,
+                                                "# Lines starting with '#' will be kept; "
+                                                & "you may remove them yourself if you "
+                                                & "want to." & LF);
+                                          end if;
+                                       end if;
+                                       if not Trailer_Args.Is_Empty then
+                                          Seed := To_Unbounded_String
+                                            (Version.Trailers.Interpret
+                                               (To_String (Seed), Trailer_Args));
+                                       end if;
+                                       Have_Edit_File := True;
+                                       if Should_Edit then
+                                          begin
+                                             Buf := To_Unbounded_String
+                                               (Version.Editor.Edit_File
+                                                  (Repo, Edit_Path, To_String (Seed)));
+                                          exception
+                                             when E : Ada.IO_Exceptions.Data_Error =>
+                                                declare
+                                                   M : constant String :=
+                                                     Ada.Exceptions.Exception_Message (E);
+                                                   L : constant Natural :=
+                                                     (if M'Length > 0 and then M (M'Last) = '.'
+                                                      then M'Last - 1 else M'Last);
+                                                begin
+                                                   Error_Line
+                                                     (Ada.Characters.Handling.To_Lower
+                                                        (M (M'First .. M'First))
+                                                      & M (M'First + 1 .. L));
+                                                end;
+                                                Stderr_Line
+                                                  ("Please supply the message using "
+                                                   & "either -m or -F option.");
+                                                Set_Command_Failure;
+                                                goto Tag_Report;
+                                          end;
+                                       else
+                                          Version.Files.Write_Binary_File
+                                            (Edit_Path, To_String (Seed));
+                                          Buf := Seed;
+                                       end if;
+                                    end;
+                                 end if;
+
+                                 if Cleanup = "strip" then
+                                    Buf := To_Unbounded_String
+                                      (Version.Stripspace.Clean
+                                         (To_String (Buf),
+                                          Version.Stripspace.Strip_Comments));
+                                 elsif Cleanup = "whitespace" then
+                                    Buf := To_Unbounded_String
+                                      (Version.Stripspace.Clean (To_String (Buf)));
+                                 end if;
+
+                                 if not Message_Given and then Length (Buf) = 0 then
+                                    Die ("no tag message?");
+                                    goto Tag_Report;
+                                 end if;
+
+                                 begin
+                                    Object := To_Unbounded_String
+                                      (Version.Objects.To_String
+                                         (Version.Write.Write_Tag
+                                            (Repo,
+                                             Version.Objects.To_Object_Id
+                                               (To_String (Object)),
+                                             Tag_Name, To_String (Buf),
+                                             (if not Do_Sign then ""
+                                              elsif Have_Key then To_String (Key_Id)
+                                              else "default"))));
+                                 exception
+                                    when E : others =>
+                                       --  git's build_tag_object: the gpg
+                                       --  report (its output after the colon,
+                                       --  then a blank line), then the verdict.
+                                       declare
+                                          M : constant String :=
+                                            Ada.Exceptions.Exception_Message (E);
+                                       begin
+                                          if Starts (M, "gpg failed to sign") then
+                                             Error_Line
+                                               (M & LF & Version.Write.Last_Sign_Error);
+                                             Error_Line ("unable to sign the tag");
+                                          else
+                                             Error_Line (User_Error_Text (E));
+                                             Error_Line ("unable to write tag file");
+                                          end if;
+                                       end;
+                                       Stderr_Line
+                                         ("The tag message has been left in "
+                                          & ".git/TAG_EDITMSG");
+                                       Have_Edit_File := False;
+                                       Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                                       goto Tag_Report;
+                                 end;
+                              end;
+                           end if;
+
+                           Version.Tags.Set_Tag_Ref
+                             (Repo, Tag_Name,
+                              Version.Objects.To_Object_Id (To_String (Object)),
+                              Expected_Old   => To_String (Prev),
+                              Reflog_Message =>
+                                (if Create_Reflog
+                                 then Reflog_Message (To_String (Object)) else ""));
+                           if Have_Edit_File then
+                              Version.Files.Delete_File_If_Exists (Edit_Path);
+                              Have_Edit_File := False;
+                           end if;
+                           if Force and then Length (Prev) > 0
+                             and then Prev /= Object
                            then
                               Success_Line
-                                ("Updated tag '" & Name & "' (was "
-                                 & Abbrev (Old_Id) & ")");
+                                ("Updated tag '" & Tag_Name & "' (was "
+                                 & Abbrev (To_String (Prev)) & ")");
                            end if;
                         exception
                            when E : others =>
-                              --  An unresolvable revision is a git die(),
-                              --  not an ordinary command failure.
-                              Fatal (User_Error_Text (E));
-                        end;
-
-                     when Deleting =>
-                        if Operands.Is_Empty then
-                           Usage_Error ("missing tag name", Usage);
-                           return;
-                        end if;
-
-                        for N of Operands loop
-                           if not Version.Tags.Tag_Exists (N) then
-                              Error_Line ("tag '" & N & "' not found.");
-                              Set_Command_Failure;
-                           else
-                              Success_Line (Version.Tags.Delete_Tag_Text (N));
-                           end if;
-                        end loop;
-
-                     when Verifying =>
-                        if Operands.Is_Empty then
-                           Usage_Error ("missing tag name", Usage);
-                           return;
-                        end if;
-
-                        for N of Operands loop
-                           begin
-                              Version.Console.Put
-                                (Version.Tags.Tag_Object_Text (N));
-
-                              if not Version.Tags.Tag_Is_Signed (N) then
-                                 Error_Line ("no signature found");
-                                 Set_Command_Failure;
+                              if Have_Edit_File then
+                                 Stderr_Line
+                                   ("The tag message has been left in .git/TAG_EDITMSG");
                               end if;
-                           exception
-                              when E : others =>
-                                 Error_Line (User_Error_Text (E));
-                                 Set_Command_Failure;
-                           end;
-                        end loop;
-                  end case;
+                              Die (User_Error_Text (E));
+                        end;
+                     end;
+                  end;
+
+                  <<Tag_Report>>
+                  if Length (Fatal) > 0 then
+                     Stderr_Line ("fatal: " & To_String (Fatal));
+                     Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                  end if;
                end;
 
             end if;

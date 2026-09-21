@@ -213,14 +213,13 @@ version checkout [-q] --orphan NEW-BRANCH [START-POINT]
 version checkout [-q] --detach [COMMIT]
 version checkout [-q] [-f] [--ours|--theirs] [TREE-ISH] [--] PATHSPEC...
 version switch [-q] [-f] [-t|--no-track] [-c|-C NEW-BRANCH] [--orphan NEW-BRANCH] [--detach] (BRANCH|START-POINT|-)
-version tag [-a|-s|-u KEY] [-f] [-m MSG] NAME [REV]
-version tag -d NAME...
-version tag -v NAME...
-version tag [-n[NUM]] [-l] [PATTERN...]
-version tag --contains REV
-version tag --merged REV
-version tag --points-at REV
-version tag --sort=KEY
+version tag [-a | -s | -u <key-id>] [-f] [-m <msg> | -F <file>] [-e] [--trailer <token>[(=|:)<value>]]...
+  [--cleanup=strip|whitespace|verbatim] [--create-reflog] <tagname> [<commit> | <object>]
+version tag -d <tagname>...
+version tag [-n[<num>]] -l [--contains <commit>] [--no-contains <commit>] [--points-at <object>]
+  [--column[=<options>] | --no-column] [--sort=<key>]... [--format=<format>] [--merged <commit>]
+  [--no-merged <commit>] [-i] [--omit-empty] [--color[=<when>]] [<pattern>...]
+version tag -v [--format=<format>] <tagname>...
 version tag create NAME
 version tag create NAME REV
 version tag create -a NAME -m MESSAGE

@@ -7073,6 +7073,165 @@ package body CLI_Integration_Tests is
       Run_Parity_Transcript (Root, Scenario, "notes");
    end Notes_Option_Surface_Matches_Git;
 
+   --  `tag`: git's option surface -- creation (lightweight on any object,
+   --  -a/-m/-F/-e/--trailer/--cleanup, -f with git's report, the editor
+   --  template, nested-tag advice, --create-reflog), listing (patterns,
+   --  -n, --format, --sort keys, -i, --contains/--no-contains/--merged/
+   --  --no-merged/--points-at with their defaults, --column, --omit-empty,
+   --  --color, tag.sort and column.* config), delete and verify, and git's
+   --  refusals.
+   procedure Tag_Option_Surface_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Scenario : constant String :=
+          "state() { :; }" & LF
+        & "git init -q; git config user.email a@b; git config user.name A" & LF
+        & "printf 'a\n' > f; git add f; git commit -qm one" & LF
+        & "printf 'b\n' >> f; git commit -qam two" & LF
+        & "git checkout -q -b side HEAD~1; printf 'c\n' > g; git add g; git "
+          & "commit -qm side-commit; git checkout -q main" & LF
+        & "printf 'd\n' >> f; git commit -qam three" & LF
+        & "x() { l=$1; shift; echo ""\$ $l"" >> ""$TF""; ""$@"" >> ""$TF"" 2>&1; echo "
+          & """[rc=$?]"" >> ""$TF""; }" & LF
+        & "ts() { l=$1; f=$2; shift 2; echo ""\$ $l"" >> ""$TF""; ""$TOOL"" ""$@"" >> "
+          & """$TF"" 2>&1 < ""$f""; echo ""[rc=$?]"" >> ""$TF""; }" & LF
+        & "tE() { l=$1; e=$2; shift 2; echo ""\$ $l"" >> ""$TF""; GIT_EDITOR=""$e"" "
+          & """$TOOL"" ""$@"" >> ""$TF"" 2>&1 < /dev/null; echo ""[rc=$?]"" >> ""$TF""; }" & LF
+        & "t 'empty list' tag" & LF
+        & "t 'lightweight' tag v1 HEAD~2" & LF
+        & "t 'annotated -m' tag -a -m 'first release' v1.0 HEAD~1" & LF
+        & "t 'annotated -m twice' tag -m 'para one' -m 'para two' v1.1" & LF
+        & "x 'cat v1.1' git cat-file tag v1.1" & LF
+        & "t 'blob tag' tag blobtag HEAD:f" & LF
+        & "t 'tree tag' tag treetag HEAD^{tree}" & LF
+        & "t 'nested' tag -a -m 'nested' nested v1.0" & LF
+        & "t 'bundled -am' tag -am 'bundled msg' v2" & LF
+        & "t 'list' tag" & LF
+        & "t 'list -l' tag -l" & LF
+        & "t 'list pattern' tag -l 'v1*'" & LF
+        & "t 'list pattern2' tag -l 'v?'" & LF
+        & "t 'list patterns' tag -l 'v1' 'v2'" & LF
+        & "t 'list -i' tag -l -i 'V1*'" & LF
+        & "t 'list -n' tag -n" & LF
+        & "t 'list -n2' tag -n2 'v1*'" & LF
+        & "t 'list -n 2' tag -n 2" & LF
+        & "t 'list -n --format' tag -n --format='%(refname) %(objecttype)'" & LF
+        & "t 'list --format' tag -l --format='%(refname:short) %(objecttype) " & "%(*objecttype)'" & LF
+        & "t 'list --format contents' tag --list --format='%(refname:short): " & "%(contents:lines=1)'" & LF
+        & "t 'list --sort=-refname' tag --sort=-refname" & LF
+        & "t 'list --sort=v:refname' tag --sort=v:refname" & LF
+        & "t 'list two sorts' tag --sort=-refname --sort=objecttype" & LF
+        & "t 'list -i sort' tag -i --sort=refname" & LF
+        & "t 'contains' tag --contains HEAD~2" & LF
+        & "t 'contains default' tag --contains" & LF
+        & "t 'contains side' tag --contains side" & LF
+        & "t 'no-contains' tag --no-contains HEAD~1" & LF
+        & "t 'with' tag --with HEAD~1" & LF
+        & "t 'without' tag --without HEAD~1" & LF
+        & "t 'merged' tag --merged HEAD~1" & LF
+        & "t 'merged default' tag --merged" & LF
+        & "t 'no-merged' tag --no-merged HEAD~1" & LF
+        & "t 'merged side' tag --merged side --merged HEAD~2" & LF
+        & "t 'points-at' tag --points-at HEAD~1" & LF
+        & "t 'points-at default' tag --points-at" & LF
+        & "t 'points-at blob' tag --points-at HEAD:f" & LF
+        & "t 'points-at two' tag --points-at HEAD~1 --points-at HEAD~2" & LF
+        & "t 'column' tag --column" & LF
+        & "t 'column row' tag --column=row" & LF
+        & "t 'column dense' tag --column=dense" & LF
+        & "t 'column plain' tag --column=plain" & LF
+        & "t 'column never' tag --column=never" & LF
+        & "t 'no-column' tag --no-column" & LF
+        & "t 'column -n' tag --column -n" & LF
+        & "t 'omit-empty' tag " & "--format='%(if)%(*objecttype)%(then)%(refname:short)%(end)' "
+          & "--omit-empty" & LF
+        & "t 'color' tag --color " & "--format='%(color:red)%(refname:short)%(color:reset)' 'v1*'" & LF
+        & "t 'color never' tag --color=never " & "--format='%(color:red)%(refname:short)%(color:reset)' 'v1*'" & LF
+        & "t 'exists' tag v1" & LF
+        & "t 'force same' tag -f v1 HEAD~2" & LF
+        & "t 'force move' tag -f v1 HEAD" & LF
+        & "t 'force annotated' tag -f -a -m 'moved' v1.0 HEAD" & LF
+        & "t 'invalid name' tag 'bad..name'" & LF
+        & "t 'dash name' tag -- -x" & LF
+        & "t 'too many' tag t3 HEAD HEAD" & LF
+        & "t 'unresolvable' tag t4 nope" & LF
+        & "t '-d --contains' tag -d --contains HEAD x" & LF
+        & "t '-v -n' tag -v -n1 x" & LF
+        & "t '-F -m' tag -F f -m x t" & LF
+        & "t 'delete' tag -d v2" & LF
+        & "t 'delete two' tag -d nested blobtag" & LF
+        & "t 'delete missing' tag -d nope v1.1" & LF
+        & "t 'delete none' tag -d" & LF
+        & "t 'list after' tag" & LF
+        & "t 'verify lw' tag -v v1" & LF
+        & "t 'verify unsigned' tag -v v1.0" & LF
+        & "t 'verify missing' tag -v nope" & LF
+        & "t 'verify none' tag -v" & LF
+        & "printf 'from file\n\n# comment\n\n' > msg.txt" & LF
+        & "t '-F' tag -F msg.txt f1" & LF
+        & "x 'cat f1' git cat-file tag f1" & LF
+        & "ts '-F -' msg.txt tag -F - f2" & LF
+        & "x 'cat f2' git cat-file tag f2" & LF
+        & "t '-F missing' tag -F nope.txt f3" & LF
+        & "t 'cleanup verbatim' tag --cleanup=verbatim -m 'x  ' -m 'y' cv" & LF
+        & "x 'cat cv' git cat-file tag cv" & LF
+        & "t 'cleanup whitespace' tag --cleanup=whitespace -F msg.txt cw" & LF
+        & "x 'cat cw' git cat-file tag cw" & LF
+        & "t 'cleanup bad' tag --cleanup=bogus -m x cb" & LF
+        & "t 'empty -m' tag -a -m '' e1" & LF
+        & "x 'cat e1' git cat-file tag e1" & LF
+        & "t 'trailer' tag -m 'subject' --trailer 'Signed-off-by: A <a@b>' " & "--trailer 'Key=Value' tr1" & LF
+        & "x 'cat tr1' git cat-file tag tr1" & LF
+        & "t 'create-reflog' tag --create-reflog r1 HEAD~1" & LF
+        & "x 'reflog r1' git reflog refs/tags/r1" & LF
+        & "t 'create-reflog blob' tag --create-reflog r2 HEAD:f" & LF
+        & "x 'reflog r2' cat .git/logs/refs/tags/r2" & LF
+        & "t 'create-reflog tag' tag --create-reflog r3 v1.0" & LF
+        & "x 'reflog r3' cat .git/logs/refs/tags/r3" & LF
+        & "GIT_REFLOG_ACTION='custom action' t 'create-reflog action' tag " & "--create-reflog r4" & LF
+        & "x 'reflog r4' cat .git/logs/refs/tags/r4" & LF
+        & "cat > ed.sh <<'X'" & LF
+        & "#!/bin/sh" & LF
+        & "cat ""$1"" > ""$(dirname ""$1"")/../captured.txt""" & LF
+        & "printf 'edited tag msg\n# a comment\n\nbody\n\n\n' > ""$1""" & LF
+        & "X" & LF
+        & "chmod +x ed.sh" & LF
+        & "tE 'editor -a' ./ed.sh tag -a ed1" & LF
+        & "x 'captured' cat captured.txt" & LF
+        & "x 'cat ed1' git cat-file tag ed1" & LF
+        & "tE 'editor -e -m' ./ed.sh tag -e -m 'seed' ed2" & LF
+        & "x 'captured2' cat captured.txt" & LF
+        & "tE 'editor -f existing' ./ed.sh tag -f -a ed1" & LF
+        & "x 'captured3' cat captured.txt" & LF
+        & "tE 'editor verbatim' ./ed.sh tag -a --cleanup=verbatim ed3" & LF
+        & "x 'captured4' cat captured.txt" & LF
+        & "x 'cat ed3' git cat-file tag ed3" & LF
+        & "tE 'editor trailer' ./ed.sh tag -a --trailer 'Acked-by: B' ed4" & LF
+        & "x 'captured5' cat captured.txt" & LF
+        & "tE 'editor empty' true tag -a ed5" & LF
+        & "tE 'editor fails' false tag -a ed6" & LF
+        & "tE 'editor -e no msg' true tag -e ed7" & LF
+        & "git config tag.sort -refname" & LF
+        & "t 'tag.sort' tag" & LF
+        & "t 'tag.sort override' tag --sort=refname" & LF
+        & "t 'no-sort' tag --no-sort" & LF
+        & "git config --unset tag.sort" & LF
+        & "git config column.tag always" & LF
+        & "t 'column.tag' tag" & LF
+        & "git config column.ui row" & LF
+        & "t 'column.ui' tag" & LF
+        & "t 'column.ui no-column' tag --no-column" & LF
+        & "git config --unset column.ui; git config --unset column.tag" & LF
+        & "git config advice.nestedTag false" & LF
+        & "t 'nested quiet' tag -a -m 'n2' nested2 v1.0" & LF
+        & "git config --unset advice.nestedTag" & LF
+        & "t 'final list' tag -n1" & LF;
+   begin
+      Run_Parity_Transcript (Root, Scenario, "tag");
+   end Tag_Option_Surface_Matches_Git;
+
    procedure Bisect_Run_And_Patch_Id_Match_Git
      (T : in out AUnit.Test_Cases.Test_Case'Class)
    is
@@ -8490,6 +8649,9 @@ package body CLI_Integration_Tests is
       Register_Routine
         (T, Notes_Option_Surface_Matches_Git'Access,
          "Notes: git's option surface, editor, copy/rewrite, merge strategies");
+      Register_Routine
+        (T, Tag_Option_Surface_Matches_Git'Access,
+         "Tag: git's option surface, listing filters, columns, editor, reflog");
       Register_Routine
         (T, Fast_Import_Stream_Matches_Git'Access,
          "Fast-import: author defaults to committer, short modes are files");
