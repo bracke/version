@@ -59,6 +59,7 @@ with Version.Merge_State;
 with Version.Remove;
 with Version.Tags;
 with Version.Column;
+with Version.Branches;
 with Version.Remotes;
 with Version.Dumb_Http;
 with Version.Fetch;
@@ -4237,41 +4238,6 @@ package body Version.CLI is
       end loop;
    end Sort_Branches;
 
-   --  Remote-tracking branches, as `branch -r` names them ("origin/main")
-   --  and as `branch -a` names them ("remotes/origin/main"). A symbolic ref
-   --  such as origin/HEAD is shown with the ref it points at, like git.
-   procedure Print_Remote_Branch_List (With_Prefix : Boolean) is
-      Repo : constant Version.Repository.Repository_Handle :=
-        Version.Repository.Open;
-      Pats : Version.Ref_Format.String_Vectors.Vector;
-   begin
-      --  For_Each_Ref matches a refname prefix, not a glob. A remote symref
-      --  (origin/HEAD) is shown as "name -> target", as git's branch -r does.
-      Pats.Append ("refs/remotes");
-      declare
-         Lines : constant Version.Ref_Format.String_Vectors.Vector :=
-           Version.Ref_Format.For_Each_Ref
-             (Repo, Pats,
-              Format => "%(refname:lstrip=2)|%(symref:short)");
-      begin
-         for I in Lines.First_Index .. Lines.Last_Index loop
-            declare
-               Line : constant String := Lines.Element (I);
-               Bar  : constant Natural :=
-                 Ada.Strings.Fixed.Index (Line, "|");
-               Name : constant String :=
-                 (if Bar = 0 then Line else Line (Line'First .. Bar - 1));
-               Tgt  : constant String :=
-                 (if Bar = 0 then "" else Line (Bar + 1 .. Line'Last));
-            begin
-               Ada.Text_IO.Put_Line
-                 ("  " & (if With_Prefix then "remotes/" else "") & Name
-                  & (if Tgt = "" then "" else " -> " & Tgt));
-            end;
-         end loop;
-      end;
-   end Print_Remote_Branch_List;
-
    --  `git branch --points-at <object>`: the branches whose tip is exactly
    --  <object>. git compares the ref's own id (no peeling of the argument),
    --  so `--points-at <annotated-tag>` lists nothing -- a branch id is a
@@ -4282,50 +4248,6 @@ package body Version.CLI is
      (if Name = Current then "* "
       elsif Version.Worktrees.Branch_Checked_Out_Elsewhere (Name) then "+ "
       else "  ");
-
-   --  commit, never the tag object.
-   procedure Print_Points_At
-     (Object      : String;
-      Show_Remote : Boolean)
-   is
-      Repo : constant Version.Repository.Repository_Handle :=
-        Version.Repository.Open;
-      Target : constant String :=
-        Version.Objects.To_String (Version.Revisions.Resolve (Repo, Object));
-      Current : constant String := Version.Refs.Current_Branch_Name (Repo);
-
-      procedure Scan
-        (Prefix   : String;    --  "refs/heads" or "refs/remotes"
-         Disp_Pre : String;    --  "" or "remotes/"
-         Locals   : Boolean)
-      is
-         Pats : Version.Ref_Format.String_Vectors.Vector;
-      begin
-         Pats.Append (Prefix);
-         for Line of Version.Ref_Format.For_Each_Ref
-           (Repo, Pats, "%(objectname)|%(refname:lstrip=2)")
-         loop
-            declare
-               Bar : constant Natural :=
-                 Ada.Strings.Fixed.Index (Line, "|");
-               Sha : constant String := Line (Line'First .. Bar - 1);
-               Nm  : constant String := Line (Bar + 1 .. Line'Last);
-            begin
-               if Sha = Target then
-                  Ada.Text_IO.Put_Line
-                    ((if Locals then Local_Branch_Marker (Nm, Current)
-                      else "  ")
-                     & Disp_Pre & Nm);
-               end if;
-            end;
-         end loop;
-      end Scan;
-   begin
-      Scan ("refs/heads", "", Locals => True);
-      if Show_Remote then
-         Scan ("refs/remotes", "remotes/", Locals => False);
-      end if;
-   end Print_Points_At;
 
    --  git's fsck lists the "dangling" objects (unreachable roots) and its
    --  prune -n/-v lists every unreachable object. Both walk the loose objects
@@ -4484,42 +4406,6 @@ package body Version.CLI is
    begin
       return Match (Text'First, Pattern'First);
    end Glob_Match;
-
-   --  The filtering forms print the same shape as a plain listing -- two
-   --  spaces, or "* " on the branch you are on. The *_Text helpers behind
-   --  them yield bare names, which is a different answer to the same question.
-   procedure Print_Marked_Branches (Names_Text : String) is
-      Repo : constant Version.Repository.Repository_Handle :=
-        Version.Repository.Open;
-      Head : constant Version.Refs.Head_Info := Version.Refs.Read_Head (Repo);
-      Current : constant String :=
-        (if Version.Refs.Is_Attached (Head)
-         then Version.Refs.Branch_Name (Head) else "");
-      First : Natural := Names_Text'First;
-   begin
-      while First <= Names_Text'Last loop
-         declare
-            Last : Natural := First;
-         begin
-            while Last <= Names_Text'Last
-              and then Names_Text (Last) /= ASCII.LF
-            loop
-               Last := Last + 1;
-            end loop;
-
-            declare
-               Name : constant String := Names_Text (First .. Last - 1);
-            begin
-               if Name'Length > 0 then
-                  Ada.Text_IO.Put_Line
-                    (Local_Branch_Marker (Name, Current) & Name);
-               end if;
-            end;
-
-            First := Last + 1;
-         end;
-      end loop;
-   end Print_Marked_Branches;
 
    procedure Print_Branch_List
      (Pattern       : String := "";
@@ -20867,1100 +20753,1535 @@ package body Version.CLI is
 
          elsif Command = "branch" then
             declare
-               Usage : constant String := "version branch SUBCOMMAND [ARGS]";
+               Usage : constant String :=
+                 "version branch [<options>] [-r | -a] [--merged] [--no-merged]"
+                 & " | [<options>] [-f] [--recurse-submodules] <branch-name> [<start-point>]"
+                 & " | [<options>] [-l] [<pattern>...]"
+                 & " | [<options>] [-r] (-d | -D) <branch-name>..."
+                 & " | [<options>] (-m | -M) [<old-branch>] <new-branch>"
+                 & " | [<options>] (-c | -C) [<old-branch>] <new-branch>"
+                 & " | [<options>] [-r | -a] [--points-at]"
+                 & " | [<options>] [-r | -a] [--format]";
             begin
-               if Count < 2 then
-                  --  Bare `branch` lists branches, like git.
-                  Print_Branch_List;
-               elsif (for some I in 2 .. Count =>
-                        Arg (I) = "--points-at"
-                        or else Has_Prefix (Arg (I), "--points-at="))
+               --  This CLI's word spellings (list, current, exists, resolve,
+               --  upstream, contains, merged, unmerged, create, switch, rename,
+               --  delete, set-upstream, unset-upstream, ahead-behind, update,
+               --  integrate, finalize) keep their forms; everything else is
+               --  git's grammar.
+               if Count >= 2
+                 and then Arg (2) in "list" | "current" | "exists" | "resolve"
+                                  | "upstream" | "contains" | "merged" | "unmerged"
+                                  | "create" | "switch" | "rename" | "delete"
+                                  | "set-upstream" | "unset-upstream"
+                                  | "ahead-behind" | "update" | "integrate"
+                                  | "finalize"
                then
-                  --  `branch [-a|-r] --points-at <object>`: the branches at
-                  --  exactly that object. Handled before the listing forms so
-                  --  a leading -a/-r does not just list everything.
-                  declare
-                     Obj    : Unbounded_String;
-                     Want_A : Boolean := False;
-                     Want_R : Boolean := False;
-                  begin
-                     for I in 2 .. Count loop
-                        if Has_Prefix (Arg (I), "--points-at=") then
-                           Obj := To_Unbounded_String
-                             (Arg (I) (Arg (I)'First + 12 .. Arg (I)'Last));
-                        elsif Arg (I) = "--points-at" and then I < Count then
-                           Obj := To_Unbounded_String (Arg (I + 1));
-                        elsif Arg (I) = "-a" or else Arg (I) = "--all" then
-                           Want_A := True;
-                        elsif Arg (I) = "-r" or else Arg (I) = "--remotes" then
-                           Want_R := True;
-                        end if;
-                     end loop;
-                     if Length (Obj) = 0 then
-                        Usage_Error ("branch --points-at needs an object",
-                                     Usage);
-                        return;
-                     end if;
-                     Print_Points_At
-                       (To_String (Obj), Show_Remote => Want_A or else Want_R);
-                  end;
-               elsif (for some I in 2 .. Count =>
-                        Has_Prefix (Arg (I), "--format=")
-                        or else Has_Prefix (Arg (I), "--sort="))
-                 and then (for all I in 2 .. Count =>
-                             Arg (I) /= "-a" and then Arg (I) /= "--all"
-                             and then Arg (I) /= "-r"
-                             and then Arg (I) /= "--remotes")
-               then
-                  --  `branch --format=<fmt>` / `--sort=<key>` on the local
-                  --  branches, driven by the ref-format engine. (`-a`/`-r`
-                  --  with the default refname sort go through the listing
-                  --  handler below.)
-                  declare
-                     Repo : constant Version.Repository.Repository_Handle :=
-                       Version.Repository.Open;
-                     Fmt  : Unbounded_String :=
-                       To_Unbounded_String ("%(HEAD) %(refname:lstrip=2)");
-                     Sort : Unbounded_String;
-                     Pats : Version.Ref_Format.String_Vectors.Vector;
-                  begin
-                     for I in 2 .. Count loop
-                        if Has_Prefix (Arg (I), "--format=") then
-                           Fmt := To_Unbounded_String
-                             (Arg (I) (Arg (I)'First + 9 .. Arg (I)'Last));
-                        elsif Has_Prefix (Arg (I), "--sort=") then
-                           Sort := To_Unbounded_String
-                             (Arg (I) (Arg (I)'First + 7 .. Arg (I)'Last));
-                        end if;
-                     end loop;
-                     Pats.Append ("refs/heads");
-                     for Line of Version.Ref_Format.For_Each_Ref
-                       (Repo, Pats, To_String (Fmt), To_String (Sort))
-                     loop
-                        Success_Line (Line);
-                     end loop;
-                  end;
-               elsif (for some I in 2 .. Count =>
-                        Arg (I) = "-a" or else Arg (I) = "--all"
-                        or else Arg (I) = "-r" or else Arg (I) = "--remotes")
-                 and then (for some I in 2 .. Count =>
-                             Arg (I) = "--merged" or else Arg (I) = "--no-merged"
-                             or else Has_Prefix (Arg (I), "--merged=")
-                             or else Has_Prefix (Arg (I), "--no-merged="))
-               then
-                  --  `branch (-a|-r) (--merged|--no-merged) [<commit>] [<glob>]`:
-                  --  the remotes/all listing filtered to branches whose tip is
-                  --  (or is not) reachable from <commit> (default HEAD).
-                  declare
-                     Want_A : Boolean := False;
-                     Want_R : Boolean := False;
-                     Negate : Boolean := False;
-                     Rev    : Unbounded_String := To_Unbounded_String ("HEAD");
-                     Got_Rev : Boolean := False;
-                     Pat    : Unbounded_String;
-                     I      : Natural := 2;
-                  begin
-                     while I <= Count loop
-                        declare
-                           A : constant String := Arg (I);
-                        begin
-                           if A = "-a" or else A = "--all" then
-                              Want_A := True;
-                           elsif A = "-r" or else A = "--remotes" then
-                              Want_R := True;
-                           elsif A = "--merged" or else A = "--no-merged" then
-                              Negate := A = "--no-merged";
-                              if I < Count and then Arg (I + 1)'Length > 0
-                                and then Arg (I + 1) (Arg (I + 1)'First) /= '-'
-                              then
-                                 Rev := To_Unbounded_String (Arg (I + 1));
-                                 Got_Rev := True;
-                                 I := I + 1;
-                              end if;
-                           elsif Has_Prefix (A, "--merged=") then
-                              Negate := False;
-                              Rev := To_Unbounded_String
-                                (A (A'First + 9 .. A'Last));
-                           elsif Has_Prefix (A, "--no-merged=") then
-                              Negate := True;
-                              Rev := To_Unbounded_String
-                                (A (A'First + 12 .. A'Last));
-                           elsif A = "--list" or else A = "-i"
-                             or else A = "--ignore-case"
-                           then
-                              null;
-                           elsif A'Length > 0 and then A (A'First) = '-' then
-                              null;
-                           elsif not Got_Rev and then Length (Pat) = 0 then
-                              --  A lone trailing token is the merge commit.
-                              Rev := To_Unbounded_String (A);
-                              Got_Rev := True;
-                           else
-                              Pat := To_Unbounded_String (A);
-                           end if;
-                        end;
-                        I := I + 1;
-                     end loop;
-                     Print_Branch_List
-                       (Pattern       => To_String (Pat),
-                        Show_Local     => not Want_R or else Want_A,
-                        Show_Remote    => Want_R or else Want_A,
-                        Remote_Prefix  => Want_A,
-                        Merge_Filter   => To_String (Rev),
-                        Merge_Negate   => Negate);
-                  end;
-               elsif
-                 --  Any combination of the listing flags -- scope (-a/--all,
-                 --  -r/--remotes), verbosity (-v/-vv/--verbose), --ignore-case
-                 --  and --list -- in any order and position. A glob is a
-                 --  listing operand only under --list; without it a positional
-                 --  means create (handled below). The --merged/--contains/
-                 --  --points-at/--format filters were handled above.
-                 (for some I in 2 .. Count =>
-                    Arg (I) in "-a" | "--all" | "-r" | "--remotes"
-                             | "-v" | "-vv" | "--verbose" | "--list")
-                 and then
-                 (for all I in 2 .. Count =>
-                    Arg (I) in "-a" | "--all" | "-r" | "--remotes"
-                             | "-v" | "-vv" | "--verbose" | "--list"
-                             | "-i" | "--ignore-case"
-                    or else
-                      ((for some J in 2 .. Count => Arg (J) = "--list")
-                       and then Arg (I)'Length > 0
-                       and then Arg (I) (Arg (I)'First) /= '-'))
-               then
-                  declare
-                     Want_A : Boolean := False;
-                     Want_R : Boolean := False;
-                     Icase  : Boolean := False;
-                     Verb   : Natural := 0;
-                     Pat    : Unbounded_String;
-                  begin
-                     for I in 2 .. Count loop
-                        if Arg (I) = "-a" or else Arg (I) = "--all" then
-                           Want_A := True;
-                        elsif Arg (I) = "-r" or else Arg (I) = "--remotes" then
-                           Want_R := True;
-                        elsif Arg (I) = "-v" or else Arg (I) = "--verbose" then
-                           Verb := Natural'Min (2, Verb + 1);
-                        elsif Arg (I) = "-vv" then
-                           Verb := 2;
-                        elsif Arg (I) = "-i"
-                          or else Arg (I) = "--ignore-case"
-                        then
-                           Icase := True;
-                        elsif Arg (I) = "--list" then
-                           null;
-                        elsif Arg (I)'Length > 0
-                          and then Arg (I) (Arg (I)'First) /= '-'
-                        then
-                           Pat := To_Unbounded_String (Arg (I));
-                        end if;
-                     end loop;
-
-                     declare
-                        Show_Local  : constant Boolean :=
-                          not Want_R or else Want_A;
-                        Show_Remote : constant Boolean := Want_R or else Want_A;
-                     begin
-                        if Verb > 0 and then Length (Pat) = 0 then
+                  if Arg (2) = "list" then
+                     if Count = 2 then
+                        Print_Branch_List;
+                     elsif Arg (3) = "--verbose" then
+                        if Count = 3 then
                            Version.Console.Put
-                             (Version.Branch.List_Branches_Verbose_Text
-                                (With_Upstream => Verb >= 2,
-                                 Show_Local    => Show_Local,
-                                 Show_Remote   => Show_Remote,
-                                 Remote_Prefix => Want_A));
+                             (Version.Branch.List_Branches_Verbose_Text);
                         else
-                           --  A glob (or the plain form) goes through the
-                           --  non-verbose lister, which filters by pattern.
-                           Print_Branch_List
-                             (Pattern       => To_String (Pat),
-                              Show_Local    => Show_Local,
-                              Show_Remote   => Show_Remote,
-                              Remote_Prefix => Want_A,
-                              Ignore_Case   => Icase);
-                        end if;
-                     end;
-                  end;
-               elsif
-                 --  git rejects a branch name alongside -a/-r (which only
-                 --  scope a listing): "the -a, and -r, options ... do not take
-                 --  a branch name." Only when nothing but scope flags and the
-                 --  name are present -- `-d -r <name>` is a remote delete, and
-                 --  a name with --list is a listing (both handled elsewhere).
-                 (for some I in 2 .. Count =>
-                    Arg (I) in "-a" | "--all" | "-r" | "--remotes")
-                 and then
-                 (for some I in 2 .. Count =>
-                    Arg (I)'Length > 0 and then Arg (I) (Arg (I)'First) /= '-')
-                 and then
-                 (for all I in 2 .. Count =>
-                    Arg (I) in "-a" | "--all" | "-r" | "--remotes"
-                             | "-v" | "-vv" | "--verbose"
-                             | "-i" | "--ignore-case"
-                    or else (Arg (I)'Length > 0
-                             and then Arg (I) (Arg (I)'First) /= '-'))
-               then
-                  Ada.Text_IO.Put_Line
-                    (Ada.Text_IO.Standard_Error,
-                     "fatal: the -a, and -r, options to 'git branch' do not"
-                     & " take a branch name.");
-                  Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
-               --  git's own spellings for the operations this command already
-               --  had under long names: -d/-D delete, and -r scopes the
-               --  deletion to remote-tracking refs.
-               elsif Arg (2) = "-d" or else Arg (2) = "-D"
-                 or else Arg (2) = "--delete"
-                 or else ((Arg (2) = "-q" or else Arg (2) = "--quiet")
-                          and then Count >= 3
-                          and then (Arg (3) = "-d" or else Arg (3) = "-D"
-                                    or else Arg (3) = "--delete"))
-               then
-                  declare
-                     Force  : Boolean := Arg (2) = "-D";
-                     Remote : Boolean := False;
-                     --  -q suppresses git's "Deleted branch ..." line.
-                     Quiet  : Boolean :=
-                       Arg (2) = "-q" or else Arg (2) = "--quiet";
-                     Names  : Version.Trailers.String_Vectors.Vector;
-                     Repo   : constant Version.Repository.Repository_Handle :=
-                       Version.Repository.Open;
-                  begin
-                     for I in 3 .. Count loop
-                        if Arg (I) = "-f" or else Arg (I) = "--force"
-                          or else Arg (I) = "-D"
-                        then
-                           Force := True;
-                        elsif Arg (I) = "-d" or else Arg (I) = "--delete" then
-                           null;   --  the delete flag itself
-                        elsif Arg (I) = "-r" or else Arg (I) = "--remotes" then
-                           Remote := True;
-                        elsif Arg (I) = "-q" or else Arg (I) = "--quiet" then
-                           Quiet := True;
-                        elsif Arg (I)'Length > 0
-                          and then Arg (I) (Arg (I)'First) = '-'
-                        then
-                           Usage_Error
-                             ("unknown branch option: " & Arg (I), Usage);
+                           Usage_Error ("too many branch list arguments", Usage);
                            return;
-                        else
-                           Names.Append (Arg (I));
                         end if;
-                     end loop;
+                     elsif Arg (3) = "--contains" then
+                        if Count = 3 then
+                           Usage_Error ("missing branch list revision", Usage);
+                           return;
+                        elsif Count = 4 then
+                           Ada.Text_IO.Put
+                             (Version.Branch.Branches_Containing_Text (Arg (4)));
+                        else
+                           Usage_Error ("too many branch list arguments", Usage);
+                           return;
+                        end if;
+                     elsif Arg (3) = "--merged" then
+                        if Count = 3 then
+                           Ada.Text_IO.Put (Version.Branch.Merged_Branches_Text);
+                        elsif Count = 4 then
+                           Ada.Text_IO.Put
+                             (Version.Branch.Merged_Branches_Text (Arg (4)));
+                        else
+                           Usage_Error ("too many branch list arguments", Usage);
+                           return;
+                        end if;
+                     elsif Arg (3) = "--no-merged" then
+                        if Count = 3 then
+                           Ada.Text_IO.Put (Version.Branch.Unmerged_Branches_Text);
+                        elsif Count = 4 then
+                           Ada.Text_IO.Put
+                             (Version.Branch.Unmerged_Branches_Text (Arg (4)));
+                        else
+                           Usage_Error ("too many branch list arguments", Usage);
+                           return;
+                        end if;
+                     elsif Arg (3)'Length > 0
+                       and then Arg (3) (Arg (3)'First) = '-'
+                     then
+                        Usage_Error ("unknown branch list option: " & Arg (3), Usage);
+                        return;
+                     else
+                        Usage_Error ("too many branch list arguments", Usage);
+                        return;
+                     end if;
 
-                     if Names.Is_Empty then
+                  elsif Arg (2) = "current" then
+                     if Count /= 2 then
+                        Usage_Error ("too many branch current arguments", Usage);
+                        return;
+                     end if;
+                     Ada.Text_IO.Put (Version.Branch.Current_Branch_Text);
+
+                  elsif Arg (2) = "exists" then
+                     if Count = 2 then
                         Usage_Error ("missing branch name", Usage);
                         return;
-                     end if;
-
-                     --  A failed delete is exit 1 in git, unlike branch's
-                     --  other failures, which are die()s at 128. The status
-                     --  belongs to the operation, not to the command.
-                     begin
-                        for N of Names loop
-                           declare
-                              Ref : constant String :=
-                                (if Remote then "refs/remotes/" & N
-                                 else "refs/heads/" & N);
-
-                              --  git reports where the branch stood, so the user
-                              --  can put it back; it is read before the delete.
-                              function Was return String is
-                                 Id : constant Version.Objects.Hex_Object_Id :=
-                                   Version.Refs.Resolve_Ref (Repo, Ref);
-                              begin
-                                 return Version.Objects.To_String (Id)
-                                   (1 .. Version.Revisions.Unique_Abbrev_Length
-                                           (Repo, Id, 7));
-                              exception
-                                 when others =>
-                                    return "";
-                              end Was;
-
-                              Short : constant String := Was;
-                           begin
-                              if Remote then
-                                 declare
-                                    Tx : Version.Ref_Transaction.Transaction;
-                                 begin
-                                    Version.Ref_Transaction.Start (Tx, Repo);
-                                    Version.Ref_Transaction.Add_Delete
-                                      (Tx, Ref, "");
-                                    Version.Ref_Transaction.Commit (Tx);
-                                 end;
-                                 if not Quiet then
-                                    Success_Line
-                                      ("Deleted remote-tracking branch " & N
-                                       & " (was " & Short & ").");
-                                 end if;
-                              else
-                                 Version.Branch.Delete_Branch
-                                   (Name => N, Force => Force);
-                                 if not Quiet then
-                                    Success_Line
-                                      ("Deleted branch " & N
-                                       & " (was " & Short & ").");
-                                 end if;
-                              end if;
-                           end;
-                        end loop;
-                     exception
-                        when E : Ada.IO_Exceptions.Data_Error
-                           | Ada.IO_Exceptions.Name_Error
-                           | Ada.IO_Exceptions.Use_Error =>
-                           Error_Line (User_Error_Text (E));
-                           Set_Command_Failure;
-                     end;
-                  end;
-
-               --  The filtering forms git spells as options on `branch`
-               --  itself, over the same listings the long subcommands print.
-               elsif Arg (2) = "--merged" or else Arg (2) = "--no-merged"
-                 or else Arg (2) = "--contains" or else Arg (2) = "--list"
-                 or else Arg (2) = "--no-contains"
-                 or else Has_Prefix (Arg (2), "--merged=")
-                 or else Has_Prefix (Arg (2), "--no-merged=")
-                 or else Has_Prefix (Arg (2), "--contains=")
-                 or else Has_Prefix (Arg (2), "--no-contains=")
-               then
-                  declare
-                     function Value_Of return String is
-                        A : constant String := Arg (2);
-                        Eq : constant Natural :=
-                          Ada.Strings.Fixed.Index (A, "=");
-                     begin
-                        if Eq /= 0 then
-                           return A (Eq + 1 .. A'Last);
-                        elsif Count >= 3
-                          and then Arg (3)'Length > 0
-                          and then Arg (3) (Arg (3)'First) /= '-'
-                        then
-                           return Arg (3);
-                        end if;
-                        return "";
-                     end Value_Of;
-
-                     Rev : constant String := Value_Of;
-                  begin
-                     if Has_Prefix (Arg (2), "--merged") then
-                        if Rev'Length = 0 then
-                           Print_Marked_Branches
-                             (Version.Branch.Merged_Branches_Text);
-                        else
-                           Print_Marked_Branches
-                             (Version.Branch.Merged_Branches_Text (Rev));
-                        end if;
-                     elsif Has_Prefix (Arg (2), "--no-merged") then
-                        if Rev'Length = 0 then
-                           Print_Marked_Branches
-                             (Version.Branch.Unmerged_Branches_Text);
-                        else
-                           Print_Marked_Branches
-                             (Version.Branch.Unmerged_Branches_Text (Rev));
-                        end if;
-                     elsif Has_Prefix (Arg (2), "--no-contains") then
-                        --  The branches that do NOT contain the revision.
-                        declare
-                           Repo :
-                             constant Version.Repository.Repository_Handle :=
-                               Version.Repository.Open;
-                           Target : constant Version.Objects.Hex_Object_Id :=
-                             Version.Revisions.Resolve_Commit (Repo, Rev);
-                           Branches :
-                             Version.Refs.Branch_Name_Vectors.Vector :=
-                               Version.Refs.List_Branches (Repo);
-                           Names : Unbounded_String;
-                        begin
-                           Sort_Branches (Branches);
-                           for B of Branches loop
-                              if not Version.History.Is_Ancestor
-                                (Repo,
-                                 Base_Id    => Target,
-                                 Derived_Id =>
-                                   Version.Revisions.Resolve_Commit
-                                     (Repo, To_String (B)))
-                              then
-                                 Append (Names, To_String (B) & ASCII.LF);
-                              end if;
-                           end loop;
-                           Print_Marked_Branches (To_String (Names));
-                        end;
-                     elsif Has_Prefix (Arg (2), "--contains") then
-                        if Rev'Length = 0 then
-                           Usage_Error
-                             ("missing branch contains revision", Usage);
-                           return;
-                        end if;
-                        Print_Marked_Branches
-                          (Version.Branch.Branches_Containing_Text (Rev));
-                     else
-                        --  --list with no pattern is the plain listing;
-                        --  with one it is that listing globbed.
-                        Print_Branch_List (Rev);
-                     end if;
-                  end;
-
-               --  More of git's own spellings for what the long subcommands
-               --  do: --show-current prints the checked-out branch, -m/-M
-               --  rename, and the upstream flags set or clear tracking.
-               elsif Arg (2) = "--show-current" then
-                  declare
-                     Repo : constant Version.Repository.Repository_Handle :=
-                       Version.Repository.Open;
-                     H : constant Version.Refs.Head_Info :=
-                       Version.Refs.Read_Head (Repo);
-                  begin
-                     if Version.Refs.Is_Attached (H) then
-                        Success_Line (Version.Refs.Branch_Name (H));
-                     end if;
-                  end;
-
-               elsif Arg (2) = "-m" or else Arg (2) = "-M"
-                 or else Arg (2) = "--move"
-               then
-                  --  `-m <new>` renames the current branch; `-m <old> <new>`
-                  --  renames a named one. -M (or -f) overwrites an existing
-                  --  destination, which a plain -m refuses.
-                  declare
-                     Repo : constant Version.Repository.Repository_Handle :=
-                       Version.Repository.Open;
-                     Force : Boolean := Arg (2) = "-M";
-                     Names : Version.Trailers.String_Vectors.Vector;
-                  begin
-                     for I in 3 .. Count loop
-                        if Arg (I) = "-f" or else Arg (I) = "--force"
-                          or else Arg (I) = "-M"
-                        then
-                           Force := True;
-                        elsif Arg (I) = "-m" or else Arg (I) = "--move" then
-                           null;
-                        elsif Arg (I)'Length > 0
-                          and then Arg (I) (Arg (I)'First) = '-'
-                        then
-                           Usage_Error
-                             ("unknown branch option: " & Arg (I), Usage);
-                           return;
-                        else
-                           Names.Append (Arg (I));
-                        end if;
-                     end loop;
-
-                     if Natural (Names.Length) = 1 then
-                        Version.Branch.Rename_Current_Branch
-                          (Names.First_Element);
-                     elsif Natural (Names.Length) = 2 then
-                        if Force
-                          and then Names.First_Element /= Names.Last_Element
-                          and then Version.Refs.Ref_Exists
-                                     (Repo, "refs/heads/" & Names.Last_Element)
-                        then
-                           --  Clear the destination so the rename can take it.
-                           Version.Branch.Delete_Branch
-                             (Name => Names.Last_Element, Force => True);
-                        end if;
-                        Version.Branch.Rename_Branch
-                          (Names.First_Element, Names.Last_Element);
-                     else
-                        Usage_Error ("branch -m needs a name", Usage);
+                     elsif Count > 3 then
+                        Usage_Error ("too many branch exists arguments", Usage);
                         return;
                      end if;
-                  end;
+                     if not Version.Branch.Branch_Exists (Arg (3)) then
+                        Ada.Command_Line.Set_Exit_Status (Command_Failure_Exit);
+                     end if;
 
-               elsif Has_Prefix (Arg (2), "--set-upstream-to=")
-                 or else Arg (2) = "-u"
-                 or else Arg (2) = "--set-upstream-to"
-               then
-                  declare
-                     Repo : constant Version.Repository.Repository_Handle :=
-                       Version.Repository.Open;
-                     --  --set-upstream-to=<remote>/<branch>: git splits the
-                     --  value at the last "/" into remote and merge ref.
-                     Value : constant String :=
-                       (if Has_Prefix (Arg (2), "--set-upstream-to=")
-                        then Arg (2) (Arg (2)'First + 18 .. Arg (2)'Last)
-                        elsif Count >= 3 then Arg (3) else "");
-                     Slash : constant Natural :=
-                       Ada.Strings.Fixed.Index (Value, "/", Ada.Strings.Backward);
-                     Branch_Name : constant String :=
-                       (if Has_Prefix (Arg (2), "--set-upstream-to=")
-                          and then Count >= 3 then Arg (3)
-                        elsif not Has_Prefix (Arg (2), "--set-upstream-to=")
-                          and then Count >= 4 then Arg (4)
-                        else Version.Refs.Current_Branch_Name (Repo));
-                     --  git refuses to track a ref that does not resolve.
-                     Upstream_Ok : Boolean := True;
-                  begin
-                     begin
-                        declare
-                           Ignored : constant Version.Objects.Hex_Object_Id :=
-                             Version.Revisions.Resolve (Repo, Value);
-                        begin
-                           pragma Unreferenced (Ignored);
-                        end;
-                     exception
-                        when others =>
-                           Upstream_Ok := False;
-                     end;
+                  elsif Arg (2) = "resolve" then
+                     if Count = 2 then
+                        Usage_Error ("missing branch name", Usage);
+                        return;
+                     elsif Count > 3 then
+                        Usage_Error ("too many branch resolve arguments", Usage);
+                        return;
+                     end if;
+                     Ada.Text_IO.Put (Version.Branch.Resolve_Branch_Text (Arg (3)));
 
-                     if not Upstream_Ok then
-                        Stderr_Line
-                          ("fatal: the requested upstream branch '" & Value
-                           & "' does not exist");
-                        Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                  elsif Arg (2) = "upstream" then
+                     if Count = 2 then
+                        Ada.Text_IO.Put (Version.Branch.Upstream_Text);
+                     elsif Count = 3 then
+                        Ada.Text_IO.Put (Version.Branch.Upstream_Text (Arg (3)));
+                     else
+                        Usage_Error ("too many branch upstream arguments", Usage);
                         return;
                      end if;
 
-                     --  A "<remote>/<branch>" value names a remote-tracking
-                     --  ref; a bare name that still resolved is a local branch,
-                     --  which git records with the "." remote.
-                     if Slash = 0 then
-                        Version.Tracking.Set_Upstream
-                          (Repo        => Repo,
-                           Branch_Name => Branch_Name,
-                           Remote_Name => ".",
-                           Merge_Ref   => "refs/heads/" & Value);
-                     else
-                        Version.Tracking.Set_Upstream
-                          (Repo        => Repo,
-                           Branch_Name => Branch_Name,
-                           Remote_Name => Value (Value'First .. Slash - 1),
-                           Merge_Ref   =>
-                             "refs/heads/" & Value (Slash + 1 .. Value'Last));
-                     end if;
-                     Success_Line
-                       ("branch '" & Branch_Name & "' set up to track '"
-                        & Value & "'.");
-                  end;
-
-               elsif Arg (2) = "--unset-upstream" then
-                  declare
-                     Repo : constant Version.Repository.Repository_Handle :=
-                       Version.Repository.Open;
-                     Name : constant String :=
-                       (if Count >= 3 then Arg (3)
-                        else Version.Refs.Current_Branch_Name (Repo));
-                  begin
-                     Version.Tracking.Unset_Upstream
-                       (Repo => Repo, Branch_Name => Name);
-                  end;
-
-               elsif Arg (2) = "list" then
-                  if Count = 2 then
-                     Print_Branch_List;
-                  elsif Arg (3) = "--verbose" then
-                     if Count = 3 then
-                        Version.Console.Put
-                          (Version.Branch.List_Branches_Verbose_Text);
-                     else
-                        Usage_Error ("too many branch list arguments", Usage);
+                  elsif Arg (2) = "contains" then
+                     if Count = 2 then
+                        Usage_Error ("missing branch contains revision", Usage);
+                        return;
+                     elsif Count > 3 then
+                        Usage_Error ("too many branch contains arguments", Usage);
                         return;
                      end if;
-                  elsif Arg (3) = "--contains" then
-                     if Count = 3 then
-                        Usage_Error ("missing branch list revision", Usage);
-                        return;
-                     elsif Count = 4 then
-                        Ada.Text_IO.Put
-                          (Version.Branch.Branches_Containing_Text (Arg (4)));
-                     else
-                        Usage_Error ("too many branch list arguments", Usage);
-                        return;
-                     end if;
-                  elsif Arg (3) = "--merged" then
-                     if Count = 3 then
-                        Ada.Text_IO.Put (Version.Branch.Merged_Branches_Text);
-                     elsif Count = 4 then
-                        Ada.Text_IO.Put
-                          (Version.Branch.Merged_Branches_Text (Arg (4)));
-                     else
-                        Usage_Error ("too many branch list arguments", Usage);
-                        return;
-                     end if;
-                  elsif Arg (3) = "--no-merged" then
-                     if Count = 3 then
-                        Ada.Text_IO.Put (Version.Branch.Unmerged_Branches_Text);
-                     elsif Count = 4 then
-                        Ada.Text_IO.Put
-                          (Version.Branch.Unmerged_Branches_Text (Arg (4)));
-                     else
-                        Usage_Error ("too many branch list arguments", Usage);
-                        return;
-                     end if;
-                  elsif Arg (3)'Length > 0
-                    and then Arg (3) (Arg (3)'First) = '-'
-                  then
-                     Usage_Error ("unknown branch list option: " & Arg (3), Usage);
-                     return;
-                  else
-                     Usage_Error ("too many branch list arguments", Usage);
-                     return;
-                  end if;
-
-               elsif Arg (2) = "current" then
-                  if Count /= 2 then
-                     Usage_Error ("too many branch current arguments", Usage);
-                     return;
-                  end if;
-                  Ada.Text_IO.Put (Version.Branch.Current_Branch_Text);
-
-               elsif Arg (2) = "exists" then
-                  if Count = 2 then
-                     Usage_Error ("missing branch name", Usage);
-                     return;
-                  elsif Count > 3 then
-                     Usage_Error ("too many branch exists arguments", Usage);
-                     return;
-                  end if;
-                  if not Version.Branch.Branch_Exists (Arg (3)) then
-                     Ada.Command_Line.Set_Exit_Status (Command_Failure_Exit);
-                  end if;
-
-               elsif Arg (2) = "resolve" then
-                  if Count = 2 then
-                     Usage_Error ("missing branch name", Usage);
-                     return;
-                  elsif Count > 3 then
-                     Usage_Error ("too many branch resolve arguments", Usage);
-                     return;
-                  end if;
-                  Ada.Text_IO.Put (Version.Branch.Resolve_Branch_Text (Arg (3)));
-
-               elsif Arg (2) = "upstream" then
-                  if Count = 2 then
-                     Ada.Text_IO.Put (Version.Branch.Upstream_Text);
-                  elsif Count = 3 then
-                     Ada.Text_IO.Put (Version.Branch.Upstream_Text (Arg (3)));
-                  else
-                     Usage_Error ("too many branch upstream arguments", Usage);
-                     return;
-                  end if;
-
-               elsif Arg (2) = "contains" then
-                  if Count = 2 then
-                     Usage_Error ("missing branch contains revision", Usage);
-                     return;
-                  elsif Count > 3 then
-                     Usage_Error ("too many branch contains arguments", Usage);
-                     return;
-                  end if;
-                  Ada.Text_IO.Put
-                    (Version.Branch.Branches_Containing_Text (Arg (3)));
-
-               elsif Arg (2) = "merged" then
-                  if Count = 2 then
-                     Ada.Text_IO.Put (Version.Branch.Merged_Branches_Text);
-                  elsif Count = 3 then
-                     Ada.Text_IO.Put (Version.Branch.Merged_Branches_Text (Arg (3)));
-                  else
-                     Usage_Error ("too many branch merged arguments", Usage);
-                     return;
-                  end if;
-
-               elsif Arg (2) = "unmerged" then
-                  if Count = 2 then
-                     Ada.Text_IO.Put (Version.Branch.Unmerged_Branches_Text);
-                  elsif Count = 3 then
                      Ada.Text_IO.Put
-                       (Version.Branch.Unmerged_Branches_Text (Arg (3)));
-                  else
-                     Usage_Error ("too many branch unmerged arguments", Usage);
-                     return;
-                  end if;
+                       (Version.Branch.Branches_Containing_Text (Arg (3)));
 
-               elsif Arg (2) = "create" then
-                  if Count = 2 then
-                     Usage_Error ("missing branch name", Usage);
-                     return;
-                  elsif Count > 3 then
-                     Usage_Error ("too many branch create arguments", Usage);
-                     return;
-                  end if;
-                  Version.Branch.Create_Branch (Arg (3));
-                  Success_Line ("created branch " & Arg (3));
-
-               elsif Arg (2) = "switch" then
-                  if Count = 2 then
-                     Usage_Error ("missing branch name", Usage);
-                     return;
-                  elsif Count > 3 then
-                     Usage_Error ("too many branch switch arguments", Usage);
-                     return;
-                  end if;
-                  Version.Branch.Switch_Branch (Arg (3));
-                  Success_Line ("switched to branch " & Arg (3));
-
-               elsif Arg (2) = "rename" then
-                  if Count = 2 then
-                     Usage_Error ("missing branch new name", Usage);
-                     return;
-                  elsif Count = 3 then
-                     Version.Branch.Rename_Current_Branch (Arg (3));
-                     Success_Line ("renamed current branch to " & Arg (3));
-                  elsif Count = 4 then
-                     Version.Branch.Rename_Branch
-                       (Old_Name => Arg (3), New_Name => Arg (4));
-                     Success_Line
-                       ("renamed branch " & Arg (3) & " to " & Arg (4));
-                  else
-                     Usage_Error ("too many branch rename arguments", Usage);
-                     return;
-                  end if;
-
-               elsif Arg (2) = "delete" then
-                  declare
-                     Force         : Boolean := False;
-                     Name          : Unbounded_String;
-                     Operand_Count : Natural := 0;
-                  begin
-                     for I in 3 .. Count loop
-                        if Arg (I) = "--force" then
-                           if Force then
-                              Usage_Error ("duplicate option: --force", Usage);
-                              return;
-                           end if;
-                           Force := True;
-                        elsif Arg (I)'Length > 0
-                          and then Arg (I) (Arg (I)'First) = '-'
-                        then
-                           Usage_Error
-                             ("unknown branch delete option: " & Arg (I), Usage);
-                           return;
-                        else
-                           Operand_Count := Operand_Count + 1;
-                           if Operand_Count = 1 then
-                              Name := To_Unbounded_String (Arg (I));
-                           else
-                              Usage_Error
-                                ("too many branch delete arguments", Usage);
-                              return;
-                           end if;
-                        end if;
-                     end loop;
-
-                     if Operand_Count = 0 then
-                        Usage_Error ("missing branch name", Usage);
+                  elsif Arg (2) = "merged" then
+                     if Count = 2 then
+                        Ada.Text_IO.Put (Version.Branch.Merged_Branches_Text);
+                     elsif Count = 3 then
+                        Ada.Text_IO.Put (Version.Branch.Merged_Branches_Text (Arg (3)));
+                     else
+                        Usage_Error ("too many branch merged arguments", Usage);
                         return;
                      end if;
 
-                     Version.Branch.Delete_Branch
-                       (Name => To_String (Name), Force => Force);
-                     Success_Line ("deleted branch " & To_String (Name));
-                  end;
+                  elsif Arg (2) = "unmerged" then
+                     if Count = 2 then
+                        Ada.Text_IO.Put (Version.Branch.Unmerged_Branches_Text);
+                     elsif Count = 3 then
+                        Ada.Text_IO.Put
+                          (Version.Branch.Unmerged_Branches_Text (Arg (3)));
+                     else
+                        Usage_Error ("too many branch unmerged arguments", Usage);
+                        return;
+                     end if;
 
-               elsif Arg (2) = "set-upstream" then
-                  if Count < 5 then
-                     Usage_Error
-                       ("missing branch upstream arguments", Usage);
-                     return;
-                  elsif Count > 5 then
-                     Usage_Error
-                       ("too many branch set-upstream arguments", Usage);
-                     return;
-                  end if;
-                  Version.Tracking.Set_Upstream
-                    (Repo        => Version.Repository.Open,
-                     Branch_Name => Arg (3),
-                     Remote_Name => Arg (4),
-                     Merge_Ref   => "refs/heads/" & Arg (5));
-                  Success_Line
-                    ("set upstream for "
-                     & Arg (3)
-                     & " to "
-                     & Arg (4)
-                     & "/"
-                     & Arg (5));
+                  elsif Arg (2) = "create" then
+                     if Count = 2 then
+                        Usage_Error ("missing branch name", Usage);
+                        return;
+                     elsif Count > 3 then
+                        Usage_Error ("too many branch create arguments", Usage);
+                        return;
+                     end if;
+                     Version.Branch.Create_Branch (Arg (3));
+                     Success_Line ("created branch " & Arg (3));
 
-               elsif Arg (2) = "unset-upstream" then
-                  if Count = 2 then
-                     Usage_Error ("missing branch name", Usage);
-                     return;
-                  elsif Count > 3 then
-                     Usage_Error
-                       ("too many branch unset-upstream arguments", Usage);
-                     return;
-                  end if;
-                  Version.Tracking.Unset_Upstream
-                    (Repo => Version.Repository.Open, Branch_Name => Arg (3));
-                  Success_Line ("unset upstream for " & Arg (3));
+                  elsif Arg (2) = "switch" then
+                     if Count = 2 then
+                        Usage_Error ("missing branch name", Usage);
+                        return;
+                     elsif Count > 3 then
+                        Usage_Error ("too many branch switch arguments", Usage);
+                        return;
+                     end if;
+                     Version.Branch.Switch_Branch (Arg (3));
+                     Success_Line ("switched to branch " & Arg (3));
 
-               elsif Arg (2) = "ahead-behind" then
-                  if Count = 2 then
-                     Usage_Error ("missing branch name", Usage);
-                     return;
-                  elsif Count > 3 then
-                     Usage_Error
-                       ("too many branch ahead-behind arguments", Usage);
-                     return;
-                  end if;
-                  declare
-                     Counts : constant Version.Tracking.Ahead_Behind :=
-                       Version.Tracking.Count_Ahead_Behind
-                         (Repo        => Version.Repository.Open,
-                          Branch_Name => Arg (3));
-                  begin
-                     Ada.Text_IO.Put_Line
-                       ("ahead "
-                        & Natural_Image (Counts.Ahead)
-                        & " behind "
-                        & Natural_Image (Counts.Behind));
-                  end;
+                  elsif Arg (2) = "rename" then
+                     if Count = 2 then
+                        Usage_Error ("missing branch new name", Usage);
+                        return;
+                     elsif Count = 3 then
+                        Version.Branch.Rename_Current_Branch (Arg (3));
+                        Success_Line ("renamed current branch to " & Arg (3));
+                     elsif Count = 4 then
+                        Version.Branch.Rename_Branch
+                          (Old_Name => Arg (3), New_Name => Arg (4));
+                        Success_Line
+                          ("renamed branch " & Arg (3) & " to " & Arg (4));
+                     else
+                        Usage_Error ("too many branch rename arguments", Usage);
+                        return;
+                     end if;
 
-               elsif Arg (2) = "update" then
-                  if Count = 2 then
-                     Usage_Error ("missing branch name", Usage);
-                     return;
-                  elsif Count > 3 then
-                     Usage_Error ("too many branch update arguments", Usage);
-                     return;
-                  end if;
-                  Version.Branch.Update_Current_Branch (Arg (3));
-                  Success_Line ("updated current branch to " & Arg (3));
+                  elsif Arg (2) = "delete" then
+                     declare
+                        Force         : Boolean := False;
+                        Name          : Unbounded_String;
+                        Operand_Count : Natural := 0;
+                     begin
+                        for I in 3 .. Count loop
+                           if Arg (I) = "--force" then
+                              if Force then
+                                 Usage_Error ("duplicate option: --force", Usage);
+                                 return;
+                              end if;
+                              Force := True;
+                           elsif Arg (I)'Length > 0
+                             and then Arg (I) (Arg (I)'First) = '-'
+                           then
+                              Usage_Error
+                                ("unknown branch delete option: " & Arg (I), Usage);
+                              return;
+                           else
+                              Operand_Count := Operand_Count + 1;
+                              if Operand_Count = 1 then
+                                 Name := To_Unbounded_String (Arg (I));
+                              else
+                                 Usage_Error
+                                   ("too many branch delete arguments", Usage);
+                                 return;
+                              end if;
+                           end if;
+                        end loop;
 
-               elsif Arg (2) = "integrate" then
-                  if Count = 2 then
-                     Usage_Error ("missing branch integration target", Usage);
-                     return;
-                  elsif Count > 3 then
-                     Usage_Error ("too many branch integrate arguments", Usage);
-                     return;
-                  elsif Arg (3) = "--abort" then
-                     Version.Branch.Abort_Integration;
-                     Success_Line ("aborted branch integration");
-                  elsif Arg (3) = "--finalize" then
+                        if Operand_Count = 0 then
+                           Usage_Error ("missing branch name", Usage);
+                           return;
+                        end if;
+
+                        Version.Branch.Delete_Branch
+                          (Name => To_String (Name), Force => Force);
+                        Success_Line ("deleted branch " & To_String (Name));
+                     end;
+
+                  elsif Arg (2) = "set-upstream" then
+                     if Count < 5 then
+                        Usage_Error
+                          ("missing branch upstream arguments", Usage);
+                        return;
+                     elsif Count > 5 then
+                        Usage_Error
+                          ("too many branch set-upstream arguments", Usage);
+                        return;
+                     end if;
+                     Version.Tracking.Set_Upstream
+                       (Repo        => Version.Repository.Open,
+                        Branch_Name => Arg (3),
+                        Remote_Name => Arg (4),
+                        Merge_Ref   => "refs/heads/" & Arg (5));
+                     Success_Line
+                       ("set upstream for "
+                        & Arg (3)
+                        & " to "
+                        & Arg (4)
+                        & "/"
+                        & Arg (5));
+
+                  elsif Arg (2) = "unset-upstream" then
+                     if Count = 2 then
+                        Usage_Error ("missing branch name", Usage);
+                        return;
+                     elsif Count > 3 then
+                        Usage_Error
+                          ("too many branch unset-upstream arguments", Usage);
+                        return;
+                     end if;
+                     Version.Tracking.Unset_Upstream
+                       (Repo => Version.Repository.Open, Branch_Name => Arg (3));
+                     Success_Line ("unset upstream for " & Arg (3));
+
+                  elsif Arg (2) = "ahead-behind" then
+                     if Count = 2 then
+                        Usage_Error ("missing branch name", Usage);
+                        return;
+                     elsif Count > 3 then
+                        Usage_Error
+                          ("too many branch ahead-behind arguments", Usage);
+                        return;
+                     end if;
+                     declare
+                        Counts : constant Version.Tracking.Ahead_Behind :=
+                          Version.Tracking.Count_Ahead_Behind
+                            (Repo        => Version.Repository.Open,
+                             Branch_Name => Arg (3));
+                     begin
+                        Ada.Text_IO.Put_Line
+                          ("ahead "
+                           & Natural_Image (Counts.Ahead)
+                           & " behind "
+                           & Natural_Image (Counts.Behind));
+                     end;
+
+                  elsif Arg (2) = "update" then
+                     if Count = 2 then
+                        Usage_Error ("missing branch name", Usage);
+                        return;
+                     elsif Count > 3 then
+                        Usage_Error ("too many branch update arguments", Usage);
+                        return;
+                     end if;
+                     Version.Branch.Update_Current_Branch (Arg (3));
+                     Success_Line ("updated current branch to " & Arg (3));
+
+                  elsif Arg (2) = "integrate" then
+                     if Count = 2 then
+                        Usage_Error ("missing branch integration target", Usage);
+                        return;
+                     elsif Count > 3 then
+                        Usage_Error ("too many branch integrate arguments", Usage);
+                        return;
+                     elsif Arg (3) = "--abort" then
+                        Version.Branch.Abort_Integration;
+                        Success_Line ("aborted branch integration");
+                     elsif Arg (3) = "--finalize" then
+                        Version.Branch.Finalize_Integration;
+                        Success_Line ("finalized branch integration");
+                     elsif Arg (3)'Length > 0
+                       and then Arg (3) (Arg (3)'First) = '-'
+                     then
+                        Usage_Error
+                          ("unknown branch integrate option: " & Arg (3), Usage);
+                        return;
+                     else
+                        Version.Branch.Integrate_Branch (Arg (3));
+                        Success_Line ("integrated branch " & Arg (3));
+                     end if;
+
+                  elsif Arg (2) = "finalize" then
+                     if Count /= 2 then
+                        Usage_Error ("too many branch finalize arguments", Usage);
+                        return;
+                     end if;
                      Version.Branch.Finalize_Integration;
                      Success_Line ("finalized branch integration");
-                  elsif Arg (3)'Length > 0
-                    and then Arg (3) (Arg (3)'First) = '-'
-                  then
-                     Usage_Error
-                       ("unknown branch integrate option: " & Arg (3), Usage);
-                     return;
-                  else
-                     Version.Branch.Integrate_Branch (Arg (3));
-                     Success_Line ("integrated branch " & Arg (3));
                   end if;
-
-               elsif Arg (2) = "finalize" then
-                  if Count /= 2 then
-                     Usage_Error ("too many branch finalize arguments", Usage);
-                     return;
-                  end if;
-                  Version.Branch.Finalize_Integration;
-                  Success_Line ("finalized branch integration");
-
-               --  Combined short listing flags: -av, -avv, -rv, -vv. git
-               --  bundles -a/-r/-v into one token; expand it so the listing
-               --  forms are reachable without a case per combination.
-               elsif Arg (2)'Length >= 2 and then Arg (2) (Arg (2)'First) = '-'
-                 and then Arg (2) (Arg (2)'First + 1) /= '-'
-                 and then (for all C of
-                             Arg (2) (Arg (2)'First + 1 .. Arg (2)'Last)
-                           => C in 'a' | 'v' | 'r')
-                 and then (for some C of
-                             Arg (2) (Arg (2)'First + 1 .. Arg (2)'Last)
-                           => C in 'a' | 'v' | 'r')
-               then
-                  declare
-                     Want_All     : Boolean := False;
-                     Want_Remotes : Boolean := False;
-                     Want_Verbose : Boolean := False;
-                     --  git's --abbrev=<n> sets the id width; --no-abbrev shows
-                     --  the full 40-hex id (0 here means "no abbreviation").
-                     Abbrev       : Natural := 7;
-                  begin
-                     for I in Arg (2)'First + 1 .. Arg (2)'Last loop
-                        case Arg (2) (I) is
-                           when 'a' => Want_All := True;
-                           when 'r' => Want_Remotes := True;
-                           when 'v' => Want_Verbose := True;
-                           when others => null;
-                        end case;
-                     end loop;
-
-                     for I in 3 .. Count loop
-                        if Arg (I) = "--no-abbrev" then
-                           Abbrev := 0;
-                        elsif Has_Prefix (Arg (I), "--abbrev=") then
-                           begin
-                              Abbrev := Natural'Value
-                                (Arg (I) (Arg (I)'First + 9 .. Arg (I)'Last));
-                           exception
-                              when others => null;
-                           end;
-                        end if;
-                     end loop;
-
-                     if Want_Verbose then
-                        --  -vv (or -avv): two v's request the upstream name.
-                        --  One unified listing so locals and remotes share the
-                        --  name-column width, as git aligns them.
-                        declare
-                           VV : constant Boolean :=
-                             (for some K in Arg (2)'First + 1 .. Arg (2)'Last =>
-                                (Arg (2) (K) = 'v'
-                                 and then K < Arg (2)'Last
-                                 and then Arg (2) (K + 1) = 'v'));
-                        begin
-                           Version.Console.Put
-                             (Version.Branch.List_Branches_Verbose_Text
-                                (With_Upstream => VV,
-                                 Show_Local    => not Want_Remotes or Want_All,
-                                 Show_Remote   => Want_Remotes or Want_All,
-                                 Remote_Prefix => Want_All,
-                                 Abbrev        => Abbrev));
-                        end;
-                     elsif Want_Remotes and then not Want_All then
-                        --  -r: remote-tracking branches only, bare short names.
-                        Print_Remote_Branch_List (With_Prefix => False);
-                     else
-                        Print_Branch_List;
-                        if Want_All then
-                           Print_Remote_Branch_List (With_Prefix => True);
-                        end if;
-                     end if;
-                  end;
-
-               --  git's positional forms: `branch <name> [<start>]` creates a
-               --  branch, `-f` overwrites an existing one, and `-c`/`-C` copy
-               --  a branch to a new name. A leading option that is not a
-               --  known verb lands here too (e.g. `-f name start`).
-               elsif Arg (2) = "-c" or else Arg (2) = "-C"
-                 or else Arg (2) = "--copy"
-                 or else (Arg (2)'Length > 0
-                          and then Arg (2) (Arg (2)'First) /= '-')
-                 or else Arg (2) = "-f" or else Arg (2) = "--force"
-                 or else Arg (2) = "-t" or else Arg (2) = "--track"
-                 or else Arg (2) = "--no-track"
-               then
+               else
+                  --  git's own grammar, a port of builtin/branch.c: one
+                  --  parse pass with parse-options rules, then the single
+                  --  action git allows -- delete, show-current, list (the
+                  --  default with no operand or with a filter), edit the
+                  --  description, rename/copy, set or unset the upstream,
+                  --  or create.
                   declare
                      Repo : constant Version.Repository.Repository_Handle :=
                        Version.Repository.Open;
-                     Force  : Boolean := False;
-                     Copy   : Boolean := Arg (2) = "-c" or else Arg (2) = "-C"
-                                or else Arg (2) = "--copy";
-                     Want_Track : Boolean := False;   --  explicit -t/--track
-                     No_Track   : Boolean := False;   --  --no-track
-                     Names  : Version.Trailers.String_Vectors.Vector;
-                  begin
-                     for I in 2 .. Count loop
-                        if Arg (I) = "-f" or else Arg (I) = "--force"
-                          or else Arg (I) = "-C"
-                        then
-                           Force := True;
-                           if Arg (I) = "-C" then
-                              Copy := True;
-                           end if;
-                        elsif Arg (I) = "-c" or else Arg (I) = "--copy" then
-                           Copy := True;
-                        elsif Arg (I) = "-t" or else Arg (I) = "--track" then
-                           Want_Track := True;
-                        elsif Arg (I) = "--no-track" then
-                           No_Track := True;
-                        elsif Arg (I) = "-q" or else Arg (I) = "--quiet" then
-                           null;
-                        elsif Arg (I)'Length > 0
-                          and then Arg (I) (Arg (I)'First) = '-'
-                        then
-                           Usage_Error
-                             ("unknown branch option: " & Arg (I), Usage);
-                           return;
-                        else
-                           Names.Append (Arg (I));
+
+                     LF : constant Character := ASCII.LF;
+
+                     function Starts (S, P : String) return Boolean is
+                       (S'Length >= P'Length
+                        and then S (S'First .. S'First + P'Length - 1) = P);
+                     function After (S, P : String) return String is
+                       (S (S'First + P'Length .. S'Last));
+
+                     function Config_Value (Key : String) return String is
+                       (if Version.Config.Has_Key (Repo, Key)
+                        then Version.Config.Get_Value (Repo, Key) else "");
+                     function Config_Bool (Key : String; Default : Boolean)
+                        return Boolean
+                     is
+                        OK : Boolean;
+                     begin
+                        if not Version.Config.Has_Key (Repo, Key) then
+                           return Default;
                         end if;
+                        return Config_Bool_Norm (Config_Value (Key), OK) = "true";
+                     end Config_Bool;
+
+                     --  Actions (git's bits: 1 plain, 2 forced).
+                     Delete     : Natural := 0;
+                     Rename     : Natural := 0;
+                     Copy       : Natural := 0;
+                     List       : Boolean := False;
+                     Show_Cur   : Boolean := False;
+                     Edit_Desc  : Boolean := False;
+                     Unset_Up   : Boolean := False;
+                     New_Upstream : Unbounded_String;
+                     Have_Upstream : Boolean := False;
+                     --  Options.
+                     Verbose    : Natural := 0;
+                     Quiet      : Boolean := False;
+                     Force      : Boolean := False;
+                     Icase      : Boolean := False;
+                     Reflog     : Boolean := False;
+                     Abbrev     : Integer := -1;
+                     Track      : Version.Branches.Track_Mode :=
+                       Version.Branches.Default_Track (Repo);
+                     Track_Set_Upstream : Boolean := False;   --  --set-upstream
+                     Kind_Local  : Boolean := True;    --  FILTER_REFS_BRANCHES
+                     Kind_Remote : Boolean := False;   --  FILTER_REFS_REMOTES
+                     Filter      : Version.Ref_Format.Ref_Filter;
+                     Sort_Keys   : Version.Ref_Format.String_Vectors.Vector;
+                     Format_Str  : Unbounded_String;
+                     Has_Format  : Boolean := False;
+                     Color_Mode  : Unbounded_String;   --  --color[=when]
+                     Col_Opts    : Version.Column.Options;
+                     Recurse_Sub : Boolean := False;
+                     Operands    : Version.Ref_Format.String_Vectors.Vector;
+                     Bad         : Boolean := False;
+                     Fatal       : Unbounded_String;
+                     Args        : Version.Ref_Format.String_Vectors.Vector;
+                     I           : Positive := 1;
+
+                     --  git's color.branch.* slots.
+                     type Slot is (Reset, Plain, Remote, Local, Current, Upstream, Worktree);
+                     Colors : array (Slot) of Unbounded_String :=
+                       [Reset    => To_Unbounded_String (ASCII.ESC & "[m"),
+                        Plain    => Null_Unbounded_String,
+                        Remote   => To_Unbounded_String (ASCII.ESC & "[31m"),
+                        Local    => Null_Unbounded_String,
+                        Current  => To_Unbounded_String (ASCII.ESC & "[32m"),
+                        Upstream => To_Unbounded_String (ASCII.ESC & "[34m"),
+                        Worktree => To_Unbounded_String (ASCII.ESC & "[36m")];
+                     Use_Color : Boolean := False;
+
+                     Head_Info : constant Version.Refs.Head_Info :=
+                       Version.Refs.Read_Head (Repo);
+                     Detached  : constant Boolean :=
+                       Version.Refs.Is_Detached (Head_Info);
+                     --  git's `head`: the branch name, or "HEAD" when detached.
+                     Head_Name : constant String :=
+                       (if Detached then "HEAD"
+                        else Version.Refs.Branch_Name (Head_Info));
+
+                     procedure Die (Text : String) is
+                     begin
+                        if Length (Fatal) = 0 then
+                           Fatal := To_Unbounded_String (Text);
+                        end if;
+                     end Die;
+
+                     procedure Bad_Usage (Text : String) is
+                     begin
+                        if not Bad then
+                           if Text'Length > 0 then
+                              Error_Line (Text);
+                           end if;
+                           Expected (Usage);
+                           Bad := True;
+                        end if;
+                     end Bad_Usage;
+
+                     --  git's parse_opt_commits (an option error: usage).
+                     function Commit_Arg (Text : String) return String is
+                     begin
+                        declare
+                           use type Version.Objects.Object_Kind;
+                           Any : constant String :=
+                             Version.Objects.To_String
+                               (Version.Revisions.Resolve (Repo, Text));
+                           Obj : constant Version.Objects.Git_Object :=
+                             Version.Objects.Read_Object
+                               (Repo, Version.Objects.To_Object_Id (Any));
+                        begin
+                           if Version.Objects.Kind (Obj)
+                              in Version.Objects.Blob_Object | Version.Objects.Tree_Object
+                           then
+                              Error_Line
+                                ("object " & Any & " is a "
+                                 & (if Version.Objects.Kind (Obj)
+                                       = Version.Objects.Blob_Object
+                                    then "blob" else "tree")
+                                 & ", not a commit");
+                           end if;
+                           return Version.Objects.To_String
+                             (Version.Revisions.Resolve_Commit (Repo, Any));
+                        exception
+                           when Ada.IO_Exceptions.Data_Error =>
+                              Bad_Usage ("no such commit " & Text);
+                              return "";
+                        end;
+                     exception
+                        when Ada.IO_Exceptions.Data_Error
+                            | Ada.IO_Exceptions.Name_Error =>
+                           Bad_Usage ("malformed object name " & Text);
+                           return "";
+                     end Commit_Arg;
+
+                     function Object_Arg (Text : String) return String is
+                     begin
+                        return Version.Objects.To_String
+                          (Version.Revisions.Resolve (Repo, Text));
+                     exception
+                        when Ada.IO_Exceptions.Data_Error
+                            | Ada.IO_Exceptions.Name_Error =>
+                           Bad_Usage ("malformed object name '" & Text & "'");
+                           return "";
+                     end Object_Arg;
+
+                     function Take_Value
+                       (Flag         : String;
+                        Inline       : String;
+                        Has_Inline   : Boolean;
+                        Last_Default : String := "";
+                        Use_Default  : Boolean := False) return String is
+                     begin
+                        if Has_Inline then
+                           return Inline;
+                        elsif I < Natural (Args.Length) then
+                           I := I + 1;
+                           return Args (I);
+                        elsif Use_Default then
+                           return Last_Default;
+                        else
+                           Bad_Usage
+                             ((if Starts (Flag, "--")
+                               then "option `" & After (Flag, "--") & "' requires a value"
+                               else "switch `" & After (Flag, "-") & "' requires a value"));
+                           return "";
+                        end if;
+                     end Take_Value;
+
+                     function Short_Value (Flag : Character; Rest : String)
+                        return String is
+                     begin
+                        if Rest'Length > 0 then
+                           return Rest;
+                        elsif I < Natural (Args.Length) then
+                           I := I + 1;
+                           return Args (I);
+                        else
+                           Bad_Usage ("switch `" & Flag & "' requires a value");
+                           return "";
+                        end if;
+                     end Short_Value;
+
+                     procedure Set_Track (Value : String) is
+                     begin
+                        if Value = "" or else Value = "direct" then
+                           Track := Version.Branches.Track_Explicit;
+                        elsif Value = "inherit" then
+                           Track := Version.Branches.Track_Inherit;
+                        else
+                           Die ("unrecognized --track argument: " & Value);
+                        end if;
+                     end Set_Track;
+
+                     function Long_Option (A : String) return Boolean is
+                        Eq   : constant Natural := Ada.Strings.Fixed.Index (A, "=");
+                        Name : constant String :=
+                          (if Eq = 0 then A else A (A'First .. Eq - 1));
+                        Val  : constant String :=
+                          (if Eq = 0 then "" else A (Eq + 1 .. A'Last));
+                        Has_Val : constant Boolean := Eq /= 0;
+                        Last    : constant Boolean := I = Natural (Args.Length);
+                     begin
+                        if Name = "--verbose" then
+                           Verbose := Verbose + 1;
+                        elsif Name = "--no-verbose" then
+                           Verbose := 0;
+                        elsif Name = "--quiet" then
+                           Quiet := True;
+                        elsif Name = "--no-quiet" then
+                           Quiet := False;
+                        elsif Name = "--track" then
+                           Set_Track (Val);
+                        elsif Name = "--no-track" then
+                           Track := Version.Branches.Track_Never;
+                        elsif Name = "--set-upstream" then
+                           Track_Set_Upstream := True;
+                        elsif Name = "--set-upstream-to" then
+                           New_Upstream := To_Unbounded_String
+                             (Take_Value (Name, Val, Has_Val));
+                           Have_Upstream := True;
+                        elsif Name = "--no-set-upstream-to" then
+                           Have_Upstream := False;
+                        elsif Name = "--unset-upstream" then
+                           Unset_Up := True;
+                        elsif Name = "--no-unset-upstream" then
+                           Unset_Up := False;
+                        elsif Name = "--color" then
+                           Color_Mode := To_Unbounded_String
+                             (if Has_Val then Val else "always");
+                        elsif Name = "--no-color" then
+                           Color_Mode := To_Unbounded_String ("never");
+                        elsif Name = "--remotes" then
+                           Kind_Local := False;
+                           Kind_Remote := True;
+                        elsif Name = "--all" then
+                           Kind_Local := True;
+                           Kind_Remote := True;
+                        elsif Name = "--contains" or else Name = "--with" then
+                           Filter.With_Commits.Append
+                             (Commit_Arg (Take_Value (Name, Val, Has_Val, "HEAD", Last)));
+                        elsif Name = "--no-contains" or else Name = "--without" then
+                           Filter.No_Commits.Append
+                             (Commit_Arg (Take_Value (Name, Val, Has_Val, "HEAD", Last)));
+                        elsif Name = "--abbrev" then
+                           declare
+                              V : constant String := Take_Value (Name, Val, Has_Val);
+                           begin
+                              if V'Length > 0 then
+                                 Abbrev := Integer'Value (V);
+                              end if;
+                           exception
+                              when Constraint_Error =>
+                                 Bad_Usage ("option `abbrev' expects a numerical value");
+                           end;
+                        elsif Name = "--no-abbrev" then
+                           Abbrev := 0;
+                        elsif Name = "--delete" then
+                           Delete := Natural'Max (Delete, 1);
+                        elsif Name = "--move" then
+                           Rename := Natural'Max (Rename, 1);
+                        elsif Name = "--copy" then
+                           Copy := Natural'Max (Copy, 1);
+                        elsif Name = "--omit-empty" then
+                           Filter.Omit_Empty := True;
+                        elsif Name = "--no-omit-empty" then
+                           Filter.Omit_Empty := False;
+                        elsif Name = "--list" then
+                           List := True;
+                        elsif Name = "--no-list" then
+                           List := False;
+                        elsif Name = "--show-current" then
+                           Show_Cur := True;
+                        elsif Name = "--no-show-current" then
+                           Show_Cur := False;
+                        elsif Name = "--create-reflog" then
+                           Reflog := True;
+                        elsif Name = "--no-create-reflog" then
+                           Reflog := False;
+                        elsif Name = "--edit-description" then
+                           Edit_Desc := True;
+                        elsif Name = "--no-edit-description" then
+                           Edit_Desc := False;
+                        elsif Name = "--force" then
+                           Force := True;
+                        elsif Name = "--no-force" then
+                           Force := False;
+                        elsif Name = "--merged" then
+                           Filter.Reachable_From.Append
+                             (Commit_Arg (Take_Value (Name, Val, Has_Val, "HEAD", Last)));
+                        elsif Name = "--no-merged" then
+                           Filter.Unreachable_From.Append
+                             (Commit_Arg (Take_Value (Name, Val, Has_Val, "HEAD", Last)));
+                        elsif Name = "--column" then
+                           declare
+                              Bad_Word : Unbounded_String;
+                           begin
+                              Version.Column.Apply_Command_Line
+                                (Col_Opts, Val, Negated => False, Bad_Word => Bad_Word);
+                              if Length (Bad_Word) > 0 then
+                                 Error_Line
+                                   ("unsupported option '" & To_String (Bad_Word) & "'");
+                                 Bad_Usage ("");
+                              end if;
+                           end;
+                        elsif Name = "--no-column" then
+                           declare
+                              Bad_Word : Unbounded_String;
+                           begin
+                              Version.Column.Apply_Command_Line
+                                (Col_Opts, "", Negated => True, Bad_Word => Bad_Word);
+                           end;
+                        elsif Name = "--sort" then
+                           Sort_Keys.Append (Take_Value (Name, Val, Has_Val));
+                        elsif Name = "--no-sort" then
+                           Sort_Keys.Clear;
+                        elsif Name = "--points-at" then
+                           Filter.Points_At.Append
+                             (Object_Arg (Take_Value (Name, Val, Has_Val)));
+                        elsif Name = "--no-points-at" then
+                           Filter.Points_At.Clear;
+                        elsif Name = "--ignore-case" then
+                           Icase := True;
+                        elsif Name = "--no-ignore-case" then
+                           Icase := False;
+                        elsif Name = "--recurse-submodules" then
+                           Recurse_Sub := True;
+                        elsif Name = "--no-recurse-submodules" then
+                           Recurse_Sub := False;
+                        elsif Name = "--format" then
+                           Format_Str := To_Unbounded_String
+                             (Take_Value (Name, Val, Has_Val));
+                           Has_Format := True;
+                        elsif Name = "--no-format" then
+                           Has_Format := False;
+                        else
+                           return False;
+                        end if;
+                        return True;
+                     end Long_Option;
+
+                     procedure Short_Options (A : String) is
+                        K : Positive := A'First + 1;
+                     begin
+                        while K <= A'Last and then not Bad loop
+                           declare
+                              C    : constant Character := A (K);
+                              Rest : constant String := A (K + 1 .. A'Last);
+                           begin
+                              case C is
+                                 when 'v' => Verbose := Verbose + 1;
+                                 when 'q' => Quiet := True;
+                                 when 'r' =>
+                                    Kind_Local := False;
+                                    Kind_Remote := True;
+                                 when 'a' =>
+                                    Kind_Local := True;
+                                    Kind_Remote := True;
+                                 when 'd' => Delete := Natural'Max (Delete, 1);
+                                 when 'D' => Delete := 2;
+                                 when 'm' => Rename := Natural'Max (Rename, 1);
+                                 when 'M' => Rename := 2;
+                                 when 'c' => Copy := Natural'Max (Copy, 1);
+                                 when 'C' => Copy := 2;
+                                 when 'l' => List := True;
+                                 when 'f' => Force := True;
+                                 when 'i' => Icase := True;
+                                 when 't' =>
+                                    --  OPTARG: only an attached value counts.
+                                    Set_Track (Rest);
+                                    return;
+                                 when 'u' =>
+                                    New_Upstream := To_Unbounded_String
+                                      (Short_Value ('u', Rest));
+                                    Have_Upstream := True;
+                                    return;
+                                 when others =>
+                                    Bad_Usage ("unknown switch `" & C & "'");
+                                    return;
+                              end case;
+                           end;
+                           K := K + 1;
+                        end loop;
+                     end Short_Options;
+
+                     function Color (S : Slot) return String is
+                       (if Use_Color then To_String (Colors (S)) else "");
+
+                     --  git's quote_literal_for_format: a literal in a
+                     --  for-each-ref template must double its '%'.
+                     function Quote_Literal (S : String) return String is
+                        R : Unbounded_String;
+                     begin
+                        for Ch of S loop
+                           if Ch = '%' then
+                              Append (R, "%%");
+                           else
+                              Append (R, Ch);
+                           end if;
+                        end loop;
+                        return To_String (R);
+                     end Quote_Literal;
+
+                     function Image (N : Integer) return String is
+                       (Ada.Strings.Fixed.Trim (Integer'Image (N), Ada.Strings.Both));
+
+                     --  git's build_format.
+                     function Build_Format
+                       (Max_Width : Natural; Remote_Prefix : String) return String
+                     is
+                        L : Unbounded_String;
+                        R : Unbounded_String;
+                     begin
+                        Append (L, "%(if)%(HEAD)%(then)* " & Color (Current)
+                                & "%(else)%(if)%(worktreepath)%(then)+ " & Color (Worktree)
+                                & "%(else)  " & Color (Local) & "%(end)%(end)");
+                        Append (R, "  " & Color (Remote));
+                        if Verbose > 0 then
+                           declare
+                              Obname : constant String :=
+                                (if Abbrev < 0 then "%(objectname:short)"
+                                 elsif Abbrev = 0 then "%(objectname)"
+                                 else "%(objectname:short=" & Image (Abbrev) & ")");
+                           begin
+                              Append (L, "%(align:" & Image (Max_Width)
+                                      & ",left)%(refname:lstrip=2)%(end)");
+                              Append (L, Color (Reset));
+                              Append (L, " " & Obname & " ");
+                              if Verbose > 1 then
+                                 Append (L, "%(if:notequals=*)%(HEAD)%(then)%(if)%(worktreepath)%(then)("
+                                         & Color (Worktree) & "%(worktreepath)" & Color (Reset)
+                                         & ") %(end)%(end)");
+                                 Append (L, "%(if)%(upstream)%(then)[" & Color (Upstream)
+                                         & "%(upstream:short)" & Color (Reset)
+                                         & "%(if)%(upstream:track)%(then): "
+                                         & "%(upstream:track,nobracket)%(end)] %(end)"
+                                         & "%(contents:subject)");
+                              else
+                                 Append (L, "%(if)%(upstream:track)%(then)%(upstream:track) "
+                                         & "%(end)%(contents:subject)");
+                              end if;
+                              Append (R, "%(align:" & Image (Max_Width) & ",left)"
+                                      & Quote_Literal (Remote_Prefix)
+                                      & "%(refname:lstrip=2)%(end)" & Color (Reset)
+                                      & "%(if)%(symref)%(then) -> %(symref:short)"
+                                      & "%(else) " & Obname & " %(contents:subject)%(end)");
+                           end;
+                        else
+                           Append (L, "%(refname:lstrip=2)" & Color (Reset)
+                                   & "%(if)%(symref)%(then) -> %(symref:short)%(end)");
+                           Append (R, Quote_Literal (Remote_Prefix)
+                                   & "%(refname:lstrip=2)" & Color (Reset)
+                                   & "%(if)%(symref)%(then) -> %(symref:short)%(end)");
+                        end if;
+                        return "%(if:notequals=refs/remotes)%(refname:rstrip=-2)%(then)"
+                          & To_String (L) & "%(else)" & To_String (R) & "%(end)";
+                     end Build_Format;
+
+                     --  git's utf8_strwidth stand-in for ref names.
+                     function Width (S : String) return Natural is
+                        N : Natural := 0;
+                     begin
+                        for Ch of S loop
+                           if Character'Pos (Ch) not in 16#80# .. 16#BF# then
+                              N := N + 1;
+                           end if;
+                        end loop;
+                        return N;
+                     end Width;
+
+                     --  git's branch_checked_out: the worktree holding Name.
+                     function Worktree_Of (Name : String) return String is
+                     begin
+                        if not Detached and then Head_Name = Name then
+                           return Version.Repository.Root_Path (Repo);
+                        end if;
+                        for W of Version.Worktrees.List loop
+                           if not W.Detached and then To_String (W.Branch) = Name then
+                              return To_String (W.Path);
+                           end if;
+                        end loop;
+                        return "";
+                     exception
+                        when others =>
+                           return "";
+                     end Worktree_Of;
+
+                     function Abbrev_Of (Id : String) return String is
+                       (Id (Id'First .. Id'First
+                            + Version.Revisions.Unique_Abbrev_Length
+                                (Repo, Version.Objects.To_Object_Id (Id), 7) - 1));
+
+                     Noncreate : Natural;
+                  begin
+                     --  Config: branch.sort, column.*, color.branch[.slot].
+                     for Item of Version.Config.Read_All (Repo) loop
+                        declare
+                           Full : constant String :=
+                             Version.Config.Config_Entry_Name (Item);
+                           Key  : constant String :=
+                             Ada.Characters.Handling.To_Lower (Full);
+                           Val  : constant String := To_String (Item.Value);
+                           Bad_Word : Unbounded_String;
+                        begin
+                           if Key = "branch.sort" then
+                              Sort_Keys.Append (Val);
+                           elsif Key = "column.ui" or else Key = "column.branch" then
+                              Version.Column.Parse (Val, Col_Opts, Bad_Word);
+                              if Length (Bad_Word) > 0 then
+                                 Error_Line
+                                   ("unsupported option '" & To_String (Bad_Word) & "'");
+                                 Die ("invalid column." & Key (Key'First + 7 .. Key'Last)
+                                      & " mode " & Val);
+                              end if;
+                           elsif Key = "color.branch" then
+                              Color_Mode := To_Unbounded_String
+                                (if Ada.Characters.Handling.To_Lower (Val) = "always"
+                                 then "always"
+                                 elsif Ada.Characters.Handling.To_Lower (Val)
+                                       in "never" | "false" | "no" | "off" | "0"
+                                 then "never" else "auto");
+                           elsif Starts (Key, "color.branch.") then
+                              declare
+                                 S : constant String := Key (Key'First + 13 .. Key'Last);
+                              begin
+                                 for Sl in Slot loop
+                                    if Ada.Characters.Handling.To_Lower (Slot'Image (Sl)) = S
+                                    then
+                                       Colors (Sl) :=
+                                         To_Unbounded_String (Version.Color.To_Ansi (Val));
+                                    end if;
+                                 end loop;
+                              end;
+                           end if;
+                        end;
                      end loop;
 
-                     if Copy then
-                        --  `-c [<src>] <dst>`: src defaults to the current
-                        --  branch. Copy is a create at the source's commit.
-                        declare
-                           Src : constant String :=
-                             (if Natural (Names.Length) >= 2
-                              then Names.First_Element
-                              else Version.Refs.Current_Branch_Name (Repo));
-                           Dst : constant String := Names.Last_Element;
-                        begin
-                           if Names.Is_Empty then
-                              Usage_Error ("branch -c needs a name", Usage);
-                              return;
-                           end if;
-                           Version.Branch.Create_Branch
-                             (Dst,
-                              Version.Objects.To_String
-                                (Version.Revisions.Resolve_Commit (Repo, Src)));
-                        end;
-                        return;
-                     end if;
-
-                     if Names.Is_Empty then
-                        Usage_Error ("branch needs a name", Usage);
-                        return;
-                     end if;
+                     for K in 2 .. Count loop
+                        Args.Append (Arg (K));
+                     end loop;
 
                      declare
-                        Name  : constant String := Names.First_Element;
-                        Start : constant String :=
-                          (if Natural (Names.Length) >= 2
-                           then Names.Element (Names.First_Index + 1)
-                           else "HEAD");
-                        Ref   : constant String := "refs/heads/" & Name;
+                        No_More : Boolean := False;
                      begin
-                        --  Without -f, a name that already exists is a fatal
-                        --  error, as git reports.
-                        if Version.Refs.Ref_Exists (Repo, Ref) then
-                           if not Force then
-                              Stderr_Line
-                                ("fatal: a branch named '" & Name
-                                 & "' already exists");
-                              Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
-                              return;
-                           end if;
-                           --  -f moves the existing branch: clear it first so
-                           --  the create writes it fresh at the new start.
-                           Version.Branch.Delete_Branch
-                             (Name => Name, Force => True);
-                        end if;
+                        while I <= Natural (Args.Length) and then not Bad
+                          and then Length (Fatal) = 0
+                        loop
+                           declare
+                              A : constant String := Args (I);
+                           begin
+                              if No_More or else A'Length < 2 or else A (A'First) /= '-'
+                              then
+                                 Operands.Append (A);
+                              elsif A = "--" then
+                                 No_More := True;
+                              elsif Starts (A, "--") then
+                                 if not Long_Option (A) then
+                                    Bad_Usage
+                                      ("unknown option `" & After (A, "--") & "'");
+                                 end if;
+                              else
+                                 Short_Options (A);
+                              end if;
+                           end;
+                           I := I + 1;
+                        end loop;
+                     end;
 
-                        Version.Branch.Create_Branch
-                          (Name,
-                           Version.Objects.To_String
-                             (Version.Revisions.Resolve_Commit (Repo, Start)));
+                     if Bad or else Length (Fatal) > 0 then
+                        goto Branch_Report;
+                     end if;
 
-                        --  git sets up tracking when the start point is a
-                        --  remote-tracking ref (its autoSetupMerge default) or
-                        --  when -t is given, unless --no-track. It then prints
-                        --  "branch '<name>' set up to track '<upstream>'.".
+                     --  --color: only "always" colours a pipe; color.ui's
+                     --  default of auto does not.
+                     if Length (Color_Mode) = 0 then
                         declare
-                           Rt_Ref : constant String :=
-                             "refs/remotes/" & Start;
-                           From_Remote : constant Boolean :=
-                             Version.Refs.Ref_Exists (Repo, Rt_Ref);
-                           Slash : constant Natural :=
-                             Ada.Strings.Fixed.Index
-                               (Start, "/", Ada.Strings.Backward);
+                           UI : constant String :=
+                             Ada.Characters.Handling.To_Lower (Config_Value ("color.ui"));
                         begin
-                           if not No_Track
-                             and then (Want_Track or else From_Remote)
-                             and then From_Remote and then Slash /= 0
-                           then
-                              Version.Tracking.Set_Upstream
-                                (Repo        => Repo,
-                                 Branch_Name => Name,
-                                 Remote_Name =>
-                                   Start (Start'First .. Slash - 1),
-                                 Merge_Ref   =>
-                                   "refs/heads/"
-                                   & Start (Slash + 1 .. Start'Last));
-                              Success_Line
-                                ("branch '" & Name & "' set up to track '"
-                                 & Start & "'.");
+                           Use_Color := UI = "always";
+                        end;
+                     else
+                        Use_Color := To_String (Color_Mode) = "always";
+                     end if;
+
+                     if Delete = 0 and then Rename = 0 and then Copy = 0
+                       and then not Edit_Desc and then not Have_Upstream
+                       and then not Show_Cur and then not Unset_Up
+                       and then Operands.Is_Empty
+                     then
+                        List := True;
+                     end if;
+                     if not Filter.With_Commits.Is_Empty or else not Filter.No_Commits.Is_Empty
+                       or else not Filter.Reachable_From.Is_Empty
+                       or else not Filter.Unreachable_From.Is_Empty
+                       or else not Filter.Points_At.Is_Empty
+                     then
+                        List := True;
+                     end if;
+
+                     Noncreate := Boolean'Pos (Delete > 0) + Boolean'Pos (Rename > 0)
+                       + Boolean'Pos (Copy > 0) + Boolean'Pos (Have_Upstream)
+                       + Boolean'Pos (Show_Cur) + Boolean'Pos (List)
+                       + Boolean'Pos (Edit_Desc) + Boolean'Pos (Unset_Up);
+                     if Noncreate > 1 then
+                        Bad_Usage ("");
+                        goto Branch_Report;
+                     end if;
+
+                     if Recurse_Sub then
+                        if not Config_Bool ("submodule.propagateBranches", False) then
+                           Die ("branch with --recurse-submodules can only be used if "
+                                & "submodule.propagateBranches is enabled");
+                        elsif Noncreate > 0 then
+                           Die ("--recurse-submodules can only be used to create branches");
+                        end if;
+                        if Length (Fatal) > 0 then
+                           goto Branch_Report;
+                        end if;
+                     end if;
+
+                     Filter.Ignore_Case := Icase;
+                     Version.Column.Finalize (Col_Opts, Stdout_Is_Tty => False);
+                     if Verbose > 0 then
+                        if Col_Opts.From_Command_Line
+                          and then Version.Column.Active (Col_Opts)
+                        then
+                           Die ("options '--column' and '--verbose' cannot be used together");
+                           goto Branch_Report;
+                        end if;
+                        Col_Opts.Enable := Version.Column.Disabled;
+                     end if;
+
+                     if Force then
+                        Delete := Natural'Min (Delete * 2, 2);
+                        Rename := Natural'Min (Rename * 2, 2);
+                        Copy := Natural'Min (Copy * 2, 2);
+                     end if;
+
+                     if Delete > 0 then
+                        --  git's delete_branches.
+                        if Operands.Is_Empty then
+                           Die ("branch name required");
+                           goto Branch_Report;
+                        end if;
+                        if Kind_Local and then Kind_Remote then
+                           Die ("cannot use -a with -d");
+                           goto Branch_Report;
+                        end if;
+                        declare
+                           Remote_Kind : constant Boolean := Kind_Remote;
+                           Forced      : constant Boolean := Delete > 1 or else Remote_Kind;
+                           Failed      : Boolean := False;
+                           Names       : Version.Ref_Format.String_Vectors.Vector;
+                           Descs       : Version.Ref_Format.String_Vectors.Vector;
+                           Head_Id     : constant String :=
+                             (if Version.Objects.Is_Valid_Hex_Object_Id
+                                   (Version.Refs.Current_Commit_Id (Repo))
+                              then Version.Refs.Current_Commit_Id (Repo) else "");
+
+                           --  git's branch_merged: against the upstream when
+                           --  there is one, else HEAD, with git's reminders
+                           --  when the two disagree.
+                           function Merged (Name, Commit : String) return Boolean is
+                              Ref_Name : Unbounded_String;
+                              Ref_Rev  : Unbounded_String;
+                              Result   : Boolean;
+                           begin
+                              if not Remote_Kind
+                                and then Version.Tracking.Has_Upstream (Repo, Name)
+                              then
+                                 declare
+                                    Up : constant String :=
+                                      Version.Tracking.Remote_Tracking_Ref
+                                        (Version.Tracking.Upstream (Repo, Name));
+                                 begin
+                                    if Version.Refs.Ref_Exists (Repo, Up) then
+                                       Ref_Name := To_Unbounded_String (Up);
+                                       Ref_Rev := To_Unbounded_String
+                                         (Version.Objects.To_String
+                                            (Version.Revisions.Resolve_Commit (Repo, Up)));
+                                    end if;
+                                 exception
+                                    when others =>
+                                       null;
+                                 end;
+                              end if;
+                              if Length (Ref_Rev) = 0 then
+                                 if Head_Id'Length = 0 then
+                                    return False;
+                                 end if;
+                                 return Version.History.Is_Ancestor
+                                   (Repo, Version.Objects.To_Object_Id (Commit),
+                                    Version.Objects.To_Object_Id (Head_Id));
+                              end if;
+                              Result := Version.History.Is_Ancestor
+                                (Repo, Version.Objects.To_Object_Id (Commit),
+                                 Version.Objects.To_Object_Id (To_String (Ref_Rev)));
+                              if Head_Id'Length > 0 and then To_String (Ref_Rev) /= Head_Id
+                              then
+                                 declare
+                                    Expect : constant Boolean :=
+                                      Version.History.Is_Ancestor
+                                        (Repo, Version.Objects.To_Object_Id (Commit),
+                                         Version.Objects.To_Object_Id (Head_Id));
+                                 begin
+                                    if Expect /= Result then
+                                       if Result then
+                                          Stderr_Line
+                                            ("warning: deleting branch '" & Name
+                                             & "' that has been merged to");
+                                          Stderr_Line
+                                            ("         '" & To_String (Ref_Name)
+                                             & "', but not yet merged to HEAD");
+                                       else
+                                          Stderr_Line
+                                            ("warning: not deleting branch '" & Name
+                                             & "' that is not yet merged to");
+                                          Stderr_Line
+                                            ("         '" & To_String (Ref_Name)
+                                             & "', even though it is merged to HEAD");
+                                       end if;
+                                    end if;
+                                 end;
+                              end if;
+                              return Result;
+                           end Merged;
+                        begin
+                           for N of Operands loop
+                              declare
+                                 Ref : constant String :=
+                                   (if Remote_Kind then "refs/remotes/" & N
+                                    else "refs/heads/" & N);
+                              begin
+                                 if not Remote_Kind then
+                                    declare
+                                       Path : constant String := Worktree_Of (N);
+                                    begin
+                                       if Path'Length > 0 then
+                                          Error_Line
+                                            ("cannot delete branch '" & N
+                                             & "' used by worktree at '" & Path & "'");
+                                          Failed := True;
+                                          goto Next_Name;
+                                       end if;
+                                    end;
+                                 end if;
+                                 if not Version.Refs.Ref_Exists (Repo, Ref) then
+                                    if Remote_Kind then
+                                       Error_Line
+                                         ("remote-tracking branch '" & N & "' not found");
+                                    elsif Version.Refs.Ref_Exists
+                                            (Repo, "refs/remotes/" & N)
+                                    then
+                                       Error_Line
+                                         ("branch '" & N & "' not found." & LF
+                                          & "Did you forget --remote?");
+                                    else
+                                       Error_Line ("branch '" & N & "' not found");
+                                    end if;
+                                    Failed := True;
+                                    goto Next_Name;
+                                 end if;
+                                 declare
+                                    Id     : constant String :=
+                                      Version.Objects.To_String
+                                        (Version.Refs.Resolve_Ref (Repo, Ref));
+                                    Commit : Unbounded_String;
+                                 begin
+                                    if not Forced then
+                                       begin
+                                          Commit := To_Unbounded_String
+                                            (Version.Objects.To_String
+                                               (Version.Revisions.Resolve_Commit (Repo, Id)));
+                                       exception
+                                          when others =>
+                                             Error_Line
+                                               ("couldn't look up commit object for '"
+                                                & Ref & "'");
+                                             Failed := True;
+                                             goto Next_Name;
+                                       end;
+                                       if not Merged (N, To_String (Commit)) then
+                                          Error_Line
+                                            ("the branch '" & N & "' is not fully merged");
+                                          if Config_Bool ("advice.forceDeleteBranch", True)
+                                          then
+                                             Stderr_Line
+                                               ("hint: If you are sure you want to delete "
+                                                & "it, run 'git branch -D " & N & "'");
+                                             Stderr_Line
+                                               ("hint: Disable this message with ""git "
+                                                & "config set advice.forceDeleteBranch "
+                                                & "false""");
+                                          end if;
+                                          Failed := True;
+                                          goto Next_Name;
+                                       end if;
+                                    end if;
+                                    Names.Append (N);
+                                    Descs.Append (Abbrev_Of (Id));
+                                 end;
+                              end;
+                              <<Next_Name>>
+                              null;
+                           end loop;
+
+                           for K in 1 .. Natural (Names.Length) loop
+                              begin
+                                 Version.Branches.Remove (Repo, Names (K), Remote_Kind);
+                                 if not Quiet then
+                                    Success_Line
+                                      ((if Remote_Kind then "Deleted remote-tracking branch "
+                                        else "Deleted branch ")
+                                       & Names (K) & " (was " & Descs (K) & ").");
+                                 end if;
+                              exception
+                                 when E : others =>
+                                    Error_Line (User_Error_Text (E));
+                                    Failed := True;
+                              end;
+                           end loop;
+                           if Failed then
+                              Set_Command_Failure;
                            end if;
                         end;
-                     end;
-                  end;
+                        goto Branch_Report;
+                     end if;
 
-               else
-                  Usage_Error ("unknown branch subcommand: " & Arg (2), Usage);
-                  return;
+                     if Show_Cur then
+                        if not Detached then
+                           Success_Line (Head_Name);
+                        end if;
+                        goto Branch_Report;
+                     end if;
+
+                     if List then
+                        declare
+                           Fmt    : Unbounded_String;
+                           Pats   : Version.Ref_Format.String_Vectors.Vector;
+                           Items  : Version.Ref_Format.String_Vectors.Vector;
+                           Remote_Prefix : constant String :=
+                             (if Kind_Local then "remotes/" else "");
+                           Max_Width : Natural := 0;
+                        begin
+                           Filter.Match_As_Path := False;
+                           Filter.Use_Color := Use_Color;
+                           if Kind_Local and then Kind_Remote then
+                              Filter.Under := To_Unbounded_String ("refs/heads/");
+                              Filter.Under_Alt := To_Unbounded_String ("refs/remotes/");
+                           elsif Kind_Remote then
+                              Filter.Under := To_Unbounded_String ("refs/remotes/");
+                           else
+                              Filter.Under := To_Unbounded_String ("refs/heads/");
+                           end if;
+                           Filter.Include_Detached_Head := Kind_Local and then Detached;
+                           for Op of Operands loop
+                              Pats.Append (Op);
+                           end loop;
+
+                           begin
+                              if Verbose > 0 and then not Has_Format then
+                                 --  git's calc_maxwidth over the selected refs.
+                                 for Line of Version.Ref_Format.For_Each_Ref
+                                               (Repo, Pats, "%(refname)", Sort_Keys, Filter)
+                                 loop
+                                    declare
+                                       W : Natural;
+                                    begin
+                                       if Starts (Line, "refs/heads/") then
+                                          W := Width (After (Line, "refs/heads/"));
+                                       elsif Starts (Line, "refs/remotes/") then
+                                          W := Width (After (Line, "refs/remotes/"))
+                                            + Remote_Prefix'Length;
+                                       else
+                                          W := Width (Line);   --  the HEAD description
+                                       end if;
+                                       Max_Width := Natural'Max (Max_Width, W);
+                                    end;
+                                 end loop;
+                              end if;
+                              Fmt := To_Unbounded_String
+                                (if Has_Format then To_String (Format_Str)
+                                 else Build_Format (Max_Width, Remote_Prefix));
+                              for Line of Version.Ref_Format.For_Each_Ref
+                                            (Repo, Pats, To_String (Fmt), Sort_Keys, Filter)
+                              loop
+                                 Items.Append (Line);
+                              end loop;
+                           exception
+                              when E : Constraint_Error
+                                     | Ada.IO_Exceptions.Data_Error =>
+                                 Die (User_Error_Text (E));
+                                 goto Branch_Report;
+                           end;
+                           if Version.Column.Active (Col_Opts) then
+                              Version.Console.Put (Version.Column.Render (Items, Col_Opts));
+                           else
+                              for Line of Items loop
+                                 Success_Line (Line);
+                              end loop;
+                           end if;
+                        end;
+                        goto Branch_Report;
+                     end if;
+
+                     if Edit_Desc then
+                        declare
+                           Name : Unbounded_String;
+                        begin
+                           if Operands.Is_Empty then
+                              if Detached then
+                                 Die ("cannot give description to detached HEAD");
+                                 goto Branch_Report;
+                              end if;
+                              Name := To_Unbounded_String (Head_Name);
+                           elsif Natural (Operands.Length) = 1 then
+                              Name := To_Unbounded_String (Operands (1));
+                           else
+                              Die ("cannot edit description of more than one branch");
+                              goto Branch_Report;
+                           end if;
+                           if not Version.Refs.Ref_Exists
+                                    (Repo, "refs/heads/" & To_String (Name))
+                           then
+                              if Operands.Is_Empty
+                                or else Worktree_Of (To_String (Name))'Length > 0
+                              then
+                                 Error_Line
+                                   ("no commit on branch '" & To_String (Name) & "' yet");
+                              else
+                                 Error_Line ("no branch named '" & To_String (Name) & "'");
+                              end if;
+                              Set_Command_Failure;
+                              goto Branch_Report;
+                           end if;
+                           --  git's edit_branch_description.
+                           declare
+                              Key  : constant String :=
+                                "branch." & To_String (Name) & ".description";
+                              Existing : constant String := Config_Value (Key);
+                              Exists   : constant Boolean :=
+                                Version.Config.Has_Key (Repo, Key);
+                              Seed : Unbounded_String := To_Unbounded_String (Existing);
+                              Path : constant String :=
+                                Version.Files.Join
+                                  (Version.Repository.Git_Dir (Repo), "EDIT_DESCRIPTION");
+                              Text : Unbounded_String;
+                           begin
+                              if Length (Seed) = 0
+                                or else Element (Seed, Length (Seed)) /= LF
+                              then
+                                 Append (Seed, LF);
+                              end if;
+                              Append (Seed, "# Please edit the description for the branch"
+                                      & LF & "#   " & To_String (Name) & LF
+                                      & "# Lines starting with '#' will be stripped." & LF);
+                              begin
+                                 Text := To_Unbounded_String
+                                   (Version.Editor.Edit_File (Repo, Path, To_String (Seed)));
+                              exception
+                                 when E : Ada.IO_Exceptions.Data_Error =>
+                                    declare
+                                       M : constant String :=
+                                         Ada.Exceptions.Exception_Message (E);
+                                       L : constant Natural :=
+                                         (if M'Length > 0 and then M (M'Last) = '.'
+                                          then M'Last - 1 else M'Last);
+                                    begin
+                                       Error_Line
+                                         (Ada.Characters.Handling.To_Lower
+                                            (M (M'First .. M'First))
+                                          & M (M'First + 1 .. L));
+                                    end;
+                                    Set_Command_Failure;
+                                    goto Branch_Report;
+                              end;
+                              Text := To_Unbounded_String
+                                (Version.Stripspace.Clean
+                                   (To_String (Text), Version.Stripspace.Strip_Comments));
+                              if Length (Text) > 0 then
+                                 Version.Config.Set_Key (Repo, Key, To_String (Text));
+                              elsif Exists then
+                                 Version.Config.Unset_All (Repo, Key);
+                              end if;
+                           end;
+                        end;
+                        goto Branch_Report;
+                     end if;
+
+                     if Copy > 0 or else Rename > 0 then
+                        declare
+                           Is_Copy : constant Boolean := Copy > 0;
+                           Forced  : constant Boolean := Copy + Rename > 1;
+                        begin
+                           if Operands.Is_Empty then
+                              Die ("branch name required");
+                           elsif Natural (Operands.Length) = 1 and then Detached then
+                              Die (if Is_Copy
+                                   then "cannot copy the current branch while not on any"
+                                   else "cannot rename the current branch while not on any");
+                           elsif Natural (Operands.Length) = 1 then
+                              Version.Branches.Rename_Or_Copy
+                                (Repo, Head_Name, Operands (1), Is_Copy, Forced,
+                                 Head_Branch => (if Detached then "" else Head_Name));
+                           elsif Natural (Operands.Length) = 2 then
+                              Version.Branches.Rename_Or_Copy
+                                (Repo, Operands (1), Operands (2), Is_Copy, Forced,
+                                 Head_Branch => (if Detached then "" else Head_Name));
+                           else
+                              Die (if Is_Copy then "too many branches for a copy operation"
+                                   else "too many arguments for a rename operation");
+                           end if;
+                        exception
+                           when E : Version.Branches.Branch_Error =>
+                              declare
+                                 M : constant String :=
+                                   Ada.Exceptions.Exception_Message (E);
+                              begin
+                                 Die (M);
+                                 if M'Length > 27
+                                   and then M (M'Last - 26 .. M'Last)
+                                            = " is not a valid branch name"
+                                   and then Config_Bool ("advice.refSyntax", True)
+                                 then
+                                    Fatal := Fatal & LF
+                                      & "hint: See 'git help check-ref-format'" & LF
+                                      & "hint: Disable this message with ""git config set "
+                                      & "advice.refSyntax false""";
+                                 end if;
+                              end;
+                        end;
+                        goto Branch_Report;
+                     end if;
+
+                     if Have_Upstream then
+                        declare
+                           Name : Unbounded_String;
+                           Note : Unbounded_String;
+                        begin
+                           if Operands.Is_Empty then
+                              if Detached then
+                                 Die ("could not set upstream of HEAD to "
+                                      & To_String (New_Upstream)
+                                      & " when it does not point to any branch");
+                                 goto Branch_Report;
+                              end if;
+                              Name := To_Unbounded_String (Head_Name);
+                           elsif Natural (Operands.Length) = 1 then
+                              if Operands (1) = "HEAD" and then Detached then
+                                 Die ("could not set upstream of HEAD to "
+                                      & To_String (New_Upstream)
+                                      & " when it does not point to any branch");
+                                 goto Branch_Report;
+                              end if;
+                              Name := To_Unbounded_String
+                                (if Operands (1) = "HEAD" then Head_Name else Operands (1));
+                           else
+                              Die ("too many arguments to set new upstream");
+                              goto Branch_Report;
+                           end if;
+                           if not Version.Refs.Ref_Exists
+                                    (Repo, "refs/heads/" & To_String (Name))
+                           then
+                              if Operands.Is_Empty
+                                or else Worktree_Of (To_String (Name))'Length > 0
+                              then
+                                 Die ("no commit on branch '" & To_String (Name) & "' yet");
+                              else
+                                 Die ("branch '" & To_String (Name) & "' does not exist");
+                              end if;
+                              goto Branch_Report;
+                           end if;
+                           Version.Branches.Set_Upstream_To
+                             (Repo, To_String (Name), To_String (New_Upstream), Quiet, Note);
+                           if Length (Note) > 0 then
+                              Success_Line (To_String (Note));
+                           end if;
+                        exception
+                           when E : Version.Branches.Branch_Error =>
+                              Die (Ada.Exceptions.Exception_Message (E));
+                              if Config_Bool ("advice.setUpstreamFailure", True) then
+                                 Fatal := Fatal & LF & "hint:" & LF
+                                   & "hint: If you are planning on basing your work on an "
+                                   & "upstream" & LF
+                                   & "hint: branch that already exists at the remote, you may "
+                                   & "need to" & LF
+                                   & "hint: run ""git fetch"" to retrieve it." & LF
+                                   & "hint:" & LF
+                                   & "hint: If you are planning to push out a new local "
+                                   & "branch that" & LF
+                                   & "hint: will track its remote counterpart, you may want "
+                                   & "to use" & LF
+                                   & "hint: ""git push -u"" to set the upstream config as you "
+                                   & "push." & LF
+                                   & "hint: Disable this message with ""git config set "
+                                   & "advice.setUpstreamFailure false""";
+                              end if;
+                        end;
+                        goto Branch_Report;
+                     end if;
+
+                     if Unset_Up then
+                        declare
+                           Name : Unbounded_String;
+                        begin
+                           if Operands.Is_Empty then
+                              if Detached then
+                                 Die ("could not unset upstream of HEAD when it does "
+                                      & "not point to any branch");
+                                 goto Branch_Report;
+                              end if;
+                              Name := To_Unbounded_String (Head_Name);
+                           elsif Natural (Operands.Length) = 1 then
+                              if Operands (1) = "HEAD" and then Detached then
+                                 Die ("could not unset upstream of HEAD when it does "
+                                      & "not point to any branch");
+                                 goto Branch_Report;
+                              end if;
+                              Name := To_Unbounded_String
+                                (if Operands (1) = "HEAD" then Head_Name else Operands (1));
+                           else
+                              Die ("too many arguments to unset upstream");
+                              goto Branch_Report;
+                           end if;
+                           Version.Branches.Unset_Upstream (Repo, To_String (Name));
+                        exception
+                           when E : Version.Branches.Branch_Error =>
+                              Die (Ada.Exceptions.Exception_Message (E));
+                        end;
+                        goto Branch_Report;
+                     end if;
+
+                     --  Creation.
+                     if Noncreate = 0 and then not Operands.Is_Empty
+                       and then Natural (Operands.Length) <= 2
+                     then
+                        declare
+                           Name  : constant String := Operands (1);
+                           Start : constant String :=
+                             (if Natural (Operands.Length) = 2 then Operands (2)
+                              else Head_Name);
+                           Note  : Unbounded_String;
+                           Warn  : Unbounded_String;
+                        begin
+                           if Kind_Remote then
+                              Die ("the -a, and -r, options to 'git branch' do not take a "
+                                   & "branch name." & LF
+                                   & "Did you mean to use: -a|-r --list <pattern>?");
+                              goto Branch_Report;
+                           end if;
+                           if Track_Set_Upstream then
+                              Die ("the '--set-upstream' option is no longer supported. "
+                                   & "Please use '--track' or '--set-upstream-to' instead");
+                              goto Branch_Report;
+                           end if;
+                           Version.Branches.Create
+                             (Repo, Name, Start, Force, Track, Quiet, Reflog, Note, Warn);
+                           if Length (Warn) > 0 then
+                              Stderr_Line ("warning: " & To_String (Warn));
+                           end if;
+                           if Length (Note) > 0 then
+                              Success_Line (To_String (Note));
+                           end if;
+                        exception
+                           when E : Version.Branches.Branch_Error =>
+                              declare
+                                 M : constant String :=
+                                   Ada.Exceptions.Exception_Message (E);
+                              begin
+                                 Die (M);
+                                 if M'Length > 27
+                                   and then M (M'Last - 26 .. M'Last)
+                                            = " is not a valid branch name"
+                                   and then Config_Bool ("advice.refSyntax", True)
+                                 then
+                                    Fatal := Fatal & LF
+                                      & "hint: See 'git help check-ref-format'" & LF
+                                      & "hint: Disable this message with ""git config set "
+                                      & "advice.refSyntax false""";
+                                 end if;
+                              end;
+                        end;
+                        goto Branch_Report;
+                     end if;
+
+                     Bad_Usage ("");
+
+                     <<Branch_Report>>
+                     if Length (Fatal) > 0 then
+                        Stderr_Line ("fatal: " & To_String (Fatal));
+                        Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                     end if;
+                  end;
                end if;
             end;
 

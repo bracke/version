@@ -1745,7 +1745,15 @@ package body Version.CLI.Tests is
    is
       Root : constant String :=
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
-      Usage : constant String := "version branch SUBCOMMAND [ARGS]";
+      Usage : constant String :=
+        "version branch [<options>] [-r | -a] [--merged] [--no-merged]"
+        & " | [<options>] [-f] [--recurse-submodules] <branch-name> [<start-point>]"
+        & " | [<options>] [-l] [<pattern>...]"
+        & " | [<options>] [-r] (-d | -D) <branch-name>..."
+        & " | [<options>] (-m | -M) [<old-branch>] <new-branch>"
+        & " | [<options>] (-c | -C) [<old-branch>] <new-branch>"
+        & " | [<options>] [-r | -a] [--points-at]"
+        & " | [<options>] [-r | -a] [--format]";
 
       procedure Check_Usage_Failure
         (Command : String; Detail : String; Context : String)
@@ -1786,10 +1794,22 @@ package body Version.CLI.Tests is
       --  error; that behaviour is byte-oracled in Plumbing_Matches_Git.
       --  `branch frobnicate` now creates a branch (git's positional syntax);
       --  an unknown option is what still fails.
-      Check_Usage_Failure
-        ("branch --frobnicate",
-         "unknown branch subcommand: --frobnicate",
-         "branch unknown subcommand");
+      --  An unknown option gets git's parse-options wording and its usage
+      --  (git's grammar needs the repository open first, as git does).
+      Version.Init.Init (Root);
+      declare
+         Output : Ada.Strings.Unbounded.Unbounded_String;
+         Status : Integer;
+      begin
+         Run_CLI_Capture (Root, "branch --frobnicate", Output, Status);
+         Assert
+           (Status = Integer (Version.CLI.Usage_Exit_Status),
+            "branch unknown option must fail with usage status");
+         Assert_Contains
+           (Ada.Strings.Unbounded.To_String (Output),
+            "error: unknown option `frobnicate'",
+            "branch unknown option detail");
+      end;
       Check_Usage_Failure
         ("branch list --contains",
          "missing branch list revision",

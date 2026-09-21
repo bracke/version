@@ -279,6 +279,16 @@ package body Version.CLI.Help is
             "Restore working tree or staged paths selected by pathspec.");
       elsif Name = "branch" then
          Append_Line (Text, "Usage:");
+         Append_Line
+           (Text, "  version branch [<options>] [-r | -a] [--merged] [--no-merged]");
+         Append_Line
+           (Text, "  version branch [<options>] [-f] [--recurse-submodules] <branch-name> [<start-point>]");
+         Append_Line (Text, "  version branch [<options>] [-l] [<pattern>...]");
+         Append_Line (Text, "  version branch [<options>] [-r] (-d | -D) <branch-name>...");
+         Append_Line (Text, "  version branch [<options>] (-m | -M) [<old-branch>] <new-branch>");
+         Append_Line (Text, "  version branch [<options>] (-c | -C) [<old-branch>] <new-branch>");
+         Append_Line (Text, "  version branch [<options>] [-r | -a] [--points-at]");
+         Append_Line (Text, "  version branch [<options>] [-r | -a] [--format]");
          Append_Line (Text, "  version branch list");
          Append_Line (Text, "  version branch list --verbose");
          Append_Line (Text, "  version branch list --contains REV");
@@ -1044,6 +1054,14 @@ package body Version.CLI.Help is
          Line ("patch selection (-p) is not supported.");
       elsif Name = "branch" then
          Line ("Usage:");
+         Line ("  version branch [<options>] [-r | -a] [--merged] [--no-merged]");
+         Line ("  version branch [<options>] [-f] [--recurse-submodules] <branch-name> [<start-point>]");
+         Line ("  version branch [<options>] [-l] [<pattern>...]");
+         Line ("  version branch [<options>] [-r] (-d | -D) <branch-name>...");
+         Line ("  version branch [<options>] (-m | -M) [<old-branch>] <new-branch>");
+         Line ("  version branch [<options>] (-c | -C) [<old-branch>] <new-branch>");
+         Line ("  version branch [<options>] [-r | -a] [--points-at]");
+         Line ("  version branch [<options>] [-r | -a] [--format]");
          Line ("  version branch list");
          Line ("  version branch list --verbose");
          Line ("  version branch list --contains REV");

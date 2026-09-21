@@ -7232,6 +7232,250 @@ package body CLI_Integration_Tests is
       Run_Parity_Transcript (Root, Scenario, "tag");
    end Tag_Option_Surface_Matches_Git;
 
+   --  `branch`: git's option surface -- the listing formats (plain, -v,
+   --  -vv with upstream and worktree marks, -a/-r, patterns, -i, --sort,
+   --  --format, --column, --color, the detached-HEAD line, the filters
+   --  with their HEAD defaults), creation with tracking (--track modes,
+   --  branch.autoSetupMerge/Rebase, --create-reflog, the reflog entries),
+   --  --set-upstream-to/--unset-upstream, -m/-M/-c/-C with reflog and
+   --  config carried along, -d/-D with git's merged checks and messages,
+   --  --edit-description, --show-current, and git's refusals.
+   procedure Branch_Option_Surface_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Scenario : constant String :=
+          "state() { :; }" & LF
+        & "git init -q; git config user.email a@b; git config user.name A" & LF
+        & "printf 'a\n' > f; git add f; git commit -qm one" & LF
+        & "printf 'b\n' >> f; git commit -qam two" & LF
+        & "git checkout -q -b side HEAD~1; printf 'c\n' > g; git add g; git "
+          & "commit -qm side-commit; git checkout -q main" & LF
+        & "printf 'd\n' >> f; git commit -qam three" & LF
+        & "git checkout -q -b feature; printf 'e\n' > h; git add h; git commit "
+          & "-qm 'feature work'; git checkout -q main" & LF
+        & "git clone -q . ../${NAME}_remote 2>/dev/null; git remote add origin "
+          & "../${NAME}_remote; git fetch -q origin" & LF
+        & "git branch -q --set-upstream-to=origin/main main 2>/dev/null" & LF
+        & "x() { l=$1; shift; echo ""\$ $l"" >> ""$TF""; ""$@"" >> ""$TF"" 2>&1; echo "
+          & """[rc=$?]"" >> ""$TF""; }" & LF
+        & "tE() { l=$1; e=$2; shift 2; echo ""\$ $l"" >> ""$TF""; GIT_EDITOR=""$e"" "
+          & """$TOOL"" ""$@"" >> ""$TF"" 2>&1 < /dev/null; echo ""[rc=$?]"" >> ""$TF""; }" & LF
+        & "t 'list' branch" & LF
+        & "t 'list -l' branch -l" & LF
+        & "t 'list --list' branch --list" & LF
+        & "t 'list -a' branch -a" & LF
+        & "t 'list -r' branch -r" & LF
+        & "t 'list -v' branch -v" & LF
+        & "t 'list -vv' branch -vv" & LF
+        & "t 'list -av' branch -av" & LF
+        & "t 'list -avv' branch -avv" & LF
+        & "t 'list -rv' branch -rv" & LF
+        & "t 'list pattern' branch -l 'fe*'" & LF
+        & "t 'list pattern nolist' branch 'fe*'" & LF
+        & "t 'list -i' branch -i -l 'FE*'" & LF
+        & "t 'list --abbrev' branch -v --abbrev=4" & LF
+        & "t 'list --no-abbrev' branch -v --no-abbrev" & LF
+        & "t 'contains' branch --contains HEAD~1" & LF
+        & "t 'contains default' branch --contains" & LF
+        & "t 'contains -a' branch -a --contains HEAD~2" & LF
+        & "t 'no-contains' branch --no-contains side" & LF
+        & "t 'merged' branch --merged" & LF
+        & "t 'merged rev' branch --merged feature" & LF
+        & "t 'no-merged' branch --no-merged" & LF
+        & "t 'no-merged -a' branch -a --no-merged main" & LF
+        & "t 'points-at' branch --points-at HEAD~1" & LF
+        & "t 'points-at -a' branch -a --points-at HEAD" & LF
+        & "t 'sort' branch --sort=-refname" & LF
+        & "t 'sort committerdate' branch --sort=-committerdate" & LF
+        & "t 'format' branch --format='%(refname:short) %(objectname:short) " & "%(upstream:short)'" & LF
+        & "t 'format -a' branch -a --format='%(refname)'" & LF
+        & "t 'column' branch --column" & LF
+        & "t 'column -v' branch --column -v" & LF
+        & "t 'omit-empty' branch " & "--format='%(if)%(upstream)%(then)%(refname:short)%(end)' --omit-empty" & LF
+        & "t 'show-current' branch --show-current" & LF
+        & "t 'create' branch new1" & LF
+        & "t 'create start' branch new2 HEAD~1" & LF
+        & "t 'create exists' branch new1" & LF
+        & "t 'create -f' branch -f new1 HEAD~2" & LF
+        & "t 'create bad name' branch 'bad..name'" & LF
+        & "t 'create bad start' branch new3 nope" & LF
+        & "t 'create -t' branch -t new4 origin/main" & LF
+        & "t 'create --track=inherit' branch --track=inherit new5 main" & LF
+        & "t 'create no-track' branch --no-track new6 origin/main" & LF
+        & "t 'create auto track' branch new7 origin/main" & LF
+        & "t 'create -a name' branch -a new8" & LF
+        & "t 'create --create-reflog' branch --create-reflog new10" & LF
+        & "x 'reflog new10' cat .git/logs/refs/heads/new10" & LF
+        & "t 'create -q' branch -q new11 origin/main" & LF
+        & "t 'set-upstream-to' branch --set-upstream-to=origin/main new1" & LF
+        & "t 'set-upstream-to -u' branch -u origin/side new2" & LF
+        & "t 'set-upstream-to current' branch -u origin/main" & LF
+        & "t 'set-upstream-to local' branch -u side new2" & LF
+        & "t 'set-upstream-to missing' branch -u origin/nope new2" & LF
+        & "t 'set-upstream-to no branch' branch -u origin/main nosuch" & LF
+        & "t 'set-upstream-to too many' branch -u origin/main a b" & LF
+        & "t 'unset-upstream' branch --unset-upstream new1" & LF
+        & "t 'unset-upstream none' branch --unset-upstream new1" & LF
+        & "t 'unset-upstream current' branch --unset-upstream" & LF
+        & "t 'unset-upstream no branch' branch --unset-upstream nosuch" & LF
+        & "t 'list -vv after' branch -vv" & LF
+        & "t 'rename' branch -m new2 renamed2" & LF
+        & "t 'rename exists' branch -m renamed2 new1" & LF
+        & "t 'rename -M' branch -M renamed2 new1" & LF
+        & "t 'rename current' branch -m main2" & LF
+        & "t 'list after rename' branch" & LF
+        & "t 'rename back' branch -m main" & LF
+        & "t 'rename missing' branch -m nope x" & LF
+        & "t 'rename too many' branch -m a b c" & LF
+        & "t 'rename bad' branch -m new1 'bad..name'" & LF
+        & "t 'rename none' branch -m" & LF
+        & "t 'copy' branch -c new1 copy1" & LF
+        & "t 'copy exists' branch -c copy1 new1" & LF
+        & "t 'copy -C' branch -C copy1 new1" & LF
+        & "t 'copy current' branch -c copied-main" & LF
+        & "t 'copy missing' branch -c nope x" & LF
+        & "t 'list after copy' branch" & LF
+        & "t 'delete' branch -d copy1" & LF
+        & "t 'delete unmerged' branch -d feature" & LF
+        & "t 'delete -D' branch -D feature" & LF
+        & "t 'delete -d -f' branch -d -f new1" & LF
+        & "t 'delete missing' branch -d nope" & LF
+        & "t 'delete missing remote hint' branch -d main2 origin/side" & LF
+        & "t 'delete -r' branch -d -r origin/side" & LF
+        & "t 'delete -r missing' branch -r -d origin/nope" & LF
+        & "t 'delete -a' branch -a -d x" & LF
+        & "t 'delete current' branch -d main" & LF
+        & "t 'delete none' branch -d" & LF
+        & "t 'delete -q' branch -q -d new10" & LF
+        & "t 'delete two' branch -D new4 new5" & LF
+        & "t 'list after delete' branch -a" & LF
+        & "t 'mode + create' branch --show-current x" & LF
+        & "cat > ed.sh <<'X'" & LF
+        & "#!/bin/sh" & LF
+        & "cat ""$1"" > ""$(dirname ""$1"")/../captured.txt""" & LF
+        & "printf 'my description\n# comment\n' > ""$1""" & LF
+        & "X" & LF
+        & "chmod +x ed.sh" & LF
+        & "tE 'edit-description' ./ed.sh branch --edit-description" & LF
+        & "x 'captured' cat captured.txt" & LF
+        & "x 'config desc' git config branch.main.description" & LF
+        & "tE 'edit-description named' ./ed.sh branch --edit-description side" & LF
+        & "x 'captured2' cat captured.txt" & LF
+        & "tE 'edit-description missing' ./ed.sh branch --edit-description nope" & LF
+        & "tE 'edit-description empty' true branch --edit-description side" & LF
+        & "x 'config desc2' git config --get branch.side.description" & LF
+        & "tE 'edit-description two' ./ed.sh branch --edit-description a b" & LF
+        & "git checkout -q --detach HEAD" & LF
+        & "t 'detached list' branch" & LF
+        & "t 'detached list -v' branch -v" & LF
+        & "t 'detached list -a' branch -a" & LF
+        & "t 'detached show-current' branch --show-current" & LF
+        & "t 'detached rename' branch -m x" & LF
+        & "t 'detached copy' branch -c x" & LF
+        & "t 'detached set-upstream' branch -u origin/main" & LF
+        & "t 'detached unset' branch --unset-upstream" & LF
+        & "t 'detached edit-description' branch --edit-description" & LF
+        & "t 'detached create' branch det1" & LF
+        & "t 'detached sort' branch --sort=-refname" & LF
+        & "git checkout -q main" & LF
+        & "git config branch.sort -refname" & LF
+        & "t 'branch.sort' branch" & LF
+        & "git config --unset branch.sort" & LF
+        & "git config column.branch always" & LF
+        & "t 'column.branch' branch" & LF
+        & "git config --unset column.branch" & LF
+        & "git config color.branch always" & LF
+        & "t 'color.branch' branch -v" & LF
+        & "t 'color.branch -a' branch -a" & LF
+        & "t 'color --no-color' branch --no-color" & LF
+        & "git config --unset color.branch" & LF
+        & "t 'color always' branch --color=always" & LF
+        & "t 'color -vv always' branch --color -vv" & LF
+        & "mkdir ""../${NAME}_2"" && cd ""../${NAME}_2""" & LF
+        & "git init -q; git config user.email a@b; git config user.name A" & LF
+        & "printf 'a\n' > f; git add f; git commit -qm one" & LF
+        & "printf 'b\n' >> f; git commit -qam two" & LF
+        & "git checkout -q -b side HEAD~1; printf 'c\n' > g; git add g; git "
+          & "commit -qm side-commit; git checkout -q main" & LF
+        & "git clone -q . ../${NAME}_remote 2>/dev/null; git remote add origin "
+          & "../${NAME}_remote; git fetch -q origin" & LF
+        & "t 'create' branch b1" & LF
+        & "x 'reflog b1' git reflog b1" & LF
+        & "t 'create from commit' branch b2 HEAD~1" & LF
+        & "x 'reflog b2' git reflog b2" & LF
+        & "t 'create -f' branch -f b1 HEAD~1" & LF
+        & "x 'reflog b1 after -f' git reflog b1" & LF
+        & "t 'rename' branch -m b1 b1r" & LF
+        & "x 'reflog b1r' git reflog b1r" & LF
+        & "x 'log dir' ls .git/logs/refs/heads" & LF
+        & "t 'copy' branch -c b1r b1c" & LF
+        & "x 'reflog b1c' git reflog b1c" & LF
+        & "t 'rename current' branch -m main mainx" & LF
+        & "x 'reflog HEAD' git reflog -2 HEAD" & LF
+        & "x 'reflog mainx' git reflog -2 mainx" & LF
+        & "t 'rename back' branch -m mainx main" & LF
+        & "t 'track non-branch' branch -t tb HEAD~1" & LF
+        & "t 'track local' branch -t tb side" & LF
+        & "t 'track local msg' branch -vv" & LF
+        & "t 'set-upstream old' branch --set-upstream x" & LF
+        & "git config branch.autoSetupMerge always" & LF
+        & "t 'autosetup always' branch asa side" & LF
+        & "git config branch.autoSetupMerge false" & LF
+        & "t 'autosetup false' branch asf origin/main" & LF
+        & "git config branch.autoSetupMerge simple" & LF
+        & "t 'autosetup simple diff' branch simp origin/main" & LF
+        & "t 'autosetup simple same' branch main2 origin/main" & LF
+        & "git branch -D main2 >/dev/null 2>&1; git checkout -q -b main2 main "
+          & ">/dev/null 2>&1; git checkout -q main; git branch -D main2 >/dev/null" & LF
+        & "git config branch.autoSetupMerge inherit" & LF
+        & "t 'autosetup inherit' branch inh tb" & LF
+        & "t 'autosetup inherit none' branch inh2 b2" & LF
+        & "git config --unset branch.autoSetupMerge" & LF
+        & "git config branch.autoSetupRebase always" & LF
+        & "t 'autosetup rebase' branch reb origin/main" & LF
+        & "git config --unset branch.autoSetupRebase" & LF
+        & "t 'list -vv all' branch -vv" & LF
+        & "t 'create -q' branch -q q1 origin/main" & LF
+        & "t 'gone' branch --set-upstream-to=origin/main b2" & LF
+        & "git update-ref -d refs/remotes/origin/main" & LF
+        & "t 'list gone' branch -vv" & LF
+        & "t 'format gone' branch --format='%(refname:short) [%(upstream:track)] "
+          & "[%(upstream:trackshort)]'" & LF
+        & "git fetch -q origin" & LF
+        & "t 'recurse' branch --recurse-submodules rs" & LF
+        & "git config submodule.propagateBranches true" & LF
+        & "t 'recurse2' branch --recurse-submodules --list" & LF
+        & "git config --unset submodule.propagateBranches" & LF
+        & "t 'merged -r' branch -r --merged main" & LF
+        & "t 'no-merged -r' branch -r --no-merged side" & LF
+        & "t 'pattern slash' branch -a -l 'origin/*'" & LF
+        & "t 'pattern slash2' branch -r -l 'origin/m*'" & LF
+        & "t 'sort -i' branch -i --sort=refname" & LF
+        & "git worktree add -q ../${NAME}_wt side" & LF
+        & "t 'worktree list' branch" & LF
+        & "t 'worktree list -v' branch -v" & LF
+        & "t 'worktree list -vv' branch -vv" & LF
+        & "t 'delete wt' branch -D side" & LF
+        & "t 'rename wt' branch -m side side2" & LF
+        & "t 'create -f wt' branch -f side HEAD" & LF
+        & "t 'unset-upstream other' branch --unset-upstream tb" & LF
+        & "t 'unset-upstream again' branch --unset-upstream tb" & LF
+        & "t 'delete with config' branch -D b2" & LF
+        & "x 'config after delete' git config --get-regexp 'branch\.b2\..*'" & LF
+        & "x 'log after delete' ls .git/logs/refs/heads" & LF
+        & "t 'delete -r' branch -r -d origin/side" & LF
+        & "t 'list -r after' branch -r" & LF
+        & "t 'edit-description detached check' branch --edit-description nope" & LF
+        & "t 'copy -c current' branch -c cur" & LF
+        & "x 'reflog cur' git reflog cur" & LF
+        & "t 'copy -C existing' branch -C cur b1c" & LF
+        & "t 'move onto self' branch -M main main" & LF;
+   begin
+      Run_Parity_Transcript (Root, Scenario, "branch");
+   end Branch_Option_Surface_Matches_Git;
+
    procedure Bisect_Run_And_Patch_Id_Match_Git
      (T : in out AUnit.Test_Cases.Test_Case'Class)
    is
@@ -8652,6 +8896,9 @@ package body CLI_Integration_Tests is
       Register_Routine
         (T, Tag_Option_Surface_Matches_Git'Access,
          "Tag: git's option surface, listing filters, columns, editor, reflog");
+      Register_Routine
+        (T, Branch_Option_Surface_Matches_Git'Access,
+         "Branch: git's option surface, listing formats, tracking, rename, delete");
       Register_Routine
         (T, Fast_Import_Stream_Matches_Git'Access,
          "Fast-import: author defaults to committer, short modes are files");

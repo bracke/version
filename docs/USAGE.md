@@ -80,6 +80,16 @@ version diff [OPTIONS] --no-index PATH PATH
 ## Branches
 
 ```text
+version branch [<options>] [-r | -a] [--merged [<commit>]] [--no-merged [<commit>]]
+version branch [<options>] [-f] [-t[=direct|inherit] | --no-track] [--create-reflog] [-q] <branch-name> [<start-point>]
+version branch [<options>] [-l] [-v [-v]] [-i] [--abbrev=<n>] [--sort=<key>]... [--format=<format>]
+  [--column[=<options>] | --no-column] [--color[=<when>]] [--contains [<commit>]] [--no-contains [<commit>]]
+  [--points-at <object>] [--omit-empty] [<pattern>...]
+version branch [<options>] [-r] (-d | -D) [-q] <branch-name>...
+version branch [<options>] (-m | -M) [<old-branch>] <new-branch>
+version branch [<options>] (-c | -C) [<old-branch>] <new-branch>
+version branch (-u | --set-upstream-to=)<upstream> [<branch>] | --unset-upstream [<branch>]
+version branch --show-current | --edit-description [<branch>]
 version branch list
 version branch list --verbose
 version branch list --contains REV
