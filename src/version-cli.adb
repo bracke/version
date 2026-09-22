@@ -3168,7 +3168,7 @@ package body Version.CLI is
            [1 => new String'("-c"), 2 => new String'(Shell)];
          Ok    : Boolean;
       begin
-         GNAT.OS_Lib.Spawn ("/bin/sh", Args, Ok);
+         GNAT.OS_Lib.Spawn (Version.Platform.Shell_Program, Args, Ok);
          GNAT.OS_Lib.Free (Args (1));
          GNAT.OS_Lib.Free (Args (2));
          if not Ok then
@@ -5237,7 +5237,7 @@ package body Version.CLI is
                           & To_String (MB));
                      Status :=
                        GNAT.OS_Lib.Spawn
-                         (Program_Name => "/bin/sh", Args => Args);
+                         (Program_Name => Version.Platform.Shell_Program, Args => Args);
                      GNAT.OS_Lib.Free (Args (1));
                      GNAT.OS_Lib.Free (Args (2));
                   end;
@@ -7687,7 +7687,7 @@ package body Version.CLI is
              ("cd '" & Work_Dir & "' && GIT_WORK_TREE=. GIT_DIR='"
               & Ada.Directories.Full_Name (Git_Dir) & "' " & Command);
          Status :=
-           GNAT.OS_Lib.Spawn (Program_Name => "/bin/sh", Args => Args);
+           GNAT.OS_Lib.Spawn (Program_Name => Version.Platform.Shell_Program, Args => Args);
          GNAT.OS_Lib.Free (Args (1));
          GNAT.OS_Lib.Free (Args (2));
          return Status;
@@ -7812,7 +7812,7 @@ package body Version.CLI is
             Args (1) := new String'("-c");
             Args (2) := new String'(Cmd);
             Status :=
-              GNAT.OS_Lib.Spawn (Program_Name => "/bin/sh", Args => Args);
+              GNAT.OS_Lib.Spawn (Program_Name => Version.Platform.Shell_Program, Args => Args);
             GNAT.OS_Lib.Free (Args (1));
             GNAT.OS_Lib.Free (Args (2));
             if Status /= 0 then
@@ -11655,7 +11655,7 @@ package body Version.CLI is
                           & To_String (Command));
                      Status :=
                        GNAT.OS_Lib.Spawn
-                         (Program_Name => "/bin/sh", Args => Args);
+                         (Program_Name => Version.Platform.Shell_Program, Args => Args);
                      GNAT.OS_Lib.Free (Args (1));
                      GNAT.OS_Lib.Free (Args (2));
                      Ada.Directories.Set_Directory (Old_Dir);
@@ -12486,7 +12486,7 @@ package body Version.CLI is
                Args (2) := new String'(Cmd);
                Status :=
                  GNAT.OS_Lib.Spawn
-                   (Program_Name => "/bin/sh", Args => Args);
+                   (Program_Name => Version.Platform.Shell_Program, Args => Args);
                GNAT.OS_Lib.Free (Args (1));
                GNAT.OS_Lib.Free (Args (2));
 
@@ -32549,7 +32549,7 @@ package body Version.CLI is
                               & " > '" & Out_Path & "'")];
                         Ok       : Boolean;
                      begin
-                        GNAT.OS_Lib.Spawn ("/bin/sh", Args, Ok);
+                        GNAT.OS_Lib.Spawn (Version.Platform.Shell_Program, Args, Ok);
                         GNAT.OS_Lib.Free (Args (1));
                         GNAT.OS_Lib.Free (Args (2));
                         if not Ok then
@@ -45437,7 +45437,7 @@ package body Version.CLI is
                                                    St :=
                                                      GNAT.OS_Lib.Spawn
                                                        (Program_Name =>
-                                                          "/bin/sh",
+                                                          Version.Platform.Shell_Program,
                                                         Args => Sh);
                                                    GNAT.OS_Lib.Free (Sh (1));
                                                    GNAT.OS_Lib.Free (Sh (2));
@@ -47889,7 +47889,7 @@ package body Version.CLI is
                   Args (1) := new String'("-c");
                   Args (2) := new String'(Cmd);
                   Status :=
-                    GNAT.OS_Lib.Spawn (Program_Name => "/bin/sh", Args => Args);
+                    GNAT.OS_Lib.Spawn (Program_Name => Version.Platform.Shell_Program, Args => Args);
                   GNAT.OS_Lib.Free (Args (1));
                   GNAT.OS_Lib.Free (Args (2));
                   return Status;
@@ -47910,7 +47910,7 @@ package body Version.CLI is
                   Args (5) := new String'(Remote);
                   Status :=
                     GNAT.OS_Lib.Spawn
-                      (Program_Name => "/bin/sh", Args => Args);
+                      (Program_Name => Version.Platform.Shell_Program, Args => Args);
                   for A of Args loop
                      GNAT.OS_Lib.Free (A);
                   end loop;
