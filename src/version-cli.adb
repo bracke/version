@@ -4822,7 +4822,7 @@ package body Version.CLI is
                                       Version.Objects.To_Object_Id (Id))
                         then
                            if not Dry then
-                              Ada.Directories.Delete_File
+                              Version.Files.Delete_File
                                 (Version.Files.Join (Dir, Simple));
                            else
                               --  git -n echoes the rm it would run.
@@ -4927,7 +4927,7 @@ package body Version.CLI is
          end if;
 
          if Version.Files.Exists (Path) then
-            Ada.Directories.Delete_File (Path);
+            Version.Files.Delete_File (Path);
          end if;
 
          Drop_Path;
@@ -5568,22 +5568,22 @@ package body Version.CLI is
          exception
             when others =>
                if Version.Files.Exists (Temp) then
-                  Ada.Directories.Delete_File (Temp);
+                  Version.Files.Delete_File (Temp);
                end if;
 
                if Version.Files.Exists (Idx) then
-                  Ada.Directories.Delete_File (Idx);
+                  Version.Files.Delete_File (Idx);
                end if;
 
                raise;
          end;
 
          if Version.Files.Exists (Temp) then
-            Ada.Directories.Delete_File (Temp);
+            Version.Files.Delete_File (Temp);
          end if;
 
          if Version.Files.Exists (Idx) then
-            Ada.Directories.Delete_File (Idx);
+            Version.Files.Delete_File (Idx);
          end if;
       end;
    exception
@@ -5694,15 +5694,15 @@ package body Version.CLI is
             if To_Stdout then
                Version.Console.Put
                  (Version.Files.Read_Binary_File (Temp_Pack));
-               Ada.Directories.Delete_File (Temp_Pack);
-               Ada.Directories.Delete_File (Temp_Idx);
+               Version.Files.Delete_File (Temp_Pack);
+               Version.Files.Delete_File (Temp_Idx);
                return;
             end if;
 
             if Base_Name = "" then
                Error_Line ("pack-objects needs a base name or --stdout");
-               Ada.Directories.Delete_File (Temp_Pack);
-               Ada.Directories.Delete_File (Temp_Idx);
+               Version.Files.Delete_File (Temp_Pack);
+               Version.Files.Delete_File (Temp_Idx);
                Set_Usage_Failure;
                return;
             end if;
@@ -8210,7 +8210,7 @@ package body Version.CLI is
                         end loop;
 
                         if Version.Files.Exists (Temp_Index) then
-                           Ada.Directories.Delete_File (Temp_Index);
+                           Version.Files.Delete_File (Temp_Index);
                         end if;
 
                         Ada.Environment_Variables.Set
@@ -8369,11 +8369,11 @@ package body Version.CLI is
                         end if;
 
                         if Version.Files.Exists (In_Path) then
-                           Ada.Directories.Delete_File (In_Path);
+                           Version.Files.Delete_File (In_Path);
                         end if;
 
                         if Version.Files.Exists (Out_Path) then
-                           Ada.Directories.Delete_File (Out_Path);
+                           Version.Files.Delete_File (Out_Path);
                         end if;
                      end;
                   end if;
@@ -44676,8 +44676,18 @@ package body Version.CLI is
                           Long_Long_Integer (Ada.Directories.Size (E));
                      begin
                         Count_N := Count_N + 1;
-                        --  ceil(size / 4096) * 4 KiB.
-                        KiB := KiB + ((Sz + 4095) / 4096) * 4;
+                        --  git's on_disk_bytes: st_blocks * 512, which for a
+                        --  loose object is ceil(size / 4096) * 4 KiB. A host
+                        --  whose stat has no st_blocks (Windows) gets the
+                        --  plain size instead, as git's
+                        --  NO_ST_BLOCKS_IN_STRUCT_STAT branch does -- there a
+                        --  repository of small objects really is 0 kilobytes.
+                        KiB :=
+                          KiB
+                          + (if Version.Platform."=" (Version.Platform.Current,
+                                Version.Platform.Windows_Platform)
+                             then Sz / 1024
+                             else ((Sz + 4095) / 4096) * 4);
                         Loose_Ids.Append
                           (Prefix & Ada.Directories.Simple_Name (E));
                      end;

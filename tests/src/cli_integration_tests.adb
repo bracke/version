@@ -1738,7 +1738,11 @@ package body CLI_Integration_Tests is
          & "   for s in -1 -2 -3 -9 HEAD~2..HEAD HEAD~2..HEAD~1; do"
          & "     git format-patch --stdout $s | " & Norm & " > g.mbox;"
          & "     " & CLI & " format-patch --stdout $s | " & Norm & " > v.mbox;"
-         & "     cmp -s g.mbox v.mbox || { echo ""mismatch $s""; exit 1; };"
+         --  On a mismatch, say what differs: a host one cannot reach gives
+         --  no second chance to look.
+         & "     cmp -s g.mbox v.mbox"
+         & "       || { echo ""mismatch $s"";"
+         & "            diff g.mbox v.mbox | head -20; exit 1; };"
          & "   done;"
          --  -o <dir>: same file names and same bytes
          & "   mkdir go vo;"
@@ -2094,9 +2098,14 @@ package body CLI_Integration_Tests is
          & " rm -rf r; mkdir r; ( cd r; git init -q -b main;"
          & "   git config user.email t@e; git config user.name T;"
          --  a tab, a high-bit byte and a DEL in tracked names
-         & "   printf 'x' > ""$(printf 'tab\there.txt')"";"
+         --  A host that forbids a control character in a file name cannot
+         --  hold this repository at all (Windows rejects every byte below
+         --  0x20); git's own suite gates the same cases on FUNNYNAMES.
+         & "   printf 'x' > ""$(printf 'tab\there.txt')"" 2>/dev/null"
+         & "     || exit 0;"
          & "   printf 'x' > ""$(printf 'hi\303\251.txt')"";"
-         & "   printf 'x' > ""$(printf 'del\177.txt')"";"
+         & "   printf 'x' > ""$(printf 'del\177.txt')"" 2>/dev/null"
+         & "     || exit 0;"
          & "   printf 'y' > normal.txt;"
          & "   git add -A; git commit -qm c1;"
          --  listing matches git byte for byte, including the C-quoting
@@ -5061,7 +5070,12 @@ package body CLI_Integration_Tests is
             & "NAME=" & Name & LF
             & "TOOL=" & Q & Tool & Q & LF
             & Driver & Scenario
-            & "sed -i " & Q & "s#$BASE/wt_$NAME#WT#g; s#$BASE/$NAME#REPO#g" & Q
+            --  Both transcripts go through the same substitutions, so the
+            --  comparison is unchanged -- but a carriage return becomes
+            --  visible, instead of a byte difference that the log prints
+            --  identically on both sides.
+            & "sed -i " & Q
+            & "s#$BASE/wt_$NAME#WT#g; s#$BASE/$NAME#REPO#g; s/\r/<CR>/g" & Q
             & " " & Q & "$TF" & Q & LF);
          Version.Git_Fixtures.Run (Root, "bash " & Q & Script_Path & Q);
       end Run_Flow;
@@ -6614,6 +6628,12 @@ package body CLI_Integration_Tests is
         & "t 'utf8' grep -n 'f..' utf.txt" & LF
         & "t 'utf8 -o' grep -o 'f..' utf.txt" & LF
         & "t 'path dir' grep foo sub" & LF
+        --  What the tool actually received: a host that rewrites or expands
+        --  an argument before main() sees it (MSYS path conversion, a C
+        --  runtime that globs argv) shows up here rather than as a silent
+        --  wrong answer three cases later.
+        & "t 'argv verbatim' rev-parse --sq-quote '*.txt' 'HEAD:b.txt'"
+        & " '/TWO/,+2'" & LF
         & "t 'path glob' grep foo '*.txt'" & LF
         & "t 'path glob2' grep -n foo -- '*.c'" & LF
         & "t '--max-depth=0' grep --max-depth=0 foo" & LF

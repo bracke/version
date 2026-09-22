@@ -70,10 +70,21 @@ package body Version.Git_Fixtures is
         [1 => new String'("-c"),
          2 => new String'(Command)];
 
+      --  A fixture that is itself a script gets its *inner* commands traced;
+      --  tracing the one-line `bash <script>` call says nothing.
+      Is_Script : constant Boolean :=
+        Command'Length > 5
+        and then Command (Command'First .. Command'First + 4) = "bash ";
+
+      Traced : constant String :=
+        (if Is_Script
+         then "bash -x " & Command (Command'First + 5 .. Command'Last)
+         else Command);
+
       Trace_Args : GNAT.OS_Lib.Argument_List :=
         [1 => new String'("-x"),
          2 => new String'("-c"),
-         3 => new String'(Command)];
+         3 => new String'(Traced)];
    begin
       Ada.Directories.Set_Directory (Dir);
 
