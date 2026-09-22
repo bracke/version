@@ -1,5 +1,7 @@
 with Ada.Directories;
 with GNAT.OS_Lib;
+
+with Version.Platform;
 with Project_Tools.Files;
 with Project_Tools.Test_Fixtures;
 
@@ -8,9 +10,25 @@ with Project_Tools.Test_Fixtures;
 --  lives once in Project_Tools.Test_Fixtures / Project_Tools.Files.
 package body Version.Test_Support is
 
+   --  Forward slashes throughout: every fixture interpolates this root into
+   --  a shell command, and on Windows the native spelling arrives as
+   --  C:\Users\... whose backslashes sh reads as escapes -- the path came out
+   --  as C:UsersRUNNER~1AppData... and nothing could be written to it. Windows
+   --  itself accepts either separator.
    function Fresh_Temp_Dir (Name : String) return String is
+      --  Canonical first: on Windows %TEMP% is the 8.3 short spelling, while
+      --  git and the CLI print the long one, so a fixture path built from it
+      --  never matched the paths in the output it was compared against.
+      Dir : String :=
+        Version.Platform.Canonical_Path
+          (Project_Tools.Test_Fixtures.Fresh_Temp_Dir (Name));
    begin
-      return Project_Tools.Test_Fixtures.Fresh_Temp_Dir (Name);
+      for C of Dir loop
+         if C = '\' then
+            C := '/';
+         end if;
+      end loop;
+      return Dir;
    end Fresh_Temp_Dir;
 
    procedure Cleanup (Path : String) is
