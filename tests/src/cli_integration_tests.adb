@@ -7077,7 +7077,9 @@ package body CLI_Integration_Tests is
         & "t 'merge again' notes merge other" & LF
         & "t 'merge again -s ours' notes merge -s ours other" & LF
         & "printf 'resolved\n' > .git/NOTES_MERGE_WORKTREE/$C3" & LF
-        & "/bin/rm .git/NOTES_MERGE_WORKTREE/$C1" & LF
+        --  `rm`, not /bin/rm: the absolute path does not exist on every
+        --  host, and the shell finds the builtin-or-binary either way.
+        & "rm -f .git/NOTES_MERGE_WORKTREE/$C1" & LF
         & "t 'merge commit' notes merge --commit" & LF
         & "t 'show resolved' notes show" & LF
         & "t 'show t1' notes show HEAD~1" & LF
