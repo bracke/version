@@ -133,6 +133,10 @@ jobs:
       - name: Run Windows platform gate
         working-directory: version
         shell: bash
+        # A suite that blocks (an editor, a prompt, a spawn that never
+        # returns) otherwise sits here until the six-hour job timeout; fail
+        # while the log is still worth reading.
+        timeout-minutes: 75
         env:
           VERSION_PLATFORM_CI_EVIDENCE_DIR: .release/platform-ci-evidence
         run: ./tools/bin/check_platform_ci_matrix.exe windows
