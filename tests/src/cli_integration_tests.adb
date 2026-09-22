@@ -2614,8 +2614,11 @@ package body CLI_Integration_Tests is
          & "   git rev-list --objects --all | awk '{print $1}'"
          & "     | git pack-objects --stdout > ../p.pack );"
          --  -o writes only the index it was asked for
+         --  `git init` here because this CLI wants a repository for
+         --  index-pack where git does not; without one the case only ran
+         --  where a stray .git sat above the fixture.
          & " mkdir a; cp p.pack a/my.pack;"
-         & " ( cd a; " & CLI & " index-pack -o custom.idx my.pack"
+         & " ( cd a; git init -q .; " & CLI & " index-pack -o custom.idx my.pack"
          & "     > /dev/null;"
          & "   test -f custom.idx; test ! -f my.idx );"
          --  --stdin reports "pack<TAB><checksum>", as git does
