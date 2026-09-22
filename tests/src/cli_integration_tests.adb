@@ -7697,6 +7697,197 @@ package body CLI_Integration_Tests is
       Run_Parity_Transcript (Root, Scenario, "stash");
    end Stash_Option_Surface_Matches_Git;
 
+   procedure Worktree_Option_Surface_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Scenario : constant String :=
+          "state() { :; }" & LF
+        & "git init -q; git config user.email a@b; git config user.name A" & LF
+        & "printf 'a\n' > f; git add f; git commit -qm one" & LF
+        & "printf 'b\n' >> f; git commit -qam two" & LF
+        & "git branch side HEAD~1" & LF
+        & "git init -q --bare ../${NAME}_up >/dev/null 2>&1" & LF
+        & "git remote add origin ../${NAME}_up; git push -q origin main side "
+            & "2>/dev/null; git fetch -q origin" & LF
+        & "WD=""../${NAME}_wts""; mkdir -p ""$WD""" & LF
+        & "x() { l=$1; shift; echo ""\$ $l"" >> ""$TF""; ""$@"" >> ""$TF"" 2>&1; "
+            & "echo ""[rc=$?]"" >> ""$TF""; }" & LF
+        & "t 'usage none' worktree" & LF
+        & "t 'usage bogus' worktree bogus" & LF
+        & "t 'list' worktree list" & LF
+        & "t 'list -z' worktree list -z" & LF
+        & "t 'list -v --porcelain' worktree list -v --porcelain" & LF
+        & "t 'list extra' worktree list extra" & LF
+        & "t 'list badopt' worktree list --nope" & LF
+        & "t 'add none' worktree add" & LF
+        & "t 'add -z' worktree add -z" & LF
+        & "t 'add --badopt' worktree add --badopt ""$WD/x""" & LF
+        & "t 'add reason no lock' worktree add --reason r ""$WD/x""" & LF
+        & "t 'add -b -B' worktree add -b x -B y ""$WD/x""" & LF
+        & "t 'add -b --detach' worktree add --detach -b x ""$WD/x""" & LF
+        & "t 'add orphan detach' worktree add --orphan --detach ""$WD/x""" & LF
+        & "t 'add orphan track' worktree add --orphan --track ""$WD/x""" & LF
+        & "t 'add orphan no-checkout' worktree add --orphan --no-checkout ""$WD/x""" & LF
+        & "t 'add orphan commitish' worktree add --orphan ""$WD/x"" HEAD" & LF
+        & "t 'add badref' worktree add ""$WD/x"" nosuchrev" & LF
+        & "t 'add dwim new' worktree add ""$WD/w1""" & LF
+        & "t 'add dwim existing' worktree add ""$WD/side""" & LF
+        & "t 'add dup branch' worktree add ""$WD/dup"" side" & LF
+        & "t 'add dup branch -f' worktree add -f ""$WD/dup"" side" & LF
+        & "t 'add detach' worktree add --detach ""$WD/det"" HEAD~1" & LF
+        & "t 'add -d short' worktree add -d ""$WD/det2"" HEAD" & LF
+        & "t 'add -b' worktree add -b nb ""$WD/nb""" & LF
+        & "t 'add -b existing' worktree add -b nb ""$WD/nb2""" & LF
+        & "t 'add -B' worktree add -B nb ""$WD/nb3"" HEAD~1" & LF
+        & "t 'add -B in use' worktree add -B side ""$WD/nb4""" & LF
+        & "t 'add -q' worktree add -q ""$WD/q1"" -b qb" & LF
+        & "t 'add --no-checkout' worktree add --no-checkout ""$WD/nc"" -b ncb" & LF
+        & "x 'nc contents' ls -A ""$WD/nc""" & LF
+        & "t 'add --lock --reason' worktree add --lock --reason ""on usb"" "
+            & """$WD/lk"" -b lkb" & LF
+        & "t 'add --lock plain' worktree add --lock ""$WD/lk2"" -b lkb2" & LF
+        & "t 'list after adds' worktree list" & LF
+        & "t 'list -v' worktree list -v" & LF
+        & "t 'list --porcelain' worktree list --porcelain" & LF
+        & "t 'add --track' worktree add --track ""$WD/tr"" -b trb origin/side" & LF
+        & "t 'add --no-track' worktree add --no-track ""$WD/tr2"" -b trb2 origin/side" & LF
+        & "t 'add --track no branch' worktree add --track ""$WD/tr3"" side" & LF
+        & "t 'branch -vv' branch -vv" & LF
+        & "t 'add guess-remote' worktree add --guess-remote ""$WD/gr""" & LF
+        & "t 'add guess-remote hit' worktree add --guess-remote ""$WD/noexist""" & LF
+        & "x 'config guessRemote' git config worktree.guessRemote true" & LF
+        & "t 'add guess cfg' worktree add ""$WD/nope2""" & LF
+        & "x 'unset guessRemote' git config --unset worktree.guessRemote" & LF
+        & "t 'add orphan' worktree add --orphan ""$WD/orp""" & LF
+        & "t 'add orphan -b' worktree add --orphan -b orpb ""$WD/orp2""" & LF
+        & "t 'add orphan existing branch' worktree add --orphan -b nb ""$WD/orp3""" & LF
+        & "t 'add orphan in use' worktree add --orphan -b side ""$WD/orp4""" & LF
+        & "t 'add exists' worktree add ""$WD/side"" -b other" & LF
+        & "t 'lock' worktree lock ""$WD/w1""" & LF
+        & "t 'lock again' worktree lock ""$WD/w1""" & LF
+        & "t 'lock reason' worktree lock --reason ""why"" ""$WD/det""" & LF
+        & "t 'lock main' worktree lock ." & LF
+        & "t 'lock nope' worktree lock ""$WD/nothere""" & LF
+        & "t 'lock no args' worktree lock" & LF
+        & "t 'lock two' worktree lock a b" & LF
+        & "t 'unlock' worktree unlock ""$WD/w1""" & LF
+        & "t 'unlock again' worktree unlock ""$WD/w1""" & LF
+        & "t 'list locked' worktree list" & LF
+        & "t 'list locked -v' worktree list -v" & LF
+        & "t 'list locked porcelain' worktree list --porcelain" & LF
+        & "t 'remove locked' worktree remove ""$WD/det""" & LF
+        & "t 'remove locked -f' worktree remove -f ""$WD/det""" & LF
+        & "t 'remove locked -f -f' worktree remove -f -f ""$WD/det""" & LF
+        & "t 'move locked' worktree move ""$WD/lk"" ""$WD/lkmoved""" & LF
+        & "t 'move locked -f -f' worktree move -f -f ""$WD/lk"" ""$WD/lkmoved""" & LF
+        & "t 'move' worktree move ""$WD/w1"" ""$WD/w1moved""" & LF
+        & "t 'move main' worktree move . ""$WD/nope3""" & LF
+        & "t 'move missing' worktree move ""$WD/ghost"" ""$WD/ghost2""" & LF
+        & "t 'move onto existing' worktree move ""$WD/w1moved"" ""$WD/nb""" & LF
+        & "t 'move one arg' worktree move ""$WD/w1moved""" & LF
+        & "t 'remove' worktree remove ""$WD/w1moved""" & LF
+        & "t 'remove main' worktree remove ." & LF
+        & "t 'remove missing' worktree remove ""$WD/ghost""" & LF
+        & "t 'remove no args' worktree remove" & LF
+        & "x 'dirty a worktree' sh -c ""echo dirty >> $WD/nb/f""" & LF
+        & "t 'remove dirty' worktree remove ""$WD/nb""" & LF
+        & "t 'remove dirty -f' worktree remove -f ""$WD/nb""" & LF
+        & "t 'prune dry' worktree prune -n" & LF
+        & "x 'delete a worktree dir' rm -rf ""$WD/q1""" & LF
+        & "t 'prune dry after' worktree prune -n" & LF
+        & "t 'prune verbose' worktree prune -v" & LF
+        & "t 'prune again' worktree prune -n" & LF
+        & "t 'prune expire' worktree prune --expire 1.day" & LF
+        & "t 'prune badopt' worktree prune --nope" & LF
+        & "t 'prune operand' worktree prune xx" & LF
+        & "t 'list final' worktree list" & LF
+        & "x 'move a worktree by hand' mv ""$WD/side"" ""$WD/sidemoved""" & LF
+        & "t 'repair' worktree repair ""$WD/sidemoved""" & LF
+        & "t 'repair again' worktree repair ""$WD/sidemoved""" & LF
+        & "t 'repair bogus' worktree repair /nonexistent" & LF
+        & "t 'repair two bogus' worktree repair /nonexistent /alsonot" & LF
+        & "x 'plain dir' mkdir -p ""$WD/plain""" & LF
+        & "t 'repair plain' worktree repair ""$WD/plain""" & LF
+        & "t 'repair none' worktree repair" & LF
+        & "t 'list end' worktree list" & LF
+        & "sed -i -e '/^usage: /,/^\[rc=/{/^\[rc=/!d}' -e '/^error: expected: /d' "
+            & """$TF""" & LF
+        & "sed -i ""s/${NAME}_wts/WTS/g; s/${NAME}_up/UP/g"" ""$TF""" & LF;
+   begin
+      Run_Parity_Transcript (Root, Scenario, "worktree");
+   end Worktree_Option_Surface_Matches_Git;
+
+   procedure Worktree_Repair_And_Unborn_Match_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Scenario : constant String :=
+          "state() { :; }" & LF
+        & "x() { l=$1; shift; echo ""\$ $l"" >> ""$TF""; ""$@"" >> ""$TF"" 2>&1; "
+            & "echo ""[rc=$?]"" >> ""$TF""; }" & LF
+        & "WD=""../${NAME}_wts""; mkdir -p ""$WD""" & LF
+        & "git init -q; git config user.email a@b; git config user.name A" & LF
+        & "t 'empty add' worktree add ""$WD/eo""" & LF
+        & "t 'empty list' worktree list" & LF
+        & "t 'empty add orphan' worktree add --orphan ""$WD/eo2""" & LF
+        & "t 'empty add -b' worktree add -b eb ""$WD/eo3""" & LF
+        & "t 'empty add detach' worktree add --detach ""$WD/eo4""" & LF
+        & "x 'advice off' git config advice.worktreeAddOrphan false" & LF
+        & "t 'empty detach quiet advice' worktree add --detach ""$WD/eo5""" & LF
+        & "x 'advice on' git config --unset advice.worktreeAddOrphan" & LF
+        & "printf 'a\n' > f; git add f; git commit -qm one" & LF
+        & "printf 'b\n' >> f; git commit -qam two" & LF
+        & "git branch side HEAD~1" & LF
+        & "t 'list now' worktree list" & LF
+        & "t 'bundled -fq' worktree add -fq ""$WD/b1"" -b bb1" & LF
+        & "t 'attached -bvalue' worktree add -bbb2 ""$WD/b2""" & LF
+        & "t 'long branch=' worktree add --branch=bb3 ""$WD/b3""" & LF
+        & "t 'no-checkout then checkout' worktree add --no-checkout --checkout "
+            & """$WD/b4"" -b bb4" & LF
+        & "t 'no-detach' worktree add --detach --no-detach ""$WD/b5""" & LF
+        & "t 'no-orphan' worktree add --orphan --no-orphan ""$WD/b6""" & LF
+        & "t 'no-lock' worktree add --lock --no-lock ""$WD/b7"" -b bb7" & LF
+        & "t 'lock reason=' worktree lock --reason=deep ""$WD/b7""" & LF
+        & "t 'list -v reason' worktree list -v" & LF
+        & "t 'unlock b7' worktree unlock ""$WD/b7""" & LF
+        & "t 'track value' worktree add --track=inherit ""$WD/ti"" -b tib side" & LF
+        & "t 'track' worktree add --track ""$WD/td"" -b tdb side" & LF
+        & "t 'no-track' worktree add --no-track ""$WD/td2"" -b tdb2 side" & LF
+        & "t 'branch -vv' branch -vv" & LF
+        & "t 'add -q -B' worktree add -q -B side ""$WD/sb""" & LF
+        & "t 'list after -B' worktree list" & LF
+        & "t 'move into dir' worktree move ""$WD/b1"" ""$WD/b2""" & LF
+        & "t 'move plain' worktree move ""$WD/b1"" ""$WD/b1x""" & LF
+        & "t 'list moved' worktree list" & LF
+        & "t 'expire list' worktree list --expire 1.day" & LF
+        & "t 'porcelain -z' worktree list --porcelain -z" & LF
+        & "t 'no-porcelain' worktree list --porcelain --no-porcelain" & LF
+        & "t 'no-verbose' worktree list -v --no-verbose" & LF
+        & "t 'prune no-dry' worktree prune --no-dry-run -n" & LF
+        & "t 'remove no-force' worktree remove --no-force ""$WD/b1x""" & LF
+        & "t 'repair no args' worktree repair" & LF
+        & "t 'repair dot' worktree repair ." & LF
+        & "x 'break a link' sh -c ""echo 'gitdir: /nowhere' > $WD/b4/.git""" & LF
+        & "t 'repair broken' worktree repair ""$WD/b4""" & LF
+        & "x 'show b4 git' cat ""$WD/b4/.git""" & LF
+        & "t 'list after repair' worktree list" & LF
+        & "x 'clobber a link' rm -f ""$WD/b5/.git""" & LF
+        & "t 'repair noarg fixes' worktree repair" & LF
+        & "x 'show b5 git' cat ""$WD/b5/.git""" & LF
+        & "t 'repair twice' worktree repair" & LF
+        & "x 'move by hand' mv ""$WD/b6"" ""$WD/b6moved""" & LF
+        & "t 'repair moved' worktree repair ""$WD/b6moved""" & LF
+        & "t 'list end' worktree list" & LF
+        & "sed -i -e '/^usage: /,/^\[rc=/{/^\[rc=/!d}' -e '/^error: expected: /d' "
+            & """$TF""" & LF
+        & "sed -i ""s/${NAME}_wts/WTS/g"" ""$TF""" & LF;
+   begin
+      Run_Parity_Transcript (Root, Scenario, "worktree repair");
+   end Worktree_Repair_And_Unborn_Match_Git;
+
    procedure Bisect_Run_And_Patch_Id_Match_Git
      (T : in out AUnit.Test_Cases.Test_Case'Class)
    is
@@ -9123,6 +9314,12 @@ package body CLI_Integration_Tests is
       Register_Routine
         (T, Stash_Option_Surface_Matches_Git'Access,
          "Stash: git's option surface, push modes, apply/pop merge, show, store");
+      Register_Routine
+        (T, Worktree_Option_Surface_Matches_Git'Access,
+         "Worktree: git's option surface, add DWIM, list, lock, move, prune");
+      Register_Routine
+        (T, Worktree_Repair_And_Unborn_Match_Git'Access,
+         "Worktree: repair both directions, an unborn HEAD, the flag spellings");
       Register_Routine
         (T, Fast_Import_Stream_Matches_Git'Access,
          "Fast-import: author defaults to committer, short modes are files");

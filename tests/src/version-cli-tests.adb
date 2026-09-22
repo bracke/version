@@ -1010,7 +1010,7 @@ package body Version.CLI.Tests is
          "submodule help");
       Assert_Contains
         (Version.CLI.Help.Command_Text ("worktree"),
-         "  version worktree add --detach PATH REV",
+         "  version worktree list [-v | --porcelain [-z]]",
          "worktree help");
       Assert_Contains
         (Version.CLI.Help.Command_Text ("worktree"),
@@ -3235,10 +3235,15 @@ package body Version.CLI.Tests is
    is
       Root : constant String :=
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      --  Each subcommand prints its own usage, as git's parse-options does.
       Usage : constant String :=
-        "version worktree add [-b|-B <branch>] [--detach]"
-        & " [--no-checkout] [--lock] PATH [COMMIT-ISH]";
-      Top_Usage : constant String := "version worktree SUBCOMMAND [ARGS]";
+        "version worktree add [-f] [--detach] [--checkout]"
+        & " [--lock [--reason <string>]] [--orphan]"
+        & " [(-b | -B) <new-branch>] <path> [<commit-ish>]";
+      List_Usage : constant String :=
+        "version worktree list [-v | --porcelain [-z]]";
+      Remove_Usage : constant String :=
+        "version worktree remove [-f] <worktree>";
 
       procedure Check_Usage_Failure
         (Command : String; Detail : String; Usage_Text : String; Context : String)
@@ -3271,58 +3276,56 @@ package body Version.CLI.Tests is
             Context & " output");
       end Check_Success;
 
+      --  git prints the usage alone for a wrong operand count; only an
+      --  unknown option or subcommand gets a diagnostic of its own.
+      procedure Check_Usage_Only
+        (Command : String; Usage_Text : String; Context : String)
+      is
+         Output : Ada.Strings.Unbounded.Unbounded_String;
+         Status : Integer;
+      begin
+         Run_CLI_Capture (Root, Command, Output, Status);
+         Assert (Status /= 0, Context & " must fail");
+         Assert_Contains
+           (Ada.Strings.Unbounded.To_String (Output),
+            Version.CLI.Expected_Output_Text (Usage_Text),
+            Context & " usage");
+      end Check_Usage_Only;
+
       Normal_Path   : constant String := Root & "-wt-feature";
       Detached_Path : constant String := Root & "-wt-detached";
       Old_Dir       : constant String := Ada.Directories.Current_Directory;
    begin
       Check_Usage_Failure
         ("worktree",
-         "missing worktree subcommand",
-         Top_Usage,
+         "need a subcommand",
+         Usage,
          "worktree missing subcommand");
       Check_Usage_Failure
         ("worktree frobnicate",
-         "unknown worktree subcommand: frobnicate",
-         Top_Usage,
-         "worktree unknown subcommand");
-      Check_Usage_Failure
-        ("worktree list extra",
-         "too many worktree list arguments",
-         Top_Usage,
-         "worktree list extra argument");
-      Check_Usage_Failure
-        ("worktree current extra",
-         "too many worktree current arguments",
-         Top_Usage,
-         "worktree current extra argument");
-      Check_Usage_Failure
-        ("worktree remove",
-         "missing worktree path",
-         Top_Usage,
-         "worktree remove missing path");
-      Check_Usage_Failure
-        ("worktree remove one two",
-         "too many worktree remove arguments",
-         Top_Usage,
-         "worktree remove too many arguments");
-      Check_Usage_Failure
-        ("worktree add",
-         "missing worktree path",
+         "unknown subcommand: `frobnicate'",
          Usage,
-         "worktree add missing path");
+         "worktree unknown subcommand");
+      Check_Usage_Only
+        ("worktree list extra", List_Usage, "worktree list extra argument");
+      Check_Usage_Only
+        ("worktree current extra", Usage, "worktree current extra argument");
+      Check_Usage_Only
+        ("worktree remove", Remove_Usage, "worktree remove missing path");
+      Check_Usage_Only
+        ("worktree remove one two", Remove_Usage,
+         "worktree remove too many arguments");
+      Check_Usage_Only ("worktree add", Usage, "worktree add missing path");
       --  A bare path (new branch from its basename), --detach without a
       --  revision (detach HEAD), and a repeated --detach are all valid git
       --  parity now, so they are no longer usage errors.
       Check_Usage_Failure
-        ("worktree add --orphan ../wt main",
-         "unknown worktree add option: --orphan",
+        ("worktree add --frobnicate ../wt main",
+         "unknown option `frobnicate'",
          Usage,
          "worktree add unknown option");
-      Check_Usage_Failure
-        ("worktree add ../wt main extra",
-         "too many worktree add arguments",
-         Usage,
-         "worktree add extra operand");
+      Check_Usage_Only
+        ("worktree add ../wt main extra", Usage, "worktree add extra operand");
 
       Version.Init.Init (Root);
       Configure_User (Root);

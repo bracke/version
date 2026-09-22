@@ -424,11 +424,22 @@ package body Version.CLI.Help is
             "Initialize, update, and inspect Git-compatible submodules.");
       elsif Name = "worktree" then
          Append_Line (Text, "Usage:");
-         Append_Line (Text, "  version worktree add PATH BRANCH");
-         Append_Line (Text, "  version worktree add --detach PATH REV");
-         Append_Line (Text, "  version worktree list");
+         Append_Line
+           (Text,
+            "  version worktree add [-f] [-q] [--detach] [--[no-]checkout]"
+            & " [--lock [--reason STRING]]");
+         Append_Line
+           (Text,
+            "                       [--orphan] [(-b|-B) BRANCH] [--track|--no-track]"
+            & " PATH [COMMIT-ISH]");
+         Append_Line (Text, "  version worktree list [-v | --porcelain [-z]]");
+         Append_Line (Text, "  version worktree lock [--reason STRING] WORKTREE");
+         Append_Line (Text, "  version worktree unlock WORKTREE");
+         Append_Line (Text, "  version worktree move [-f] WORKTREE NEW-PATH");
+         Append_Line (Text, "  version worktree remove [-f] WORKTREE");
+         Append_Line (Text, "  version worktree prune [-n] [-v] [--expire TIME]");
+         Append_Line (Text, "  version worktree repair [PATH...]");
          Append_Line (Text, "  version worktree current");
-         Append_Line (Text, "  version worktree remove PATH");
          Append_Line (Text);
          Append_Line
            (Text,
@@ -1226,11 +1237,18 @@ package body Version.CLI.Help is
 
       elsif Name = "worktree" then
          Line ("Usage:");
-         Line ("  version worktree add PATH BRANCH");
-         Line ("  version worktree add --detach PATH REV");
-         Line ("  version worktree list");
+         Line ("  version worktree add [-f] [-q] [--detach] [--[no-]checkout]"
+               & " [--lock [--reason STRING]]");
+         Line ("                       [--orphan] [(-b|-B) BRANCH]"
+               & " [--track|--no-track] PATH [COMMIT-ISH]");
+         Line ("  version worktree list [-v | --porcelain [-z]]");
+         Line ("  version worktree lock [--reason STRING] WORKTREE");
+         Line ("  version worktree unlock WORKTREE");
+         Line ("  version worktree move [-f] WORKTREE NEW-PATH");
+         Line ("  version worktree remove [-f] WORKTREE");
+         Line ("  version worktree prune [-n] [-v] [--expire TIME]");
+         Line ("  version worktree repair [PATH...]");
          Line ("  version worktree current");
-         Line ("  version worktree remove PATH");
          Line;
          Line
            ("Manage linked worktrees with shared objects and refs but isolated HEAD and index.");

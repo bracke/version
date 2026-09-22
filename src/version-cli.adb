@@ -1284,7 +1284,10 @@ package body Version.CLI is
                Put_Record_Line ("branch refs/heads/" & To_String (It.Branch));
             end if;
             if It.Locked then
-               Put_Record_Line ("locked");
+               Put_Record_Line
+                 ("locked"
+                  & (if Length (It.Lock_Reason) > 0
+                     then " " & To_String (It.Lock_Reason) else ""));
             end if;
             if It.Missing then
                Put_Record_Line ("prunable " & Prunable_Reason);
@@ -1303,17 +1306,28 @@ package body Version.CLI is
             Path : constant String := To_String (It.Path);
             Pad  : constant String :=
               [1 .. Natural'Max (Width - Path'Length, 0) => ' '];
+            Detailed : Boolean;
          begin
             --  Verbose moves an annotation that carries a reason (a prunable
-            --  worktree always does) onto a following tab-indented line;
-            --  otherwise the annotation stays inline.
+            --  worktree always does, a locked one only when `lock --reason`
+            --  recorded it) onto a following tab-indented line; otherwise the
+            --  annotation stays inline.
+            Detailed := Verbose
+              and then (It.Missing
+                        or else (It.Locked and then Length (It.Lock_Reason) > 0));
             Success_Line
               (Path & Pad & " " & Abbrev (To_String (It.Head)) & " "
                & (if It.Detached then "(detached HEAD)"
                   else "[" & To_String (It.Branch) & "]")
-               & (if It.Locked then " locked" else "")
+               & (if It.Locked and then not Detailed then " locked" else "")
                & (if It.Missing and then not Verbose then " prunable"
                   else ""));
+            if Verbose and then It.Locked
+              and then Length (It.Lock_Reason) > 0
+            then
+               Success_Line
+                 (ASCII.HT & "locked: " & To_String (It.Lock_Reason));
+            end if;
             if It.Missing and then Verbose then
                Success_Line (ASCII.HT & "prunable: " & Prunable_Reason);
             end if;
@@ -24980,434 +24994,860 @@ package body Version.CLI is
             end;
 
          elsif Command = "worktree" then
+            --  A port of builtin/worktree.c: a subcommand, then that
+            --  subcommand's own parse-options table, with git's messages and
+            --  exit codes (a die is 128, a usage error 129, and a failing
+            --  `branch` child 255).
             declare
-               Usage : constant String := "version worktree SUBCOMMAND [ARGS]";
+               Add_Usage : constant String :=
+                 "version worktree add [-f] [--detach] [--checkout]"
+                 & " [--lock [--reason <string>]] [--orphan]"
+                 & " [(-b | -B) <new-branch>] <path> [<commit-ish>]";
+               List_Usage   : constant String :=
+                 "version worktree list [-v | --porcelain [-z]]";
+               Lock_Usage   : constant String :=
+                 "version worktree lock [--reason <string>] <worktree>";
+               Move_Usage   : constant String :=
+                 "version worktree move <worktree> <new-path>";
+               Prune_Usage  : constant String :=
+                 "version worktree prune [-n] [-v] [--expire <expire>]";
+               Remove_Usage : constant String :=
+                 "version worktree remove [-f] <worktree>";
+               Repair_Usage : constant String :=
+                 "version worktree repair [<path>...]";
+               Unlock_Usage : constant String :=
+                 "version worktree unlock <worktree>";
+               Usage        : constant String :=
+                 Add_Usage & " | " & List_Usage & " | " & Lock_Usage & " | "
+                 & Move_Usage & " | " & Prune_Usage & " | " & Remove_Usage
+                 & " | " & Repair_Usage & " | " & Unlock_Usage;
+
+               Repo : constant Version.Repository.Repository_Handle :=
+                 Version.Repository.Open;
+
+               function Starts (S, P : String) return Boolean is
+                 (S'Length >= P'Length
+                  and then S (S'First .. S'First + P'Length - 1) = P);
+               function After (S, P : String) return String is
+                 (S (S'First + P'Length .. S'Last));
+
+               function Config_Bool (Key : String; Default : Boolean)
+                  return Boolean
+               is
+                  OK : Boolean;
+               begin
+                  if not Version.Config.Has_Key (Repo, Key) then
+                     return Default;
+                  end if;
+                  return Config_Bool_Norm
+                           (Version.Config.Get_Value (Repo, Key), OK) = "true";
+               end Config_Bool;
+
+               Subcommand : constant String :=
+                 (if Count >= 2 then Arg (2) else "");
+               Sub_Usage  : constant String :=
+                 (if Subcommand = "add" then Add_Usage
+                  elsif Subcommand = "list" then List_Usage
+                  elsif Subcommand = "lock" then Lock_Usage
+                  elsif Subcommand = "move" then Move_Usage
+                  elsif Subcommand = "prune" then Prune_Usage
+                  elsif Subcommand = "remove" then Remove_Usage
+                  elsif Subcommand = "repair" then Repair_Usage
+                  elsif Subcommand = "unlock" then Unlock_Usage
+                  else Usage);
+
+               Bad          : Boolean := False;
+               Fatal        : Unbounded_String;
+               Fatal_Status : Ada.Command_Line.Exit_Status := Fatal_Exit;
+               --  `repair` diagnoses each path with error() and exits 1.
+               Failed       : Boolean := False;
+
+               procedure Die (Text : String) is
+               begin
+                  if Length (Fatal) = 0 then
+                     Fatal := To_Unbounded_String (Text);
+                  end if;
+               end Die;
+
+               --  git prints the usage alone; only an unknown option or an
+               --  unknown subcommand gets a diagnostic of its own.
+               procedure Bad_Usage (Text : String) is
+               begin
+                  if not Bad then
+                     if Text'Length > 0 then
+                        Error_Line (Text);
+                     end if;
+                     Expected (Sub_Usage);
+                     Bad := True;
+                  end if;
+               end Bad_Usage;
+
+               procedure Unknown_Option (A : String) is
+               begin
+                  if Starts (A, "--") then
+                     Bad_Usage ("unknown option `" & After (A, "--") & "'");
+                  else
+                     Bad_Usage
+                       ("unknown switch `"
+                        & A (A'First + 1 .. A'First + 1) & "'");
+                  end if;
+               end Unknown_Option;
+
+               --  The arguments after the subcommand.
+               Args : Version.Ref_Format.String_Vectors.Vector;
+               I    : Positive := 1;
+
+               function Take_Value
+                 (Flag : String; Inline : String; Has_Inline : Boolean)
+                  return String is
+               begin
+                  if Has_Inline then
+                     return Inline;
+                  elsif I < Natural (Args.Length) then
+                     I := I + 1;
+                     return Args (I);
+                  else
+                     Bad_Usage
+                       ("option `" & After (Flag, "--") & "' requires a value");
+                     return "";
+                  end if;
+               end Take_Value;
+
+               function Short_Value (Flag : Character; Rest : String)
+                  return String is
+               begin
+                  if Rest'Length > 0 then
+                     return Rest;
+                  elsif I < Natural (Args.Length) then
+                     I := I + 1;
+                     return Args (I);
+                  else
+                     Bad_Usage ("switch `" & Flag & "' requires a value");
+                     return "";
+                  end if;
+               end Short_Value;
+
+               --  The commit a revision names, "" when it names none.
+               function Commit_Of (Text : String) return String is
+               begin
+                  return Version.Objects.To_String
+                    (Version.Revisions.Resolve_Commit (Repo, Text));
+               exception
+                  when others =>
+                     return "";
+               end Commit_Of;
+
+               --  The abbreviation git reports a commit with.
+               function Abbrev (Hex : String) return String is
+                 (if Hex'Length = 0 then Hex
+                  else Hex (Hex'First .. Hex'First
+                            + Version.Revisions.Unique_Abbrev_Length
+                                (Repo, Version.Objects.To_Object_Id (Hex), 7)
+                            - 1));
+
+               --  The worktree that has Branch checked out (the main one
+               --  included), or "" -- git names it when it refuses.
+               function In_Use_By (Branch : String) return String is
+               begin
+                  for W of Version.Worktrees.List loop
+                     if not W.Detached and then To_String (W.Branch) = Branch
+                     then
+                        return To_String (W.Path);
+                     end if;
+                  end loop;
+                  return "";
+               end In_Use_By;
+
+               --  git's DWIM: a name that is no local branch but exists as
+               --  <remote>/<name> under exactly one remote. Returns the
+               --  remote-tracking ref, or "".
+               function Unique_Remote_Ref (Name : String) return String is
+                  Found : Unbounded_String;
+                  Hits  : Natural := 0;
+               begin
+                  for R of Version.Remotes.List_Remotes loop
+                     if Version.Refs.Ref_Exists
+                          (Repo,
+                           "refs/remotes/" & To_String (R.Name) & "/" & Name)
+                     then
+                        Hits := Hits + 1;
+                        Found := R.Name;
+                     end if;
+                  end loop;
+                  return
+                    (if Hits = 1 then To_String (Found) & "/" & Name else "");
+               end Unique_Remote_Ref;
             begin
-               if Count < 2 then
-                  Usage_Error ("missing worktree subcommand", Usage);
-                  return;
-               elsif Arg (2) = "list" then
+               for K in 3 .. Count loop
+                  Args.Append (Arg (K));
+               end loop;
+
+               if Subcommand = "" then
+                  Bad_Usage ("need a subcommand");
+
+               elsif Subcommand = "list" then
                   declare
                      Porcelain : Boolean := False;
-                     Null_Term : Boolean := False;
                      Verbose   : Boolean := False;
-                     Bad       : Boolean := False;
+                     Null_Term : Boolean := False;
+                     Operands  : Natural := 0;
                   begin
-                     for J in 3 .. Count loop
-                        --  -v/--verbose puts a prunable/locked reason on its own
-                        --  tab-indented line instead of inline.
-                        if Arg (J) = "--porcelain" then
-                           Porcelain := True;
-                        elsif Arg (J) = "-v" or else Arg (J) = "--verbose" then
-                           Verbose := True;
-                        elsif Arg (J) = "-z" then
-                           Null_Term := True;
-                        elsif Arg (J)'Length > 0
-                          and then Arg (J) (Arg (J)'First) = '-'
-                        then
-                           Usage_Error
-                             ("unknown worktree list option: " & Arg (J),
-                              Usage);
-                           Bad := True;
-                           exit;
-                        else
-                           Usage_Error
-                             ("too many worktree list arguments", Usage);
-                           Bad := True;
-                           exit;
-                        end if;
-                     end loop;
-
-                     if not Bad then
-                        --  git couples -z to the porcelain form; it refuses -z
-                        --  for the human-readable listing.
-                        if Null_Term and then not Porcelain then
-                           Error_Line ("-z requires --porcelain");
-                           Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
-                        else
-                           Print_Worktree_List
-                             (Porcelain => Porcelain,
-                              Null_Term => Null_Term,
-                              Verbose   => Verbose);
-                        end if;
-                     end if;
-                  end;
-
-               elsif Arg (2) = "current" then
-                  if Count /= 2 then
-                     Usage_Error ("too many worktree current arguments", Usage);
-                     return;
-                  end if;
-                  Ada.Text_IO.Put (Version.Worktrees.Current_Worktree_Text);
-
-               elsif Arg (2) = "add" then
-                  declare
-                     Add_Usage    : constant String :=
-                       "version worktree add [-b|-B <branch>] [--detach]"
-                       & " [--no-checkout] [--lock] PATH [COMMIT-ISH]";
-                     I             : Natural := 3;
-                     Detached      : Boolean := False;
-                     No_Checkout   : Boolean := False;
-                     Do_Lock       : Boolean := False;
-                     New_Branch    : Unbounded_String;
-                     Force_Branch  : Boolean := False;
-                     Has_New_Br    : Boolean := False;
-                     Path          : Unbounded_String;
-                     Commit_Ish    : Unbounded_String;
-                     Operand_Count : Natural := 0;
-                     Bad           : Boolean := False;
-
-                     --  Accept "-b x", "-bx" and "--branch=x" (likewise -B).
-                     function Take_Branch (Short, Long : String) return Boolean
-                     is
-                        A : constant String := Arg (I);
-                     begin
-                        if A = Short or else A = Long then
-                           if I = Count then
-                              Usage_Error (A & " requires a value", Add_Usage);
-                              Bad := True;
-                              return True;
-                           end if;
-                           I := I + 1;
-                           New_Branch := To_Unbounded_String (Arg (I));
-                           return True;
-                        elsif A'Length > 2
-                          and then A (A'First .. A'First + 1) = Short
-                        then
-                           New_Branch :=
-                             To_Unbounded_String (A (A'First + 2 .. A'Last));
-                           return True;
-                        elsif A'Length > Long'Length + 1
-                          and then A (A'First .. A'First + Long'Length - 1) = Long
-                          and then A (A'First + Long'Length) = '='
-                        then
-                           New_Branch := To_Unbounded_String
-                             (A (A'First + Long'Length + 1 .. A'Last));
-                           return True;
-                        end if;
-                        return False;
-                     end Take_Branch;
-                  begin
-                     while I <= Count and then not Bad loop
-                        if Arg (I) = "--detach" then
-                           Detached := True;
-                        elsif Arg (I) = "--no-checkout" or else Arg (I) = "-n"
-                        then
-                           No_Checkout := True;
-                        elsif Arg (I) = "--lock" then
-                           Do_Lock := True;
-                        elsif Arg (I) = "-f" or else Arg (I) = "--force" then
-                           null;  --  accepted; branch-in-use is still refused
-                        elsif Take_Branch ("-b", "--branch") then
-                           Has_New_Br := not Bad;
-                        elsif Take_Branch ("-B", "--branch-force") then
-                           Has_New_Br := not Bad;
-                           Force_Branch := True;
-                        elsif Arg (I)'Length > 0
-                          and then Arg (I) (Arg (I)'First) = '-'
-                        then
-                           Usage_Error
-                             ("unknown worktree add option: " & Arg (I),
-                              Add_Usage);
-                           Bad := True;
-                        else
-                           Operand_Count := Operand_Count + 1;
-                           if Operand_Count = 1 then
-                              Path := To_Unbounded_String (Arg (I));
-                           elsif Operand_Count = 2 then
-                              Commit_Ish := To_Unbounded_String (Arg (I));
+                     while I <= Natural (Args.Length) and then not Bad loop
+                        declare
+                           A    : constant String := Args (I);
+                           Eq   : constant Natural :=
+                             Ada.Strings.Fixed.Index (A, "=");
+                           Name : constant String :=
+                             (if Eq = 0 then A else A (A'First .. Eq - 1));
+                           Val  : constant String :=
+                             (if Eq = 0 then "" else A (Eq + 1 .. A'Last));
+                        begin
+                           if Name = "--porcelain" then
+                              Porcelain := True;
+                           elsif Name = "--no-porcelain" then
+                              Porcelain := False;
+                           elsif A = "-v" or else Name = "--verbose" then
+                              Verbose := True;
+                           elsif Name = "--no-verbose" then
+                              Verbose := False;
+                           elsif A = "-z" then
+                              Null_Term := True;
+                           elsif Name = "--expire" then
+                              --  Age-based annotation needs mtimes to
+                              --  compare; what is reported here is broken
+                              --  whatever its age.
+                              declare
+                                 Ignored : constant String :=
+                                   Take_Value (Name, Val, Eq /= 0);
+                              begin
+                                 pragma Unreferenced (Ignored);
+                                 null;
+                              end;
+                           elsif A'Length > 1 and then A (A'First) = '-' then
+                              Unknown_Option (A);
                            else
-                              Usage_Error
-                                ("too many worktree add arguments", Add_Usage);
-                              Bad := True;
+                              Operands := Operands + 1;
                            end if;
-                        end if;
+                        end;
                         I := I + 1;
                      end loop;
 
-                     if not Bad then
-                        declare
-                           P     : constant String := To_String (Path);
-                           CI    : constant String := To_String (Commit_Ish);
-                           Start : constant String :=
-                             (if CI'Length > 0 then CI else "HEAD");
+                     if Bad then
+                        null;
+                     elsif Operands > 0 then
+                        Bad_Usage ("");
+                     elsif Verbose and then Porcelain then
+                        Die ("options '--verbose' and '--porcelain' cannot be "
+                             & "used together");
+                     elsif Null_Term and then not Porcelain then
+                        Die ("the option '-z' requires '--porcelain'");
+                     else
+                        Print_Worktree_List
+                          (Porcelain => Porcelain,
+                           Null_Term => Null_Term,
+                           Verbose   => Verbose);
+                     end if;
+                  end;
 
-                           --  The last path component (git names the auto
-                           --  branch after it), trailing slashes ignored.
-                           function Base_Of (S : String) return String is
-                              Last : Integer := S'Last;
-                           begin
-                              while Last >= S'First and then S (Last) = '/' loop
-                                 Last := Last - 1;
-                              end loop;
-                              for K in reverse S'First .. Last loop
-                                 if S (K) = '/' then
-                                    return S (K + 1 .. Last);
+               elsif Subcommand = "add" then
+                  declare
+                     Force        : Boolean := False;
+                     Detach       : Boolean := False;
+                     Quiet        : Boolean := False;
+                     Checkout     : Boolean := True;
+                     Orphan       : Boolean := False;
+                     Keep_Locked  : Boolean := False;
+                     Lock_Text    : Unbounded_String;
+                     Have_Reason  : Boolean := False;
+                     New_Branch   : Unbounded_String;
+                     Have_B       : Boolean := False;
+                     Have_Lower_B : Boolean := False;
+                     Force_B      : Boolean := False;
+                     Track        : Version.Branches.Track_Mode :=
+                       Version.Branches.Default_Track (Repo);
+                     Have_Track   : Boolean := False;
+                     Guess_Remote : Boolean :=
+                       Config_Bool ("worktree.guessRemote", False);
+                     Operands     : Version.Ref_Format.String_Vectors.Vector;
+
+                     procedure Handle_Short (A : String) is
+                        K : Positive := A'First + 1;
+                     begin
+                        while K <= A'Last and then not Bad loop
+                           case A (K) is
+                              when 'f' =>
+                                 Force := True;
+                              when 'q' =>
+                                 Quiet := True;
+                              when 'd' =>
+                                 Detach := True;
+                              when 'b' | 'B' =>
+                                 New_Branch := To_Unbounded_String
+                                   (Short_Value (A (K), A (K + 1 .. A'Last)));
+                                 Have_B := True;
+                                 if A (K) = 'B' then
+                                    Force_B := True;
+                                 else
+                                    Have_Lower_B := True;
                                  end if;
-                              end loop;
-                              return S (S'First .. Last);
-                           end Base_Of;
-
-                           procedure Finish_Attached (Branch : String) is
-                           begin
-                              Version.Worktrees.Add (P, Branch, No_Checkout);
-                              if not No_Checkout then
-                                 Report_Worktree_Head (Branch);
+                                 return;
+                              when others =>
+                                 Bad_Usage ("unknown switch `" & A (K) & "'");
+                                 return;
+                           end case;
+                           K := K + 1;
+                        end loop;
+                     end Handle_Short;
+                  begin
+                     while I <= Natural (Args.Length) and then not Bad loop
+                        declare
+                           A    : constant String := Args (I);
+                           Eq   : constant Natural :=
+                             Ada.Strings.Fixed.Index (A, "=");
+                           Name : constant String :=
+                             (if Eq = 0 then A else A (A'First .. Eq - 1));
+                           Val  : constant String :=
+                             (if Eq = 0 then "" else A (Eq + 1 .. A'Last));
+                        begin
+                           if Name = "--force" then
+                              Force := True;
+                           elsif Name = "--no-force" then
+                              Force := False;
+                           elsif Name = "--detach" then
+                              Detach := True;
+                           elsif Name = "--no-detach" then
+                              Detach := False;
+                           elsif Name = "--quiet" then
+                              Quiet := True;
+                           elsif Name = "--no-quiet" then
+                              Quiet := False;
+                           elsif Name = "--checkout" then
+                              Checkout := True;
+                           elsif Name = "--no-checkout" then
+                              Checkout := False;
+                           elsif Name = "--orphan" then
+                              Orphan := True;
+                           elsif Name = "--no-orphan" then
+                              Orphan := False;
+                           elsif Name = "--lock" then
+                              Keep_Locked := True;
+                           elsif Name = "--no-lock" then
+                              Keep_Locked := False;
+                           elsif Name = "--reason" then
+                              Lock_Text := To_Unbounded_String
+                                (Take_Value (Name, Val, Eq /= 0));
+                              Have_Reason := True;
+                           elsif Name = "--track" then
+                              --  git's worktree add takes a plain --[no-]track.
+                              if Eq /= 0 then
+                                 Bad_Usage ("option `track' takes no value");
+                              else
+                                 Track := Version.Branches.Track_Explicit;
+                                 Have_Track := True;
                               end if;
-                           end Finish_Attached;
+                           elsif Name = "--no-track" then
+                              Track := Version.Branches.Track_Never;
+                              Have_Track := True;
+                           elsif Name = "--guess-remote" then
+                              Guess_Remote := True;
+                           elsif Name = "--no-guess-remote" then
+                              Guess_Remote := False;
+                           elsif Name = "--relative-paths"
+                             or else Name = "--no-relative-paths"
+                           then
+                              --  The administrative files are absolute here.
+                              null;
+                           elsif Starts (A, "--") then
+                              Unknown_Option (A);
+                           elsif A'Length > 1 and then A (A'First) = '-' then
+                              Handle_Short (A);
+                           else
+                              Operands.Append (A);
+                           end if;
+                        end;
+                        I := I + 1;
+                     end loop;
 
-                           procedure Finish_Detached (Rev : String) is
-                           begin
+                     --  git's refusals, in its order.
+                     if Bad then
+                        null;
+                     elsif (Detach and then Have_B)
+                       or else (Have_Lower_B and then Force_B)
+                     then
+                        Die ("options '-b', '-B', and '--detach' cannot be "
+                             & "used together");
+                     elsif Orphan and then Detach then
+                        Die ("options '--orphan' and '--detach' cannot be "
+                             & "used together");
+                     elsif Orphan and then Have_Track then
+                        Die ("options '--orphan' and '--track' cannot be "
+                             & "used together");
+                     elsif Orphan and then not Checkout then
+                        Die ("options '--orphan' and '--no-checkout' cannot "
+                             & "be used together");
+                     elsif Orphan and then Natural (Operands.Length) = 2 then
+                        Die ("option '--orphan' and commit-ish cannot be "
+                             & "used together");
+                     elsif Have_Reason and then not Keep_Locked then
+                        Die ("the option '--reason' requires '--lock'");
+                     elsif Operands.Is_Empty
+                       or else Natural (Operands.Length) > 2
+                     then
+                        Bad_Usage ("");
+                     end if;
+
+                     if Bad or else Length (Fatal) > 0 then
+                        goto Worktree_Report;
+                     end if;
+
+                     declare
+                        Path  : constant String := Operands (1);
+                        Given : constant String :=
+                          (if Natural (Operands.Length) = 2
+                           then Operands (2) else "HEAD");
+
+                        --  git's worktree_basename: the last path component.
+                        function Base_Of (S : String) return String is
+                           Last : Integer := S'Last;
+                        begin
+                           while Last >= S'First and then S (Last) = '/' loop
+                              Last := Last - 1;
+                           end loop;
+                           for K in reverse S'First .. Last loop
+                              if S (K) = '/' then
+                                 return S (K + 1 .. Last);
+                              end if;
+                           end loop;
+                           return S (S'First .. Last);
+                        end Base_Of;
+
+                        Base   : constant String := Base_Of (Path);
+                        Branch : Unbounded_String :=
+                          To_Unbounded_String (Given);
+                        Start  : Unbounded_String;
+                     begin
+                        --  `-B` validates the branch before announcing
+                        --  anything; `-b` leaves that to the branch itself.
+                        if Force_B and then not Force
+                          and then Version.Refs.Ref_Exists
+                                     (Repo,
+                                      "refs/heads/" & To_String (New_Branch))
+                          and then In_Use_By (To_String (New_Branch)) /= ""
+                        then
+                           Die ("'" & To_String (New_Branch)
+                                & "' is already used by worktree at '"
+                                & In_Use_By (To_String (New_Branch)) & "'");
+                           goto Worktree_Report;
+                        end if;
+
+                        --  git's DWIM for `add <path>`: the basename names a
+                        --  branch to check out, a remote branch to start from
+                        --  under --guess-remote, or a new branch.
+                        if Orphan then
+                           if not Have_B then
+                              New_Branch := To_Unbounded_String (Base);
+                              Have_B := True;
+                           end if;
+                        elsif not Detach and then not Have_B
+                          and then Natural (Operands.Length) < 2
+                        then
+                           if Version.Refs.Ref_Exists
+                                (Repo, "refs/heads/" & Base)
+                           then
+                              Branch := To_Unbounded_String (Base);
+                           else
+                              New_Branch := To_Unbounded_String (Base);
+                              Have_B := True;
+                              if Guess_Remote
+                                and then Unique_Remote_Ref (Base) /= ""
+                              then
+                                 Branch := To_Unbounded_String
+                                   (Unique_Remote_Ref (Base));
+                              end if;
+                           end if;
+                        end if;
+
+                        --  A repository without commits has no source branch
+                        --  to start from, so git makes the new worktree an
+                        --  orphan instead of refusing.
+                        if not Orphan and then not Detach
+                          and then Natural (Operands.Length) < 2
+                          and then Commit_Of (To_String (Branch)) = ""
+                        then
+                           Stderr_Line
+                             ("No possible source branch, inferring "
+                              & "'--orphan'");
+                           Orphan := True;
+                           if not Have_B then
+                              New_Branch := To_Unbounded_String (Base);
+                              Have_B := True;
+                           end if;
+                        end if;
+
+                        if not Orphan then
+                           Start := To_Unbounded_String
+                             (Commit_Of (To_String (Branch)));
+                           if Length (Start) = 0 then
+                              --  Nothing can be checked out in a repository
+                              --  without commits; git points at --orphan.
+                              if Commit_Of ("HEAD") = ""
+                                and then Config_Bool
+                                           ("advice.worktreeAddOrphan", True)
+                              then
+                                 Stderr_Line
+                                   ("hint: If you meant to create a worktree "
+                                    & "containing a new unborn branch");
+                                 Stderr_Line
+                                   ("hint: (branch with no commits) for this "
+                                    & "repository, you can do so");
+                                 Stderr_Line ("hint: using the --orphan flag:");
+                                 Stderr_Line ("hint:");
+                                 Stderr_Line
+                                   ("hint:     git worktree add --orphan "
+                                    & Path);
+                                 Stderr_Line ("hint:");
+                                 Stderr_Line
+                                   ("hint: Disable this message with ""git "
+                                    & "config set advice.worktreeAddOrphan "
+                                    & "false""");
+                              end if;
+                              Die ("invalid reference: " & To_String (Branch));
+                              goto Worktree_Report;
+                           end if;
+                        end if;
+
+                        --  git's print_preparing_worktree_line.
+                        if not Quiet then
+                           if Detach then
                               Stderr_Line
                                 ("Preparing worktree (detached HEAD "
-                                 & Rev & ")");
-                              Version.Worktrees.Add_Detached
-                                (P, Rev, No_Checkout);
-                              if not No_Checkout then
-                                 Report_Worktree_Head (Rev);
-                              end if;
-                           end Finish_Detached;
-
-                           procedure Make_New_Branch (Name : String) is
-                              Repo : constant
-                                Version.Repository.Repository_Handle :=
-                                  Version.Repository.Open;
-                              Id   : constant String :=
-                                Version.Objects.To_String
-                                  (Version.Revisions.Resolve_Commit
-                                     (Repo, Start));
-                           begin
-                              if Force_Branch
-                                and then Version.Branch.Branch_Exists (Name)
-                              then
-                                 Version.Branch.Delete_Branch
-                                   (Name, Force => True);
-                              end if;
-                              Version.Branch.Create_Branch (Name, Id);
+                                 & Abbrev (To_String (Start)) & ")");
+                           elsif Force_B
+                             and then Version.Refs.Ref_Exists
+                                        (Repo,
+                                         "refs/heads/"
+                                         & To_String (New_Branch))
+                           then
+                              Stderr_Line
+                                ("Preparing worktree (resetting branch '"
+                                 & To_String (New_Branch) & "'; was at "
+                                 & Abbrev
+                                     (Version.Objects.To_String
+                                        (Version.Refs.Resolve_Ref
+                                           (Repo,
+                                            "refs/heads/"
+                                            & To_String (New_Branch))))
+                                 & ")");
+                           elsif Have_B then
                               Stderr_Line
                                 ("Preparing worktree (new branch '"
-                                 & Name & "')");
-                              Finish_Attached (Name);
-                           end Make_New_Branch;
-                        begin
-                           if Operand_Count = 0 then
-                              Usage_Error ("missing worktree path", Add_Usage);
-                           elsif Has_New_Br then
-                              Make_New_Branch (To_String (New_Branch));
-                           elsif Detached then
-                              Finish_Detached (Start);
-                           elsif Operand_Count = 2 then
-                              --  An existing branch is checked out attached;
-                              --  anything else is resolved as a detached commit.
-                              if Version.Branch.Branch_Exists (CI) then
-                                 Stderr_Line
-                                   ("Preparing worktree (checking out '"
-                                    & CI & "')");
-                                 Finish_Attached (CI);
-                              else
-                                 Finish_Detached (CI);
-                              end if;
+                                 & To_String (New_Branch) & "')");
                            else
-                              --  Bare `add <path>`: the path's basename names a
-                              --  branch to check out, or a new branch to create.
-                              declare
-                                 Base : constant String := Base_Of (P);
-                              begin
-                                 if Version.Branch.Branch_Exists (Base) then
-                                    Stderr_Line
-                                      ("Preparing worktree (checking out '"
-                                       & Base & "')");
-                                    Finish_Attached (Base);
-                                 else
-                                    Make_New_Branch (Base);
-                                 end if;
-                              end;
+                              Stderr_Line
+                                ("Preparing worktree (checking out '"
+                                 & To_String (Branch) & "')");
+                           end if;
+                        end if;
+
+                        begin
+                           if Orphan then
+                              if In_Use_By (To_String (New_Branch)) /= "" then
+                                 Die ("'" & To_String (New_Branch)
+                                      & "' is already used by worktree at '"
+                                      & In_Use_By (To_String (New_Branch))
+                                      & "'");
+                                 goto Worktree_Report;
+                              end if;
+                              Version.Worktrees.Add_Orphan
+                                (Path, To_String (New_Branch));
+                           else
+                              if Have_B then
+                                 --  git runs `branch [--force] <new> <start>`
+                                 --  as a child and exits 255 when it fails.
+                                 declare
+                                    Note : Unbounded_String;
+                                    Warn : Unbounded_String;
+                                 begin
+                                    Version.Branches.Create
+                                      (Repo, To_String (New_Branch),
+                                       To_String (Branch),
+                                       Force   => Force_B,
+                                       Track   => Track,
+                                       Quiet   => Quiet,
+                                       Reflog  => False,
+                                       Note    => Note,
+                                       Warning => Warn);
+                                    if Length (Warn) > 0 then
+                                       Stderr_Line
+                                         ("warning: " & To_String (Warn));
+                                    end if;
+                                    if Length (Note) > 0 then
+                                       Success_Line (To_String (Note));
+                                    end if;
+                                 exception
+                                    when E : Version.Branches.Branch_Error =>
+                                       Fatal_Status := 255;
+                                       Die
+                                         (Ada.Exceptions.Exception_Message
+                                            (E));
+                                       goto Worktree_Report;
+                                 end;
+                                 Branch := New_Branch;
+                              elsif Have_Track then
+                                 Die ("--[no-]track can only be used if a new "
+                                      & "branch is created");
+                                 goto Worktree_Report;
+                              end if;
+
+                              if Detach then
+                                 Version.Worktrees.Add_Detached
+                                   (Path, To_String (Branch),
+                                    No_Checkout => not Checkout);
+                              else
+                                 Version.Worktrees.Add
+                                   (Path, To_String (Branch),
+                                    No_Checkout => not Checkout,
+                                    Force       => Force);
+                              end if;
                            end if;
 
-                           if Do_Lock and then not Bad then
-                              Version.Worktrees.Lock (P);
+                           if Keep_Locked then
+                              Version.Worktrees.Lock
+                                (Path,
+                                 (if Have_Reason then To_String (Lock_Text)
+                                  else "added with --lock"));
                            end if;
+
+                           if Checkout and then not Quiet
+                             and then not Orphan
+                           then
+                              Report_Worktree_Head (To_String (Start));
+                           end if;
+                        exception
+                           when E : Version.Worktrees.Worktree_Error =>
+                              Die (Ada.Exceptions.Exception_Message (E));
+                           when E : Ada.IO_Exceptions.Data_Error
+                                  | Ada.IO_Exceptions.Name_Error
+                                  | Ada.IO_Exceptions.Use_Error =>
+                              Die (User_Error_Text (E));
+                        end;
+                     end;
+                  end;
+
+               elsif Subcommand = "lock" or else Subcommand = "unlock" then
+                  declare
+                     Reason   : Unbounded_String;
+                     Operands : Version.Ref_Format.String_Vectors.Vector;
+                  begin
+                     while I <= Natural (Args.Length) and then not Bad loop
+                        declare
+                           A    : constant String := Args (I);
+                           Eq   : constant Natural :=
+                             Ada.Strings.Fixed.Index (A, "=");
+                           Name : constant String :=
+                             (if Eq = 0 then A else A (A'First .. Eq - 1));
+                           Val  : constant String :=
+                             (if Eq = 0 then "" else A (Eq + 1 .. A'Last));
+                        begin
+                           if Subcommand = "lock"
+                             and then Name = "--reason"
+                           then
+                              Reason := To_Unbounded_String
+                                (Take_Value (Name, Val, Eq /= 0));
+                           elsif Subcommand = "lock"
+                             and then Name = "--no-reason"
+                           then
+                              Reason := Null_Unbounded_String;
+                           elsif A'Length > 1 and then A (A'First) = '-' then
+                              Unknown_Option (A);
+                           else
+                              Operands.Append (A);
+                           end if;
+                        end;
+                        I := I + 1;
+                     end loop;
+
+                     if Bad then
+                        null;
+                     elsif Natural (Operands.Length) /= 1 then
+                        Bad_Usage ("");
+                     else
+                        begin
+                           if Subcommand = "lock" then
+                              Version.Worktrees.Lock
+                                (Operands (1), To_String (Reason));
+                           else
+                              Version.Worktrees.Unlock (Operands (1));
+                           end if;
+                        exception
+                           when E : Version.Worktrees.Worktree_Error =>
+                              Die (Ada.Exceptions.Exception_Message (E));
+                           when E : Ada.IO_Exceptions.Data_Error
+                                  | Ada.IO_Exceptions.Name_Error =>
+                              Die (User_Error_Text (E));
                         end;
                      end if;
                   end;
 
-               elsif Arg (2) = "remove" then
+               elsif Subcommand = "move" or else Subcommand = "remove" then
                   declare
-                     Force_Count : Natural := 0;
-                     Target      : Unbounded_String;
-                     Bad         : Boolean := False;
+                     Force    : Natural := 0;
+                     Operands : Version.Ref_Format.String_Vectors.Vector;
+                     Wanted   : constant Natural :=
+                       (if Subcommand = "move" then 2 else 1);
                   begin
-                     for I in 3 .. Count loop
-                        if Arg (I) = "-f" or else Arg (I) = "--force" then
-                           Force_Count := Force_Count + 1;
-                        elsif Arg (I)'Length > 0
-                          and then Arg (I) (Arg (I)'First) = '-'
-                        then
-                           Usage_Error
-                             ("unknown worktree remove option: " & Arg (I),
-                              Usage);
-                           Bad := True;
-                           exit;
-                        elsif Length (Target) = 0 then
-                           Target := To_Unbounded_String (Arg (I));
+                     for A of Args loop
+                        if A = "-f" or else A = "--force" then
+                           Force := Force + 1;
+                        elsif A = "--no-force" then
+                           Force := 0;
+                        elsif A'Length > 1 and then A (A'First) = '-' then
+                           Unknown_Option (A);
                         else
-                           Usage_Error
-                             ("too many worktree remove arguments", Usage);
-                           Bad := True;
-                           exit;
+                           Operands.Append (A);
                         end if;
                      end loop;
 
-                     if not Bad then
-                        if Length (Target) = 0 then
-                           Usage_Error ("missing worktree path", Usage);
-                        elsif Version.Worktrees.Is_Locked (To_String (Target))
-                          and then Force_Count < 2
-                        then
-                           --  git refuses to remove a locked worktree unless
-                           --  the force flag is given twice.
-                           Error_Line
-                             ("fatal: cannot remove a locked working tree;");
-                           Error_Line
-                             ("use 'remove -f -f' to override or unlock first");
-                           Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
-                        else
-                           --  git removes a worktree silently; a force flag
-                           --  also discards local modifications.
-                           Version.Worktrees.Remove
-                             (To_String (Target),
-                              Force => Force_Count >= 1);
-                        end if;
-                     end if;
-                  end;
-
-               elsif Arg (2) = "move" then
-                  if Count /= 4 then
-                     Usage_Error
-                       ("worktree move requires a source and a destination",
-                        Usage);
-                  else
-                     --  git moves a worktree silently.
-                     Version.Worktrees.Move (Arg (3), Arg (4));
-                  end if;
-
-               elsif Arg (2) = "repair" then
-                  --  git's `worktree repair` with no path repairs the current
-                  --  worktree's own administrative files; on a healthy repo
-                  --  that is a silent no-op (exit 0).
-                  for I in 3 .. Count loop
-                     Version.Worktrees.Repair (Arg (I));
-                  end loop;
-
-               elsif Arg (2) = "lock" or else Arg (2) = "unlock" then
-                  declare
-                     Reason  : Unbounded_String;
-                     Target  : Unbounded_String;
-                     Bad     : Boolean := False;
-                     I       : Natural := 3;
-                  begin
-                     while I <= Count loop
-                        if Arg (I)'Length > 9
-                          and then Arg (I) (Arg (I)'First .. Arg (I)'First + 8)
-                                   = "--reason="
-                        then
-                           Reason := To_Unbounded_String
-                             (Arg (I) (Arg (I)'First + 9 .. Arg (I)'Last));
-                           I := I + 1;
-                        elsif Arg (I) = "--reason" then
-                           --  git also takes the reason as a separate argument.
-                           if I = Count then
-                              Usage_Error
-                                ("--reason requires a value", Usage);
-                              Bad := True;
-                              exit;
+                     if Bad then
+                        null;
+                     elsif Natural (Operands.Length) /= Wanted then
+                        Bad_Usage ("");
+                     else
+                        begin
+                           if Subcommand = "move" then
+                              Version.Worktrees.Move
+                                (Operands (1), Operands (2), Force);
+                           else
+                              Version.Worktrees.Remove (Operands (1), Force);
                            end if;
-                           Reason := To_Unbounded_String (Arg (I + 1));
-                           I := I + 2;
-                        elsif Arg (I)'Length > 0
-                          and then Arg (I) (Arg (I)'First) = '-'
-                        then
-                           Usage_Error
-                             ("unknown worktree " & Arg (2) & " option: "
-                              & Arg (I), Usage);
-                           Bad := True;
-                           exit;
-                        elsif Length (Target) = 0 then
-                           Target := To_Unbounded_String (Arg (I));
-                           I := I + 1;
-                        else
-                           Usage_Error
-                             ("too many worktree " & Arg (2) & " arguments",
-                              Usage);
-                           Bad := True;
-                           exit;
-                        end if;
-                     end loop;
-
-                     if not Bad then
-                        if Length (Target) = 0 then
-                           Usage_Error ("missing worktree path", Usage);
-                        elsif Arg (2) = "lock" then
-                           Version.Worktrees.Lock
-                             (To_String (Target), To_String (Reason));
-                        else
-                           Version.Worktrees.Unlock (To_String (Target));
-                        end if;
+                        exception
+                           when E : Version.Worktrees.Worktree_Error =>
+                              Die (Ada.Exceptions.Exception_Message (E));
+                           when E : Ada.IO_Exceptions.Data_Error
+                                  | Ada.IO_Exceptions.Name_Error
+                                  | Ada.IO_Exceptions.Use_Error =>
+                              Die (User_Error_Text (E));
+                        end;
                      end if;
                   end;
 
-               elsif Arg (2) = "prune" then
-                  --  Without this a worktree whose directory was deleted
-                  --  could not be reclaimed at all: its admin entry stayed,
-                  --  and with it the claim on the branch it had checked out.
+               elsif Subcommand = "prune" then
                   declare
                      Dry_Run : Boolean := False;
                      Verbose : Boolean := False;
-                     Bad     : Boolean := False;
                   begin
-                     for I in 3 .. Count loop
-                        if Arg (I) = "-n" or else Arg (I) = "--dry-run" then
-                           Dry_Run := True;
-                        elsif Arg (I) = "-v" or else Arg (I) = "--verbose" then
-                           Verbose := True;
-                        elsif Arg (I)'Length > 9
-                          and then Arg (I) (Arg (I)'First .. Arg (I)'First + 8)
-                                   = "--expire="
-                        then
-                           --  Age-based expiry needs mtimes to compare; the
-                           --  entries reported here are broken regardless of
-                           --  age, so the flag is accepted and ignored.
-                           null;
-                        else
-                           Usage_Error
-                             ("unknown worktree prune option: " & Arg (I),
-                              Usage);
-                           Bad := True;
-                           exit;
-                        end if;
+                     while I <= Natural (Args.Length) and then not Bad loop
+                        declare
+                           A    : constant String := Args (I);
+                           Eq   : constant Natural :=
+                             Ada.Strings.Fixed.Index (A, "=");
+                           Name : constant String :=
+                             (if Eq = 0 then A else A (A'First .. Eq - 1));
+                           Val  : constant String :=
+                             (if Eq = 0 then "" else A (Eq + 1 .. A'Last));
+                        begin
+                           if A = "-n" or else Name = "--dry-run" then
+                              Dry_Run := True;
+                           elsif Name = "--no-dry-run" then
+                              Dry_Run := False;
+                           elsif A = "-v" or else Name = "--verbose" then
+                              Verbose := True;
+                           elsif Name = "--no-verbose" then
+                              Verbose := False;
+                           elsif Name = "--expire" then
+                              --  Age-based expiry needs mtimes to compare;
+                              --  what is reported here is broken whatever
+                              --  its age.
+                              declare
+                                 Ignored : constant String :=
+                                   Take_Value (Name, Val, Eq /= 0);
+                              begin
+                                 pragma Unreferenced (Ignored);
+                                 null;
+                              end;
+                           elsif A'Length > 1 and then A (A'First) = '-' then
+                              Unknown_Option (A);
+                           else
+                              Bad_Usage ("");
+                           end if;
+                        end;
+                        I := I + 1;
                      end loop;
 
                      if not Bad then
+                        --  git reports each entry it drops.
                         if Dry_Run or else Verbose then
-                           --  git reports each removal on stderr.
                            for Item of Version.Worktrees.Prunable loop
-                              Error_Line
-                                ("Removing worktrees/"
-                                 & To_String (Item.Name) & ": "
-                                 & To_String (Item.Reason));
+                              Stderr_Line
+                                ("Removing worktrees/" & To_String (Item.Name)
+                                 & ": " & To_String (Item.Reason));
                            end loop;
                         end if;
-
                         if not Dry_Run then
                            Version.Worktrees.Prune;
                         end if;
                      end if;
                   end;
 
+               elsif Subcommand = "repair" then
+                  for A of Args loop
+                     if A'Length > 1 and then A (A'First) = '-' then
+                        Unknown_Option (A);
+                     end if;
+                  end loop;
+                  if not Bad then
+                     --  git diagnoses each path it was given, then makes a
+                     --  pass over every administrative entry; whatever it
+                     --  could not repair is an error() and exit 1.
+                     declare
+                        Reports : Version.Worktrees.Report_Vectors.Vector;
+                        Errors  : Version.Worktrees.Report_Vectors.Vector;
+                     begin
+                        if Args.Is_Empty then
+                           Version.Worktrees.Repair (".", Reports, Errors);
+                        else
+                           for A of Args loop
+                              Version.Worktrees.Repair (A, Reports, Errors);
+                           end loop;
+                        end if;
+                        Version.Worktrees.Repair_All (Reports, Errors);
+                        for Line of Errors loop
+                           Error_Line (Line);
+                        end loop;
+                        for Line of Reports loop
+                           Stderr_Line (Line);
+                        end loop;
+                        Failed := not Errors.Is_Empty;
+                     exception
+                        when E : Version.Worktrees.Worktree_Error =>
+                           Die (Ada.Exceptions.Exception_Message (E));
+                        when E : Ada.IO_Exceptions.Data_Error
+                               | Ada.IO_Exceptions.Name_Error
+                               | Ada.IO_Exceptions.Use_Error =>
+                           Error_Line (User_Error_Text (E));
+                           Failed := True;
+                     end;
+                  end if;
+
+               elsif Subcommand = "current" then
+                  --  This CLI's own spelling: the worktree it runs in.
+                  if not Args.Is_Empty then
+                     Bad_Usage ("");
+                  else
+                     Version.Console.Put
+                       (Version.Worktrees.Current_Worktree_Text);
+                  end if;
+
                else
-                  Usage_Error
-                    ("unknown worktree subcommand: " & Arg (2), Usage);
-                  return;
+                  Bad_Usage ("unknown subcommand: `" & Subcommand & "'");
+               end if;
+
+               <<Worktree_Report>>
+               if Length (Fatal) > 0 then
+                  Stderr_Line ("fatal: " & To_String (Fatal));
+                  Ada.Command_Line.Set_Exit_Status (Fatal_Status);
+               elsif Failed then
+                  Set_Command_Failure;
                end if;
             end;
 
