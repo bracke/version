@@ -1,3 +1,4 @@
+with Ada.Directories;
 with GNAT.OS_Lib;
 with Project_Tools.Files;
 with Project_Tools.Test_Fixtures;
@@ -53,5 +54,20 @@ package body Version.Test_Support is
          return Path;
       end;
    end Shell_Program;
+
+
+   function CLI_Command (Root : String) return String is
+      Exe   : constant String := Join (Root, "bin/main.exe");
+      Built : constant String :=
+        (if Ada.Directories.Exists (Exe) then Exe else Join (Root, "bin/main"));
+      Word  : String := Built;
+   begin
+      for C of Word loop
+         if C = '\' then
+            C := '/';
+         end if;
+      end loop;
+      return '"' & Word & '"';
+   end CLI_Command;
 
 end Version.Test_Support;

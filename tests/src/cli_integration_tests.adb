@@ -45,7 +45,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Version.Init.Init (Root);
       Configure_User (Root);
@@ -105,7 +105,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Version.Init.Init (Root);
       Configure_User (Root);
@@ -168,7 +168,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Version.Init.Init (Root);
       Configure_User (Root);
@@ -223,7 +223,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Version.Init.Init (Root);
       Configure_User (Root);
@@ -269,7 +269,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI     : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
       Remote  : constant String := Root;
       Work    : constant String := Root & "-work";
    begin
@@ -316,7 +316,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI     : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
       Raised  : Boolean := False;
    begin
       Version.Init.Init (Root);
@@ -351,7 +351,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
 
       procedure Commit (Name, Subject : String) is
       begin
@@ -407,7 +407,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
       D : constant String :=
         "GIT_AUTHOR_DATE='1700000000 +0000'"
         & " GIT_COMMITTER_DATE='1700000000 +0000' ";
@@ -460,7 +460,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Version.Init.Init (Root);
       Configure_User (Root);
@@ -512,7 +512,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
       procedure Rebuild is
       begin
          Version.Git_Fixtures.Run
@@ -564,7 +564,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Version.Init.Init (Root);
       Configure_User (Root);
@@ -607,7 +607,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Ada.Directories.Set_Directory (Root);
       --  Identical content and pinned dates give both repos the same commit
@@ -665,7 +665,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
       --  No `author` line, and the short mode spellings git documents.
       Stream : constant String :=
         "printf 'blob\nmark :1\ndata 2\nx\n\nblob\nmark :2\ndata 2\ny\n\n"
@@ -751,7 +751,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Ada.Directories.Set_Directory (Root);
       --  Two identical repos, each with two commits and a branch `feature`
@@ -819,7 +819,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Ada.Directories.Set_Directory (Root);
 
@@ -868,7 +868,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Ada.Directories.Set_Directory (Root);
 
@@ -921,7 +921,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Ada.Directories.Set_Directory (Root);
 
@@ -974,7 +974,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Ada.Directories.Set_Directory (Root);
 
@@ -1022,7 +1022,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Ada.Directories.Set_Directory (Root);
 
@@ -1095,7 +1095,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Ada.Directories.Set_Directory (Root);
 
@@ -1158,7 +1158,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Ada.Directories.Set_Directory (Root);
 
@@ -1214,7 +1214,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Ada.Directories.Set_Directory (Root);
 
@@ -1267,7 +1267,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Ada.Directories.Set_Directory (Root);
 
@@ -1317,7 +1317,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Ada.Directories.Set_Directory (Root);
 
@@ -1383,7 +1383,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Ada.Directories.Set_Directory (Root);
 
@@ -1472,7 +1472,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Ada.Directories.Set_Directory (Root);
 
@@ -1509,7 +1509,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Ada.Directories.Set_Directory (Root);
 
@@ -1570,7 +1570,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Ada.Directories.Set_Directory (Root);
 
@@ -1616,7 +1616,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Ada.Directories.Set_Directory (Root);
 
@@ -1663,7 +1663,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Ada.Directories.Set_Directory (Root);
 
@@ -1712,7 +1712,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
       --  Normalise the "-- \n<git version>" trailer, which is git's own.
       Norm : constant String :=
         "sed 's/^[0-9][0-9.]*$/VERSION/'";
@@ -1769,7 +1769,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Ada.Directories.Set_Directory (Root);
 
@@ -1835,7 +1835,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Ada.Directories.Set_Directory (Root);
 
@@ -1886,7 +1886,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Ada.Directories.Set_Directory (Root);
 
@@ -1932,7 +1932,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Ada.Directories.Set_Directory (Root);
 
@@ -1977,7 +1977,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Ada.Directories.Set_Directory (Root);
 
@@ -2036,7 +2036,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Ada.Directories.Set_Directory (Root);
 
@@ -2084,7 +2084,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Ada.Directories.Set_Directory (Root);
 
@@ -2129,7 +2129,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Ada.Directories.Set_Directory (Root);
 
@@ -2191,7 +2191,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Ada.Directories.Set_Directory (Root);
 
@@ -2251,7 +2251,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Ada.Directories.Set_Directory (Root);
 
@@ -2297,7 +2297,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Ada.Directories.Set_Directory (Root);
 
@@ -2352,7 +2352,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Ada.Directories.Set_Directory (Root);
 
@@ -2406,7 +2406,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Ada.Directories.Set_Directory (Root);
 
@@ -2453,7 +2453,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Ada.Directories.Set_Directory (Root);
 
@@ -2494,7 +2494,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Ada.Directories.Set_Directory (Root);
 
@@ -2557,7 +2557,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Ada.Directories.Set_Directory (Root);
 
@@ -2598,7 +2598,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Ada.Directories.Set_Directory (Root);
 
@@ -2646,7 +2646,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Ada.Directories.Set_Directory (Root);
 
@@ -2695,7 +2695,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Ada.Directories.Set_Directory (Root);
 
@@ -2740,7 +2740,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Ada.Directories.Set_Directory (Root);
 
@@ -2788,7 +2788,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Ada.Directories.Set_Directory (Root);
 
@@ -2836,7 +2836,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Ada.Directories.Set_Directory (Root);
 
@@ -2891,7 +2891,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Ada.Directories.Set_Directory (Root);
 
@@ -2943,7 +2943,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Ada.Directories.Set_Directory (Root);
 
@@ -3003,7 +3003,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Ada.Directories.Set_Directory (Root);
 
@@ -3055,7 +3055,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Ada.Directories.Set_Directory (Root);
 
@@ -3126,7 +3126,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Ada.Directories.Set_Directory (Root);
 
@@ -3183,7 +3183,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
       procedure Oracle (Cmd : String) is
       begin
          Version.Git_Fixtures.Run
@@ -3243,7 +3243,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Version.Init.Init (Root);
       Configure_User (Root);
@@ -3290,7 +3290,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Version.Init.Init (Root);
       Configure_User (Root);
@@ -3331,7 +3331,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Version.Init.Init (Root);
       Configure_User (Root);
@@ -3371,7 +3371,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Version.Init.Init (Root);
       Configure_User (Root);
@@ -3419,7 +3419,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Version.Init.Init (Root);
       Configure_User (Root);
@@ -3462,7 +3462,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Version.Init.Init (Root);
       Configure_User (Root);
@@ -3504,7 +3504,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Version.Init.Init (Root);
       Configure_User (Root);
@@ -3550,7 +3550,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
 
       function Both (Input, Args : String) return String is
         ("test ""$(printf '" & Input & "' | " & CLI
@@ -3592,7 +3592,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
 
       function Both (Input, Args : String) return String is
         ("test ""$(printf '" & Input & "' | " & CLI
@@ -3631,7 +3631,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
 
       --  Compare the exit code of version vs git for one refname + flags.
       function Rc (Ref, Flags : String) return String is
@@ -3685,7 +3685,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Version.Init.Init (Root);
       Configure_User (Root);
@@ -3721,7 +3721,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Version.Init.Init (Root);
       Configure_User (Root);
@@ -3762,7 +3762,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
 
       function Both (Input : String) return String is
         ("test ""$(printf '" & Input & "' | " & CLI
@@ -3815,7 +3815,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Version.Init.Init (Root);
       Configure_User (Root);
@@ -3856,7 +3856,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
 
       function Both (Cmd : String) return String is
         ("test ""$(" & CLI & " " & Cmd & " 2>&1)"" = "
@@ -3909,7 +3909,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Version.Init.Init (Root);
       Configure_User (Root);
@@ -3951,7 +3951,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Version.Init.Init (Root);
       Configure_User (Root);
@@ -4115,7 +4115,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
       Remote : constant String :=
         Version.Test_Support.Join (Root, "remote.git");
    begin
@@ -4182,7 +4182,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
       Helper : constant String := Version.Test_Support.Join (Root, "helper.sh");
    begin
       Version.Init.Init (Root);
@@ -4238,7 +4238,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Version.Init.Init (Root);
       Configure_User (Root);
@@ -4276,7 +4276,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Version.Init.Init (Root);
       Configure_User (Root);
@@ -4323,7 +4323,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Version.Init.Init (Root);
       Configure_User (Root);
@@ -4378,7 +4378,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
       LF : constant Character := Character'Val (10);
    begin
       Version.Init.Init (Root);
@@ -4419,7 +4419,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI     : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
       GEnv : constant String :=
         "LC_ALL=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null "
         --  Pin the identity as well: with the global config out of the
@@ -4499,7 +4499,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI     : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
       Q : constant Character := '"';
       GEnv : constant String :=
         "LC_ALL=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null "
@@ -4606,7 +4606,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI     : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
       Q : constant Character := '"';
       GEnv : constant String :=
         "LC_ALL=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null "
@@ -4714,7 +4714,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI     : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
       Q : constant Character := '"';
       GEnv : constant String :=
         "LC_ALL=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null "
@@ -4819,7 +4819,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI     : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
       Q : constant Character := '"';
       GEnv : constant String :=
         "LC_ALL=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null "
@@ -4911,7 +4911,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI     : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
       Q : constant Character := '"';
       GEnv : constant String :=
         "LC_ALL=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null "
@@ -4999,7 +4999,7 @@ package body CLI_Integration_Tests is
    is
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI     : constant String :=
-        Version.Test_Support.Join (Old_Dir, "bin/main");
+        Version.Test_Support.CLI_Command (Old_Dir);
       Q       : constant Character := '"';
 
       --  git localizes its messages, so pin the locale; pin dates and the
@@ -7951,7 +7951,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI     : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
       Q : constant Character := '"';
       GEnv : constant String :=
         "LC_ALL=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null "
@@ -8032,7 +8032,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI     : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
       Q : constant Character := '"';
       GEnv : constant String :=
         "LC_ALL=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null "
@@ -8124,7 +8124,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI     : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
       Q : constant Character := '"';
       GEnv : constant String :=
         "LC_ALL=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null "
@@ -8222,7 +8222,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI     : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
       Q : constant Character := '"';
       GEnv : constant String :=
         "LC_ALL=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null "
@@ -8325,7 +8325,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI     : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
       Q : constant Character := '"';
       GEnv : constant String :=
         "LC_ALL=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null "
@@ -8443,7 +8443,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI     : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
       Q : constant Character := '"';
       GEnv : constant String :=
         "LC_ALL=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null "
@@ -8541,7 +8541,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI     : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
       Q : constant Character := '"';
 
       --  Runs an identical set of merge-file invocations (with -p, so output
@@ -8616,7 +8616,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
 
       procedure Assert_In (Hay, Needle, Ctx : String) is
       begin
@@ -8676,7 +8676,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI     : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
 
       --  Deterministic git: C locale, no user/global config, default branch
       --  main, non-interactive editor.
@@ -8767,7 +8767,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI     : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
       GEnv : constant String :=
         "LC_ALL=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null "
         --  Pin the identity as well: with the global config out of the
@@ -8848,7 +8848,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI     : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
       Up      : constant String := Version.Test_Support.Join (Base, "up.git");
       Work    : constant String := Version.Test_Support.Join (Base, "work");
       Clone   : constant String := Version.Test_Support.Join (Base, "clone");
@@ -8936,7 +8936,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
 
       procedure Assert_In (Hay, Needle, Ctx : String) is
       begin
@@ -9017,7 +9017,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Version.Init.Init (Root);
       Configure_User (Root);
@@ -9067,7 +9067,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI     : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
    begin
       Version.Init.Init (Root);
       Configure_User (Root);
@@ -9125,7 +9125,7 @@ package body CLI_Integration_Tests is
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       CLI     : constant String :=
-        """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
+        Version.Test_Support.CLI_Command (Old_Dir);
       Super   : constant String := Version.Test_Support.Join (Base, "super");
    begin
       --  A submodule upstream and a superproject that embeds it (set up with

@@ -45,4 +45,11 @@ package Version.Test_Support is
    --  so every fixture command failed before it ran.
    function Shell_Program return String;
 
+
+   --  The built CLI as one shell word: `bin/main.exe` where it exists, with
+   --  forward slashes and quoted. A Windows path reaches sh as
+   --  D:\a\...\bin\main.exe, whose backslashes sh reads as escapes, so the
+   --  command came back "not found".
+   function CLI_Command (Root : String) return String;
+
 end Version.Test_Support;
