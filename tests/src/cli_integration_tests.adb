@@ -7476,6 +7476,227 @@ package body CLI_Integration_Tests is
       Run_Parity_Transcript (Root, Scenario, "branch");
    end Branch_Option_Surface_Matches_Git;
 
+   --  `stash`: git's option surface -- push/save with -u/-a/-k/-S/-m,
+   --  pathspecs and --pathspec-from-file, list through the log machinery,
+   --  show with -u/--only-untracked and the diff options, apply/pop with
+   --  --index, -q and the conflict-marker labels (including the merge onto
+   --  a dirty tree, its narration and the status git prints afterwards),
+   --  drop, branch, create, store and clear, with git's messages.
+   procedure Stash_Option_Surface_Matches_Git
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Scenario : constant String :=
+          "state() { :; }" & LF
+        & "git init -q; git config user.email a@b; git config user.name A" & LF
+        & "printf 'a\n1\n2\n3\n4\n5\n' > f; printf 'k\n' > keep; git add f keep; " & "git commit -qm one" & LF
+        & "printf 'b\n1\n2\n3\n4\n5\n' > f; printf 'staged\n' > s; git add s" & LF
+        & "printf 'u\n' > un.txt; printf 'ig\n' > ig.txt; printf 'ig.txt\n' > "
+          & ".gitignore; git add .gitignore; git commit -qm two" & LF
+        & "printf 'b2\n1\n2\n3\n4\n5\n' > f; printf 'staged2\n' > s; git add s; " & "printf 'w\n' >> s" & LF
+        & "x() { l=$1; shift; echo ""\$ $l"" >> ""$TF""; ""$@"" >> ""$TF"" 2>&1; echo "
+          & """[rc=$?]"" >> ""$TF""; }" & LF
+        & "t 'push' stash push" & LF
+        & "x 'status' git status --porcelain" & LF
+        & "t 'list' stash list" & LF
+        & "t 'list oneline' stash list --oneline" & LF
+        & "t 'list -n1' stash list -n 1" & LF
+        & "t 'list format' stash list --format='%gd %gs'" & LF
+        & "t 'show' stash show" & LF
+        & "t 'show -p' stash show -p" & LF
+        & "t 'show --stat' stash show --stat" & LF
+        & "t 'show --name-only' stash show --name-only" & LF
+        & "t 'show bogus' stash show stash@{9}" & LF
+        & "t 'apply' stash apply" & LF
+        & "x 'status2' git status --porcelain" & LF
+        & "t 'apply again' stash apply" & LF
+        & "t 'drop' stash drop" & LF
+        & "t 'list after drop' stash list" & LF
+        & "t 'drop empty' stash drop" & LF
+        & "t 'clear' stash clear" & LF
+        & "t 'pop empty' stash pop" & LF
+        & "t 'push nothing' stash push" & LF
+        & "git checkout -q -- . 2>/dev/null; git reset -q" & LF
+        & "printf 'c\n' >> f; printf 'stg\n' > s2; git add s2" & LF
+        & "t 'push -k' stash push -k" & LF
+        & "x 'status -k' git status --porcelain" & LF
+        & "t 'pop' stash pop" & LF
+        & "x 'status after pop' git status --porcelain" & LF
+        & "t 'push --staged' stash push --staged" & LF
+        & "x 'status staged' git status --porcelain" & LF
+        & "t 'list2' stash list" & LF
+        & "t 'pop --index' stash pop --index" & LF
+        & "x 'status after pop index' git status --porcelain" & LF
+        & "git reset -q --hard" & LF
+        & "printf 'd\n' >> f; printf 'un2\n' > un2.txt" & LF
+        & "t 'push -u' stash push -u" & LF
+        & "x 'status -u' git status --porcelain" & LF
+        & "t 'show -u' stash show -u" & LF
+        & "t 'show --only-untracked' stash show --only-untracked" & LF
+        & "t 'pop -q' stash pop -q" & LF
+        & "x 'status after -q' git status --porcelain" & LF
+        & "git reset -q --hard; /bin/rm -f un2.txt" & LF
+        & "printf 'e\n' >> f" & LF
+        & "t 'push -m msg' stash push -m 'my message'" & LF
+        & "t 'list3' stash list" & LF
+        & "t 'save legacy' stash save" & LF
+        & "printf 'f\n' >> f" & LF
+        & "t 'save msg' stash save my saved message" & LF
+        & "t 'list4' stash list" & LF
+        & "t 'apply idx' stash apply --index stash@{0}" & LF
+        & "t 'drop q' stash drop -q" & LF
+        & "t 'drop bad ref' stash drop HEAD" & LF
+        & "t 'apply bad' stash apply nosuchthing" & LF
+        & "t 'apply many' stash apply stash@{0} stash@{1}" & LF
+        & "t 'clear2' stash clear" & LF
+        & "git reset -q --hard" & LF
+        & "printf 'g\n' >> f" & LF
+        & "t 'create' stash create" & LF
+        & "t 'create msg' stash create my create message" & LF
+        & "x 'status after create' git status --porcelain" & LF
+        & "t 'store' stash store -m stored $(git stash create)" & LF
+        & "t 'list5' stash list" & LF
+        & "t 'store bad' stash store -m x nosuch" & LF
+        & "t 'store nothing' stash store" & LF
+        & "t 'store many' stash store a b" & LF
+        & "t 'clear3' stash clear" & LF
+        & "git reset -q --hard" & LF
+        & "printf 'h\n' >> f" & LF
+        & "t 'push paths' stash push -- f" & LF
+        & "t 'push paths nomatch' stash push -- nosuch" & LF
+        & "t 'clear4' stash clear" & LF
+        & "git reset -q --hard" & LF
+        & "printf 'i\n' >> f" & LF
+        & "t 'branch' stash branch newb" & LF
+        & "x 'status branch' git status --porcelain" & LF
+        & "t 'list6' stash list" & LF
+        & "x 'branch name' git rev-parse --abbrev-ref HEAD" & LF
+        & "git checkout -q main 2>/dev/null || git checkout -q master" & LF
+        & "t 'branch no name' stash branch" & LF
+        & "t 'push then branch' stash push" & LF
+        & "t 'branch exists' stash branch main" & LF
+        & "t 'unknown sub' stash frobnicate" & LF
+        & "t 'push -p' stash push -p" & LF
+        & "t 'push -u -p' stash push -p -u" & LF
+        & "t 'push -S -u' stash push -S -u" & LF
+        & "t 'pathspec-from-file' stash push --pathspec-from-file=- --staged" & LF
+        & "t 'pathspec-file-nul' stash push --pathspec-file-nul" & LF
+        & "mkdir ""../${NAME}_2"" && cd ""../${NAME}_2""" & LF
+        & "git init -q; git config user.email a@b; git config user.name A" & LF
+        & "printf 'base\n1\n2\n3\n4\n5\n6\n7\n8\n' > f; printf 'o\n' > other; git "
+          & "add f other; git commit -qm one" & LF
+        & "# conflicting apply" & LF
+        & "printf 'stash\n1\n2\n3\n4\n5\n6\n7\n8\n' > f" & LF
+        & "t 'push' stash push -m mine" & LF
+        & "printf 'local\n1\n2\n3\n4\n5\n6\n7\n8\n' > f" & LF
+        & "git commit -qam 'local change'" & LF
+        & "t 'apply conflict' stash apply" & LF
+        & "x 'file' cat f" & LF
+        & "x 'status' git status --porcelain" & LF
+        & "t 'list still' stash list" & LF
+        & "git checkout -q --theirs f 2>/dev/null; git reset -q --hard" & LF
+        & "t 'pop conflict' stash pop" & LF
+        & "x 'file2' cat f" & LF
+        & "t 'list after pop conflict' stash list" & LF
+        & "git reset -q --hard" & LF
+        & "t 'apply labels' stash apply --label-ours=OURS --label-theirs=THEIRS " & "--label-base=BASE" & LF
+        & "x 'file3' cat f" & LF
+        & "git reset -q --hard" & LF
+        & "t 'apply q' stash apply -q" & LF
+        & "x 'file3q' cat f" & LF
+        & "git reset -q --hard" & LF
+        & "t 'drop it' stash drop" & LF
+        & "# index restoration" & LF
+        & "printf 'staged\n' > st; git add st; printf 'work\n' >> other" & LF
+        & "t 'push2' stash push" & LF
+        & "t 'apply --index' stash apply --index" & LF
+        & "x 'status idx' git status --porcelain" & LF
+        & "git reset -q --hard; git clean -qfd" & LF
+        & "t 'apply no index' stash apply" & LF
+        & "x 'status noidx' git status --porcelain" & LF
+        & "git reset -q --hard; git clean -qfd" & LF
+        & "git config stash.index true" & LF
+        & "t 'apply cfg index' stash apply" & LF
+        & "x 'status cfgidx' git status --porcelain" & LF
+        & "git config --unset stash.index" & LF
+        & "git reset -q --hard; git clean -qfd" & LF
+        & "t 'drop2' stash drop" & LF
+        & "# untracked round trip" & LF
+        & "printf 'unt\n' > u1.txt; mkdir -p d; printf 'unt2\n' > d/u2.txt; "
+          & "printf 'ign\n' > i.txt; printf 'i.txt\n' > .gitignore; git add "
+          & ".gitignore; git commit -qm ignore" & LF
+        & "t 'push -u' stash push -u -m untracked" & LF
+        & "x 'status after push -u' git status --porcelain" & LF
+        & "x 'ls' ls" & LF
+        & "t 'show -u' stash show -u" & LF
+        & "t 'show only' stash show --only-untracked" & LF
+        & "t 'show -u -p' stash show -u -p" & LF
+        & "t 'pop untracked' stash pop" & LF
+        & "x 'status after pop -u' git status --porcelain" & LF
+        & "x 'cat u1' cat u1.txt" & LF
+        & "x 'cat d/u2' cat d/u2.txt" & LF
+        & "git clean -qfd" & LF
+        & "printf 'x\n' >> other" & LF
+        & "t 'push -a' stash push -a -m all" & LF
+        & "x 'ls after -a' ls" & LF
+        & "t 'pop -a' stash pop" & LF
+        & "x 'ls after pop' ls" & LF
+        & "git reset -q --hard; git clean -qfdx" & LF
+        & "# keep-index" & LF
+        & "printf 'k1\n' > k1; git add k1; printf 'w1\n' >> other" & LF
+        & "t 'push -k' stash push -k -m keep" & LF
+        & "x 'status -k' git status --porcelain" & LF
+        & "x 'cat k1' cat k1" & LF
+        & "t 'pop -k' stash pop" & LF
+        & "x 'status after pop -k' git status --porcelain" & LF
+        & "git reset -q --hard; git clean -qfdx" & LF
+        & "# stash config for show" & LF
+        & "printf 'cfg\n' >> other" & LF
+        & "t 'push cfg' stash push" & LF
+        & "git config stash.showStat false" & LF
+        & "t 'show no stat' stash show" & LF
+        & "git config stash.showPatch true" & LF
+        & "t 'show patch cfg' stash show" & LF
+        & "git config --unset stash.showStat; git config --unset stash.showPatch" & LF
+        & "git config stash.showIncludeUntracked true" & LF
+        & "t 'show u cfg' stash show" & LF
+        & "git config --unset stash.showIncludeUntracked" & LF
+        & "t 'show explicit' stash show --name-status" & LF
+        & "t 'clear' stash clear" & LF
+        & "git reset -q --hard" & LF
+        & "# stash create/store round trip and stash-like commits" & LF
+        & "printf 'cs\n' >> other" & LF
+        & "x 'status create' git status --porcelain" & LF
+        & "x 'apply commit' sh -c '""$0"" stash apply ""$(""$0"" stash create)""' " & """$TOOL""" & LF
+        & "x 'show commit' sh -c '""$0"" stash show ""$(""$0"" stash create)""' ""$TOOL""" & LF
+        & "x 'drop commit' sh -c '""$0"" stash drop ""$(""$0"" stash create)""' ""$TOOL""" & LF
+        & "x 'branch commit' sh -c '""$0"" stash branch nb ""$(""$0"" stash create)""' " & """$TOOL""" & LF
+        & "x 'branch after' git rev-parse --abbrev-ref HEAD" & LF
+        & "x 'status after branch' git status --porcelain" & LF
+        & "t 'list after branch' stash list" & LF
+        & "git checkout -q main 2>/dev/null || git checkout -q master; git reset "
+          & "-q --hard; git clean -qfdx" & LF
+        & "# pathspec-from-file" & LF
+        & "printf 'p1\n' >> other; printf 'p2\n' > p2; git add p2" & LF
+        & "printf 'other\n' > specs.txt" & LF
+        & "t 'pathspec file' stash push --pathspec-from-file=specs.txt" & LF
+        & "x 'status pf' git status --porcelain" & LF
+        & "t 'pop pf' stash pop" & LF
+        & "git reset -q --hard; git clean -qfdx" & LF
+        & "# store and quiet" & LF
+        & "printf 'q\n' >> other" & LF
+        & "x 'store quiet' sh -c '""$0"" stash store -q -m quiet ""$(""$0"" stash " & "create)""' ""$TOOL""" & LF
+        & "t 'list store' stash list" & LF
+        & "x 'store no msg' sh -c '""$0"" stash store ""$(""$0"" stash create)""' " & """$TOOL""" & LF
+        & "t 'list store2' stash list" & LF
+        & "t 'drop -q' stash drop -q" & LF
+        & "t 'clear2' stash clear" & LF
+        & "git reset -q --hard" & LF;
+   begin
+      Run_Parity_Transcript (Root, Scenario, "stash");
+   end Stash_Option_Surface_Matches_Git;
+
    procedure Bisect_Run_And_Patch_Id_Match_Git
      (T : in out AUnit.Test_Cases.Test_Case'Class)
    is
@@ -8899,6 +9120,9 @@ package body CLI_Integration_Tests is
       Register_Routine
         (T, Branch_Option_Surface_Matches_Git'Access,
          "Branch: git's option surface, listing formats, tracking, rename, delete");
+      Register_Routine
+        (T, Stash_Option_Surface_Matches_Git'Access,
+         "Stash: git's option surface, push modes, apply/pop merge, show, store");
       Register_Routine
         (T, Fast_Import_Stream_Matches_Git'Access,
          "Fast-import: author defaults to committer, short modes are files");

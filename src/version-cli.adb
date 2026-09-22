@@ -17808,6 +17808,8 @@ package body Version.CLI is
                      New_Id             : Version.Objects.Hex_Object_Id :=
                        Version.Objects.Zero_Object_Id;
                      Revisions_Resolved : Boolean := False;
+                     --  git takes any tree-ish pair, not just commits.
+                     Trees_Only : Boolean := False;
                      Has_Paths : constant Boolean := LCount >= 5;
                   begin
                      begin
@@ -17826,6 +17828,21 @@ package body Version.CLI is
                            Revisions_Resolved := False;
                      end;
 
+                     if not Revisions_Resolved and then not Merge_Base_Flag then
+                        --  `diff <tree> <tree>`: the operands need only name
+                        --  trees, which is what a tag, a tree id or a
+                        --  `<rev>^{tree}` gives.
+                        begin
+                           Old_Id := Version.Revisions.Resolve_Tree (Repo, LArg (2));
+                           New_Id := Version.Revisions.Resolve_Tree (Repo, LArg (3));
+                           Revisions_Resolved := True;
+                           Trees_Only := True;
+                        exception
+                           when Ada.IO_Exceptions.Data_Error | Constraint_Error =>
+                              Revisions_Resolved := False;
+                        end;
+                     end if;
+
                      if Revisions_Resolved and then Dirstat_On then
                         Emit
                           (Version.Diff.Dir_Stat
@@ -17839,6 +17856,8 @@ package body Version.CLI is
                               By_Line    => Dirstat_Line,
                               Permille   => Dirstat_Perm,
                               Cumulative => Dirstat_Cum));
+                     elsif Revisions_Resolved and then Trees_Only then
+                        Emit (Version.Diff.Diff_Trees (Repo, Old_Id, New_Id, Opts));
                      elsif Revisions_Resolved and then Has_Paths then
                         Emit
                           (Version.Diff.Diff_Commits
@@ -18247,8 +18266,12 @@ package body Version.CLI is
                   then
                      Walk.Skip := Natural'Value (After (Arg (I), "--skip="));
                   elsif Arg (I) = "--oneline" then
+                     --  git's last-one-wins: --oneline after a --format
+                     --  replaces it (and a later --format replaces this).
                      Oneline := True;
                      Hdr.Full_Oneline := False;
+                     Has_Format := False;
+                     Format := Null_Unbounded_String;
                   elsif Arg (I) = "--stat" then
                      Stat := True;
                   elsif Has_Prefix (Arg (I), "--stat=") then
@@ -18372,12 +18395,14 @@ package body Version.CLI is
                        ("From %H Mon Sep 17 00:00:00 2001%nFrom: %aN <%aE>%n"
                         & "Date: %aD%nSubject: [PATCH] %s%n%n%b");
                      Has_Format := True;
+                     Oneline := False;
                      Terminator := False;
                   elsif Arg (I) = "--pretty=reference"
                     or else Arg (I) = "--format=reference"
                   then
                      Format := To_Unbounded_String ("%h (%s, %as)");
                      Has_Format := True;
+                     Oneline := False;
                      Terminator := True;
                   elsif Arg (I) = "--notes" then
                      Want_Notes := True;
@@ -18396,6 +18421,7 @@ package body Version.CLI is
                   elsif Starts (Arg (I), "--format=") then
                      Format := To_Unbounded_String (After (Arg (I), "--format="));
                      Has_Format := True;
+                     Oneline := False;
                      Terminator := True;
                   elsif Starts (Arg (I), "--date=") then
                      Date_Mode :=
@@ -18404,11 +18430,13 @@ package body Version.CLI is
                      Format :=
                        To_Unbounded_String (After (Arg (I), "--pretty=tformat:"));
                      Has_Format := True;
+                     Oneline := False;
                      Terminator := True;
                   elsif Starts (Arg (I), "--pretty=format:") then
                      Format :=
                        To_Unbounded_String (After (Arg (I), "--pretty=format:"));
                      Has_Format := True;
+                     Oneline := False;
                      Terminator := False;
                   elsif Starts (Arg (I), "--pretty=") then
                      --  A bare %-format is tformat; anything else names a
@@ -18433,9 +18461,11 @@ package body Version.CLI is
                               Terminator := True;
                            end if;
                            Has_Format := True;
+                           Oneline := False;
                         elsif (for some C of V => C = '%') then
                            Format := To_Unbounded_String (V);
                            Has_Format := True;
+                           Oneline := False;
                            Terminator := True;
                         else
                            Ada.Text_IO.Put_Line
@@ -19727,13 +19757,51 @@ package body Version.CLI is
                         --  -g: the reflog entries of the first tip (HEAD by
                         --  default), newest first, each a shown commit.
                         declare
-                           Ref : constant String :=
+                           Given : constant String :=
                              (if Tip_Names.Is_Empty
                                 or else Tip_Names.First_Element = ""
                               then "HEAD" else Tip_Names.First_Element);
+
+                           --  git's dwim_log: the ref_rev_parse_rules, so
+                           --  `-g main` walks refs/heads/main and `-g
+                           --  refs/stash` (or `stash`) walks refs/stash.
+                           function Dwim_Log (Name : String) return String is
+                           begin
+                              if Name = "HEAD" then
+                                 return "HEAD";
+                              end if;
+                              for Candidate of Version.Ref_Format.String_Vectors.Vector'
+                                [Name, "refs/" & Name, "refs/tags/" & Name,
+                                 "refs/heads/" & Name, "refs/remotes/" & Name,
+                                 "refs/remotes/" & Name & "/HEAD"]
+                              loop
+                                 if Version.Ref_Names.Is_Valid_Ref_Name (Candidate)
+                                   and then Version.Refs.Ref_Exists (Repo, Candidate)
+                                 then
+                                    return Candidate;
+                                 end if;
+                              end loop;
+                              return "refs/heads/" & Name;
+                           end Dwim_Log;
+
+                           Full : constant String := Dwim_Log (Given);
+
+                           --  git's shorten_unambiguous_ref: %gd names the
+                           --  ref the short way (refs/stash -> stash).
+                           Ref : constant String :=
+                             (if Full = "HEAD" then "HEAD"
+                              elsif Has_Prefix (Full, "refs/heads/")
+                              then Full (Full'First + 11 .. Full'Last)
+                              elsif Has_Prefix (Full, "refs/tags/")
+                              then Full (Full'First + 10 .. Full'Last)
+                              elsif Has_Prefix (Full, "refs/remotes/")
+                              then Full (Full'First + 13 .. Full'Last)
+                              elsif Has_Prefix (Full, "refs/")
+                              then Full (Full'First + 5 .. Full'Last)
+                              else Full);
                            Text : constant String :=
                              Version.Files.Read_Binary_File
-                               (Version.Reflog.Path (Repo, Ref));
+                               (Version.Reflog.Path (Repo, Full));
                            Lines : Version.Rev_Args.String_Vectors.Vector;
                            Start : Natural := Text'First;
                         begin
@@ -19816,6 +19884,9 @@ package body Version.CLI is
                                           Reflog_Selector =>
                                             To_Unbounded_String
                                               (Ref & "@{" & Sel & "}"),
+                                          Reflog_Selector_Long =>
+                                            To_Unbounded_String
+                                              (Given & "@{" & Sel & "}"),
                                           Reflog_Ident => To_Unbounded_String (Who),
                                           Reflog_Message => To_Unbounded_String (Msg)));
                                  end if;
@@ -25729,673 +25800,1030 @@ package body Version.CLI is
             end;
 
          elsif Command = "stash" then
+            --  A port of builtin/stash.c: the subcommand comes first (a
+            --  leading option means `push`), each one parses its own
+            --  options with git's parse-options rules, and `list` and
+            --  `show` hand the whole `log`/`diff` surface to those
+            --  commands, as git's own implementation does.
             declare
                Usage : constant String :=
-                 "version stash [push [-m MSG] [-u|--include-untracked"
-                 & "|-a|--include-ignored] [--] [PATH...]] | "
-                 & "version stash save [-m MSG] [-u|-a] [MESSAGE] | "
-                 & "version stash create [--include-untracked|--include-ignored] [--] [PATH...] | "
-                 & "version stash store [-m MESSAGE] COMMIT | "
-                 & "version stash list | version stash show"
-                 & " [-p|--patch|--stat|--name-only|--name-status|--numstat"
-                 & "|--shortstat|-U<n>] [stash@{N}] [--] [PATH...] | "
-                 & "version stash apply [stash@{N}] [--] [PATH...] | "
-                 & "version stash pop [stash@{N}] [--] [PATH...] | "
-                 & "version stash branch NAME [stash@{N}] | "
-                 & "version stash drop [stash@{N}] | version stash clear";
+                 "version stash list [<log-options>]"
+                 & " | show [-u | --include-untracked | --only-untracked]"
+                 & " [<diff-options>] [<stash>]"
+                 & " | drop [-q | --quiet] [<stash>]"
+                 & " | pop [--index] [-q | --quiet] [<stash>]"
+                 & " | apply [--index] [-q | --quiet] [--label-ours=<label>]"
+                 & " [--label-theirs=<label>] [--label-base=<label>] [<stash>]"
+                 & " | branch <branchname> [<stash>]"
+                 & " | [push] [-p | --patch] [-S | --staged]"
+                 & " [-k | --[no-]keep-index] [-q | --quiet]"
+                 & " [-u | --include-untracked] [-a | --all]"
+                 & " [(-m | --message) <message>]"
+                 & " [--pathspec-from-file=<file> [--pathspec-file-nul]]"
+                 & " [--] [<pathspec>...]"
+                 & " | save [-p | --patch] [-S | --staged]"
+                 & " [-k | --[no-]keep-index] [-q | --quiet]"
+                 & " [-u | --include-untracked] [-a | --all] [<message>]"
+                 & " | store [(-m | --message) <message>] [-q | --quiet] <commit>"
+                 & " | create [<message>] | clear";
 
-               function Is_Option (Text : String) return Boolean is
-               begin
-                  return Text'Length > 0 and then Text (Text'First) = '-';
-               end Is_Option;
+               Repo : constant Version.Repository.Repository_Handle :=
+                 Version.Repository.Open;
 
-               function Is_Stash_Spec (Text : String) return Boolean is
-               begin
-                  return Ada.Strings.Fixed.Index (Text, "stash@{") = 1;
-               end Is_Stash_Spec;
+               LF : constant Character := ASCII.LF;
 
-               procedure Parse_Stash_Path_Command
-                 (Subcommand        : String;
-                  First_Index       : Positive;
-                  Include_Untracked : out Boolean;
-                  Include_Ignored   : out Boolean;
-                  Message           : out Unbounded_String;
-                  Path_First        : out Natural;
-                  OK                : out Boolean)
+               function Starts (S, P : String) return Boolean is
+                 (S'Length >= P'Length
+                  and then S (S'First .. S'First + P'Length - 1) = P);
+               function After (S, P : String) return String is
+                 (S (S'First + P'Length .. S'Last));
+
+               function Config_Bool (Key : String; Default : Boolean)
+                  return Boolean
                is
-                  I               : Natural := First_Index;
-                  After_Separator : Boolean := False;
-                  Saw_Untracked   : Boolean := False;
-                  Saw_Ignored     : Boolean := False;
+                  OK : Boolean;
                begin
-                  Include_Untracked := False;
-                  Include_Ignored := False;
-                  Message := Null_Unbounded_String;
-                  Path_First := First_Index;
-                  OK := False;
+                  if not Version.Config.Has_Key (Repo, Key) then
+                     return Default;
+                  end if;
+                  return Config_Bool_Norm
+                           (Version.Config.Get_Value (Repo, Key), OK) = "true";
+               end Config_Bool;
 
-                  while I <= Count loop
-                     if Arg (I) = "--" and then not After_Separator then
-                        After_Separator := True;
-                        Path_First := I;
-                        OK := True;
-                        return;
+               Bad   : Boolean := False;
+               Fatal : Unbounded_String;
+               --  git's stash reports most failures with error()/fprintf and
+               --  exit 1 rather than a die().
+               Failed : Boolean := False;
 
-                     elsif not After_Separator
-                       and then (Arg (I) = "--include-untracked"
-                                 or else Arg (I) = "-u")
-                     then
-                        if Saw_Untracked then
-                           Usage_Error
-                             ("duplicate stash " & Subcommand
-                              & " option: --include-untracked",
-                              Usage);
-                           return;
-                        elsif Saw_Ignored then
-                           Usage_Error
-                             ("stash " & Subcommand
-                              & " --include-untracked cannot be combined with --include-ignored",
-                              Usage);
-                           return;
-                        end if;
+               procedure Die (Text : String) is
+               begin
+                  if Length (Fatal) = 0 then
+                     Fatal := To_Unbounded_String (Text);
+                  end if;
+               end Die;
 
-                        Saw_Untracked := True;
-                        Include_Untracked := True;
-                        I := I + 1;
-
-                     elsif not After_Separator
-                       and then (Arg (I) = "--include-ignored"
-                                 or else Arg (I) = "-a"
-                                 or else Arg (I) = "--all")
-                     then
-                        if Saw_Ignored then
-                           Usage_Error
-                             ("duplicate stash " & Subcommand
-                              & " option: --include-ignored",
-                              Usage);
-                           return;
-                        elsif Saw_Untracked then
-                           Usage_Error
-                             ("stash " & Subcommand
-                              & " --include-untracked cannot be combined with --include-ignored",
-                              Usage);
-                           return;
-                        end if;
-
-                        Saw_Ignored := True;
-                        Include_Untracked := True;
-                        Include_Ignored := True;
-                        I := I + 1;
-
-                     elsif not After_Separator and then Arg (I) = "-m" then
-                        if I >= Count then
-                           Usage_Error
-                             ("stash " & Subcommand & " -m requires a message",
-                              Usage);
-                           return;
-                        end if;
-                        Message := To_Unbounded_String (Arg (I + 1));
-                        I := I + 2;
-
-                     elsif not After_Separator and then Arg (I) = "--message"
-                     then
-                        if I >= Count then
-                           Usage_Error
-                             ("stash " & Subcommand
-                              & " --message requires a message", Usage);
-                           return;
-                        end if;
-                        Message := To_Unbounded_String (Arg (I + 1));
-                        I := I + 2;
-
-                     elsif not After_Separator
-                       and then Has_Prefix (Arg (I), "--message=")
-                     then
-                        Message := To_Unbounded_String
-                          (Arg (I) (Arg (I)'First + 10 .. Arg (I)'Last));
-                        I := I + 1;
-
-                     elsif not After_Separator
-                       and then Has_Prefix (Arg (I), "-m")
-                     then
-                        Message := To_Unbounded_String
-                          (Arg (I) (Arg (I)'First + 2 .. Arg (I)'Last));
-                        I := I + 1;
-
-                     elsif not After_Separator and then Is_Option (Arg (I)) then
-                        Usage_Error
-                          ("unknown stash " & Subcommand & " option: " & Arg (I),
-                           Usage);
-                        return;
-
-                     else
-                        Path_First := I;
-                        OK := True;
-                        return;
+               procedure Bad_Usage (Text : String) is
+               begin
+                  if not Bad then
+                     if Text'Length > 0 then
+                        Error_Line (Text);
                      end if;
-                  end loop;
+                     Expected (Usage);
+                     Bad := True;
+                  end if;
+               end Bad_Usage;
 
-                  Path_First := Count + 1;
-                  OK := True;
-               end Parse_Stash_Path_Command;
-
-               procedure Perform_Stash_Push
-                 (Include_Untracked : Boolean;
-                  Include_Ignored   : Boolean;
-                  Specs             :
-                    Version.Pathspec.Pathspec_Vectors.Vector;
-                  Message           : String)
-               is
+               procedure Unknown_Option (A : String) is
                begin
-                  if Has_Stashable_Changes
-                       (Include_Untracked => Include_Untracked,
-                        Include_Ignored   => Include_Ignored,
-                        Pathspecs         => Specs)
-                  then
-                     Version.Stash.Push
-                       (Include_Untracked => Include_Untracked,
-                        Include_Ignored   => Include_Ignored,
-                        Pathspecs         => Specs,
-                        Message           => Message);
+                  if Starts (A, "--") then
+                     Bad_Usage ("unknown option `" & After (A, "--") & "'");
+                  else
+                     Bad_Usage
+                       ("unknown switch `" & A (A'First + 1 .. A'First + 1) & "'");
+                  end if;
+               end Unknown_Option;
 
-                     --  git names the commit the stash was taken against.
-                     --  HEAD does not move, so it still reads correctly here;
-                     --  a detached HEAD is spelled "(no branch)". With a
-                     --  message the title is "On <branch>: <msg>", otherwise
-                     --  "WIP on <branch>: <short> <subject>".
+               --  The arguments after the subcommand.
+               Args : Version.Ref_Format.String_Vectors.Vector;
+               I    : Positive := 1;
+
+               function Take_Value
+                 (Flag : String; Inline : String; Has_Inline : Boolean)
+                  return String is
+               begin
+                  if Has_Inline then
+                     return Inline;
+                  elsif I < Natural (Args.Length) then
+                     I := I + 1;
+                     return Args (I);
+                  else
+                     Bad_Usage
+                       ((if Starts (Flag, "--")
+                         then "option `" & After (Flag, "--") & "' requires a value"
+                         else "switch `" & After (Flag, "-") & "' requires a value"));
+                     return "";
+                  end if;
+               end Take_Value;
+
+               function Short_Value (Flag : Character; Rest : String)
+                  return String is
+               begin
+                  if Rest'Length > 0 then
+                     return Rest;
+                  elsif I < Natural (Args.Length) then
+                     I := I + 1;
+                     return Args (I);
+                  else
+                     Bad_Usage ("switch `" & Flag & "' requires a value");
+                     return "";
+                  end if;
+               end Short_Value;
+
+               --  Run this executable again for the subcommands git itself
+               --  delegates: `stash list` is a `log` and `stash show` a
+               --  `diff`, so both take those commands' whole option surface.
+               function Run_Self
+                 (Arguments : Version.Ref_Format.String_Vectors.Vector)
+                  return Integer
+               is
+                  Self : constant String :=
+                    (if (for some Ch of Ada.Command_Line.Command_Name => Ch = '/')
+                     then Ada.Directories.Full_Name (Ada.Command_Line.Command_Name)
+                     else Ada.Command_Line.Command_Name);
+                  List : GNAT.OS_Lib.Argument_List
+                    (1 .. Natural (Arguments.Length));
+               begin
+                  for K in 1 .. Natural (Arguments.Length) loop
+                     List (K) := new String'(Arguments (K));
+                  end loop;
+                  declare
+                     Status : constant Integer :=
+                       GNAT.OS_Lib.Spawn (Program_Name => Self, Args => List);
+                  begin
+                     for K in List'Range loop
+                        GNAT.OS_Lib.Free (List (K));
+                     end loop;
+                     return Status;
+                  end;
+               end Run_Self;
+
+               --  git's get_stash_info over the operands left after the
+               --  options: at most one revision.
+               function Info_Of
+                 (Operands : Version.Ref_Format.String_Vectors.Vector)
+                  return Version.Stash.Stash_Info
+               is
+                  Result : Version.Stash.Stash_Info;
+               begin
+                  if Natural (Operands.Length) > 1 then
                      declare
-                        Repo : constant Version.Repository.Repository_Handle :=
-                          Version.Repository.Open;
-                        Head : constant Version.Refs.Head_Info :=
-                          Version.Refs.Read_Head (Repo);
-                        Where : constant String :=
-                          (if Version.Refs.Is_Attached (Head)
-                           then Version.Refs.Branch_Name (Head)
-                           else "(no branch)");
-                        Hex : constant String :=
-                          Version.Refs.Current_Commit_Id (Repo);
-                        Obj : constant Version.Objects.Git_Object :=
-                          Version.Objects.Read_Object
-                            (Repo, Version.Objects.To_Object_Id (Hex));
-                        Title : constant String :=
-                          (if Message /= ""
-                           then "On " & Where & ": " & Message
-                           else "WIP on " & Where & ": "
-                                & Hex (Hex'First .. Hex'First + 6) & " "
-                                & Version.Objects.Commit_Message_First_Line
-                                    (Obj));
+                        Text : Unbounded_String;
                      begin
-                        Success_Line
-                          ("Saved working directory and index state " & Title);
+                        for Op of Operands loop
+                           Append (Text, " '" & Op & "'");
+                        end loop;
+                        Stderr_Line
+                          ("Too many revisions specified:" & To_String (Text));
                      end;
-                  else
-                     Success_Line ("No local changes to save");
+                     Failed := True;
+                     return Result;
                   end if;
-               end Perform_Stash_Push;
+                  return Version.Stash.Get_Info
+                    (Repo,
+                     (if Operands.Is_Empty then "" else Operands (1)));
+               exception
+                  when E : Version.Stash.Stash_Failure =>
+                     --  git's error() prefixes an unresolvable revision;
+                     --  "No stash entries found." goes out bare.
+                     declare
+                        Text : constant String :=
+                          Ada.Exceptions.Exception_Message (E);
+                     begin
+                        if Text'Length > 25
+                          and then Text (Text'Last - 24 .. Text'Last)
+                                   = " is not a valid reference"
+                        then
+                           Error_Line (Text);
+                        else
+                           Stderr_Line (Text);
+                        end if;
+                     end;
+                     Failed := True;
+                     return Result;
+               end Info_Of;
 
-               procedure Run_Stash_Push
-                 (First_Index : Positive; Subcommand_Present : Boolean)
+               --  git prints `git status` after an apply unless --quiet.
+               procedure Report_Status is
+               begin
+                  Version.Status.Print_Status;
+               end Report_Status;
+
+               procedure Do_Apply
+                 (Info    : Version.Stash.Stash_Info;
+                  Options : Version.Stash.Apply_Options;
+                  Clean   : out Boolean)
                is
-                  Include_Untracked : Boolean;
-                  Include_Ignored   : Boolean;
-                  Message           : Unbounded_String;
-                  Path_First        : Natural;
-                  OK                : Boolean;
                begin
-                  if Subcommand_Present then
-                     Parse_Stash_Path_Command
-                       ("push", First_Index, Include_Untracked,
-                        Include_Ignored, Message, Path_First, OK);
-                     if not OK then
-                        return;
-                     end if;
-                  else
-                     Include_Untracked := False;
-                     Include_Ignored := False;
-                     Path_First := Count + 1;
-                  end if;
-
-                  Perform_Stash_Push
-                    (Include_Untracked => Include_Untracked,
-                     Include_Ignored   => Include_Ignored,
-                     Specs             =>
-                       Pathspecs_From_Args (Positive (Path_First)),
-                     Message           => To_String (Message));
-               end Run_Stash_Push;
-
-               --  git's legacy `stash save [options] [<message>]`: the message
-               --  is the remaining non-option arguments joined with spaces, and
-               --  there are no pathspecs.
-               procedure Run_Stash_Save is
-                  Include_Untracked : Boolean := False;
-                  Include_Ignored   : Boolean := False;
-                  Message           : Unbounded_String;
-                  I                 : Natural := 3;
-               begin
-                  while I <= Count loop
-                     if Arg (I) = "-m" or else Arg (I) = "--message" then
-                        if I >= Count then
-                           Usage_Error
-                             ("stash save -m requires a message", Usage);
-                           return;
-                        end if;
-                        Message := To_Unbounded_String (Arg (I + 1));
-                        I := I + 2;
-                     elsif Has_Prefix (Arg (I), "--message=") then
-                        Message := To_Unbounded_String
-                          (Arg (I) (Arg (I)'First + 10 .. Arg (I)'Last));
-                        I := I + 1;
-                     elsif Has_Prefix (Arg (I), "-m") then
-                        Message := To_Unbounded_String
-                          (Arg (I) (Arg (I)'First + 2 .. Arg (I)'Last));
-                        I := I + 1;
-                     elsif Arg (I) = "-u"
-                       or else Arg (I) = "--include-untracked"
-                     then
-                        Include_Untracked := True;
-                        I := I + 1;
-                     elsif Arg (I) = "-a" or else Arg (I) = "--all"
-                       or else Arg (I) = "--include-ignored"
-                     then
-                        Include_Untracked := True;
-                        Include_Ignored := True;
-                        I := I + 1;
-                     elsif Arg (I) = "-k" or else Arg (I) = "--keep-index"
-                       or else Arg (I) = "--no-keep-index"
-                       or else Arg (I) = "-q" or else Arg (I) = "--quiet"
-                     then
-                        --  Accepted; version's stash is non-interactive and
-                        --  always resets the worktree.
-                        I := I + 1;
-                     elsif Arg (I) = "--" then
-                        I := I + 1;
-                     elsif Is_Option (Arg (I)) then
-                        Usage_Error
-                          ("unknown stash save option: " & Arg (I), Usage);
-                        return;
-                     else
-                        --  A positional word: the message (all remaining words
-                        --  joined with a single space).
-                        if Length (Message) > 0 then
-                           Append (Message, " ");
-                        end if;
-                        Append (Message, Arg (I));
-                        I := I + 1;
-                     end if;
-                  end loop;
-
-                  Perform_Stash_Push
-                    (Include_Untracked => Include_Untracked,
-                     Include_Ignored   => Include_Ignored,
-                     Specs             =>
-                       Version.Pathspec.Pathspec_Vectors.Empty_Vector,
-                     Message           => To_String (Message));
-               end Run_Stash_Save;
-
-               procedure Run_Stash_Create (First_Index : Positive) is
-                  Include_Untracked : Boolean;
-                  Include_Ignored   : Boolean;
-                  Message           : Unbounded_String;
-                  Path_First        : Natural;
-                  OK                : Boolean;
-               begin
-                  Parse_Stash_Path_Command
-                    ("create", First_Index, Include_Untracked, Include_Ignored,
-                     Message, Path_First, OK);
-                  if not OK then
-                     return;
-                  end if;
-
+                  Clean := False;
                   declare
-                     Specs : constant Version.Pathspec.Pathspec_Vectors.Vector :=
-                       Pathspecs_From_Args (Positive (Path_First));
-                     Id : constant String :=
-                       Version.Stash.Create
-                         (Include_Untracked => Include_Untracked,
-                          Include_Ignored   => Include_Ignored,
-                          Pathspecs         => Specs);
+                     Conflicted : Boolean;
+                     Narration  : Version.Stash.Message_Vectors.Vector;
                   begin
-                     if Id'Length > 0 then
-                        Ada.Text_IO.Put_Line (Id);
+                     Version.Stash.Apply_Info
+                       (Repo, Info, Options, Conflicted, Narration);
+                     --  -q silences git's merge narration.
+                     if not Options.Quiet then
+                        for Line of Narration loop
+                           Success_Line (Line);
+                        end loop;
                      end if;
+                     if Conflicted then
+                        if Options.Restore_Index then
+                           Stderr_Line ("Index was not unstashed.");
+                        end if;
+                        Failed := True;
+                     else
+                        Clean := True;
+                     end if;
+                  exception
+                     when E : Version.Stash.Stash_Error =>
+                        --  git reports the refusal and still shows the
+                        --  status it would have shown.
+                        Error_Line (Ada.Exceptions.Exception_Message (E));
+                        if Options.Restore_Index then
+                           Stderr_Line ("Index was not unstashed.");
+                        end if;
+                        Failed := True;
                   end;
-               end Run_Stash_Create;
+                  if not Options.Quiet then
+                     Report_Status;
+                  end if;
+               end Do_Apply;
 
-               procedure Run_Stash_Show is
-                  Opts            : Version.Diff.Diff_Options;
-                  Fmt_Set         : Boolean := False;
-                  Spec            : Unbounded_String;
-                  Has_Spec        : Boolean := False;
-                  Path_First      : Natural := Count + 1;
-                  After_Separator : Boolean := False;
-                  I               : Natural := 3;
+               procedure Do_Drop
+                 (Info : Version.Stash.Stash_Info; Quiet : Boolean) is
                begin
-                  while I <= Count loop
-                     if Arg (I) = "--" and then not After_Separator then
-                        After_Separator := True;
-                        Path_First := I;
-                        exit;
-
-                     elsif not After_Separator
-                       and then (Arg (I) = "--patch" or else Arg (I) = "-p")
-                     then
-                        --  Patch is the all-false Diff_Options.
-                        Fmt_Set := True;
-                     elsif not After_Separator and then Arg (I) = "--stat" then
-                        Opts.Stat := True;
-                        Fmt_Set := True;
-                     elsif not After_Separator
-                       and then Arg (I) = "--name-only"
-                     then
-                        Opts.Name_Only := True;
-                        Fmt_Set := True;
-                     elsif not After_Separator
-                       and then Arg (I) = "--name-status"
-                     then
-                        Opts.Name_Status := True;
-                        Fmt_Set := True;
-                     elsif not After_Separator and then Arg (I) = "--numstat"
-                     then
-                        Opts.Numstat := True;
-                        Fmt_Set := True;
-                     elsif not After_Separator and then Arg (I) = "--shortstat"
-                     then
-                        Opts.Shortstat := True;
-                        Fmt_Set := True;
-                     elsif not After_Separator
-                       and then (Has_Prefix (Arg (I), "-U")
-                                 or else Has_Prefix (Arg (I), "--unified="))
-                     then
-                        --  A context count implies the patch format.
-                        Fmt_Set := True;
-                        begin
-                           Opts.Context_Lines := Natural'Value
-                             (if Has_Prefix (Arg (I), "-U")
-                              then Arg (I) (Arg (I)'First + 2 .. Arg (I)'Last)
-                              else Arg (I) (Arg (I)'First + 10 .. Arg (I)'Last));
-                        exception
-                           when others =>
-                              Usage_Error
-                                ("stash show: bad context count " & Arg (I),
-                                 Usage);
-                              return;
-                        end;
-
-                     elsif not After_Separator and then Is_Stash_Spec (Arg (I))
-                     then
-                        if Has_Spec then
-                           Usage_Error ("too many stash show stash specs", Usage);
-                           return;
-                        end if;
-                        Has_Spec := True;
-                        Spec := To_Unbounded_String (Arg (I));
-
-                     elsif not After_Separator and then Is_Option (Arg (I)) then
-                        Usage_Error
-                          ("unknown stash show option: " & Arg (I), Usage);
-                        return;
-
-                     else
-                        Path_First := I;
-                        exit;
-                     end if;
-
-                     I := I + 1;
-                  end loop;
-
-                  --  git's `stash show` defaults to `--stat`.
-                  if not Fmt_Set then
-                     Opts.Stat := True;
+                  Version.Stash.Drop_Info (Repo, Info);
+                  if not Quiet then
+                     Success_Line
+                       ("Dropped " & To_String (Info.Revision) & " ("
+                        & Version.Objects.To_String (Info.W_Commit) & ")");
                   end if;
-
-                  --  Byte-exact output (Ada.Text_IO.Put would append a
-                  --  spurious trailing newline at program exit).
-                  if Has_Spec then
-                     Version.Console.Put
-                       (Version.Stash.Show
-                          (Spec      => To_String (Spec),
-                           Options   => Opts,
-                           Pathspecs => Pathspecs_From_Args
-                                          (Positive (Path_First))));
-                  else
-                     Version.Console.Put
-                       (Version.Stash.Show
-                          (Options   => Opts,
-                           Pathspecs => Pathspecs_From_Args
-                                          (Positive (Path_First))));
-                  end if;
-               end Run_Stash_Show;
-
-               procedure Run_Stash_Apply_Or_Pop (Pop : Boolean) is
-                  Spec            : Unbounded_String;
-                  Has_Spec        : Boolean := False;
-                  Path_First      : Natural := Count + 1;
-                  After_Separator : Boolean := False;
-                  I               : Natural := 3;
-               begin
-                  while I <= Count loop
-                     if Arg (I) = "--" and then not After_Separator then
-                        After_Separator := True;
-                        Path_First := I;
-                        exit;
-
-                     elsif not After_Separator and then Is_Stash_Spec (Arg (I)) then
-                        if Has_Spec then
-                           Usage_Error
-                             ("too many stash "
-                              & (if Pop then "pop" else "apply")
-                              & " stash specs",
-                              Usage);
-                           return;
-                        end if;
-                        Has_Spec := True;
-                        Spec := To_Unbounded_String (Arg (I));
-
-                     elsif not After_Separator and then Is_Option (Arg (I)) then
-                        Usage_Error
-                          ("unknown stash "
-                           & (if Pop then "pop" else "apply")
-                           & " option: " & Arg (I),
-                           Usage);
-                        return;
-
-                     else
-                        Path_First := I;
-                        exit;
-                     end if;
-
-                     I := I + 1;
-                  end loop;
-
-                  if Path_First > Count and then not Has_Spec then
-                     if Pop then
-                        Version.Stash.Pop;
-                        Success_Line ("popped stash");
-                     else
-                        Version.Stash.Apply;
-                        Success_Line ("applied stash");
-                     end if;
-
-                  elsif Has_Spec then
-                     if Version.Stash.Apply_Selected
-                          (Spec      => To_String (Spec),
-                           Pathspecs => Pathspecs_From_Args
-                                          (Positive (Path_First)))
-                     then
-                        if Pop then
-                           Version.Stash.Drop (To_String (Spec));
-                           Success_Line ("popped stash " & To_String (Spec));
-                        else
-                           Success_Line ("applied stash " & To_String (Spec));
-                        end if;
-                     else
-                        Success_Line ("no matching paths in stash");
-                     end if;
-
-                  else
-                     if Version.Stash.Apply_Selected
-                          (Pathspecs => Pathspecs_From_Args
-                                          (Positive (Path_First)))
-                     then
-                        if Pop then
-                           Version.Stash.Drop;
-                           Success_Line ("popped stash");
-                        else
-                           Success_Line ("applied stash");
-                        end if;
-                     else
-                        Success_Line ("no matching paths in stash");
-                     end if;
-                  end if;
-               end Run_Stash_Apply_Or_Pop;
-
-               procedure Run_Stash_Store is
-                  Message         : Unbounded_String;
-                  Has_Message     : Boolean := False;
-                  Commit_Text     : Unbounded_String;
-                  Has_Commit      : Boolean := False;
-                  I               : Natural := 3;
-               begin
-                  while I <= Count loop
-                     if Arg (I) = "-m" then
-                        if Has_Message then
-                           Usage_Error ("duplicate stash store option: -m", Usage);
-                           return;
-                        elsif I = Count then
-                           Usage_Error ("stash store -m requires a message", Usage);
-                           return;
-                        end if;
-
-                        Has_Message := True;
-                        Message := To_Unbounded_String (Arg (I + 1));
-                        I := I + 2;
-
-                     elsif Is_Option (Arg (I)) then
-                        Usage_Error
-                          ("unknown stash store option: " & Arg (I), Usage);
-                        return;
-
-                     else
-                        if Has_Commit then
-                           Usage_Error ("too many stash store arguments", Usage);
-                           return;
-                        end if;
-                        Has_Commit := True;
-                        Commit_Text := To_Unbounded_String (Arg (I));
-                        I := I + 1;
-                     end if;
-                  end loop;
-
-                  if not Has_Commit then
-                     Usage_Error ("missing stash store commit", Usage);
-                     return;
-                  end if;
-
-                  declare
-                     Repo : constant Version.Repository.Repository_Handle :=
-                       Version.Repository.Open;
-                  begin
-                     if Has_Message then
-                        Version.Stash.Store
-                          (Commit_Id => Version.Revisions.Resolve_Commit
-                                          (Repo, To_String (Commit_Text)),
-                           Message   => To_String (Message));
-                     else
-                        Version.Stash.Store
-                          (Version.Revisions.Resolve_Commit
-                             (Repo, To_String (Commit_Text)));
-                     end if;
-                     Success_Line ("stored stash " & To_String (Commit_Text));
-                  end;
-               end Run_Stash_Store;
+               exception
+                  when Version.Stash.Stash_Error | Ada.IO_Exceptions.Data_Error =>
+                     Error_Line
+                       (To_String (Info.Revision) & ": Could not drop stash entry");
+                     Failed := True;
+               end Do_Drop;
 
                Subcommand : constant String :=
-                 (if Count >= 2 then Arg (2) else "push");
+                 (if Count >= 2
+                    and then Arg (2) in "list" | "show" | "drop" | "pop"
+                                      | "apply" | "branch" | "clear" | "store"
+                                      | "create" | "push" | "save"
+                  then Arg (2) else "push");
+               First_Arg : constant Positive :=
+                 (if Count >= 2
+                    and then Arg (2) in "list" | "show" | "drop" | "pop"
+                                      | "apply" | "branch" | "clear" | "store"
+                                      | "create" | "push" | "save"
+                  then 3 else 2);
+               --  `stash <anything-else>` is git's assumed push, but only
+               --  when it starts with an option; a stray word is a die.
+               Assumed : constant Boolean := First_Arg = 2;
             begin
-               if Count = 1 then
-                  Run_Stash_Push (2, Subcommand_Present => False);
+               for K in First_Arg .. Count loop
+                  Args.Append (Arg (K));
+               end loop;
 
-               elsif Subcommand = "push" then
-                  Run_Stash_Push (3, Subcommand_Present => True);
+               --  A corrupt stash reflog is reported once, cleanly, before
+               --  any subcommand reads it.
+               if Subcommand in "list" | "show" | "apply" | "pop" | "drop"
+                                | "branch"
+                 and then Version.Refs.Ref_Exists (Repo, "refs/stash")
+               then
+                  declare
+                     Ignored : constant Version.Stash.Stash_Entry_Vectors.Vector :=
+                       Version.Stash.List_Entries (Repo);
+                     pragma Unreferenced (Ignored);
+                  begin
+                     null;
+                  exception
+                     when E : Ada.IO_Exceptions.Data_Error =>
+                        Error_Line (Ada.Exceptions.Exception_Message (E));
+                        Set_Command_Failure;
+                        return;
+                  end;
+               end if;
 
-               elsif Subcommand = "save" then
-                  Run_Stash_Save;
-
-               elsif Subcommand = "create" then
-                  Run_Stash_Create (3);
-
-               elsif Subcommand = "store" then
-                  Run_Stash_Store;
-
-               elsif Subcommand = "list" then
-                  if Count /= 2 then
-                     Usage_Error ("stash list takes no arguments", Usage);
-                     return;
+               if Subcommand = "list" then
+                  --  git: log --format=%gd: %gs -g --first-parent <args>
+                  --  refs/stash --
+                  if not Version.Refs.Ref_Exists (Repo, "refs/stash") then
+                     goto Stash_Report;
                   end if;
-                  Version.Stash.List;
-
-               elsif Subcommand = "show" then
-                  Run_Stash_Show;
-
-               elsif Subcommand = "apply" then
-                  Run_Stash_Apply_Or_Pop (Pop => False);
-
-               elsif Subcommand = "pop" then
-                  Run_Stash_Apply_Or_Pop (Pop => True);
-
-               elsif Subcommand = "branch" then
-                  if Count < 3 then
-                     Usage_Error ("missing stash branch name", Usage);
-                     return;
-                  elsif Is_Option (Arg (3)) then
-                     Usage_Error
-                       ("unknown stash branch option: " & Arg (3), Usage);
-                     return;
-                  elsif Count > 4 then
-                     Usage_Error ("too many stash branch arguments", Usage);
-                     return;
-                  elsif Count = 4 then
-                     Version.Stash.Branch (Arg (3), Arg (4));
-                     Success_Line
-                       ("created branch " & Arg (3) & " from " & Arg (4));
-                  else
-                     Version.Stash.Branch (Arg (3));
-                     Success_Line
-                       ("created branch " & Arg (3) & " from stash@{0}");
-                  end if;
-
-               elsif Subcommand = "drop" then
-                  if Count > 3 then
-                     Usage_Error ("too many stash drop arguments", Usage);
-                     return;
-                  elsif Count = 3 and then Is_Option (Arg (3)) then
-                     Usage_Error
-                       ("unknown stash drop option: " & Arg (3), Usage);
-                     return;
-                  elsif Count = 3 then
-                     Version.Stash.Drop (Arg (3));
-                     Success_Line ("dropped stash " & Arg (3));
-                  else
-                     Version.Stash.Drop;
-                     Success_Line ("dropped stash");
-                  end if;
+                  declare
+                     Log_Args : Version.Ref_Format.String_Vectors.Vector;
+                  begin
+                     Log_Args.Append ("log");
+                     Log_Args.Append ("--format=%gd: %gs");
+                     Log_Args.Append ("-g");
+                     Log_Args.Append ("--first-parent");
+                     for A of Args loop
+                        Log_Args.Append (A);
+                     end loop;
+                     Log_Args.Append ("refs/stash");
+                     Log_Args.Append ("--");
+                     Ada.Command_Line.Set_Exit_Status
+                       (Ada.Command_Line.Exit_Status (Run_Self (Log_Args)));
+                  end;
+                  goto Stash_Report;
 
                elsif Subcommand = "clear" then
-                  if Count /= 2 then
-                     Usage_Error ("stash clear takes no arguments", Usage);
-                     return;
+                  if not Args.Is_Empty then
+                     Error_Line
+                       ("git stash clear with arguments is unimplemented");
+                     Failed := True;
+                  else
+                     Version.Stash.Clear;
                   end if;
-                  Version.Stash.Clear;
-                  --  git's `stash clear` prints nothing.
+                  goto Stash_Report;
 
-               elsif Is_Option (Subcommand) then
-                  Usage_Error ("unknown stash option: " & Subcommand, Usage);
-                  return;
+               elsif Subcommand = "show" then
+                  declare
+                     --  git's show_stash: every non-option operand is the
+                     --  stash, every option belongs to the diff.
+                     Untracked : Natural :=
+                       (if Config_Bool ("stash.showIncludeUntracked", False)
+                        then 1 else 0);   --  0 none, 1 include, 2 only
+                     Stash_Args : Version.Ref_Format.String_Vectors.Vector;
+                     Diff_Args  : Version.Ref_Format.String_Vectors.Vector;
+                     Paths      : Version.Ref_Format.String_Vectors.Vector;
+                     After_Sep  : Boolean := False;
+                  begin
+                     for A of Args loop
+                        if After_Sep then
+                           Paths.Append (A);
+                        elsif A = "--" then
+                           After_Sep := True;
+                        elsif A = "-u" or else A = "--include-untracked" then
+                           Untracked := 1;
+                        elsif A = "--no-include-untracked" then
+                           Untracked := 0;
+                        elsif A = "--only-untracked" then
+                           Untracked := 2;
+                        elsif A'Length > 1 and then A (A'First) = '-' then
+                           Diff_Args.Append (A);
+                        else
+                           Stash_Args.Append (A);
+                        end if;
+                     end loop;
+
+                     declare
+                        Info : constant Version.Stash.Stash_Info :=
+                          Info_Of (Stash_Args);
+                     begin
+                        if Failed then
+                           goto Stash_Report;
+                        end if;
+                        --  With no diff option given, stash.showStat (on by
+                        --  default) and stash.showPatch decide the format.
+                        if Diff_Args.Is_Empty then
+                           declare
+                              Stat  : constant Boolean :=
+                                Config_Bool ("stash.showStat", True);
+                              Patch : constant Boolean :=
+                                Config_Bool ("stash.showPatch", False);
+                           begin
+                              if not Stat and then not Patch then
+                                 goto Stash_Report;
+                              end if;
+                              if Stat then
+                                 Diff_Args.Append ("--stat");
+                              end if;
+                              if Patch then
+                                 Diff_Args.Append ("--patch");
+                              end if;
+                           end;
+                        end if;
+
+                        declare
+                           Cmd : Version.Ref_Format.String_Vectors.Vector;
+                        begin
+                           Cmd.Append ("diff");
+                           for A of Diff_Args loop
+                              Cmd.Append (A);
+                           end loop;
+                           if Untracked = 2 then
+                              --  Only the untracked files: an empty base.
+                              if Info.Has_U then
+                                 Cmd.Append
+                                   (Version.Objects.To_String
+                                      (Version.Write.Write_Tree_From_Index
+                                         (Repo,
+                                          Version.Staging.Index_Entry_Vectors
+                                            .Empty_Vector)));
+                                 Cmd.Append
+                                   (Version.Objects.To_String (Info.U_Tree));
+                              else
+                                 goto Stash_Report;
+                              end if;
+                           else
+                              Cmd.Append
+                                (Version.Objects.To_String (Info.B_Commit));
+                              Cmd.Append
+                                (Version.Objects.To_String
+                                   (if Untracked = 1
+                                    then Version.Stash.Untracked_Tree (Repo, Info)
+                                    else Info.W_Commit));
+                           end if;
+                           if not Paths.Is_Empty then
+                              Cmd.Append ("--");
+                              for P of Paths loop
+                                 Cmd.Append (P);
+                              end loop;
+                           end if;
+                           Ada.Command_Line.Set_Exit_Status
+                             (Ada.Command_Line.Exit_Status (Run_Self (Cmd)));
+                        end;
+                     end;
+                  end;
+                  goto Stash_Report;
+
+               elsif Subcommand = "store" then
+                  declare
+                     Quiet    : Boolean := False;
+                     Message  : Unbounded_String;
+                     Operands : Version.Ref_Format.String_Vectors.Vector;
+                  begin
+                     while I <= Natural (Args.Length) and then not Bad loop
+                        declare
+                           A : constant String := Args (I);
+                           Eq : constant Natural :=
+                             Ada.Strings.Fixed.Index (A, "=");
+                        begin
+                           if A = "-q" or else A = "--quiet" then
+                              Quiet := True;
+                           elsif A = "--no-quiet" then
+                              Quiet := False;
+                           elsif A = "-m" or else A = "--message" then
+                              Message := To_Unbounded_String
+                                (Take_Value (A, "", False));
+                           elsif Starts (A, "--message=") then
+                              Message := To_Unbounded_String
+                                (A (Eq + 1 .. A'Last));
+                           elsif Starts (A, "-m") and then A'Length > 2 then
+                              Message := To_Unbounded_String (After (A, "-m"));
+                           else
+                              Operands.Append (A);
+                           end if;
+                        end;
+                        I := I + 1;
+                     end loop;
+
+                     if Bad then
+                        goto Stash_Report;
+                     end if;
+                     if Natural (Operands.Length) /= 1 then
+                        if not Quiet then
+                           Stderr_Line
+                             ("""git stash store"" requires one <commit> argument");
+                        end if;
+                        Failed := True;
+                        goto Stash_Report;
+                     end if;
+
+                     declare
+                        Id : Version.Objects.Hex_Object_Id;
+                     begin
+                        Id := Version.Revisions.Resolve (Repo, Operands (1));
+                        Version.Stash.Store
+                          (Commit_Id => Id, Message => To_String (Message));
+                     exception
+                        when Ada.IO_Exceptions.Data_Error
+                            | Ada.IO_Exceptions.Name_Error =>
+                           if not Quiet then
+                              Stderr_Line
+                                ("Cannot update refs/stash with " & Operands (1));
+                           end if;
+                           Failed := True;
+                     end;
+                  end;
+                  goto Stash_Report;
+
+               elsif Subcommand = "create" then
+                  --  git joins the operands into the stash message.
+                  declare
+                     Message : Unbounded_String;
+                     Id      : Unbounded_String;
+                  begin
+                     for A of Args loop
+                        if Length (Message) > 0 then
+                           Append (Message, ' ');
+                        end if;
+                        Append (Message, A);
+                     end loop;
+                     Id := To_Unbounded_String
+                       (Version.Stash.Create (Message => To_String (Message)));
+                     if Length (Id) > 0 then
+                        Success_Line (To_String (Id));
+                     end if;
+                  end;
+                  goto Stash_Report;
+
+               elsif Subcommand in "apply" | "pop" then
+                  declare
+                     Is_Pop  : constant Boolean := Subcommand = "pop";
+                     Options : Version.Stash.Apply_Options;
+                     Operands : Version.Ref_Format.String_Vectors.Vector;
+                  begin
+                     Options.Restore_Index := Config_Bool ("stash.index", False);
+                     while I <= Natural (Args.Length) and then not Bad loop
+                        declare
+                           A  : constant String := Args (I);
+                           Eq : constant Natural :=
+                             Ada.Strings.Fixed.Index (A, "=");
+                           Name : constant String :=
+                             (if Eq = 0 then A else A (A'First .. Eq - 1));
+                           Val  : constant String :=
+                             (if Eq = 0 then "" else A (Eq + 1 .. A'Last));
+                        begin
+                           if A = "-q" or else A = "--quiet" then
+                              Options.Quiet := True;
+                           elsif A = "--no-quiet" then
+                              Options.Quiet := False;
+                           elsif A = "--index" then
+                              Options.Restore_Index := True;
+                           elsif A = "--no-index" then
+                              Options.Restore_Index := False;
+                           elsif not Is_Pop and then Name = "--label-ours" then
+                              Options.Label_Ours := To_Unbounded_String
+                                (Take_Value (Name, Val, Eq /= 0));
+                           elsif not Is_Pop and then Name = "--label-theirs" then
+                              Options.Label_Theirs := To_Unbounded_String
+                                (Take_Value (Name, Val, Eq /= 0));
+                           elsif not Is_Pop and then Name = "--label-base" then
+                              Options.Label_Base := To_Unbounded_String
+                                (Take_Value (Name, Val, Eq /= 0));
+                           elsif A'Length > 1 and then A (A'First) = '-' then
+                              Unknown_Option (A);
+                           else
+                              Operands.Append (A);
+                           end if;
+                        end;
+                        I := I + 1;
+                     end loop;
+
+                     if Bad then
+                        goto Stash_Report;
+                     end if;
+
+                     declare
+                        Info : constant Version.Stash.Stash_Info :=
+                          Info_Of (Operands);
+                        Clean : Boolean;
+                     begin
+                        if Failed then
+                           goto Stash_Report;
+                        end if;
+                        if Is_Pop and then not Info.Is_Stash_Ref then
+                           Error_Line
+                             ("'" & To_String (Info.Revision)
+                              & "' is not a stash reference");
+                           Failed := True;
+                           goto Stash_Report;
+                        end if;
+
+                        Do_Apply (Info, Options, Clean);
+                        if Is_Pop then
+                           if Clean then
+                              Do_Drop (Info, Options.Quiet);
+                           else
+                              Success_Line
+                                ("The stash entry is kept in case you need it "
+                                 & "again.");
+                           end if;
+                        end if;
+                     end;
+                  end;
+                  goto Stash_Report;
+
+               elsif Subcommand = "drop" then
+                  declare
+                     Quiet    : Boolean := False;
+                     Operands : Version.Ref_Format.String_Vectors.Vector;
+                  begin
+                     for A of Args loop
+                        if A = "-q" or else A = "--quiet" then
+                           Quiet := True;
+                        elsif A = "--no-quiet" then
+                           Quiet := False;
+                        elsif A'Length > 1 and then A (A'First) = '-' then
+                           Unknown_Option (A);
+                        else
+                           Operands.Append (A);
+                        end if;
+                     end loop;
+                     if Bad then
+                        goto Stash_Report;
+                     end if;
+
+                     declare
+                        Info : constant Version.Stash.Stash_Info :=
+                          Info_Of (Operands);
+                     begin
+                        if Failed then
+                           goto Stash_Report;
+                        end if;
+                        if not Info.Is_Stash_Ref then
+                           Error_Line
+                             ("'" & To_String (Info.Revision)
+                              & "' is not a stash reference");
+                           Failed := True;
+                        else
+                           Do_Drop (Info, Quiet);
+                        end if;
+                     end;
+                  end;
+                  goto Stash_Report;
+
+               elsif Subcommand = "branch" then
+                  declare
+                     Operands : Version.Ref_Format.String_Vectors.Vector;
+                  begin
+                     for A of Args loop
+                        if A'Length > 1 and then A (A'First) = '-' then
+                           Unknown_Option (A);
+                        else
+                           Operands.Append (A);
+                        end if;
+                     end loop;
+                     if Bad then
+                        goto Stash_Report;
+                     end if;
+                     if Operands.Is_Empty then
+                        Stderr_Line ("No branch name specified");
+                        Failed := True;
+                        goto Stash_Report;
+                     end if;
+
+                     declare
+                        Name : constant String := Operands (1);
+                        Rest : Version.Ref_Format.String_Vectors.Vector;
+                     begin
+                        for K in 2 .. Natural (Operands.Length) loop
+                           Rest.Append (Operands (K));
+                        end loop;
+                        declare
+                           Info : constant Version.Stash.Stash_Info :=
+                             Info_Of (Rest);
+                           Options : constant Version.Stash.Apply_Options :=
+                             (Restore_Index => True, others => <>);
+                           Clean : Boolean;
+                           Note  : Unbounded_String;
+                           Warn  : Unbounded_String;
+                        begin
+                           if Failed then
+                              goto Stash_Report;
+                           end if;
+                           --  git runs `checkout -b <name> <base>`.
+                           Version.Branches.Create
+                             (Repo, Name,
+                              Version.Objects.To_String (Info.B_Commit),
+                              Force  => False,
+                              Track  => Version.Branches.Default_Track (Repo),
+                              Quiet  => False,
+                              Reflog => False,
+                              Note   => Note,
+                              Warning => Warn);
+                           Version.Branch.Switch_Branch (Name);
+                           --  git runs `checkout -b`, which reports the
+                           --  branch and the changes it carried over.
+                           Stderr_Line ("Switched to a new branch '" & Name & "'");
+                           Print_Carried_Modifications;
+                           Do_Apply (Info, Options, Clean);
+                           if Clean and then Info.Is_Stash_Ref then
+                              Do_Drop (Info, Quiet => False);
+                           end if;
+                        exception
+                           when E : Version.Branches.Branch_Error =>
+                              --  git runs `checkout -b` as a child: its die
+                              --  is reported, but stash itself exits 1.
+                              Stderr_Line
+                                ("fatal: " & Ada.Exceptions.Exception_Message (E));
+                              Failed := True;
+                        end;
+                     end;
+                  end;
+                  goto Stash_Report;
 
                else
-                  Usage_Error ("unknown stash subcommand: " & Subcommand, Usage);
-                  return;
+                  --  push (assumed or explicit) and save.
+                  declare
+                     Is_Save : constant Boolean := Subcommand = "save";
+                     Options : Version.Stash.Push_Options;
+                     Keep_Set : Boolean := False;
+                     Quiet   : Boolean := False;
+                     Patch   : Boolean := False;
+                     Pathspec_File : Unbounded_String;
+                     Have_File     : Boolean := False;
+                     Pathspec_Nul  : Boolean := False;
+                     Operands : Version.Ref_Format.String_Vectors.Vector;
+                     No_More  : Boolean := False;
+                     Stop     : Boolean := False;
+
+                     procedure Handle_Short (A : String) is
+                        K : Positive := A'First + 1;
+                     begin
+                        while K <= A'Last and then not Bad loop
+                           case A (K) is
+                              when 'k' =>
+                                 Options.Keep_Index := True;
+                                 Keep_Set := True;
+                              when 'S' => Options.Only_Staged := True;
+                              when 'p' => Patch := True;
+                              when 'q' => Quiet := True;
+                              when 'u' =>
+                                 Options.Include_Untracked := True;
+                                 Options.Include_Ignored := False;
+                              when 'a' =>
+                                 Options.Include_Untracked := True;
+                                 Options.Include_Ignored := True;
+                              when 'm' =>
+                                 Options.Message := To_Unbounded_String
+                                   (Short_Value ('m', A (K + 1 .. A'Last)));
+                                 return;
+                              when others =>
+                                 Bad_Usage ("unknown switch `" & A (K) & "'");
+                                 return;
+                           end case;
+                           K := K + 1;
+                        end loop;
+                     end Handle_Short;
+                  begin
+                     while I <= Natural (Args.Length) and then not Bad
+                       and then not Stop
+                     loop
+                        declare
+                           A  : constant String := Args (I);
+                           Eq : constant Natural :=
+                             Ada.Strings.Fixed.Index (A, "=");
+                           Name : constant String :=
+                             (if Eq = 0 then A else A (A'First .. Eq - 1));
+                           Val  : constant String :=
+                             (if Eq = 0 then "" else A (Eq + 1 .. A'Last));
+                        begin
+                           if No_More then
+                              Operands.Append (A);
+                           elsif A = "--" then
+                              No_More := True;
+                           elsif A'Length < 2 or else A (A'First) /= '-' then
+                              --  `save` takes its message positionally;
+                              --  `push` stops at the first non-option.
+                              if Is_Save then
+                                 Operands.Append (A);
+                              else
+                                 Stop := True;
+                                 exit;
+                              end if;
+                           elsif Name = "--keep-index" then
+                              Options.Keep_Index := True;
+                              Keep_Set := True;
+                           elsif Name = "--no-keep-index" then
+                              Options.Keep_Index := False;
+                              Keep_Set := True;
+                           elsif Name = "--staged" then
+                              Options.Only_Staged := True;
+                           elsif Name = "--no-staged" then
+                              Options.Only_Staged := False;
+                           elsif Name = "--patch" then
+                              Patch := True;
+                           elsif Name = "--no-patch" then
+                              Patch := False;
+                           elsif Name = "--quiet" then
+                              Quiet := True;
+                           elsif Name = "--no-quiet" then
+                              Quiet := False;
+                           elsif Name = "--include-untracked" then
+                              Options.Include_Untracked := True;
+                              Options.Include_Ignored := False;
+                           elsif Name = "--no-include-untracked" then
+                              Options.Include_Untracked := False;
+                              Options.Include_Ignored := False;
+                           elsif Name = "--all" then
+                              Options.Include_Untracked := True;
+                              Options.Include_Ignored := True;
+                           elsif Name = "--no-all" then
+                              Options.Include_Untracked := False;
+                              Options.Include_Ignored := False;
+                           elsif Name = "--message" then
+                              Options.Message := To_Unbounded_String
+                                (Take_Value (Name, Val, Eq /= 0));
+                           elsif not Is_Save
+                             and then Name = "--pathspec-from-file"
+                           then
+                              Pathspec_File := To_Unbounded_String
+                                (Take_Value (Name, Val, Eq /= 0));
+                              Have_File := True;
+                           elsif not Is_Save
+                             and then Name = "--pathspec-file-nul"
+                           then
+                              Pathspec_Nul := True;
+                           elsif Starts (A, "--") then
+                              Unknown_Option (A);
+                           else
+                              Handle_Short (A);
+                           end if;
+                        end;
+                        I := I + 1;
+                     end loop;
+
+                     if Bad then
+                        goto Stash_Report;
+                     end if;
+
+                     --  What is left are the pathspecs (or, under `save`,
+                     --  the message words).
+                     declare
+                        Specs : Version.Pathspec.Pathspec_Vectors.Vector;
+                        Spec_Text : Version.Ref_Format.String_Vectors.Vector;
+
+                        procedure Add_Spec (Text : String) is
+                        begin
+                           Version.Pathspec.Append_Parse
+                             (Specs, Text, Repo_Prefix);
+                           Spec_Text.Append (Text);
+                        end Add_Spec;
+                     begin
+                        if Is_Save then
+                           for Op of Operands loop
+                              if Length (Options.Message) > 0 then
+                                 Append (Options.Message, ' ');
+                              end if;
+                              Append (Options.Message, Op);
+                           end loop;
+                        else
+                           for K in I .. Natural (Args.Length) loop
+                              if Args (K) /= "--" then
+                                 Add_Spec (Args (K));
+                              end if;
+                           end loop;
+                           for Op of Operands loop
+                              Add_Spec (Op);
+                           end loop;
+                        end if;
+
+                        --  git's refusals, in its order.
+                        if Assumed and then Stop and then not Patch then
+                           Die ("subcommand wasn't specified; 'push' can't be "
+                                & "assumed due to unexpected token '"
+                                & Args (I) & "'");
+                           goto Stash_Report;
+                        end if;
+                        if Have_File then
+                           if Patch then
+                              Die ("options '--pathspec-from-file' and "
+                                   & "'--patch' cannot be used together");
+                              goto Stash_Report;
+                           elsif Options.Only_Staged then
+                              Die ("options '--pathspec-from-file' and "
+                                   & "'--staged' cannot be used together");
+                              goto Stash_Report;
+                           elsif not Specs.Is_Empty then
+                              Die ("'--pathspec-from-file' and pathspec "
+                                   & "arguments cannot be used together");
+                              goto Stash_Report;
+                           end if;
+                           declare
+                              Text : constant String :=
+                                (if To_String (Pathspec_File) = "-"
+                                 then Read_All_Stdin
+                                 else Version.Files.Read_Binary_File
+                                        (To_String (Pathspec_File)));
+                              Sep  : constant Character :=
+                                (if Pathspec_Nul then ASCII.NUL else LF);
+                              Start : Positive := Text'First;
+                           begin
+                              for K in Text'Range loop
+                                 if Text (K) = Sep then
+                                    if K > Start then
+                                       Add_Spec (Text (Start .. K - 1));
+                                    end if;
+                                    Start := K + 1;
+                                 end if;
+                              end loop;
+                              if Start <= Text'Last then
+                                 Add_Spec (Text (Start .. Text'Last));
+                              end if;
+                           end;
+                        elsif Pathspec_Nul then
+                           Die ("the option '--pathspec-file-nul' requires "
+                                & "'--pathspec-from-file'");
+                           goto Stash_Report;
+                        end if;
+
+                        if Patch and then Options.Include_Untracked then
+                           Stderr_Line
+                             ("Can't use --patch and --include-untracked or "
+                              & "--all at the same time");
+                           Failed := True;
+                           goto Stash_Report;
+                        end if;
+                        if Patch
+                          and then Has_Stashable_Changes
+                                     (Include_Untracked => Options.Include_Untracked,
+                                      Include_Ignored   => Options.Include_Ignored,
+                                      Pathspecs         => Specs)
+                        then
+                           --  git's patch mode is interactive; version has
+                           --  no hunk selector, so say so rather than
+                           --  stashing something the user did not choose.
+                           --  With nothing to stash git never gets that far
+                           --  either, and just says so.
+                           Die ("interactive patch mode is not supported");
+                           goto Stash_Report;
+                        end if;
+                        if Options.Only_Staged and then Options.Include_Untracked
+                        then
+                           Stderr_Line
+                             ("Can't use --staged and --include-untracked or "
+                              & "--all at the same time");
+                           Failed := True;
+                           goto Stash_Report;
+                        end if;
+                        if Keep_Set and then Options.Keep_Index
+                          and then Options.Only_Staged
+                        then
+                           null;   --  git allows the combination
+                        end if;
+
+                        --  git's report_path_error: every pathspec must
+                        --  match something git knows about.
+                        if not Specs.Is_Empty then
+                           declare
+                              Tracked : constant Version.Staging.Index_Entry_Vectors.Vector :=
+                                Version.Staging.Load (Repo);
+                              Missed  : Unbounded_String;
+
+                              function Matched (Text : String) return Boolean is
+                                 One : Version.Pathspec.Pathspec_Vectors.Vector;
+                              begin
+                                 Version.Pathspec.Append_Parse
+                                   (One, Text, Repo_Prefix);
+                                 for E of Tracked loop
+                                    if Version.Pathspec.Matches_Any
+                                         (One, To_String (E.Path))
+                                    then
+                                       return True;
+                                    end if;
+                                 end loop;
+                                 if Options.Include_Untracked then
+                                    for U of Version.Status.Current_Status.Untracked
+                                    loop
+                                       if Version.Pathspec.Matches_Any
+                                            (One, To_String (U.Path))
+                                       then
+                                          return True;
+                                       end if;
+                                    end loop;
+                                 end if;
+                                 return False;
+                              end Matched;
+                           begin
+                              for Text of Spec_Text loop
+                                 if Length (Missed) = 0
+                                   and then not Matched (Text)
+                                 then
+                                    Missed := To_Unbounded_String (Text);
+                                 end if;
+                              end loop;
+                              if Length (Missed) > 0 then
+                                 Error_Line
+                                   ("pathspec ':(prefix:0)" & To_String (Missed)
+                                    & "' did not match any file(s) known to git");
+                                 Stderr_Line ("Did you forget to 'git add'?");
+                                 Failed := True;
+                                 goto Stash_Report;
+                              end if;
+                           end;
+                        end if;
+
+                        declare
+                           Saved : Boolean;
+                           Title : Unbounded_String;
+                        begin
+                           Version.Stash.Push_Entry
+                             (Repo, Options, Specs, Saved, Title);
+                           if not Quiet then
+                              if Saved then
+                                 Success_Line
+                                   ("Saved working directory and index state "
+                                    & To_String (Title));
+                              else
+                                 Success_Line ("No local changes to save");
+                              end if;
+                           end if;
+                        end;
+                     end;
+                  end;
+                  goto Stash_Report;
                end if;
+
+               <<Stash_Report>>
+               if Length (Fatal) > 0 then
+                  Stderr_Line ("fatal: " & To_String (Fatal));
+                  Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+               elsif Failed then
+                  Set_Command_Failure;
+               end if;
+            exception
+               when E : Version.Stash.Stash_Error =>
+                  Stderr_Line ("fatal: " & Ada.Exceptions.Exception_Message (E));
+                  Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+               when E : Version.Stash.Stash_Failure =>
+                  Stderr_Line (Ada.Exceptions.Exception_Message (E));
+                  Set_Command_Failure;
             end;
 
          elsif Command = "sparse" or else Command = "sparse-checkout" then

@@ -113,6 +113,18 @@ version branch integrate NAME
 version branch integrate --finalize
 version branch integrate --abort
 version branch finalize
+version stash list [<log-options>]
+version stash show [-u | --include-untracked | --only-untracked] [<diff-options>] [<stash>]
+version stash [push] [-S | --staged] [-k | --[no-]keep-index] [-q | --quiet] [-u | --include-untracked]
+  [-a | --all] [(-m | --message) <message>] [--pathspec-from-file=<file> [--pathspec-file-nul]]
+  [--] [<pathspec>...]
+version stash save [<options>] [<message>]
+version stash apply [--index] [-q | --quiet] [--label-ours=<label>] [--label-theirs=<label>]
+  [--label-base=<label>] [<stash>]
+version stash pop [--index] [-q | --quiet] [<stash>]
+version stash drop [-q | --quiet] [<stash>] | stash branch <branchname> [<stash>]
+version stash store [(-m | --message) <message>] [-q | --quiet] <commit>
+version stash create [<message>] | stash clear
 version merge [OPTIONS] [TARGET...]
 version merge --continue [--verify|--no-verify]
 version merge --abort

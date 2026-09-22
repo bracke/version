@@ -1177,25 +1177,40 @@ package body Version.CLI.Help is
 
       elsif Name = "stash" then
          Line ("Usage:");
-         Line ("  version stash");
-         Line ("  version stash push [PATH...]");
-         Line ("  version stash push --include-untracked [PATH...]");
-         Line ("  version stash push --include-ignored [PATH...]");
-         Line ("  version stash create [PATH...]");
-         Line ("  version stash create --include-untracked [PATH...]");
-         Line ("  version stash create --include-ignored [PATH...]");
-         Line ("  version stash store COMMIT");
-         Line ("  version stash store -m MESSAGE COMMIT");
-         Line ("  version stash list");
-         Line ("  version stash show [--patch] [stash@{N}] [PATH...]");
-         Line ("  version stash apply [stash@{N}] [PATH...]");
-         Line ("  version stash pop [stash@{N}] [PATH...]");
-         Line ("  version stash branch NAME [stash@{N}]");
-         Line ("  version stash drop [stash@{N}]");
+         Line ("  version stash list [<log-options>]");
+         Line
+           ("  version stash show [-u | --include-untracked | --only-untracked]"
+            & " [<diff-options>] [<stash>]");
+         Line ("  version stash drop [-q | --quiet] [<stash>]");
+         Line ("  version stash pop [--index] [-q | --quiet] [<stash>]");
+         Line
+           ("  version stash apply [--index] [-q | --quiet] [--label-ours=<label>]");
+         Line
+           ("          [--label-theirs=<label>] [--label-base=<label>] [<stash>]");
+         Line ("  version stash branch <branchname> [<stash>]");
+         Line
+           ("  version stash [push] [-S | --staged] [-k | --[no-]keep-index]"
+            & " [-q | --quiet]");
+         Line
+           ("          [-u | --include-untracked] [-a | --all]"
+            & " [(-m | --message) <message>]");
+         Line
+           ("          [--pathspec-from-file=<file> [--pathspec-file-nul]]"
+            & " [--] [<pathspec>...]");
+         Line
+           ("  version stash save [-S | --staged] [-k | --[no-]keep-index]"
+            & " [-q | --quiet]");
+         Line
+           ("          [-u | --include-untracked] [-a | --all] [<message>]");
+         Line
+           ("  version stash store [(-m | --message) <message>] [-q | --quiet] <commit>");
+         Line ("  version stash create [<message>]");
          Line ("  version stash clear");
          Line;
          Line
            ("Temporarily save uncommitted work in refs/stash and restore it later.");
+         Line ("apply/pop merge the stash onto the current tree (so they work on");
+         Line ("a dirty one) and print the status afterwards, as git does.");
 
       elsif Name = "sparse" then
          Line ("Usage:");

@@ -4668,6 +4668,8 @@ package body Version.CLI.Tests is
       Root    : constant String :=
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
+      Output  : Ada.Strings.Unbounded.Unbounded_String;
+      Status  : Integer;
    begin
       Version.Init.Init (Root);
       Configure_User (Root);
@@ -4683,9 +4685,18 @@ package body Version.CLI.Tests is
          null;
       end;
 
+      --  git's `stash show` takes at most one revision: a bare path is a
+      --  second one. The paths belong after "--", which reaches the diff.
+      Run_CLI_Capture (Root, "stash show --name-status stash@{0} a.txt", Output, Status);
+      Assert (Status = 1, "stash show with a stray path must fail");
+      Assert_Contains
+        (Ada.Strings.Unbounded.To_String (Output),
+         "Too many revisions specified: 'stash@{0}' 'a.txt'",
+         "stash show stray path diagnostic");
+
       declare
          Text : constant String :=
-           Run_CLI (Root, "stash show --name-status stash@{0} a.txt");
+           Run_CLI (Root, "stash show --name-status stash@{0} -- a.txt");
       begin
          Assert_Contains
            (Text, "M" & Character'Val (9) & "a.txt",
@@ -4706,6 +4717,8 @@ package body Version.CLI.Tests is
       Root    : constant String :=
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
+      Output  : Ada.Strings.Unbounded.Unbounded_String;
+      Status  : Integer;
    begin
       Version.Init.Init (Root);
       Configure_User (Root);
@@ -4723,12 +4736,12 @@ package body Version.CLI.Tests is
 
       declare
          Text : constant String :=
-           Run_CLI (Root, "stash show --patch stash@{0} a.txt");
+           Run_CLI (Root, "stash show --patch stash@{0} -- a.txt");
       begin
-         Assert_Contains
-           (Text, "diff --git a/a.txt b/a.txt", "stash show patch CLI output");
-         Assert_Not_Contains
-           (Text, "diff --git a/b.txt b/b.txt", "stash show patch CLI output");
+         Assert_Contains (Text, "diff --git a/a.txt b/a.txt",
+                          "stash show patch pathspec CLI output");
+         Assert_Not_Contains (Text, "b.txt",
+                              "stash show patch pathspec CLI output");
       end;
       Ada.Directories.Set_Directory (Old_Dir);
    exception
@@ -4743,6 +4756,8 @@ package body Version.CLI.Tests is
       Root    : constant String :=
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
+      Output  : Ada.Strings.Unbounded.Unbounded_String;
+      Status  : Integer;
    begin
       Version.Init.Init (Root);
       Configure_User (Root);
@@ -4758,13 +4773,15 @@ package body Version.CLI.Tests is
          null;
       end;
 
-      declare
-         Text : constant String := Run_CLI (Root, "stash apply a.txt");
-      begin
-         Assert_Contains (Text, "applied stash", "stash apply pathspec CLI output");
-      end;
-      Assert (File_Text (Root, "a.txt") = "two", "CLI stash apply pathspec restores selected path");
-      Assert (File_Text (Root, "b.txt") = "one", "CLI stash apply pathspec leaves other path");
+      --  git's `stash apply` takes a stash, never a pathspec.
+      Run_CLI_Capture (Root, "stash apply a.txt", Output, Status);
+      Assert (Status = 1, "stash apply with a path must fail");
+      Assert_Contains
+        (Ada.Strings.Unbounded.To_String (Output),
+         "error: a.txt is not a valid reference",
+         "stash apply path diagnostic");
+      Assert (File_Text (Root, "a.txt") = "one",
+              "a failed stash apply must not touch the working tree");
       Ada.Directories.Set_Directory (Old_Dir);
    exception
       when others =>
@@ -4778,6 +4795,8 @@ package body Version.CLI.Tests is
       Root    : constant String :=
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
+      Output  : Ada.Strings.Unbounded.Unbounded_String;
+      Status  : Integer;
    begin
       Version.Init.Init (Root);
       Configure_User (Root);
@@ -4793,16 +4812,14 @@ package body Version.CLI.Tests is
          null;
       end;
 
-      declare
-         Text : constant String := Run_CLI (Root, "stash pop stash@{0} a.txt");
-      begin
-         Assert_Contains (Text, "popped stash stash@{0}", "stash pop pathspec CLI output");
-      end;
-      Assert (File_Text (Root, "a.txt") = "two", "CLI stash pop pathspec restores selected path");
-      Assert (File_Text (Root, "b.txt") = "one", "CLI stash pop pathspec leaves other path");
-      Assert
-        (Version.Stash.List_Entries (Version.Repository.Open).Is_Empty,
-         "CLI stash pop pathspec drops stash after selected apply");
+      Run_CLI_Capture (Root, "stash pop stash@{0} a.txt", Output, Status);
+      Assert (Status = 1, "stash pop with a path must fail");
+      Assert_Contains
+        (Ada.Strings.Unbounded.To_String (Output),
+         "Too many revisions specified: 'stash@{0}' 'a.txt'",
+         "stash pop stray path diagnostic");
+      Assert_Contains (Run_CLI (Root, "stash list"), "stash@{0}",
+                       "a failed stash pop must keep the entry");
       Ada.Directories.Set_Directory (Old_Dir);
    exception
       when others =>
@@ -4816,12 +4833,16 @@ package body Version.CLI.Tests is
       Root    : constant String :=
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
       Old_Dir : constant String := Ada.Directories.Current_Directory;
+      Output  : Ada.Strings.Unbounded.Unbounded_String;
+      Status  : Integer;
    begin
       Version.Init.Init (Root);
       Configure_User (Root);
       Ada.Directories.Set_Directory (Root);
-      Commit_File (Root, "a.txt", "one" & Character'Val (10), "base");
+      Commit_File (Root, "a.txt", "one" & Character'Val (10), "base-a");
+      Commit_File (Root, "b.txt", "one" & Character'Val (10), "base-b");
       Write_File (Root, "a.txt", "two" & Character'Val (10));
+      Write_File (Root, "b.txt", "two" & Character'Val (10));
       declare
          Ignored : constant String := Run_CLI (Root, "stash push");
          pragma Unreferenced (Ignored);
@@ -4829,16 +4850,12 @@ package body Version.CLI.Tests is
          null;
       end;
 
-      declare
-         Text : constant String := Run_CLI (Root, "stash apply missing.txt");
-      begin
-         Assert_Contains
-           (Text, "no matching paths in stash", "stash apply no-match CLI output");
-         Assert_Not_Contains (Text, "applied stash", "stash apply no-match CLI output");
-      end;
-      Assert
-        (Version.Stash.List_Entries (Version.Repository.Open).Length = 1,
-         "CLI stash apply no-match must keep stash");
+      Run_CLI_Capture (Root, "stash apply missing.txt", Output, Status);
+      Assert (Status = 1, "stash apply with an unknown revision must fail");
+      Assert_Contains
+        (Ada.Strings.Unbounded.To_String (Output),
+         "error: missing.txt is not a valid reference",
+         "stash apply unknown revision diagnostic");
       Ada.Directories.Set_Directory (Old_Dir);
    exception
       when others =>
@@ -4851,6 +4868,74 @@ package body Version.CLI.Tests is
    is
       Root    : constant String :=
         Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+      Old_Dir : constant String := Ada.Directories.Current_Directory;
+      Output  : Ada.Strings.Unbounded.Unbounded_String;
+      Status  : Integer;
+   begin
+      Version.Init.Init (Root);
+      Configure_User (Root);
+      Ada.Directories.Set_Directory (Root);
+      Commit_File (Root, "a.txt", "one" & Character'Val (10), "base-a");
+      Commit_File (Root, "b.txt", "one" & Character'Val (10), "base-b");
+      Write_File (Root, "a.txt", "two" & Character'Val (10));
+      Write_File (Root, "b.txt", "two" & Character'Val (10));
+      declare
+         Ignored : constant String := Run_CLI (Root, "stash push");
+         pragma Unreferenced (Ignored);
+      begin
+         null;
+      end;
+
+      Run_CLI_Capture (Root, "stash pop missing.txt", Output, Status);
+      Assert (Status = 1, "stash pop with an unknown revision must fail");
+      Assert_Contains
+        (Ada.Strings.Unbounded.To_String (Output),
+         "error: missing.txt is not a valid reference",
+         "stash pop unknown revision diagnostic");
+      Assert_Contains (Run_CLI (Root, "stash list"), "stash@{0}",
+                       "a failed stash pop must keep the entry");
+      Ada.Directories.Set_Directory (Old_Dir);
+   exception
+      when others =>
+         Ada.Directories.Set_Directory (Old_Dir);
+         raise;
+   end CLI_Stash_Pop_Pathspec_No_Match_Feedback_Keeps_Stash;
+
+   procedure CLI_Stash_Option_Parsing_Is_Frozen
+     (T : in out AUnit.Test_Cases.Test_Case'Class)
+   is
+      Root : constant String :=
+        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
+
+      --  git's parse-options diagnostics: an unknown option is a usage
+      --  error (129), the rest are reported and exit 1 or die at 128.
+      procedure Check_Usage_Failure
+        (Command : String; Detail : String; Context : String)
+      is
+         Output : Ada.Strings.Unbounded.Unbounded_String;
+         Status : Integer;
+      begin
+         Run_CLI_Capture (Root, Command, Output, Status);
+         Assert
+           (Status = Integer (Version.CLI.Usage_Exit_Status),
+            Context & " must fail with usage status");
+         Assert_Contains
+           (Ada.Strings.Unbounded.To_String (Output), "error: " & Detail,
+            Context & " detail");
+      end Check_Usage_Failure;
+
+      procedure Check_Failure
+        (Command : String; Detail : String; Context : String; Code : Integer)
+      is
+         Output : Ada.Strings.Unbounded.Unbounded_String;
+         Status : Integer;
+      begin
+         Run_CLI_Capture (Root, Command, Output, Status);
+         Assert (Status = Code, Context & " must fail with git's status");
+         Assert_Contains
+           (Ada.Strings.Unbounded.To_String (Output), Detail, Context & " detail");
+      end Check_Failure;
+
       Old_Dir : constant String := Ada.Directories.Current_Directory;
    begin
       Version.Init.Init (Root);
@@ -4865,131 +4950,47 @@ package body Version.CLI.Tests is
          null;
       end;
 
-      declare
-         Text : constant String := Run_CLI (Root, "stash pop missing.txt");
-      begin
-         Assert_Contains
-           (Text, "no matching paths in stash", "stash pop no-match CLI output");
-         Assert_Not_Contains (Text, "popped stash", "stash pop no-match CLI output");
-      end;
-      Assert
-        (Version.Stash.List_Entries (Version.Repository.Open).Length = 1,
-         "CLI stash pop no-match must keep stash");
+      Check_Usage_Failure
+        ("stash --bogus", "unknown option `bogus'",
+         "stash unknown top-level option");
+      Check_Usage_Failure
+        ("stash push --bad", "unknown option `bad'", "stash push unknown option");
+      Check_Usage_Failure
+        ("stash apply --bad", "unknown option `bad'", "stash apply unknown option");
+      Check_Usage_Failure
+        ("stash branch --bad", "unknown option `bad'", "stash branch unknown option");
+      Check_Failure
+        ("stash frobnicate",
+         "fatal: subcommand wasn't specified; 'push' can't be assumed due to"
+         & " unexpected token 'frobnicate'",
+         "stash unknown subcommand", 128);
+      Check_Failure
+        ("stash push -p -u",
+         "Can't use --patch and --include-untracked or --all at the same time",
+         "stash push conflicting include options", 1);
+      Check_Failure
+        ("stash store", """git stash store"" requires one <commit> argument",
+         "stash store missing commit", 1);
+      Check_Failure
+        ("stash clear extra",
+         "error: git stash clear with arguments is unimplemented",
+         "stash clear extra argument", 1);
+      Check_Failure
+        ("stash drop stash@{0} extra",
+         "Too many revisions specified: 'stash@{0}' 'extra'",
+         "stash drop too many revisions", 1);
+      Check_Failure
+        ("stash branch topic stash@{0} extra",
+         "Too many revisions specified: 'stash@{0}' 'extra'",
+         "stash branch too many revisions", 1);
+      Check_Failure
+        ("stash branch", "No branch name specified", "stash branch missing name", 1);
+
       Ada.Directories.Set_Directory (Old_Dir);
    exception
       when others =>
          Ada.Directories.Set_Directory (Old_Dir);
          raise;
-   end CLI_Stash_Pop_Pathspec_No_Match_Feedback_Keeps_Stash;
-
-   procedure CLI_Stash_Option_Parsing_Is_Frozen
-     (T : in out AUnit.Test_Cases.Test_Case'Class)
-   is
-      Root : constant String :=
-        Version.Temp_Fixture.Root (Version.Temp_Fixture.Test_Case (T));
-      Usage : constant String :=
-        "version stash [push [-m MSG] [-u|--include-untracked"
-        & "|-a|--include-ignored] [--] [PATH...]] | "
-        & "version stash save [-m MSG] [-u|-a] [MESSAGE] | "
-        & "version stash create [--include-untracked|--include-ignored] [--] [PATH...] | "
-        & "version stash store [-m MESSAGE] COMMIT | "
-        & "version stash list | version stash show"
-        & " [-p|--patch|--stat|--name-only|--name-status|--numstat"
-        & "|--shortstat|-U<n>] [stash@{N}] [--] [PATH...] | "
-        & "version stash apply [stash@{N}] [--] [PATH...] | "
-        & "version stash pop [stash@{N}] [--] [PATH...] | "
-        & "version stash branch NAME [stash@{N}] | "
-        & "version stash drop [stash@{N}] | version stash clear";
-
-      procedure Check_Usage_Failure
-        (Command : String; Detail : String; Context : String)
-      is
-         Output : Ada.Strings.Unbounded.Unbounded_String;
-         Status : Integer;
-      begin
-         Run_CLI_Capture (Root, Command, Output, Status);
-         declare
-            Text : constant String := Ada.Strings.Unbounded.To_String (Output);
-         begin
-            Assert
-              (Status = Integer (Version.CLI.Usage_Exit_Status),
-               Context & " must fail with usage status");
-            Assert_Contains (Text, "error: " & Detail, Context & " detail");
-            Assert_Contains
-              (Text,
-               Version.CLI.Expected_Output_Text (Usage),
-               Context & " usage");
-         end;
-      end Check_Usage_Failure;
-   begin
-      Check_Usage_Failure
-        ("stash --bogus",
-         "unknown stash option: --bogus",
-         "stash unknown top-level option");
-      Check_Usage_Failure
-        ("stash frobnicate",
-         "unknown stash subcommand: frobnicate",
-         "stash unknown subcommand");
-      Check_Usage_Failure
-        ("stash push --include-untracked --include-ignored",
-         "stash push --include-untracked cannot be combined with --include-ignored",
-         "stash push conflicting include options");
-      Check_Usage_Failure
-        ("stash push --bad",
-         "unknown stash push option: --bad",
-         "stash push unknown option");
-      Check_Usage_Failure
-        ("stash create --include-ignored --include-ignored",
-         "duplicate stash create option: --include-ignored",
-         "stash create duplicate option");
-      Check_Usage_Failure
-        ("stash store",
-         "missing stash store commit",
-         "stash store missing commit");
-      Check_Usage_Failure
-        ("stash store -m",
-         "stash store -m requires a message",
-         "stash store missing message");
-      Check_Usage_Failure
-        ("stash store --message msg commit",
-         "unknown stash store option: --message",
-         "stash store unknown option");
-      Check_Usage_Failure
-        ("stash list extra",
-         "stash list takes no arguments",
-         "stash list extra argument");
-      Check_Usage_Failure
-        ("stash show --bad",
-         "unknown stash show option: --bad",
-         "stash show unknown option");
-      Check_Usage_Failure
-        ("stash apply --bad",
-         "unknown stash apply option: --bad",
-         "stash apply unknown option");
-      Check_Usage_Failure
-        ("stash pop stash@{0} stash@{1}",
-         "too many stash pop stash specs",
-         "stash pop too many stash specs");
-      Check_Usage_Failure
-        ("stash branch",
-         "missing stash branch name",
-         "stash branch missing name");
-      Check_Usage_Failure
-        ("stash branch --bad",
-         "unknown stash branch option: --bad",
-         "stash branch unknown option");
-      Check_Usage_Failure
-        ("stash branch topic stash@{0} extra",
-         "too many stash branch arguments",
-         "stash branch too many arguments");
-      Check_Usage_Failure
-        ("stash drop stash@{0} extra",
-         "too many stash drop arguments",
-         "stash drop too many arguments");
-      Check_Usage_Failure
-        ("stash clear extra",
-         "stash clear takes no arguments",
-         "stash clear extra argument");
    end CLI_Stash_Option_Parsing_Is_Frozen;
 
    procedure CLI_Rebase_Option_Parsing_Is_Frozen
