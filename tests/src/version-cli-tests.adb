@@ -1976,6 +1976,13 @@ package body Version.CLI.Tests is
 
       Old_Dir : constant String := Ada.Directories.Current_Directory;
    begin
+      --  These commands are run where git would need a repository too, so
+      --  make one: the fixture root is a bare temporary directory, and a
+      --  stray .git anywhere above it (a /tmp/.git left behind by some other
+      --  run) is what made this pass on one machine and fail on CI.
+      Version.Init.Init (Root);
+      Configure_User (Root);
+
       Check_Usage_Failure
         ("status --ignored=unknown",
          "unknown status ignored mode: unknown",
@@ -3326,6 +3333,11 @@ package body Version.CLI.Tests is
       Detached_Path : constant String := Root & "-wt-detached";
       Old_Dir       : constant String := Ada.Directories.Current_Directory;
    begin
+      --  `worktree` opens the repository before it parses anything, exactly
+      --  as git does, so the usage checks below need one to exist.
+      Version.Init.Init (Root);
+      Configure_User (Root);
+
       Check_Usage_Failure
         ("worktree",
          "need a subcommand",
@@ -3357,8 +3369,6 @@ package body Version.CLI.Tests is
       Check_Usage_Only
         ("worktree add ../wt main extra", Usage, "worktree add extra operand");
 
-      Version.Init.Init (Root);
-      Configure_User (Root);
       Ada.Directories.Set_Directory (Root);
       Commit_File (Root, "a.txt", "one" & Character'Val (10), "base");
       Version.Branch.Create_Branch ("feature");
@@ -3603,6 +3613,11 @@ package body Version.CLI.Tests is
 
       Old_Dir : constant String := Ada.Directories.Current_Directory;
    begin
+      --  This CLI opens the repository before parsing `config`, so the
+      --  fixture needs one; git parses the options first and does not.
+      Version.Init.Init (Root);
+      Configure_User (Root);
+
       Check_Usage_Failure
         ("config",
          "missing config subcommand",
