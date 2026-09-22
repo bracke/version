@@ -6,37 +6,125 @@ with Version.Test_Support;
 
 package body Version.Git_Fixtures is
 
+   --  A failing fixture on a host one cannot reach explains nothing: the
+   --  common shape is `test "$(tool ...)" = "$(git ...)"`, which prints
+   --  nothing at all when the two differ.  Capture every fixture's combined
+   --  output, and on failure print its tail and then the tail of a re-run
+   --  under the shell's xtrace -- the trace carries each command *after*
+   --  expansion, so both sides of that comparison land in the log verbatim.
+   --  The trace is a re-run rather than the run itself because xtrace goes
+   --  to the shell's standard error, which the fixtures redirect into the
+   --  very files they compare.
+   Trace_Dir : constant String :=
+     Version.Test_Support.Fresh_Temp_Dir ("fixture_trace");
+
+   Output_Log : constant String :=
+     Version.Test_Support.Join (Trace_Dir, "out.log");
+
+   Trace_Log : constant String :=
+     Version.Test_Support.Join (Trace_Dir, "trace.log");
+
+   Tail_Lines : constant := 200;
+
+   --  The last Tail_Lines lines of Path, or "" when it cannot be read.
+   function Tail (Path : String) return String;
+
+   function Tail (Path : String) return String is
+   begin
+      if not Ada.Directories.Exists (Path) then
+         return "";
+      end if;
+
+      declare
+         Text  : constant String :=
+           Version.Test_Support.Read_Text_File (Path);
+         Seen  : Natural := 0;
+         First : Natural := Text'First;
+      begin
+         for I in reverse Text'Range loop
+            if Text (I) = Character'Val (10) then
+               Seen := Seen + 1;
+               if Seen > Tail_Lines then
+                  First := I + 1;
+                  exit;
+               end if;
+            end if;
+         end loop;
+
+         return Text (First .. Text'Last);
+      end;
+   exception
+      when others =>
+         return "";
+   end Tail;
+
    procedure Run
      (Dir     : String;
       Command : String)
    is
       Old_Dir : constant String := Ada.Directories.Current_Directory;
       Status  : Integer;
+      Success : Boolean;
 
       Args : GNAT.OS_Lib.Argument_List :=
         [1 => new String'("-c"),
          2 => new String'(Command)];
+
+      Trace_Args : GNAT.OS_Lib.Argument_List :=
+        [1 => new String'("-x"),
+         2 => new String'("-c"),
+         3 => new String'(Command)];
    begin
       Ada.Directories.Set_Directory (Dir);
 
-      Status :=
-        GNAT.OS_Lib.Spawn
-          (Program_Name => Version.Test_Support.Shell_Program,
-           Args         => Args);
+      GNAT.OS_Lib.Spawn
+        (Program_Name => Version.Test_Support.Shell_Program,
+         Args         => Args,
+         Output_File  => Output_Log,
+         Success      => Success,
+         Return_Code  => Status,
+         Err_To_Out   => True);
+
+      if not Success or else Status /= 0 then
+         declare
+            Retried : Boolean;
+            Ignored : Integer;
+         begin
+            GNAT.OS_Lib.Spawn
+              (Program_Name => Version.Test_Support.Shell_Program,
+               Args         => Trace_Args,
+               Output_File  => Trace_Log,
+               Success      => Retried,
+               Return_Code  => Ignored,
+               Err_To_Out   => True);
+         end;
+      end if;
 
       Ada.Directories.Set_Directory (Old_Dir);
 
-      GNAT.OS_Lib.Free (Args (1));
-      GNAT.OS_Lib.Free (Args (2));
+      for A of Args loop
+         GNAT.OS_Lib.Free (A);
+      end loop;
 
-      if Status /= 0 then
-         --  The message alone truncates, and what the command printed is
-         --  the only thing that explains a failure on a host one cannot
-         --  reach; put it where the test log will carry it.
+      for A of Trace_Args loop
+         GNAT.OS_Lib.Free (A);
+      end loop;
+
+      if not Success or else Status /= 0 then
+         --  The exception message alone truncates; put the command, what it
+         --  printed and the expanded trace where the test log carries them.
          Ada.Text_IO.Put_Line
            (Ada.Text_IO.Standard_Error,
             "fixture command failed (status" & Integer'Image (Status)
             & ") in " & Dir & ": " & Command);
+         Ada.Text_IO.Put_Line
+           (Ada.Text_IO.Standard_Error, "--- fixture output ---");
+         Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, Tail (Output_Log));
+         Ada.Text_IO.Put_Line
+           (Ada.Text_IO.Standard_Error, "--- fixture trace ---");
+         Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, Tail (Trace_Log));
+         Ada.Text_IO.Put_Line
+           (Ada.Text_IO.Standard_Error, "--- end fixture trace ---");
          raise Program_Error with
            "command failed: " & Command;
       end if;
@@ -47,8 +135,13 @@ package body Version.Git_Fixtures is
             Ada.Directories.Set_Directory (Old_Dir);
          end if;
 
-         GNAT.OS_Lib.Free (Args (1));
-         GNAT.OS_Lib.Free (Args (2));
+         for A of Args loop
+            GNAT.OS_Lib.Free (A);
+         end loop;
+
+         for A of Trace_Args loop
+            GNAT.OS_Lib.Free (A);
+         end loop;
 
          raise;
    end Run;

@@ -451,7 +451,7 @@ package body Version.CLI is
         and then Normal_Path (Normal_Path'Last) = '/'
       then
          return True;
-      elsif Ada.Directories.Exists (Native) then
+      elsif Version.Files.Exists (Native) then
          return Ada.Directories.Kind (Native) = Ada.Directories.Directory;
       else
          return False;
@@ -1942,12 +1942,12 @@ package body Version.CLI is
             elsif Has_Prefix (A, "--file=") then
                --  Read the named file when it exists (usually .git/config, this
                --  repo's own); a missing file reads as an empty config.
-               if not Ada.Directories.Exists (A (A'First + 7 .. A'Last)) then
+               if not Version.Files.Exists (A (A'First + 7 .. A'Last)) then
                   Global_Scope := True;
                end if;
             elsif A = "--file" or else A = "-f" then
                if I < Count then
-                  if not Ada.Directories.Exists (Arg (I + 1)) then
+                  if not Version.Files.Exists (Arg (I + 1)) then
                      Global_Scope := True;
                   end if;
                   I := I + 1;
@@ -2402,12 +2402,12 @@ package body Version.CLI is
                --  Read the named file if it exists (the usual case is
                --  .git/config, this repo's own config); a missing file reads
                --  as empty, so treat it like an out-of-scope config.
-               if not Ada.Directories.Exists (A (A'First + 7 .. A'Last)) then
+               if not Version.Files.Exists (A (A'First + 7 .. A'Last)) then
                   Global_Scope := True;
                end if;
             elsif A = "--file" or else A = "-f" then
                if I < Count then
-                  if not Ada.Directories.Exists (Arg (I + 1)) then
+                  if not Version.Files.Exists (Arg (I + 1)) then
                      Global_Scope := True;
                   end if;
                   I := I + 1;
@@ -3618,7 +3618,7 @@ package body Version.CLI is
            "refs/remotes/" & Remote & "/HEAD");
       Prefix : constant String := "ref: refs/remotes/" & Remote & "/";
    begin
-      if not Ada.Directories.Exists (Path) then
+      if not Version.Files.Exists (Path) then
          return "";
       end if;
       declare
@@ -4028,16 +4028,16 @@ package body Version.CLI is
         (if Version.Remotes.Remote_Exists (Remote)
          then Version.Remotes.Get_Url (Remote) else Remote);
    begin
-      if Ada.Directories.Exists (Trk) then
+      if Version.Files.Exists (Trk) then
          return;
       end if;
       declare
          Head_Path : constant String :=
-           (if Ada.Directories.Exists (Version.Files.Join (URL, "HEAD"))
+           (if Version.Files.Exists (Version.Files.Join (URL, "HEAD"))
             then Version.Files.Join (URL, "HEAD")
             else Version.Files.Join (Version.Files.Join (URL, ".git"), "HEAD"));
       begin
-         if not Ada.Directories.Exists (Head_Path) then
+         if not Version.Files.Exists (Head_Path) then
             return;
          end if;
          declare
@@ -4165,7 +4165,7 @@ package body Version.CLI is
                   if Version.Staging.Find_Path (Index, Safe_Path)
                     /= Natural'Last
                     and then not Version.Sparse.Included (Repo, Safe_Path)
-                    and then not Ada.Directories.Exists (Full_Path)
+                    and then not Version.Files.Exists (Full_Path)
                   then
                      raise Ada.IO_Exceptions.Data_Error
                        with
@@ -4796,7 +4796,7 @@ package body Version.CLI is
               Hex_Digits (Fanout / 16 + 1) & Hex_Digits (Fanout mod 16 + 1);
             Dir  : constant String := Version.Files.Join (Objects_Dir, Name);
          begin
-            if Ada.Directories.Exists (Dir)
+            if Version.Files.Exists (Dir)
               and then Ada.Directories.Kind (Dir) = Ada.Directories.Directory
             then
                declare
@@ -4926,7 +4926,7 @@ package body Version.CLI is
             Success_Line ("Removing " & Path);
          end if;
 
-         if Ada.Directories.Exists (Path) then
+         if Version.Files.Exists (Path) then
             Ada.Directories.Delete_File (Path);
          end if;
 
@@ -4946,7 +4946,7 @@ package body Version.CLI is
       if O = "" and then A = "" and then B /= "" then
          Success_Line ("Adding " & Path);
 
-         if Ada.Directories.Exists (Path) then
+         if Version.Files.Exists (Path) then
             Stderr_Line
               ("ERROR: untracked " & Path & " is overwritten by the merge.");
             return 1;
@@ -5413,7 +5413,7 @@ package body Version.CLI is
       --  building one: a missing pack die()s (128), a present one prints its
       --  checksum and succeeds.
       if Verify then
-         if not Ada.Directories.Exists (To_String (Pack_Arg)) then
+         if not Version.Files.Exists (To_String (Pack_Arg)) then
             Error_Line
               ("fatal: Cannot open existing pack file '"
                & To_String (Pack_Arg) & "'");
@@ -5567,22 +5567,22 @@ package body Version.CLI is
             end;
          exception
             when others =>
-               if Ada.Directories.Exists (Temp) then
+               if Version.Files.Exists (Temp) then
                   Ada.Directories.Delete_File (Temp);
                end if;
 
-               if Ada.Directories.Exists (Idx) then
+               if Version.Files.Exists (Idx) then
                   Ada.Directories.Delete_File (Idx);
                end if;
 
                raise;
          end;
 
-         if Ada.Directories.Exists (Temp) then
+         if Version.Files.Exists (Temp) then
             Ada.Directories.Delete_File (Temp);
          end if;
 
-         if Ada.Directories.Exists (Idx) then
+         if Version.Files.Exists (Idx) then
             Ada.Directories.Delete_File (Idx);
          end if;
       end;
@@ -7936,7 +7936,7 @@ package body Version.CLI is
          Backup_Path : constant String :=
            Version.Files.Join (Git_Dir, Backup);
       begin
-         if Ada.Directories.Exists (Backup_Path) and then not Force then
+         if Version.Files.Exists (Backup_Path) and then not Force then
             Error_Line
               ("Cannot create a new backup." & ASCII.LF
                & "A previous backup already exists in " & Backup & ASCII.LF
@@ -8209,7 +8209,7 @@ package body Version.CLI is
                            end if;
                         end loop;
 
-                        if Ada.Directories.Exists (Temp_Index) then
+                        if Version.Files.Exists (Temp_Index) then
                            Ada.Directories.Delete_File (Temp_Index);
                         end if;
 
@@ -8300,7 +8300,7 @@ package body Version.CLI is
                            Ada.Directories.End_Search (Search);
                         end Collect;
                      begin
-                        if Ada.Directories.Exists (Work_Dir) then
+                        if Version.Files.Exists (Work_Dir) then
                            Ada.Directories.Delete_Tree (Work_Dir);
                         end if;
 
@@ -8368,11 +8368,11 @@ package body Version.CLI is
                                (Version.Files.Read_Binary_File (Out_Path));
                         end if;
 
-                        if Ada.Directories.Exists (In_Path) then
+                        if Version.Files.Exists (In_Path) then
                            Ada.Directories.Delete_File (In_Path);
                         end if;
 
-                        if Ada.Directories.Exists (Out_Path) then
+                        if Version.Files.Exists (Out_Path) then
                            Ada.Directories.Delete_File (Out_Path);
                         end if;
                      end;
@@ -8520,7 +8520,7 @@ package body Version.CLI is
          then "true" else "false");
 
       function Shallow_Value return String is
-        (if Ada.Directories.Exists
+        (if Version.Files.Exists
               (Version.Files.Join
                  (Version.Repository.Common_Git_Dir (Repo), "shallow"))
          then "true" else "false");
@@ -8740,7 +8740,7 @@ package body Version.CLI is
            Version.Files.Join
              (Version.Repository.Common_Git_Dir (Repo), "objects/pack");
       begin
-         if not Ada.Directories.Exists (Dir) then
+         if not Version.Files.Exists (Dir) then
             return False;
          end if;
          declare
@@ -8824,7 +8824,7 @@ package body Version.CLI is
                 (Version.Repository.Common_Git_Dir (Repo), "objects"),
               "pack");
       begin
-         if not Ada.Directories.Exists (Dir) then
+         if not Version.Files.Exists (Dir) then
             return False;
          end if;
 
@@ -9950,7 +9950,7 @@ package body Version.CLI is
       end if;
 
       --  git refuses to create the output directory; a missing one is fatal.
-      if not Ada.Directories.Exists (To_String (Out_Dir)) then
+      if not Version.Files.Exists (To_String (Out_Dir)) then
          Error_Line
            ("fatal: cannot open directory " & To_String (Out_Dir));
          Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
@@ -10039,7 +10039,7 @@ package body Version.CLI is
                   Dir : constant String :=
                     Version.Files.Join (Root, To_String (Sub));
                begin
-                  if Ada.Directories.Exists (Dir) then
+                  if Version.Files.Exists (Dir) then
                      declare
                         Search : Ada.Directories.Search_Type;
                         Item   : Ada.Directories.Directory_Entry_Type;
@@ -10084,7 +10084,7 @@ package body Version.CLI is
          else
             for Path of Inputs loop
                exit when Failed;
-               if Ada.Directories.Exists (Path)
+               if Version.Files.Exists (Path)
                  and then Ada.Directories.Kind (Path)
                           = Ada.Directories.Directory
                then
@@ -11649,9 +11649,13 @@ package body Version.CLI is
                   begin
                      Ada.Directories.Set_Directory (To_String (Item.Value));
                      Args (1) := new String'("-c");
+                     --  Quoted, and by an absolute path: argv[0] is
+                     --  relative on a POSIX host and backslash-separated on
+                     --  Windows, where the shell reads each backslash as an
+                     --  escape and answers "command not found".
                      Args (2) :=
                        new String'
-                         (Ada.Command_Line.Command_Name & " "
+                         ('"' & Version.Platform.Self_Program & '"' & " "
                           & To_String (Command));
                      Status :=
                        GNAT.OS_Lib.Spawn
@@ -12678,7 +12682,7 @@ package body Version.CLI is
                "version bisect replay <logfile>");
             return;
          end if;
-         if not Ada.Directories.Exists (Path)
+         if not Version.Files.Exists (Path)
            or else Ada.Directories.Kind (Path) /= Ada.Directories.Ordinary_File
          then
             Stderr_Line ("cannot read file '" & Path & "' for replaying");
@@ -13591,7 +13595,7 @@ package body Version.CLI is
                end if;
 
                for P of Matches loop
-                  if Ada.Directories.Exists
+                  if Version.Files.Exists
                        (Version.Files.Join
                           (Version.Repository.Root_Path (Repo), P))
                   then
@@ -14557,7 +14561,7 @@ package body Version.CLI is
                  or else (Create or else Orphan or else Detach)
                  or else (not As_Switch
                           and then Tree_Resolves (First)
-                          and then not Ada.Directories.Exists
+                          and then not Version.Files.Exists
                                          (Version.Files.Join
                                             (Version.Repository.Root_Path (Repo),
                                              Version.Files.Join
@@ -15311,7 +15315,7 @@ package body Version.CLI is
             end Change_Of;
 
             function Exists_On_Disk (Path : String) return Boolean is
-              (Ada.Directories.Exists
+              (Version.Files.Exists
                  (Version.Files.Join (Version.Repository.Root_Path (Repo), Path)));
 
             Adds     : Version.Path_Safety.Path_Vector;   --  paths to stage
@@ -17444,7 +17448,7 @@ package body Version.CLI is
                   declare
                      Given : constant String := To_String (DOpts.Order_File);
                   begin
-                     if not Ada.Directories.Exists (Given) then
+                     if not Version.Files.Exists (Given) then
                         Ada.Text_IO.Put_Line
                           (Ada.Text_IO.Standard_Error,
                            "fatal: failed to read orderfile '" & Given
@@ -17757,7 +17761,7 @@ package body Version.CLI is
                              (Repo, Tree, Opts));
                      elsif LArg (2)'Length > 0
                        and then LArg (2) (LArg (2)'First) /= ':'
-                       and then not Ada.Directories.Exists (LArg (2))
+                       and then not Version.Files.Exists (LArg (2))
                      then
                         --  A leading ':' is pathspec magic, so the operand is
                         --  unambiguously a pathspec and its own validation
@@ -19453,7 +19457,7 @@ package body Version.CLI is
                               end loop;
                            elsif Names_Object (Spec) then
                               Specs.Append (Spec);
-                           elsif Ada.Directories.Exists (Spec) then
+                           elsif Version.Files.Exists (Spec) then
                               if not Full_Diff then
                                  Version.Pathspec.Append_Parse
                                    (Log_Paths, Spec, Repo_Prefix);
@@ -24955,7 +24959,7 @@ package body Version.CLI is
                               --  the clone on stderr, the adoption on
                               --  stdout, since adoption is the result.
                               Adopting : constant Boolean :=
-                                Ada.Directories.Exists
+                                Version.Files.Exists
                                   (Version.Files.To_Native_Path
                                      (Version.Files.Join
                                         (Version.Files.Join
@@ -26377,10 +26381,7 @@ package body Version.CLI is
                  (Arguments : Version.Ref_Format.String_Vectors.Vector)
                   return Integer
                is
-                  Self : constant String :=
-                    (if (for some Ch of Ada.Command_Line.Command_Name => Ch = '/')
-                     then Ada.Directories.Full_Name (Ada.Command_Line.Command_Name)
-                     else Ada.Command_Line.Command_Name);
+                  Self : constant String := Version.Platform.Self_Program;
                   List : GNAT.OS_Lib.Argument_List
                     (1 .. Natural (Arguments.Length));
                begin
@@ -28494,7 +28495,7 @@ package body Version.CLI is
                        Version.Repository.Open;
                      Last : constant String := Arg (Count);
                      Dst_Is_Dir : constant Boolean :=
-                       Ada.Directories.Exists (Last)
+                       Version.Files.Exists (Last)
                        and then Ada.Directories.Kind (Last)
                                 = Ada.Directories.Directory;
 
@@ -28546,7 +28547,7 @@ package body Version.CLI is
 
                      procedure Move_Source (Src, Dest : String) is
                         Src_Is_Dir : constant Boolean :=
-                          Ada.Directories.Exists (Src)
+                          Version.Files.Exists (Src)
                           and then Ada.Directories.Kind (Src)
                                    = Ada.Directories.Directory;
                      begin
@@ -28570,7 +28571,7 @@ package body Version.CLI is
                               Parent : constant String :=
                                 Ada.Directories.Containing_Directory (Dest);
                            begin
-                              if not Ada.Directories.Exists (Parent) then
+                              if not Version.Files.Exists (Parent) then
                                  raise Ada.IO_Exceptions.Data_Error with
                                    "renaming '" & Src
                                    & "' failed: No such file or directory";
@@ -28612,7 +28613,7 @@ package body Version.CLI is
                               end loop;
 
                               --  Drop the emptied source directory tree.
-                              if Ada.Directories.Exists (Src) then
+                              if Version.Files.Exists (Src) then
                                  declare
                                     Ignore : constant Boolean :=
                                       Prune_Empty (Src);
@@ -29222,7 +29223,7 @@ package body Version.CLI is
                elsif I <= Count then
                   Usage_Error ("apply accepts at most one patch file", Usage);
                elsif File_Idx /= 0
-                 and then not Ada.Directories.Exists (Arg (File_Idx))
+                 and then not Version.Files.Exists (Arg (File_Idx))
                then
                   --  git dies (exit 128) with this exact wording when the
                   --  patch file is not there.
@@ -31345,7 +31346,7 @@ package body Version.CLI is
                               exit;
                            end if;
                            if not Seen_Dashdash
-                             and then Ada.Directories.Exists
+                             and then Version.Files.Exists
                                         (Version.Files.Join
                                            (Version.Repository.Root_Path (Repo),
                                             Version.Pathspec.Resolve_Against_Prefix
@@ -31385,7 +31386,7 @@ package body Version.CLI is
                            if A'Length > 0 and then A (A'First) /= ':'
                              and then (for all C of A => C /= '*' and then C /= '?'
                                        and then C /= '[')
-                             and then not Ada.Directories.Exists
+                             and then not Version.Files.Exists
                                             (Version.Files.Join
                                                (Version.Repository.Root_Path (Repo),
                                                 Version.Pathspec.Resolve_Against_Prefix
@@ -32538,10 +32539,7 @@ package body Version.CLI is
                         --  This executable, by an absolute path so the shell
                         --  finds it whatever the current directory.
                         Self     : constant String :=
-                          (if (for some Ch of Ada.Command_Line.Command_Name => Ch = '/')
-                           then Ada.Directories.Full_Name
-                                  (Ada.Command_Line.Command_Name)
-                           else Ada.Command_Line.Command_Name);
+                          Version.Platform.Self_Program;
                         Args     : GNAT.OS_Lib.Argument_List :=
                           [1 => new String'("-c"),
                            2 => new String'
@@ -34337,7 +34335,7 @@ package body Version.CLI is
                                       Version.Pathspec.Resolve_Against_Prefix
                                         (Repo_Prefix, F)));
                         begin
-                           if not Ada.Directories.Exists (Full) then
+                           if not Version.Files.Exists (Full) then
                               Die ("could not open object name list: " & F);
                            else
                               declare
@@ -34404,7 +34402,7 @@ package body Version.CLI is
                      declare
                         F : constant String := To_String (Revs_File);
                      begin
-                        if not Ada.Directories.Exists (F) then
+                        if not Version.Files.Exists (F) then
                            Die ("reading graft file '" & F
                                 & "' failed: No such file or directory");
                         else
@@ -34470,7 +34468,7 @@ package body Version.CLI is
                            Opts.Contents := To_Unbounded_String (Read_All_Stdin);
                            Opts.Contents_Name :=
                              To_Unbounded_String ("standard input");
-                        elsif not Ada.Directories.Exists (F) then
+                        elsif not Version.Files.Exists (F) then
                            Die ("Cannot stat '" & F & "': No such file or directory");
                         else
                            Opts.Contents := To_Unbounded_String
@@ -37129,7 +37127,7 @@ package body Version.CLI is
                       (Version.Repository.Common_Git_Dir (Repo), Ref);
                begin
                   if No_Deref
-                    or else not Ada.Directories.Exists (Path)
+                    or else not Version.Files.Exists (Path)
                     or else Ada.Directories.Kind (Path)
                             /= Ada.Directories.Ordinary_File
                   then
@@ -37383,7 +37381,7 @@ package body Version.CLI is
                         --  the target, or "" when it is a regular/absent ref.
                         function Symref_Target return String is
                         begin
-                           if not Ada.Directories.Exists (Path) then
+                           if not Version.Files.Exists (Path) then
                               return "";
                            end if;
                            declare
@@ -38143,7 +38141,7 @@ package body Version.CLI is
                end Apply_Chmod;
 
                procedure Process_Path (Path : String) is
-                  Present : constant Boolean := Ada.Directories.Exists (Path);
+                  Present : constant Boolean := Version.Files.Exists (Path);
                begin
                   if Force_Remove then
                      Remove_From_Index (Path);
@@ -41515,7 +41513,7 @@ package body Version.CLI is
                               URL : constant String :=
                                 Version.Remotes.Get_Url (To_String (Name));
                               Head_Path : constant String :=
-                                (if Ada.Directories.Exists
+                                (if Version.Files.Exists
                                       (Version.Files.Join (URL, "HEAD"))
                                  then Version.Files.Join (URL, "HEAD")
                                  else Version.Files.Join
@@ -41523,7 +41521,7 @@ package body Version.CLI is
                                          "HEAD"));
                               Default : Unbounded_String;
                            begin
-                              if Ada.Directories.Exists (Head_Path) then
+                              if Version.Files.Exists (Head_Path) then
                                  declare
                                     C : constant String :=
                                       Version.Files.Read_Binary_File
@@ -42638,7 +42636,7 @@ package body Version.CLI is
                      Search : Ada.Directories.Search_Type;
                      Found  : Boolean;
                   begin
-                     if not Ada.Directories.Exists (Dir) then
+                     if not Version.Files.Exists (Dir) then
                         return False;
                      end if;
                      Ada.Directories.Start_Search
@@ -43809,7 +43807,7 @@ package body Version.CLI is
                           Version.Files.Join
                             (Version.Repository.Root_Path (Repo), Path);
                      begin
-                        if not Ada.Directories.Exists (Full) then
+                        if not Version.Files.Exists (Full) then
                            return "";
                         end if;
                         declare
@@ -44296,7 +44294,7 @@ package body Version.CLI is
 
                if not Bad then
                   for Idx of Files loop
-                     if not Ada.Directories.Exists (Idx) then
+                     if not Version.Files.Exists (Idx) then
                         Error_Line
                           ("fatal: Cannot open existing pack file '"
                            & Idx & "'");
@@ -44485,10 +44483,10 @@ package body Version.CLI is
                   end if;
                   --  -n/--no-create refreshes existing files only; it never
                   --  writes one that is not already there.
-                  if No_Create and then not Ada.Directories.Exists (Dest) then
+                  if No_Create and then not Version.Files.Exists (Dest) then
                      return;
                   end if;
-                  if not Force and then Ada.Directories.Exists (Dest) then
+                  if not Force and then Version.Files.Exists (Dest) then
                      --  git leaves an existing file alone, silently.
                      return;
                   end if;
@@ -44665,7 +44663,7 @@ package body Version.CLI is
                   E      : Ada.Directories.Directory_Entry_Type;
                   Prefix : constant String := Ada.Directories.Simple_Name (Dir);
                begin
-                  if not Ada.Directories.Exists (Dir) then
+                  if not Version.Files.Exists (Dir) then
                      return;
                   end if;
                   Ada.Directories.Start_Search
@@ -44687,7 +44685,7 @@ package body Version.CLI is
                   Ada.Directories.End_Search (Search);
                end Scan_Fanout;
             begin
-               if Ada.Directories.Exists (Objects_Dir) then
+               if Version.Files.Exists (Objects_Dir) then
                   for High in 0 .. 255 loop
                      declare
                         Hex : constant String := "0123456789abcdef";
@@ -44715,7 +44713,7 @@ package body Version.CLI is
                      Search     : Ada.Directories.Search_Type;
                      E          : Ada.Directories.Directory_Entry_Type;
                   begin
-                     if Ada.Directories.Exists (Pack_Dir) then
+                     if Version.Files.Exists (Pack_Dir) then
                         Ada.Directories.Start_Search
                           (Search, Pack_Dir, "",
                            [Ada.Directories.Ordinary_File => True,
@@ -48318,7 +48316,7 @@ package body Version.CLI is
 
                procedure Load_Merge_RR is
                   Text : constant String :=
-                    (if Ada.Directories.Exists (MR_Path)
+                    (if Version.Files.Exists (MR_Path)
                      then Version.Files.Read_Binary_File (MR_Path) else "");
                   I : Natural := Text'First;
                begin
@@ -48355,7 +48353,7 @@ package body Version.CLI is
                     Version.Files.Join
                       (Version.Repository.Root_Path (Repo), Path);
                begin
-                  return Ada.Directories.Exists (Full)
+                  return Version.Files.Exists (Full)
                     and then Ada.Strings.Fixed.Index
                                (Version.Files.Read_Binary_File (Full),
                                 "<<<<<<<") /= 0;
@@ -48364,7 +48362,7 @@ package body Version.CLI is
                Load_Merge_RR;
                if Sub = "status" then
                   for I in Keys.First_Index .. Keys.Last_Index loop
-                     if Ada.Directories.Exists (Preimage (Keys (I))) then
+                     if Version.Files.Exists (Preimage (Keys (I))) then
                         Success_Line (Paths (I));
                      end if;
                   end loop;
@@ -48372,7 +48370,7 @@ package body Version.CLI is
                   --  Bare `rerere` records the preimage of each still-conflicted
                   --  file, reporting each on standard error.
                   for I in Keys.First_Index .. Keys.Last_Index loop
-                     if not Ada.Directories.Exists (Postimage (Keys (I)))
+                     if not Version.Files.Exists (Postimage (Keys (I)))
                        and then Work_Has_Markers (Paths (I))
                      then
                         Stderr_Line
@@ -48381,7 +48379,7 @@ package body Version.CLI is
                   end loop;
                elsif Sub = "remaining" then
                   for I in Keys.First_Index .. Keys.Last_Index loop
-                     if not Ada.Directories.Exists (Postimage (Keys (I)))
+                     if not Version.Files.Exists (Postimage (Keys (I)))
                        and then Work_Has_Markers (Paths (I))
                      then
                         Success_Line (Paths (I));
@@ -48390,7 +48388,7 @@ package body Version.CLI is
                elsif Sub = "clear" then
                   --  Drop the preimages of still-unresolved entries and the map.
                   for I in Keys.First_Index .. Keys.Last_Index loop
-                     if not Ada.Directories.Exists (Postimage (Keys (I))) then
+                     if not Version.Files.Exists (Postimage (Keys (I))) then
                         Version.Files.Delete_File_If_Exists (Preimage (Keys (I)));
                      end if;
                   end loop;
@@ -48417,7 +48415,7 @@ package body Version.CLI is
                            for I in Keys.First_Index .. Keys.Last_Index loop
                               if Arg (J) = "." or else Paths (I) = Arg (J) then
                                  Matched := True;
-                                 if Ada.Directories.Exists
+                                 if Version.Files.Exists
                                       (Postimage (Keys (I)))
                                  then
                                     Version.Files.Delete_File_If_Exists
@@ -48447,8 +48445,8 @@ package body Version.CLI is
                           Version.Files.Join
                             (Version.Repository.Root_Path (Repo), Paths (I));
                      begin
-                        if Ada.Directories.Exists (Pre)
-                          and then Ada.Directories.Exists (Work)
+                        if Version.Files.Exists (Pre)
+                          and then Version.Files.Exists (Work)
                         then
                            Version.Console.Put
                              (Version.Diff.Unified_Text_Diff
