@@ -157,11 +157,12 @@ package body Version.CLI is
       return Command_Failure_Exit;
    end Command_Failure_Exit_Status;
 
-   --  isatty(3): whether a file descriptor is connected to a terminal.
-   function C_Isatty (Fd : Integer) return Integer
-     with Import, Convention => C, External_Name => "isatty";
-
-   function Stdin_Is_A_Tty return Boolean is (C_Isatty (0) /= 0);
+   --  Whether standard input is a terminal -- asked before reading a
+   --  revision list from a pipe. Not the C runtime's isatty: on Windows
+   --  that answers yes for NUL too, so `< /dev/null` looked like a console
+   --  and the command read the repository instead of its input.
+   function Stdin_Is_A_Tty return Boolean
+     is (Version.Platform.Stdin_Is_A_Terminal);
 
    --  time(2): the current time as whole seconds since the Unix epoch, used
    --  only for the wall-clock stamp in format-patch's --thread Message-IDs.
@@ -31282,7 +31283,8 @@ package body Version.CLI is
                begin
                   Opts.Color :=
                     M = "always" or else M = "true" or else M = "1"
-                    or else ((M = "auto" or else M = "") and then C_Isatty (1) /= 0);
+                    or else ((M = "auto" or else M = "")
+                             and then Version.Platform.Stdout_Is_A_Terminal);
                end;
 
                declare
