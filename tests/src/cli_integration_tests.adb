@@ -4968,6 +4968,15 @@ package body CLI_Integration_Tests is
       --  HOME so no user config leaks in.
       Env : constant String :=
         "LC_ALL=C LANG=C LANGUAGE=C GIT_CONFIG_NOSYSTEM=1 "
+        --  Pin the terminal and the editor: with TERM unset or "dumb" git
+        --  refuses to open an editor at all ("Terminal is dumb, but EDITOR
+        --  unset"), and with none configured it falls back to whatever it
+        --  was built with (Debian's `editor`, not `vi`) -- both of which
+        --  made an unpinned runner take a different path than a developer
+        --  machine and diverge for that reason alone. `true` accepts the
+        --  message unedited; the editor-refused and dumb-terminal paths are
+        --  exercised explicitly by the cases that set their own editor.
+        & "TERM=xterm EDITOR=true "
         & "GIT_AUTHOR_DATE='2024-01-02T03:04:05+0100' "
         & "GIT_COMMITTER_DATE='2024-01-02T03:04:05+0100'";
 
@@ -6911,6 +6920,10 @@ package body CLI_Integration_Tests is
           & """[rc=$?]"" >> ""$TF""; }" & LF
         & "tE() { l=$1; e=$2; shift 2; echo ""\$ $l"" >> ""$TF""; GIT_EDITOR=""$e"" "
           & """$TOOL"" ""$@"" >> ""$TF"" 2>&1 < /dev/null; echo ""[rc=$?]"" >> ""$TF""; }" & LF
+        --  git refuses outright when the terminal is dumb and no editor is
+        --  configured, rather than falling back to vi.
+        & "x 'dumb terminal' env -u EDITOR -u VISUAL -u GIT_EDITOR TERM=dumb "
+          & """$TOOL"" notes append --allow-empty HEAD" & LF
         & "tE 'add editor' ./ed.sh notes add" & LF
         & "x 'captured' cat captured.txt" & LF
         & "t 'show edited' notes show" & LF
@@ -7736,6 +7749,10 @@ package body CLI_Integration_Tests is
         & "t 'add dwim existing' worktree add ""$WD/side""" & LF
         & "t 'add dup branch' worktree add ""$WD/dup"" side" & LF
         & "t 'add dup branch -f' worktree add -f ""$WD/dup"" side" & LF
+        --  Drop the second worktree again: with one branch checked out
+        --  twice, which of the two `branch -vv` names is an artefact of
+        --  git's hashmap and differs between hosts.
+        & "t 'remove dup' worktree remove -f ""$WD/dup""" & LF
         & "t 'add detach' worktree add --detach ""$WD/det"" HEAD~1" & LF
         & "t 'add -d short' worktree add -d ""$WD/det2"" HEAD" & LF
         & "t 'add -b' worktree add -b nb ""$WD/nb""" & LF

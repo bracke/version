@@ -13858,14 +13858,24 @@ package body Version.CLI is
                exception
                   when E : Ada.IO_Exceptions.Data_Error =>
                      Restore_Index;
-                     Error_Line
-                       (Ada.Characters.Handling.To_Lower
-                          (Ada.Exceptions.Exception_Message (E)
-                             (Ada.Exceptions.Exception_Message (E)'First
-                              .. Ada.Exceptions.Exception_Message (E)'First))
-                        & Ada.Exceptions.Exception_Message (E)
-                            (Ada.Exceptions.Exception_Message (E)'First + 1
-                             .. Ada.Exceptions.Exception_Message (E)'Last));
+                     --  git folds "There was a problem with the editor" to
+                     --  lower case here but keeps "Terminal is dumb, but
+                     --  EDITOR unset" as it is.
+                     declare
+                        M : constant String :=
+                          Ada.Exceptions.Exception_Message (E);
+                     begin
+                        if M'Length >= 5
+                          and then M (M'First .. M'First + 4) = "There"
+                        then
+                           Error_Line
+                             (Ada.Characters.Handling.To_Lower
+                                (M (M'First .. M'First))
+                              & M (M'First + 1 .. M'Last));
+                        else
+                           Error_Line (M);
+                        end if;
+                     end;
                      Stderr_Line ("Please supply the message using either "
                                   & "-m or -F option.");
                      Set_Command_Failure;
@@ -32598,17 +32608,29 @@ package body Version.CLI is
                               when E : Ada.IO_Exceptions.Data_Error =>
                                  --  git 2.55: "there was a problem with the
                                  --  editor '<ed>'" (lower case, no period).
+                                 --  Its other refusal here -- "Terminal is
+                                 --  dumb, but EDITOR unset" -- keeps git's
+                                 --  capital, so only the editor-failure text
+                                 --  is folded.
                                  declare
                                     M : constant String :=
                                       Ada.Exceptions.Exception_Message (E);
                                     L : constant Natural :=
                                       (if M'Length > 0 and then M (M'Last) = '.'
                                        then M'Last - 1 else M'Last);
+                                    Problem : constant Boolean :=
+                                      M'Length >= 5
+                                      and then M (M'First .. M'First + 4)
+                                               = "There";
                                  begin
-                                    Error_Line
-                                      (Ada.Characters.Handling.To_Lower
-                                         (M (M'First .. M'First))
-                                       & M (M'First + 1 .. L));
+                                    if Problem then
+                                       Error_Line
+                                         (Ada.Characters.Handling.To_Lower
+                                            (M (M'First .. M'First))
+                                          & M (M'First + 1 .. L));
+                                    else
+                                       Error_Line (M (M'First .. L));
+                                    end if;
                                  end;
                                  Die ("please supply the note contents using "
                                       & "either -m or -F option");

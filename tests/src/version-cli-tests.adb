@@ -127,7 +127,8 @@ package body Version.CLI.Tests is
            (Version_Bin & " " & Command & " > " & Shell_Quote (Output_Path) & " 2>&1")];
    begin
       Ada.Directories.Set_Directory (Root);
-      Status := GNAT.OS_Lib.Spawn (Program_Name => "/bin/sh", Args => Args);
+      Status := GNAT.OS_Lib.Spawn
+        (Program_Name => Version.Test_Support.Shell_Program, Args => Args);
       Ada.Directories.Set_Directory (Old_Dir);
       GNAT.OS_Lib.Free (Args (1));
       GNAT.OS_Lib.Free (Args (2));

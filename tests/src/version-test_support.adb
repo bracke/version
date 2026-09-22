@@ -1,3 +1,4 @@
+with GNAT.OS_Lib;
 with Project_Tools.Files;
 with Project_Tools.Test_Fixtures;
 
@@ -35,5 +36,22 @@ package body Version.Test_Support is
    begin
       return Project_Tools.Files.Join (Left, Right);
    end Join;
+
+
+   function Shell_Program return String is
+      use type GNAT.OS_Lib.String_Access;
+      Found : GNAT.OS_Lib.String_Access :=
+        GNAT.OS_Lib.Locate_Exec_On_Path ("sh");
+   begin
+      if Found = null then
+         return "/bin/sh";
+      end if;
+      declare
+         Path : constant String := Found.all;
+      begin
+         GNAT.OS_Lib.Free (Found);
+         return Path;
+      end;
+   end Shell_Program;
 
 end Version.Test_Support;
