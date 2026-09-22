@@ -6,7 +6,7 @@ version init source
 cd source
 printf 'hello\n' > hello.txt
 version stage hello.txt
-version save "initial"
+version save -m "initial"
 version remote add origin ../remote.git
 version push origin main
 cd ..

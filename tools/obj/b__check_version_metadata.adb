@@ -35,17 +35,20 @@ package body ada_main is
    E135 : Short_Integer; pragma Import (Ada, E135, "system__file_io_E");
    E198 : Short_Integer; pragma Import (Ada, E198, "ada__streams__stream_io_E");
    E187 : Short_Integer; pragma Import (Ada, E187, "system__storage_pools_E");
-   E209 : Short_Integer; pragma Import (Ada, E209, "system__storage_pools__subpools_E");
+   E211 : Short_Integer; pragma Import (Ada, E211, "system__storage_pools__subpools_E");
    E174 : Short_Integer; pragma Import (Ada, E174, "ada__strings__unbounded_E");
+   E224 : Short_Integer; pragma Import (Ada, E224, "system__regpat_E");
    E153 : Short_Integer; pragma Import (Ada, E153, "ada__calendar_E");
    E159 : Short_Integer; pragma Import (Ada, E159, "ada__calendar__time_zones_E");
    E125 : Short_Integer; pragma Import (Ada, E125, "ada__text_io_E");
-   E205 : Short_Integer; pragma Import (Ada, E205, "system__pool_global_E");
+   E207 : Short_Integer; pragma Import (Ada, E207, "system__pool_global_E");
+   E219 : Short_Integer; pragma Import (Ada, E219, "gnat__expect_E");
    E185 : Short_Integer; pragma Import (Ada, E185, "system__regexp_E");
    E151 : Short_Integer; pragma Import (Ada, E151, "ada__directories_E");
-   E203 : Short_Integer; pragma Import (Ada, E203, "project_tools__text_E");
+   E203 : Short_Integer; pragma Import (Ada, E203, "project_tools__links_E");
+   E205 : Short_Integer; pragma Import (Ada, E205, "project_tools__text_E");
    E196 : Short_Integer; pragma Import (Ada, E196, "project_tools__files_E");
-   E215 : Short_Integer; pragma Import (Ada, E215, "project_tools__processes_E");
+   E217 : Short_Integer; pragma Import (Ada, E217, "project_tools__processes_E");
    E149 : Short_Integer; pragma Import (Ada, E149, "tool_support_E");
 
    Sec_Default_Sized_Stacks : array (1 .. 1) of aliased System.Secondary_Stack.SS_Stack (System.Parameters.Runtime_Default_Sec_Stack_Size);
@@ -57,74 +60,88 @@ package body ada_main is
 
    procedure finalize_library is
    begin
+      E217 := E217 - 1;
       declare
          procedure F1;
-         pragma Import (Ada, F1, "project_tools__files__finalize_body");
+         pragma Import (Ada, F1, "project_tools__processes__finalize_spec");
       begin
-         E196 := E196 - 1;
          F1;
       end;
       declare
          procedure F2;
-         pragma Import (Ada, F2, "ada__directories__finalize_body");
+         pragma Import (Ada, F2, "project_tools__files__finalize_body");
       begin
-         E151 := E151 - 1;
+         E196 := E196 - 1;
          F2;
       end;
       declare
          procedure F3;
-         pragma Import (Ada, F3, "ada__directories__finalize_spec");
+         pragma Import (Ada, F3, "ada__directories__finalize_body");
       begin
+         E151 := E151 - 1;
          F3;
       end;
-      E185 := E185 - 1;
       declare
          procedure F4;
-         pragma Import (Ada, F4, "system__regexp__finalize_spec");
+         pragma Import (Ada, F4, "ada__directories__finalize_spec");
       begin
          F4;
       end;
-      E205 := E205 - 1;
+      E185 := E185 - 1;
       declare
          procedure F5;
-         pragma Import (Ada, F5, "system__pool_global__finalize_spec");
+         pragma Import (Ada, F5, "system__regexp__finalize_spec");
       begin
          F5;
       end;
-      E125 := E125 - 1;
+      E219 := E219 - 1;
       declare
          procedure F6;
-         pragma Import (Ada, F6, "ada__text_io__finalize_spec");
+         pragma Import (Ada, F6, "gnat__expect__finalize_spec");
       begin
          F6;
       end;
-      E174 := E174 - 1;
+      E207 := E207 - 1;
       declare
          procedure F7;
-         pragma Import (Ada, F7, "ada__strings__unbounded__finalize_spec");
+         pragma Import (Ada, F7, "system__pool_global__finalize_spec");
       begin
          F7;
       end;
-      E209 := E209 - 1;
+      E125 := E125 - 1;
       declare
          procedure F8;
-         pragma Import (Ada, F8, "system__storage_pools__subpools__finalize_spec");
+         pragma Import (Ada, F8, "ada__text_io__finalize_spec");
       begin
          F8;
       end;
-      E198 := E198 - 1;
+      E174 := E174 - 1;
       declare
          procedure F9;
-         pragma Import (Ada, F9, "ada__streams__stream_io__finalize_spec");
+         pragma Import (Ada, F9, "ada__strings__unbounded__finalize_spec");
       begin
          F9;
       end;
+      E211 := E211 - 1;
       declare
          procedure F10;
-         pragma Import (Ada, F10, "system__file_io__finalize_body");
+         pragma Import (Ada, F10, "system__storage_pools__subpools__finalize_spec");
+      begin
+         F10;
+      end;
+      E198 := E198 - 1;
+      declare
+         procedure F11;
+         pragma Import (Ada, F11, "ada__streams__stream_io__finalize_spec");
+      begin
+         F11;
+      end;
+      declare
+         procedure F12;
+         pragma Import (Ada, F12, "system__file_io__finalize_body");
       begin
          E135 := E135 - 1;
-         F10;
+         F12;
       end;
       declare
          procedure Reraise_Library_Exception_If_Any;
@@ -344,14 +361,18 @@ package body ada_main is
          System.Storage_Pools'Elab_Spec;
       end if;
       E187 := E187 + 1;
-      if E209 = 0 then
+      if E211 = 0 then
          System.Storage_Pools.Subpools'Elab_Spec;
       end if;
-      E209 := E209 + 1;
+      E211 := E211 + 1;
       if E174 = 0 then
          Ada.Strings.Unbounded'Elab_Spec;
       end if;
       E174 := E174 + 1;
+      if E224 = 0 then
+         System.Regpat'Elab_Spec;
+      end if;
+      E224 := E224 + 1;
       if E153 = 0 then
          Ada.Calendar'Elab_Spec;
       end if;
@@ -370,10 +391,14 @@ package body ada_main is
          Ada.Text_Io'Elab_Body;
       end if;
       E125 := E125 + 1;
-      if E205 = 0 then
+      if E207 = 0 then
          System.Pool_Global'Elab_Spec;
       end if;
-      E205 := E205 + 1;
+      E207 := E207 + 1;
+      if E219 = 0 then
+         Gnat.Expect'Elab_Spec;
+      end if;
+      E219 := E219 + 1;
       if E185 = 0 then
          System.Regexp'Elab_Spec;
       end if;
@@ -386,11 +411,15 @@ package body ada_main is
       end if;
       E151 := E151 + 1;
       E203 := E203 + 1;
+      E205 := E205 + 1;
       if E196 = 0 then
          Project_Tools.Files'Elab_Body;
       end if;
       E196 := E196 + 1;
-      E215 := E215 + 1;
+      if E217 = 0 then
+         Project_Tools.Processes'Elab_Spec;
+      end if;
+      E217 := E217 + 1;
       E149 := E149 + 1;
    end adainit;
 
@@ -438,9 +467,13 @@ package body ada_main is
    --   -L/home/bent/Projekte/Ada/versionlib/lib/
    --   -L/home/bent/Projekte/Ada/ssh_lib_build/lib/
    --   -L/home/bent/Projekte/Ada/cryptolib/lib/
+   --   -L/home/bent/Projekte/Ada/hostkit/lib/
    --   -L/home/bent/Projekte/Ada/zlib/lib/
    --   -L/home/bent/Projekte/Ada/httpclient/lib/
+   --   -L/home/bent/Projekte/Ada/ssllib/lib/
+   --   -L/home/bent/Projekte/Ada/truststores/lib/
    --   -L/home/bent/Projekte/Ada/i18n/lib/
+   --   -L/home/bent/Projekte/Ada/regexp/lib/
    --   -L/home/bent/.local/share/alire/toolchains/gnat_native_15.2.1_4640d4b3/lib/gcc/x86_64-pc-linux-gnu/15.2.0/adalib/
    --   -static
    --   -lgnat
