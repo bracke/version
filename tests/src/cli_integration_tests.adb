@@ -4419,6 +4419,12 @@ package body CLI_Integration_Tests is
         """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
       GEnv : constant String :=
         "LC_ALL=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null "
+        --  Pin the identity as well: with the global config out of the
+        --  way git falls back to the account and host name, which a CI
+        --  runner cannot form ("(none)") -- every commit and merge then
+        --  failed there while succeeding on a developer machine.
+        & "GIT_AUTHOR_NAME=T GIT_AUTHOR_EMAIL=t@t "
+        & "GIT_COMMITTER_NAME=T GIT_COMMITTER_EMAIL=t@t "
         & "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=init.defaultBranch "
         & "GIT_CONFIG_VALUE_0=main EDITOR=true";
       Q : constant Character := '"';
@@ -4494,6 +4500,12 @@ package body CLI_Integration_Tests is
       Q : constant Character := '"';
       GEnv : constant String :=
         "LC_ALL=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null "
+        --  Pin the identity as well: with the global config out of the
+        --  way git falls back to the account and host name, which a CI
+        --  runner cannot form ("(none)") -- every commit and merge then
+        --  failed there while succeeding on a developer machine.
+        & "GIT_AUTHOR_NAME=T GIT_AUTHOR_EMAIL=t@t "
+        & "GIT_COMMITTER_NAME=T GIT_COMMITTER_EMAIL=t@t "
         & "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=init.defaultBranch "
         & "GIT_CONFIG_VALUE_0=main EDITOR=true "
         & "GIT_AUTHOR_DATE=" & Q & "2026-01-01T00:00:00 +0000" & Q & " "
@@ -4595,6 +4607,12 @@ package body CLI_Integration_Tests is
       Q : constant Character := '"';
       GEnv : constant String :=
         "LC_ALL=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null "
+        --  Pin the identity as well: with the global config out of the
+        --  way git falls back to the account and host name, which a CI
+        --  runner cannot form ("(none)") -- every commit and merge then
+        --  failed there while succeeding on a developer machine.
+        & "GIT_AUTHOR_NAME=T GIT_AUTHOR_EMAIL=t@t "
+        & "GIT_COMMITTER_NAME=T GIT_COMMITTER_EMAIL=t@t "
         & "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=init.defaultBranch "
         & "GIT_CONFIG_VALUE_0=main EDITOR=true";
 
@@ -4697,6 +4715,12 @@ package body CLI_Integration_Tests is
       Q : constant Character := '"';
       GEnv : constant String :=
         "LC_ALL=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null "
+        --  Pin the identity as well: with the global config out of the
+        --  way git falls back to the account and host name, which a CI
+        --  runner cannot form ("(none)") -- every commit and merge then
+        --  failed there while succeeding on a developer machine.
+        & "GIT_AUTHOR_NAME=T GIT_AUTHOR_EMAIL=t@t "
+        & "GIT_COMMITTER_NAME=T GIT_COMMITTER_EMAIL=t@t "
         & "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=init.defaultBranch "
         & "GIT_CONFIG_VALUE_0=main EDITOR=true";
 
@@ -4796,6 +4820,12 @@ package body CLI_Integration_Tests is
       Q : constant Character := '"';
       GEnv : constant String :=
         "LC_ALL=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null "
+        --  Pin the identity as well: with the global config out of the
+        --  way git falls back to the account and host name, which a CI
+        --  runner cannot form ("(none)") -- every commit and merge then
+        --  failed there while succeeding on a developer machine.
+        & "GIT_AUTHOR_NAME=T GIT_AUTHOR_EMAIL=t@t "
+        & "GIT_COMMITTER_NAME=T GIT_COMMITTER_EMAIL=t@t "
         & "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=init.defaultBranch "
         & "GIT_CONFIG_VALUE_0=main EDITOR=true "
         & "GIT_AUTHOR_DATE=" & Q & "2026-01-01T00:00:00 +0000" & Q & " "
@@ -4882,6 +4912,12 @@ package body CLI_Integration_Tests is
       Q : constant Character := '"';
       GEnv : constant String :=
         "LC_ALL=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null "
+        --  Pin the identity as well: with the global config out of the
+        --  way git falls back to the account and host name, which a CI
+        --  runner cannot form ("(none)") -- every commit and merge then
+        --  failed there while succeeding on a developer machine.
+        & "GIT_AUTHOR_NAME=T GIT_AUTHOR_EMAIL=t@t "
+        & "GIT_COMMITTER_NAME=T GIT_COMMITTER_EMAIL=t@t "
         & "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=init.defaultBranch "
         & "GIT_CONFIG_VALUE_0=main EDITOR=true "
         & "GIT_AUTHOR_DATE=" & Q & "2026-01-01T00:00:00 +0000" & Q & " "
@@ -7916,6 +7952,12 @@ package body CLI_Integration_Tests is
       Q : constant Character := '"';
       GEnv : constant String :=
         "LC_ALL=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null "
+        --  Pin the identity as well: with the global config out of the
+        --  way git falls back to the account and host name, which a CI
+        --  runner cannot form ("(none)") -- every commit and merge then
+        --  failed there while succeeding on a developer machine.
+        & "GIT_AUTHOR_NAME=T GIT_AUTHOR_EMAIL=t@t "
+        & "GIT_COMMITTER_NAME=T GIT_COMMITTER_EMAIL=t@t "
         & "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=init.defaultBranch "
         & "GIT_CONFIG_VALUE_0=main EDITOR=true";
 
@@ -7991,6 +8033,12 @@ package body CLI_Integration_Tests is
       Q : constant Character := '"';
       GEnv : constant String :=
         "LC_ALL=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null "
+        --  Pin the identity as well: with the global config out of the
+        --  way git falls back to the account and host name, which a CI
+        --  runner cannot form ("(none)") -- every commit and merge then
+        --  failed there while succeeding on a developer machine.
+        & "GIT_AUTHOR_NAME=T GIT_AUTHOR_EMAIL=t@t "
+        & "GIT_COMMITTER_NAME=T GIT_COMMITTER_EMAIL=t@t "
         & "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=init.defaultBranch "
         & "GIT_CONFIG_VALUE_0=main EDITOR=true";
 
@@ -8077,6 +8125,12 @@ package body CLI_Integration_Tests is
       Q : constant Character := '"';
       GEnv : constant String :=
         "LC_ALL=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null "
+        --  Pin the identity as well: with the global config out of the
+        --  way git falls back to the account and host name, which a CI
+        --  runner cannot form ("(none)") -- every commit and merge then
+        --  failed there while succeeding on a developer machine.
+        & "GIT_AUTHOR_NAME=T GIT_AUTHOR_EMAIL=t@t "
+        & "GIT_COMMITTER_NAME=T GIT_COMMITTER_EMAIL=t@t "
         & "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=init.defaultBranch "
         & "GIT_CONFIG_VALUE_0=main EDITOR=true";
 
@@ -8169,6 +8223,12 @@ package body CLI_Integration_Tests is
       Q : constant Character := '"';
       GEnv : constant String :=
         "LC_ALL=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null "
+        --  Pin the identity as well: with the global config out of the
+        --  way git falls back to the account and host name, which a CI
+        --  runner cannot form ("(none)") -- every commit and merge then
+        --  failed there while succeeding on a developer machine.
+        & "GIT_AUTHOR_NAME=T GIT_AUTHOR_EMAIL=t@t "
+        & "GIT_COMMITTER_NAME=T GIT_COMMITTER_EMAIL=t@t "
         & "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=init.defaultBranch "
         & "GIT_CONFIG_VALUE_0=main EDITOR=true";
 
@@ -8266,6 +8326,12 @@ package body CLI_Integration_Tests is
       Q : constant Character := '"';
       GEnv : constant String :=
         "LC_ALL=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null "
+        --  Pin the identity as well: with the global config out of the
+        --  way git falls back to the account and host name, which a CI
+        --  runner cannot form ("(none)") -- every commit and merge then
+        --  failed there while succeeding on a developer machine.
+        & "GIT_AUTHOR_NAME=T GIT_AUTHOR_EMAIL=t@t "
+        & "GIT_COMMITTER_NAME=T GIT_COMMITTER_EMAIL=t@t "
         & "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=init.defaultBranch "
         & "GIT_CONFIG_VALUE_0=main EDITOR=true";
 
@@ -8378,6 +8444,12 @@ package body CLI_Integration_Tests is
       Q : constant Character := '"';
       GEnv : constant String :=
         "LC_ALL=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null "
+        --  Pin the identity as well: with the global config out of the
+        --  way git falls back to the account and host name, which a CI
+        --  runner cannot form ("(none)") -- every commit and merge then
+        --  failed there while succeeding on a developer machine.
+        & "GIT_AUTHOR_NAME=T GIT_AUTHOR_EMAIL=t@t "
+        & "GIT_COMMITTER_NAME=T GIT_COMMITTER_EMAIL=t@t "
         & "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=init.defaultBranch "
         & "GIT_CONFIG_VALUE_0=main EDITOR=true FILTER_BRANCH_SQUELCH_WARNING=1";
 
@@ -8607,6 +8679,12 @@ package body CLI_Integration_Tests is
       --  main, non-interactive editor.
       GEnv : constant String :=
         "LC_ALL=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null "
+        --  Pin the identity as well: with the global config out of the
+        --  way git falls back to the account and host name, which a CI
+        --  runner cannot form ("(none)") -- every commit and merge then
+        --  failed there while succeeding on a developer machine.
+        & "GIT_AUTHOR_NAME=T GIT_AUTHOR_EMAIL=t@t "
+        & "GIT_COMMITTER_NAME=T GIT_COMMITTER_EMAIL=t@t "
         & "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=init.defaultBranch "
         & "GIT_CONFIG_VALUE_0=main EDITOR=true";
 
@@ -8689,6 +8767,12 @@ package body CLI_Integration_Tests is
         """" & Version.Test_Support.Join (Old_Dir, "bin/main") & """";
       GEnv : constant String :=
         "LC_ALL=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null "
+        --  Pin the identity as well: with the global config out of the
+        --  way git falls back to the account and host name, which a CI
+        --  runner cannot form ("(none)") -- every commit and merge then
+        --  failed there while succeeding on a developer machine.
+        & "GIT_AUTHOR_NAME=T GIT_AUTHOR_EMAIL=t@t "
+        & "GIT_COMMITTER_NAME=T GIT_COMMITTER_EMAIL=t@t "
         & "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=init.defaultBranch "
         & "GIT_CONFIG_VALUE_0=main EDITOR=true";
       Q : constant Character := '"';

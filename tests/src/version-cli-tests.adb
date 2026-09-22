@@ -397,9 +397,13 @@ package body Version.CLI.Tests is
          return;
       end if;
 
+      --  Quote what was actually produced: a CLI difference that only shows
+      --  up on another host is otherwise a failure message with nothing in
+      --  it to go on.
       Assert
         (Ada.Strings.Fixed.Index (Text, Pattern) /= 0,
-         Context & " must contain '" & Pattern & "'");
+         Context & " must contain '" & Pattern & "'; got: "
+         & Text (Text'First .. Natural'Min (Text'Last, Text'First + 500)));
    end Assert_Contains;
 
    procedure Assert_Not_Contains
@@ -1103,7 +1107,9 @@ package body Version.CLI.Tests is
          begin
             Assert
               (Status = Integer (Version.CLI.Usage_Exit_Status),
-               Context & " must fail with usage status");
+               Context & " must fail with usage status; got"
+               & Integer'Image (Status) & " and: "
+               & Text (Text'First .. Natural'Min (Text'Last, Text'First + 500)));
             Assert_Contains (Text, "error: " & Detail, Context & " detail");
             Assert_Contains
               (Text,
@@ -1781,7 +1787,9 @@ package body Version.CLI.Tests is
          begin
             Assert
               (Status = Integer (Version.CLI.Usage_Exit_Status),
-               Context & " must fail with usage status");
+               Context & " must fail with usage status; got"
+               & Integer'Image (Status) & " and: "
+               & Text (Text'First .. Natural'Min (Text'Last, Text'First + 500)));
             Assert_Contains (Text, "error: " & Detail, Context & " detail");
             Assert_Contains
               (Text,
@@ -1943,7 +1951,9 @@ package body Version.CLI.Tests is
          begin
             Assert
               (Status = Integer (Version.CLI.Usage_Exit_Status),
-               Context & " must fail with usage status");
+               Context & " must fail with usage status; got"
+               & Integer'Image (Status) & " and: "
+               & Text (Text'First .. Natural'Min (Text'Last, Text'First + 500)));
             Assert_Contains (Text, "error: " & Detail, Context & " detail");
             Assert_Contains
               (Text,
@@ -2921,7 +2931,9 @@ package body Version.CLI.Tests is
          begin
             Assert
               (Status = Integer (Version.CLI.Usage_Exit_Status),
-               Context & " must fail with usage status");
+               Context & " must fail with usage status; got"
+               & Integer'Image (Status) & " and: "
+               & Text (Text'First .. Natural'Min (Text'Last, Text'First + 500)));
             Assert_Contains (Text, "error: " & Detail, Context & " detail");
             Assert_Contains
               (Text, Version.CLI.Expected_Output_Text (Usage),
@@ -3034,7 +3046,9 @@ package body Version.CLI.Tests is
          begin
             Assert
               (Status = Integer (Version.CLI.Usage_Exit_Status),
-               Context & " must fail with usage status");
+               Context & " must fail with usage status; got"
+               & Integer'Image (Status) & " and: "
+               & Text (Text'First .. Natural'Min (Text'Last, Text'First + 500)));
             Assert_Contains (Text, "error: " & Detail, Context & " detail");
             Assert_Contains
               (Text, Version.CLI.Expected_Output_Text (Usage),
@@ -3173,7 +3187,9 @@ package body Version.CLI.Tests is
          begin
             Assert
               (Status = Integer (Version.CLI.Usage_Exit_Status),
-               Context & " must fail with usage status");
+               Context & " must fail with usage status; got"
+               & Integer'Image (Status) & " and: "
+               & Text (Text'First .. Natural'Min (Text'Last, Text'First + 500)));
             Assert_Contains (Text, "error: " & Detail, Context & " detail");
             Assert_Contains
               (Text, Version.CLI.Expected_Output_Text (Usage),
@@ -3382,7 +3398,9 @@ package body Version.CLI.Tests is
          begin
             Assert
               (Status = Integer (Version.CLI.Usage_Exit_Status),
-               Context & " must fail with usage status");
+               Context & " must fail with usage status; got"
+               & Integer'Image (Status) & " and: "
+               & Text (Text'First .. Natural'Min (Text'Last, Text'First + 500)));
             Assert_Contains (Text, "error: " & Detail, Context & " detail");
             Assert_Contains
               (Text,
@@ -3535,7 +3553,9 @@ package body Version.CLI.Tests is
          begin
             Assert
               (Status = Integer (Version.CLI.Usage_Exit_Status),
-               Context & " must fail with usage status");
+               Context & " must fail with usage status; got"
+               & Integer'Image (Status) & " and: "
+               & Text (Text'First .. Natural'Min (Text'Last, Text'First + 500)));
             Assert_Contains (Text, "error: " & Detail, Context & " detail");
             Assert_Contains
               (Text,
@@ -3698,7 +3718,9 @@ package body Version.CLI.Tests is
          begin
             Assert
               (Status = Integer (Version.CLI.Usage_Exit_Status),
-               Context & " must fail with usage status");
+               Context & " must fail with usage status; got"
+               & Integer'Image (Status) & " and: "
+               & Text (Text'First .. Natural'Min (Text'Last, Text'First + 500)));
             Assert_Contains (Text, "error: " & Detail, Context & " detail");
             Assert_Contains
               (Text,
@@ -3830,7 +3852,9 @@ package body Version.CLI.Tests is
          begin
             Assert
               (Status = Integer (Version.CLI.Usage_Exit_Status),
-               Context & " must fail with usage status");
+               Context & " must fail with usage status; got"
+               & Integer'Image (Status) & " and: "
+               & Text (Text'First .. Natural'Min (Text'Last, Text'First + 500)));
             Assert_Contains (Text, "error: " & Detail, Context & " detail");
             Assert_Contains
               (Text,
@@ -3943,7 +3967,9 @@ package body Version.CLI.Tests is
          begin
             Assert
               (Status = Integer (Version.CLI.Usage_Exit_Status),
-               Context & " must fail with usage status");
+               Context & " must fail with usage status; got"
+               & Integer'Image (Status) & " and: "
+               & Text (Text'First .. Natural'Min (Text'Last, Text'First + 500)));
             Assert_Contains (Text, "error: " & Detail, Context & " detail");
             Assert_Contains
               (Text,
@@ -4064,7 +4090,9 @@ package body Version.CLI.Tests is
          begin
             Assert
               (Status = Integer (Version.CLI.Usage_Exit_Status),
-               Context & " must fail with usage status");
+               Context & " must fail with usage status; got"
+               & Integer'Image (Status) & " and: "
+               & Text (Text'First .. Natural'Min (Text'Last, Text'First + 500)));
             Assert_Contains (Text, "error: " & Detail, Context & " detail");
             Assert_Contains
               (Text,
@@ -4197,7 +4225,9 @@ package body Version.CLI.Tests is
          begin
             Assert
               (Status = Integer (Version.CLI.Usage_Exit_Status),
-               Context & " must fail with usage status");
+               Context & " must fail with usage status; got"
+               & Integer'Image (Status) & " and: "
+               & Text (Text'First .. Natural'Min (Text'Last, Text'First + 500)));
             Assert_Contains (Text, "error: " & Detail, Context & " detail");
             Assert_Contains
               (Text,
@@ -5037,7 +5067,9 @@ package body Version.CLI.Tests is
          begin
             Assert
               (Status = Integer (Version.CLI.Usage_Exit_Status),
-               Context & " must fail with usage status");
+               Context & " must fail with usage status; got"
+               & Integer'Image (Status) & " and: "
+               & Text (Text'First .. Natural'Min (Text'Last, Text'First + 500)));
             Assert_Contains (Text, "error: " & Detail, Context & " detail");
             Assert_Contains
               (Text,

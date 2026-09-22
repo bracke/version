@@ -1,4 +1,5 @@
 with Ada.Directories;
+with Ada.Text_IO;
 with GNAT.OS_Lib;
 
 with Version.Test_Support;
@@ -29,6 +30,13 @@ package body Version.Git_Fixtures is
       GNAT.OS_Lib.Free (Args (2));
 
       if Status /= 0 then
+         --  The message alone truncates, and what the command printed is
+         --  the only thing that explains a failure on a host one cannot
+         --  reach; put it where the test log will carry it.
+         Ada.Text_IO.Put_Line
+           (Ada.Text_IO.Standard_Error,
+            "fixture command failed (status" & Integer'Image (Status)
+            & ") in " & Dir & ": " & Command);
          raise Program_Error with
            "command failed: " & Command;
       end if;
