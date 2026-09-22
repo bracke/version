@@ -4,6 +4,7 @@ with GNAT.OS_Lib;
 with Version.Platform;
 with Project_Tools.Files;
 with Project_Tools.Test_Fixtures;
+with Version.Files;
 
 --  Thin adapter over the shared project_tools test-fixture helpers, keeping the
 --  Version.Test_Support API the test suites already use. The fixture logic
@@ -43,7 +44,11 @@ package body Version.Test_Support is
 
    procedure Write_Text_File (Path : String; Content : String) is
    begin
-      Project_Tools.Test_Fixtures.Write_Text_File (Path, Content);
+      --  Byte for byte: a fixture writes the content it means, and a host
+      --  that translates would otherwise turn `#!/bin/sh` into `#!/bin/sh\r`
+      --  -- an interpreter no shell can find -- and a `.gitignore` or a
+      --  patch into something git never wrote.
+      Version.Files.Write_Binary_File (Path, Content);
    end Write_Text_File;
 
    function Read_Text_File (Path : String) return String is
