@@ -39,7 +39,20 @@ package body Version.CLI.Tests is
    use AUnit.Assertions;
    use AUnit.Test_Cases.Registration;
 
-   Version_Bin : constant String := "/home/bent/Projekte/Ada/version/bin/main";
+   --  The suite is started from the crate root and the spawns below change
+   --  directory first, so the CLI is resolved once, here, against that root.
+   --  A hardcoded absolute path worked on one machine and failed every one of
+   --  these tests anywhere else, CI included.
+   function Built_CLI return String is
+      Root : constant String := Ada.Directories.Current_Directory;
+      Exe  : constant String :=
+        Version.Test_Support.Join (Root, "bin/main.exe");
+   begin
+      return (if Ada.Directories.Exists (Exe) then Exe
+              else Version.Test_Support.Join (Root, "bin/main"));
+   end Built_CLI;
+
+   Version_Bin : constant String := Built_CLI;
 
    function Join (Left, Right : String) return String renames Version.Test_Support.Join;
 
