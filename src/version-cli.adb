@@ -44623,7 +44623,8 @@ package body Version.CLI is
                  Version.Files.Join
                    (Version.Repository.Common_Git_Dir (Repo), "objects");
                Count_N : Natural := 0;
-               KiB     : Long_Long_Integer := 0;
+               --  The on-disk byte total; "kilobytes" is this divided once.
+               Disk_Bytes : Long_Long_Integer := 0;
                Loose_Ids : Version.Trailers.String_Vectors.Vector;
 
                function Img (N : Long_Long_Integer) return String is
@@ -44679,17 +44680,19 @@ package body Version.CLI is
                      begin
                         Count_N := Count_N + 1;
                         --  git's on_disk_bytes: st_blocks * 512, which for a
-                        --  loose object is ceil(size / 4096) * 4 KiB. A host
+                        --  loose object is ceil(size / 4096) * 4096. A host
                         --  whose stat has no st_blocks (Windows) gets the
                         --  plain size instead, as git's
-                        --  NO_ST_BLOCKS_IN_STRUCT_STAT branch does -- there a
-                        --  repository of small objects really is 0 kilobytes.
-                        KiB :=
-                          KiB
+                        --  NO_ST_BLOCKS_IN_STRUCT_STAT branch does. git keeps
+                        --  the byte total and divides once for "kilobytes",
+                        --  so -H can say "229 bytes" where the plain form
+                        --  says 0.
+                        Disk_Bytes :=
+                          Disk_Bytes
                           + (if Version.Platform."=" (Version.Platform.Current,
                                 Version.Platform.Windows_Platform)
-                             then Sz / 1024
-                             else ((Sz + 4095) / 4096) * 4);
+                             then Sz
+                             else ((Sz + 4095) / 4096) * 4096);
                         Loose_Ids.Append
                           (Prefix & Ada.Directories.Simple_Name (E));
                      end;
@@ -44791,8 +44794,8 @@ package body Version.CLI is
                              ("count: " & Img (Long_Long_Integer (Count_N)));
                            Success_Line
                              ("size: "
-                              & (if Human then Human_Bytes (KiB * 1024)
-                                 else Img (KiB)));
+                              & (if Human then Human_Bytes (Disk_Bytes)
+                                 else Img (Disk_Bytes / 1024)));
                            Success_Line ("in-pack: " & Img (In_Pack));
                            Success_Line
                              ("packs: " & Img (Long_Long_Integer (Packs)));
@@ -44817,7 +44820,7 @@ package body Version.CLI is
                   --  strbuf_humanise_bytes does: "<n> bytes", else "X.XX KiB",
                   --  "X.XX MiB", "X.XX GiB" (two decimals, /1024 each step).
                   declare
-                     Bytes : constant Long_Long_Integer := KiB * 1024;
+                     Bytes : constant Long_Long_Integer := Disk_Bytes;
 
                      function Fmt2
                        (Value, Divisor : Long_Long_Integer) return String
@@ -44847,7 +44850,7 @@ package body Version.CLI is
                else
                   Success_Line
                     (Img (Long_Long_Integer (Count_N)) & " objects, "
-                     & Img (KiB) & " kilobytes");
+                     & Img (Disk_Bytes / 1024) & " kilobytes");
                end if;
             end;
 
