@@ -16933,14 +16933,22 @@ package body Version.CLI is
                   Bad  : Boolean := False;
 
                   function Outside (P : String) return Boolean is
-                     Abs_P : constant String := Ada.Directories.Full_Name (P);
+                     --  Both sides in one spelling: Full_Name answers in the
+                     --  host's own separator, and the root is kept with
+                     --  forward slashes, so on Windows every operand looked
+                     --  to be outside the repository it was sitting in.
+                     Abs_P : constant String :=
+                       Version.Files.Normalize_Separators
+                         (Ada.Directories.Full_Name (P));
+                     Base  : constant String :=
+                       Version.Files.Normalize_Separators (Root);
                   begin
-                     return Abs_P /= Root
-                       and then not (Abs_P'Length > Root'Length
+                     return Abs_P /= Base
+                       and then not (Abs_P'Length > Base'Length
                                      and then Abs_P
                                        (Abs_P'First
-                                        .. Abs_P'First + Root'Length)
-                                       = Root & "/");
+                                        .. Abs_P'First + Base'Length)
+                                       = Base & "/");
                   exception
                      when others =>
                         return False;
