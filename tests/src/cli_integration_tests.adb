@@ -1248,7 +1248,10 @@ package body CLI_Integration_Tests is
          & " git add f;"
          & " test ""$(git diff --cached)"" = ""$(" & CLI
          & " diff --cached)"";"                                     --  staged
-         & " git commit -qm chmod; printf 'x\nY\n' > f;"
+         --  A host with no executable bit has nothing to commit here, and
+         --  `git commit` then exits 1; the content change below is the part
+         --  that is about this tool either way.
+         & " git commit -qm chmod || true; printf 'x\nY\n' > f;"
          & " test ""$(git diff)"" = ""$(" & CLI & " diff)""");      --  +content
 
       Ada.Directories.Set_Directory (Old_Dir);

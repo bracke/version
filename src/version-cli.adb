@@ -127,6 +127,22 @@ with Version.Name_Rev;
 with Version.Path_Quoting;
 
 package body Version.CLI is
+
+   --  MinGW's C startup expands a wildcard in argv before main() runs, so
+   --  `grep foo '*.txt'` arrives already replaced by the names in the
+   --  current directory -- where git matches that pathspec across
+   --  directories. git turns the same knob off in compat/mingw.c. These are
+   --  library-level, so the value is in the object rather than assigned at
+   --  elaboration, which is after the startup has already read it. The two
+   --  MinGW runtimes read different names; on a host that does not glob
+   --  nothing reads either.
+   CRT_Glob : Interfaces.C.int := 0
+     with Export, Convention => C, External_Name => "_CRT_glob";
+   pragma Warnings (Off, CRT_Glob);
+
+   Do_Wildcard : Interfaces.C.int := 0
+     with Export, Convention => C, External_Name => "_dowildcard";
+   pragma Warnings (Off, Do_Wildcard);
    use Ada.Strings.Unbounded;
    use type Ada.Directories.File_Kind;
    use type Interfaces.C.long;
