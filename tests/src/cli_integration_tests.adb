@@ -4789,7 +4789,7 @@ package body CLI_Integration_Tests is
            --  -a: these fixtures edit tracked files in place.
            & "au() { git -c user.name=T -c user.email=t@t "
            & "commit -q -a -m " & Q & "$1" & Q & "; }" & LF
-           & "for kind in automerge driver renorm; do" & LF
+           & "for kind in automerge driver renorm crlf; do" & LF
            & "  d=" & Q & Dir & Q & "/$kind" & LF
            & "  rm -rf " & Q & "$d" & Q & "; mkdir -p " & Q & "$d" & Q & LF
            & "  cd " & Q & "$d" & Q & LF
@@ -4804,6 +4804,21 @@ package body CLI_Integration_Tests is
            & "    git checkout -q -b feat" & LF
            & "    printf 'theirs\n' > f; au feat" & LF
            & "    git checkout -q main; printf 'ours\n' > f; au main" & LF
+           --  The same renormalized merge, but with the checkout ending
+           --  pinned to CRLF: git writes a merge result -- conflict markers
+           --  and all -- through the checkout filter, so the working-tree
+           --  file is CRLF. Pinned rather than left to core.eol's `native`
+           --  default, so every host exercises it and not only the one
+           --  whose native ending is CRLF.
+           & "  elif [ $kind = crlf ]; then" & LF
+           & "    git config core.eol crlf" & LF
+           & "    printf 'a\nb\nc\n' > f; git add f; au base" & LF
+           & "    git checkout -q -b feat" & LF
+           & "    printf 'a\r\nb2\r\nc\r\n' > f; au feat" & LF
+           & "    git checkout -q main; printf 'a\nb\nc2\n' > f; au main" & LF
+           & "    echo '* text=auto' > .gitattributes" & LF
+           & "    git add .gitattributes; au attrs" & LF
+           & "    git config merge.renormalize true" & LF
            & "  elif [ $kind = renorm ]; then" & LF
            & "    printf 'a\nb\nc\n' > f; git add f; au base" & LF
            & "    git checkout -q -b feat" & LF

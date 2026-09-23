@@ -127,22 +127,6 @@ with Version.Name_Rev;
 with Version.Path_Quoting;
 
 package body Version.CLI is
-
-   --  MinGW's C startup expands a wildcard in argv before main() runs, so
-   --  `grep foo '*.txt'` arrives already replaced by the names in the
-   --  current directory -- where git matches that pathspec across
-   --  directories. git turns the same knob off in compat/mingw.c. These are
-   --  library-level, so the value is in the object rather than assigned at
-   --  elaboration, which is after the startup has already read it. The two
-   --  MinGW runtimes read different names; on a host that does not glob
-   --  nothing reads either.
-   CRT_Glob : Interfaces.C.int := 0
-     with Export, Convention => C, External_Name => "_CRT_glob";
-   pragma Warnings (Off, CRT_Glob);
-
-   Do_Wildcard : Interfaces.C.int := 0
-     with Export, Convention => C, External_Name => "_dowildcard";
-   pragma Warnings (Off, Do_Wildcard);
    use Ada.Strings.Unbounded;
    use type Ada.Directories.File_Kind;
    use type Interfaces.C.long;
@@ -293,12 +277,12 @@ package body Version.CLI is
 
    function Count return Natural is
    begin
-      return Ada.Command_Line.Argument_Count - Command_Offset;
+      return Version.Platform.Argument_Count - Command_Offset;
    end Count;
 
    function Arg (Index : Positive) return String is
    begin
-      return Ada.Command_Line.Argument (Index + Command_Offset);
+      return Version.Platform.Argument (Index + Command_Offset);
    end Arg;
 
    function Parse_Depth_Argument (Text : String) return Positive is
@@ -16441,8 +16425,8 @@ package body Version.CLI is
       Quiet_Mode := False;
       Command_Offset := 0;
 
-      if Ada.Command_Line.Argument_Count > 0
-        and then Ada.Command_Line.Argument (1) = "--quiet"
+      if Version.Platform.Argument_Count > 0
+        and then Version.Platform.Argument (1) = "--quiet"
       then
          Quiet_Mode := True;
          Command_Offset := 1;
