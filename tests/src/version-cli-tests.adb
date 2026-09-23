@@ -2276,10 +2276,17 @@ package body Version.CLI.Tests is
          Status : Integer;
       begin
          Run_CLI_Capture (Root, Command, Output, Status);
-         Assert (Status = Expected_Status, Context & " status");
+         --  Say what came back: a status alone is no report on a host one
+         --  cannot reach, and the output explains the status.
+         Assert
+           (Status = Expected_Status,
+            Context & " status; got" & Integer'Image (Status)
+            & " with output: "
+            & Ada.Strings.Unbounded.To_String (Output));
          Assert
            (Ada.Strings.Unbounded.To_String (Output) = Expected_Output,
-            Context & " output");
+            Context & " output; got: "
+            & Ada.Strings.Unbounded.To_String (Output));
       end Check;
    begin
       Version.Init.Init (Root);
