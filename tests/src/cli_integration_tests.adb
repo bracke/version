@@ -4531,7 +4531,8 @@ package body CLI_Integration_Tests is
       begin
          Assert (G = V,
                  "rerere status/remaining/clear must match git." & LF
-                 & "--- git ---" & LF & G & LF & "--- version ---" & LF & Visible (V));
+                 & "--- git ---" & LF & Visible (G)
+                 & LF & "--- version ---" & LF & Visible (V));
       end;
       Ada.Directories.Set_Directory (Old_Dir);
    exception
@@ -4640,7 +4641,8 @@ package body CLI_Integration_Tests is
       begin
          Assert (G = V,
                  "conflicted merge must match git byte for byte." & LF
-                 & "--- git ---" & LF & G & LF & "--- version ---" & LF & Visible (V));
+                 & "--- git ---" & LF & Visible (G)
+                 & LF & "--- version ---" & LF & Visible (V));
       end;
       Ada.Directories.Set_Directory (Old_Dir);
    exception
@@ -4748,7 +4750,8 @@ package body CLI_Integration_Tests is
       begin
          Assert (G = V,
                  "rename labels and whitespace merges must match git." & LF
-                 & "--- git ---" & LF & G & LF & "--- version ---" & LF & Visible (V));
+                 & "--- git ---" & LF & Visible (G)
+                 & LF & "--- version ---" & LF & Visible (V));
       end;
       Ada.Directories.Set_Directory (Old_Dir);
    exception
@@ -5046,7 +5049,8 @@ package body CLI_Integration_Tests is
       begin
          Assert (G = V,
                  "diff hunks / log -p / show rev:path must match git." & LF
-                 & "--- git ---" & LF & G & LF & "--- version ---" & LF & Visible (V));
+                 & "--- git ---" & LF & Visible (G)
+                 & LF & "--- version ---" & LF & Visible (V));
       end;
       Ada.Directories.Set_Directory (Old_Dir);
    exception
@@ -5150,7 +5154,8 @@ package body CLI_Integration_Tests is
       begin
          Assert (G = V,
                  Context & " transcript must match git byte-for-byte." & LF
-                 & "--- git ---" & LF & G & LF & "--- version ---" & LF & Visible (V));
+                 & "--- git ---" & LF & Visible (G)
+                 & LF & "--- version ---" & LF & Visible (V));
       end;
    end Run_Parity_Transcript;
 
@@ -6854,6 +6859,10 @@ package body CLI_Integration_Tests is
         & "t 'crlf -o' grep -o 'foo.' crlf.txt" & LF
         & "t 'empty file' grep -c '' empty.txt" & LF
         & "t 'empty file -L' grep -L foo empty.txt" & LF
+        --  The bytes, recorded identically by both flows: a host whose
+        --  shell redirection is not byte-for-byte would otherwise leave the
+        --  two tools disagreeing about a file nobody had looked at.
+        & "{ echo '$ blanks bytes'; od -c blanks.txt; } >> ""$TF"" 2>&1" & LF
         & "t 'blanks' grep -n '^$' blanks.txt" & LF
         & "t 'blanks -c' grep -c '' blanks.txt" & LF
         & "t 'blanks -v' grep -vn 'x' blanks.txt" & LF
@@ -8094,7 +8103,8 @@ package body CLI_Integration_Tests is
       begin
          Assert (G = V,
                  "bisect run and patch-id must match git." & LF
-                 & "--- git ---" & LF & G & LF & "--- version ---" & LF & Visible (V));
+                 & "--- git ---" & LF & Visible (G)
+                 & LF & "--- version ---" & LF & Visible (V));
       end;
       Ada.Directories.Set_Directory (Old_Dir);
    exception
@@ -8188,7 +8198,8 @@ package body CLI_Integration_Tests is
       begin
          Assert (G = V,
                  "subtree add/split must match git." & LF
-                 & "--- git ---" & LF & G & LF & "--- version ---" & LF & Visible (V));
+                 & "--- git ---" & LF & Visible (G)
+                 & LF & "--- version ---" & LF & Visible (V));
       end;
       Ada.Directories.Set_Directory (Old_Dir);
    exception
@@ -8288,7 +8299,8 @@ package body CLI_Integration_Tests is
          Assert (G = V,
                  "ls-remote/check-attr/check-mailmap/for-each-repo must match "
                  & "git." & LF
-                 & "--- git ---" & LF & G & LF & "--- version ---" & LF & Visible (V));
+                 & "--- git ---" & LF & Visible (G)
+                 & LF & "--- version ---" & LF & Visible (V));
       end;
       Ada.Directories.Set_Directory (Old_Dir);
    exception
@@ -8390,7 +8402,8 @@ package body CLI_Integration_Tests is
       begin
          Assert (G = V,
                  "merge-tree and the pack plumbing must match git." & LF
-                 & "--- git ---" & LF & G & LF & "--- version ---" & LF & Visible (V));
+                 & "--- git ---" & LF & Visible (G)
+                 & LF & "--- version ---" & LF & Visible (V));
       end;
       Ada.Directories.Set_Directory (Old_Dir);
    exception
@@ -8509,7 +8522,8 @@ package body CLI_Integration_Tests is
       begin
          Assert (G = V,
                  "the merge plumbing must match git." & LF
-                 & "--- git ---" & LF & G & LF & "--- version ---" & LF & Visible (V));
+                 & "--- git ---" & LF & Visible (G)
+                 & LF & "--- version ---" & LF & Visible (V));
       end;
       Ada.Directories.Set_Directory (Old_Dir);
    exception
@@ -8610,7 +8624,8 @@ package body CLI_Integration_Tests is
          Assert (G = V,
                  "commit-graph, fast-export and filter-branch must match git."
                  & LF
-                 & "--- git ---" & LF & G & LF & "--- version ---" & LF & Visible (V));
+                 & "--- git ---" & LF & Visible (G)
+                 & LF & "--- version ---" & LF & Visible (V));
       end;
       Ada.Directories.Set_Directory (Old_Dir);
    exception
@@ -8685,7 +8700,8 @@ package body CLI_Integration_Tests is
       begin
          Assert (G = V,
                  "merge-file must match git byte-for-byte." & LF
-                 & "--- git ---" & LF & G & LF & "--- version ---" & LF & Visible (V));
+                 & "--- git ---" & LF & Visible (G)
+                 & LF & "--- version ---" & LF & Visible (V));
       end;
       Ada.Directories.Set_Directory (Old_Dir);
    exception
@@ -8836,7 +8852,8 @@ package body CLI_Integration_Tests is
       begin
          Assert (G = V,
                  "bisect transcript must match git byte-for-byte." & LF
-                 & "--- git ---" & LF & G & LF & "--- version ---" & LF & Visible (V));
+                 & "--- git ---" & LF & Visible (G)
+                 & LF & "--- version ---" & LF & Visible (V));
       end;
       Ada.Directories.Set_Directory (Old_Dir);
    exception
@@ -8917,7 +8934,8 @@ package body CLI_Integration_Tests is
       begin
          Assert (G = V,
                  "show-branch must match git byte-for-byte." & LF
-                 & "--- git ---" & LF & G & LF & "--- version ---" & LF & Visible (V));
+                 & "--- git ---" & LF & Visible (G)
+                 & LF & "--- version ---" & LF & Visible (V));
       end;
       Ada.Directories.Set_Directory (Old_Dir);
    exception
