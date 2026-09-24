@@ -6807,7 +6807,16 @@ package body CLI_Integration_Tests is
         & "printf 'a foo b bar c\nfoo bar foo\nbar\n' > ab.txt" & LF
         & "printf 'crlf foo\r\nline two\r\n' > crlf.txt" & LF
         & ": > empty.txt" & LF
-        & "printf '\n\n\n' > blanks.txt" & LF
+        --  Blank lines between content, and no trailing newline. Two
+        --  separate end-of-file differences live in that last byte, and
+        --  neither is what these cases are about: git's own `^$` reports an
+        --  extra empty line after a trailing newline when the line before
+        --  it is not empty (`a\n` answers "line 2", while `grep -c ''`
+        --  answers 1), and Git for Windows counts one line fewer than git
+        --  elsewhere for a file that is only newlines. The `od -c` below
+        --  records the bytes both tools are handed, so a disagreement about
+        --  the file itself can never be mistaken for one about counting.
+        & "printf 'x\n\ny' > blanks.txt" & LF
         & "printf 'digits 123 and 45\nno digits\n' > num.txt" & LF
         & "printf 'MiXeD foo FOO Foo\n' > case.txt" & LF
         & "git add .; git commit -qm one" & LF
