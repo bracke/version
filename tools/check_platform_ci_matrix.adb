@@ -23,6 +23,18 @@ procedure Check_Platform_CI_Matrix is
       return not Is_Windows_Host;
    end Is_Posix_Host;
 
+   --  A built binary by the name this host gave it. A Linux build of the
+   --  same tools is committed under tools/bin, so asking for the
+   --  extensionless name on a host that builds an .exe finds that one
+   --  instead and the shell answers "cannot execute binary file".
+   function Built (Directory : String; Name : String) return String is
+     (if Tool_Support.Is_File (Directory & Name & ".exe")
+      then Directory & Name & ".exe"
+      else Directory & Name);
+
+   function Tool (Name : String) return String is
+     (Built ("./tools/bin/", Name));
+
    procedure Run_Step (Command : String) is
    begin
       Tool_Support.Run_Checked
@@ -140,26 +152,22 @@ begin
 
    Run_Step ("alr build");
    Run_Step_In ("tests", "alr exec -- gprbuild -P tests.gpr");
-   if Mode = "windows" and then Tool_Support.Is_File ("./tests/bin/tests.exe") then
-      Run_Step ("./tests/bin/tests.exe");
-   else
-      Run_Step ("./tests/bin/tests");
-   end if;
+   Run_Step (Built ("./tests/bin/", "tests"));
 
    --  versionlib's functionality suite is exercised by versionlib's own
    --  platform/release tooling, not from the version crate.
 
-   Run_Step ("./tools/bin/check_release_consistency");
-   Run_Step ("./tools/bin/check_ref_write_policy");
-   Run_Step ("./tools/bin/check_ref_transaction_selftest");
+   Run_Step (Tool ("check_release_consistency"));
+   Run_Step (Tool ("check_ref_write_policy"));
+   Run_Step (Tool ("check_ref_transaction_selftest"));
    if Mode = "posix" then
-      Run_Step ("./tools/bin/check_release_consistency_selftest");
-      Run_Step ("./tools/bin/check_ref_write_policy_selftest");
+      Run_Step (Tool ("check_release_consistency_selftest"));
+      Run_Step (Tool ("check_ref_write_policy_selftest"));
    end if;
 
    if Ada.Environment_Variables.Exists ("VERSION_RELEASE_ARCHIVE") then
       Run_Step
-        ("./tools/bin/check_release_package " &
+        (Tool ("check_release_package") & " " &
          Tool_Support.Shell_Quote
            (Ada.Environment_Variables.Value ("VERSION_RELEASE_ARCHIVE")));
    end if;
