@@ -538,7 +538,7 @@ package ada_main is
    pragma Export (C, u00248, "system__stack_usageB");
    u00249 : constant Version_32 := 16#4a68f31e#;
    pragma Export (C, u00249, "system__stack_usageS");
-   u00250 : constant Version_32 := 16#3e1fdabc#;
+   u00250 : constant Version_32 := 16#fdcda8db#;
    pragma Export (C, u00250, "tool_supportB");
    u00251 : constant Version_32 := 16#86235692#;
    pragma Export (C, u00251, "tool_supportS");

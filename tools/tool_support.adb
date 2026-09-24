@@ -90,7 +90,13 @@ package body Tool_Support is
       File : Ada.Text_IO.File_Type;
    begin
       Ada.Directories.Create_Path (Dirname (Path));
-      Ada.Text_IO.Create (File, Ada.Text_IO.Out_File, Path);
+      --  Text_Translation=No: the bytes handed in are the bytes written. A
+      --  host that translates would end every line with CRLF, and the
+      --  platform-CI evidence a Windows run writes is read back and matched
+      --  line by line on another host -- where `result=passed` then carried
+      --  a carriage return and matched nothing.
+      Ada.Text_IO.Create
+        (File, Ada.Text_IO.Out_File, Path, Form => "Text_Translation=No");
       Ada.Text_IO.Put (File, Text);
       Ada.Text_IO.Close (File);
    exception

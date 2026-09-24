@@ -436,7 +436,7 @@ package body ada_main is
    --   /home/bent/Projekte/Ada/version/tools/obj/stage_release.o
    --   -L/home/bent/Projekte/Ada/version/tools/obj/
    --   -L/home/bent/Projekte/Ada/version/tools/obj/
-   --   -L/home/bent/Projekte/Ada/version/obj/release/
+   --   -L/home/bent/Projekte/Ada/version/obj/development/
    --   -L/home/bent/Projekte/Ada/project_tools/lib/
    --   -L/home/bent/Projekte/Ada/versionlib/lib/
    --   -L/home/bent/Projekte/Ada/ssh_lib_build/lib/

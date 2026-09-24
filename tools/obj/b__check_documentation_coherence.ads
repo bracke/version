@@ -452,7 +452,7 @@ package ada_main is
    pragma Export (C, u00205, "tool_doc_guardsB");
    u00206 : constant Version_32 := 16#727085be#;
    pragma Export (C, u00206, "tool_doc_guardsS");
-   u00207 : constant Version_32 := 16#3e1fdabc#;
+   u00207 : constant Version_32 := 16#fdcda8db#;
    pragma Export (C, u00207, "tool_supportB");
    u00208 : constant Version_32 := 16#86235692#;
    pragma Export (C, u00208, "tool_supportS");
