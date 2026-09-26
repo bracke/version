@@ -6872,6 +6872,23 @@ package body CLI_Integration_Tests is
         --  shell redirection is not byte-for-byte would otherwise leave the
         --  two tools disagreeing about a file nobody had looked at.
         & "{ echo '$ blanks bytes'; od -c blanks.txt; } >> ""$TF"" 2>&1" & LF
+        --  git scans the last line as far as end-of-buffer, the trailing
+        --  newline included, so a pattern that can only match the empty
+        --  string matches just past it and is reported one line beyond the
+        --  file: `-n '^$'` on "a\n" answers line 2, `-c` counts it, `-v`
+        --  never shows it, and post-context over the last line takes the
+        --  position before the pattern can reach it.
+        & "printf 'a\n' > pend.txt" & LF
+        & "printf 'p\n\nq\n' > pmid.txt" & LF
+        & "git add pend.txt pmid.txt; git commit -qm pend" & LF
+        & "t 'past end' grep -n '^$' pend.txt" & LF
+        & "t 'past end -c' grep -c '^$' pend.txt" & LF
+        & "t 'past end -v' grep -vn '^$' pend.txt" & LF
+        & "t 'past end -B1' grep -n -B1 '^$' pend.txt" & LF
+        & "t 'past end unanchored' grep -n '^' pend.txt" & LF
+        & "t 'past end no-empty' grep -n '^x$' pend.txt" & LF
+        & "t 'past end -A1' grep -n -A1 '^$' pmid.txt" & LF
+        & "t 'past end -B1 mid' grep -n -B1 '^$' pmid.txt" & LF
         & "t 'blanks' grep -n '^$' blanks.txt" & LF
         & "t 'blanks -c' grep -c '' blanks.txt" & LF
         & "t 'blanks -v' grep -vn 'x' blanks.txt" & LF
