@@ -6881,14 +6881,23 @@ package body CLI_Integration_Tests is
         & "printf 'a\n' > pend.txt" & LF
         & "printf 'p\n\nq\n' > pmid.txt" & LF
         & "git add pend.txt pmid.txt; git commit -qm pend" & LF
-        & "t 'past end' grep -n '^$' pend.txt" & LF
-        & "t 'past end -c' grep -c '^$' pend.txt" & LF
-        & "t 'past end -v' grep -vn '^$' pend.txt" & LF
-        & "t 'past end -B1' grep -n -B1 '^$' pend.txt" & LF
-        & "t 'past end unanchored' grep -n '^' pend.txt" & LF
-        & "t 'past end no-empty' grep -n '^x$' pend.txt" & LF
-        & "t 'past end -A1' grep -n -A1 '^$' pmid.txt" & LF
-        & "t 'past end -B1 mid' grep -n -B1 '^$' pmid.txt" & LF
+        --  Asked of the git on this host, because they do not agree: Git
+        --  for Windows answers as though the trailing newline were not
+        --  there and never reaches the position, so there is nothing to
+        --  hold version to there. Both flows run the same probe against
+        --  the same git, so the cases are present or absent in both
+        --  transcripts alike. version answers the same on every host.
+        & "if [ ""$(git grep -c '^$' pend.txt 2>/dev/null)"" = 'pend.txt:1' ];"
+        & " then" & LF
+        & "  t 'past end' grep -n '^$' pend.txt" & LF
+        & "  t 'past end -c' grep -c '^$' pend.txt" & LF
+        & "  t 'past end -v' grep -vn '^$' pend.txt" & LF
+        & "  t 'past end -B1' grep -n -B1 '^$' pend.txt" & LF
+        & "  t 'past end unanchored' grep -n '^' pend.txt" & LF
+        & "  t 'past end no-empty' grep -n '^x$' pend.txt" & LF
+        & "  t 'past end -A1' grep -n -A1 '^$' pmid.txt" & LF
+        & "  t 'past end -B1 mid' grep -n -B1 '^$' pmid.txt" & LF
+        & "fi" & LF
         & "t 'blanks' grep -n '^$' blanks.txt" & LF
         & "t 'blanks -c' grep -c '' blanks.txt" & LF
         & "t 'blanks -v' grep -vn 'x' blanks.txt" & LF
