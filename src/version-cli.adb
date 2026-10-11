@@ -8538,11 +8538,12 @@ package body Version.CLI is
          elsif Key = "references.format" then "files"
          else "");
 
+      Key_Bare    : aliased constant String := "layout.bare";
+      Key_Shallow : aliased constant String := "layout.shallow";
+      Key_Format  : aliased constant String := "object.format";
+      Key_Refs    : aliased constant String := "references.format";
       All_Keys : constant array (1 .. 4) of access constant String :=
-        [new String'("layout.bare"),
-         new String'("layout.shallow"),
-         new String'("object.format"),
-         new String'("references.format")];
+        [Key_Bare'Access, Key_Shallow'Access, Key_Format'Access, Key_Refs'Access];
    begin
       if Sub = "info" then
          declare
@@ -8746,7 +8747,6 @@ package body Version.CLI is
          end if;
          declare
             Search : Ada.Directories.Search_Type;
-            Ent    : Ada.Directories.Directory_Entry_Type;
             Found  : Boolean := False;
          begin
             Ada.Directories.Start_Search
@@ -10700,16 +10700,6 @@ package body Version.CLI is
             --  CONFLICT line separates each failure from the path it belongs
             --  to, which is not what git prints.
             declare
-               function Is_Conflicted (Path : String) return Boolean is
-               begin
-                  for C of Conflicts loop
-                     if To_String (C.Path) = Path then
-                        return True;
-                     end if;
-                  end loop;
-                  return False;
-               end Is_Conflicted;
-
                function Merged_Content (Path : String) return Boolean is
                begin
                   for P of Needs_Merge loop
@@ -19312,81 +19302,6 @@ package body Version.CLI is
                            Always_Show_Header => True);
                      end Commit_Text;
 
-                     --  `show <rev>:<path>`: the object at that path, not the
-                     --  commit -- a blob's contents verbatim, or git's listing
-                     --  for a directory.
-                     procedure Emit_Rev_Path (Spec : String; Colon : Positive) is
-                        Rev_Part  : constant String :=
-                          Spec (Spec'First .. Colon - 1);
-                        Path_Part : constant String :=
-                          Spec (Colon + 1 .. Spec'Last);
-                        Tree_Id : constant Version.Objects.Hex_Object_Id :=
-                          Version.Revisions.Resolve_Tree (Repo, Rev_Part);
-                        Items : constant
-                          Version.Objects.Tree_Entry_Vectors.Vector :=
-                            Version.Objects.Flatten_Tree (Repo, Tree_Id);
-                        Found : Boolean := False;
-                        Listing : Unbounded_String;
-                     begin
-                        for E of Items loop
-                           if To_String (E.Path) = Path_Part then
-                              Emit
-                                (Version.Objects.Content
-                                   (Version.Objects.Read_Object (Repo, E.Id)));
-                              return;
-                           end if;
-                        end loop;
-
-                        --  A directory: git prints `tree <spec>` then the
-                        --  entries directly under it.
-                        declare
-                           Prefix : constant String := Path_Part & "/";
-                           Seen   : Version.Trailers.String_Vectors.Vector;
-                        begin
-                           for E of Items loop
-                              declare
-                                 P : constant String := To_String (E.Path);
-                              begin
-                                 if P'Length > Prefix'Length
-                                   and then P (P'First .. P'First + Prefix'Length - 1)
-                                            = Prefix
-                                 then
-                                    declare
-                                       Rest : constant String :=
-                                         P (P'First + Prefix'Length .. P'Last);
-                                       Slash : constant Natural :=
-                                         Ada.Strings.Fixed.Index (Rest, "/");
-                                       Name : constant String :=
-                                         (if Slash = 0 then Rest
-                                          else Rest (Rest'First .. Slash - 1) & "/");
-                                       Dup : Boolean := False;
-                                    begin
-                                       for X of Seen loop
-                                          if X = Name then
-                                             Dup := True;
-                                          end if;
-                                       end loop;
-                                       if not Dup then
-                                          Seen.Append (Name);
-                                          Append (Listing, Name & ASCII.LF);
-                                       end if;
-                                       Found := True;
-                                    end;
-                                 end if;
-                              end;
-                           end loop;
-                        end;
-                        if Found then
-                           Emit ("tree " & Spec & ASCII.LF & ASCII.LF & To_String (Listing));
-                        else
-                           --  git dies (128) on a path absent from the tree.
-                           Error_Line
-                             ("fatal: path '" & Path_Part & "' does not exist in '"
-                              & Rev_Part & "'");
-                           Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
-                        end if;
-                     end Emit_Rev_Path;
-
                      --  git's cmd_show loop: a blob verbatim; a tag as its
                      --  block and then whatever it points at; a tree as its
                      --  listing; a commit through the log layouts -- each
@@ -21310,7 +21225,6 @@ package body Version.CLI is
                      function Commit_Arg (Text : String) return String is
                      begin
                         declare
-                           use type Version.Objects.Object_Kind;
                            Any : constant String :=
                              Version.Objects.To_String
                                (Version.Revisions.Resolve (Repo, Text));
@@ -35164,7 +35078,7 @@ package body Version.CLI is
                         end loop;
                         return To_String (Result);
                      end Expand;
-                     Nul : constant String := (1 => Character'Val (0));
+                     Nul : constant String := [1 => Character'Val (0)];
 
                      --  Header/record output.  With -Z every record is
                      --  NUL-terminated and the whole stream is routed through
@@ -37060,7 +36974,6 @@ package body Version.CLI is
                      --  resolve without peeling and check the kind.
                      Tree_Id : constant Version.Objects.Hex_Object_Id :=
                        Version.Revisions.Resolve (Repo, Arg (Tree_Idx));
-                     use type Version.Objects.Object_Kind;
 
                      --  A file/stdin message keeps its interior but loses its
                      --  trailing newlines; Commit_Content adds exactly one back
@@ -37476,15 +37389,44 @@ package body Version.CLI is
                               end if;
                            end;
                         elsif Natural (Operands.Length) = 2 then
-                           if Ref = "HEAD" then
-                              Version.Refs.Write_Symbolic_HEAD
-                                (Repo, Operands.Last_Element);
-                           else
-                              Version.Files.Write_Binary_File
-                                (Path,
-                                 "ref: " & Operands.Last_Element
-                                 & Character'Val (10));
-                           end if;
+                           declare
+                              Zero : constant String := [1 .. 40 => '0'];
+                              --  The ref's object before and after, for -m's
+                              --  reflog entry; zero where unborn.
+                              function Value_Of (Name : String) return String is
+                              begin
+                                 return Version.Objects.To_String (Version.Refs.Resolve_Ref (Repo, Name));
+                              exception
+                                 when others =>
+                                    return Zero;
+                              end Value_Of;
+                              Old_Value : constant String := Value_Of (Ref);
+                              Log_Cfg   : constant String :=
+                                Ada.Characters.Handling.To_Lower
+                                  (Version.Config.Value_Or (Repo, "core.logAllRefUpdates"));
+                           begin
+                              if Ref = "HEAD" then
+                                 Version.Refs.Write_Symbolic_HEAD
+                                   (Repo, Operands.Last_Element);
+                              else
+                                 Version.Files.Write_Binary_File
+                                   (Path,
+                                    "ref: " & Operands.Last_Element
+                                    & Character'Val (10));
+                              end if;
+                              --  -m: the reason in the ref's reflog, as git's
+                              --  create_symref writes it where the ref logs
+                              --  and the new target is born.
+                              if Length (Reason) > 0
+                                and then Value_Of (Operands.Last_Element) /= Zero
+                                and then Log_Cfg /= "false" and then Log_Cfg /= "no"
+                                and then Log_Cfg /= "off" and then Log_Cfg /= "0"
+                              then
+                                 Version.Reflog.Append
+                                   (Repo, Ref, Old_Value,
+                                    Value_Of (Operands.Last_Element), To_String (Reason));
+                              end if;
+                           end;
                         else
                            Usage_Error
                              ("too many symbolic-ref arguments", Usage);
@@ -40009,7 +39951,6 @@ package body Version.CLI is
                   function Commit_Arg (Text : String) return String is
                   begin
                      declare
-                        use type Version.Objects.Object_Kind;
                         Any : constant String :=
                           Version.Objects.To_String
                             (Version.Revisions.Resolve (Repo, Text));
@@ -40277,7 +40218,6 @@ package body Version.CLI is
 
                   --  git's create_reflog_msg.
                   function Reflog_Message (Object : String) return String is
-                     use type Version.Objects.Object_Kind;
                      Prefix : constant String :=
                        (if Ada.Environment_Variables.Exists ("GIT_REFLOG_ACTION")
                         then Ada.Environment_Variables.Value ("GIT_REFLOG_ACTION")
@@ -40549,7 +40489,6 @@ package body Version.CLI is
                                  Failed := True;
                               else
                                  declare
-                                    use type Version.Objects.Object_Kind;
                                     Id  : constant Version.Objects.Hex_Object_Id :=
                                       Version.Tags.Resolve_Tag (N);
                                     Obj : constant Version.Objects.Git_Object :=
@@ -40689,7 +40628,6 @@ package body Version.CLI is
 
                            if Create_Object then
                               declare
-                                 use type Version.Objects.Object_Kind;
                                  Target : constant Version.Objects.Git_Object :=
                                    Version.Objects.Read_Object
                                      (Repo, Version.Objects.To_Object_Id
@@ -42017,7 +41955,7 @@ package body Version.CLI is
                         First := First - 1;
                      end loop;
                      declare
-                        Base : String := Src (First .. Last);
+                        Base : constant String := Src (First .. Last);
                      begin
                         if Base'Length > 4
                           and then Base (Base'Last - 3 .. Base'Last) = ".git"
@@ -44508,7 +44446,29 @@ package body Version.CLI is
                      return;
                   end if;
                   if not Force and then Version.Files.Exists (Dest) then
-                     --  git leaves an existing file alone, silently.
+                     --  git leaves a file that holds the entry alone,
+                     --  silently; one that differs is refused, said unless
+                     --  -q, and the command fails. A copy under --prefix is
+                     --  never the index's own file, so it differs.
+                     declare
+                        Holds : Boolean := False;
+                     begin
+                        if Length (Prefix) = 0 then
+                           begin
+                              Holds := Version.Working_Tree.Working_Blob_Id (Repo, Path) = E.Id;
+                           exception
+                              when others =>
+                                 Holds := False;
+                           end;
+                        end if;
+                        if not Holds then
+                           if not Quiet then
+                              Stderr_Line ((if Length (Prefix) > 0 then Dest else Path)
+                                           & " already exists, no checkout");
+                           end if;
+                           Set_Command_Failure;
+                        end if;
+                     end;
                      return;
                   end if;
                   Version.Files.Create_Directory_If_Missing
@@ -44881,6 +44841,11 @@ package body Version.CLI is
                Bad       : Boolean := False;
                Name_Only : Boolean := False;
                Always    : Boolean := False;
+               --  --undefined, git's default: "undefined" for what nothing
+               --  names, whatever --always says.
+               Undefined : Boolean := True;
+               --  --no-undefined met a commit nothing names: git dies.
+               Died      : Boolean := False;
                All_Refs  : Boolean := False;
                Read_Stdin : Boolean := False;   --  --stdin/--annotate-stdin
                Refs_Pat  : Unbounded_String;   --  --refs=<glob>
@@ -44896,6 +44861,39 @@ package body Version.CLI is
                      (Repo, Target, Tags_Only => Tags_Only,
                       Refs_Pattern => To_String (Refs_Pat),
                       Exclude_Pattern => To_String (Excl_Pat)));
+
+               --  What nothing names, as git's show_name says it:
+               --  "undefined" under --undefined (the default); else the
+               --  abbreviated id under --always; else "" -- git dies
+               --  "cannot describe".
+               function Shown
+                 (Repo   : Version.Repository.Repository_Handle;
+                  Target : Version.Objects.Hex_Object_Id;
+                  Name   : String) return String
+               is
+                  Hex : constant String := Version.Objects.To_String (Target);
+               begin
+                  if Name /= "undefined" or else Undefined then
+                     return Name;
+                  elsif Always then
+                     return Hex (Hex'First .. Hex'First
+                                 + Version.Revisions.Unique_Abbrev_Length
+                                     (Repo, Target, Version.Revisions.Auto_Abbrev) - 1);
+                  end if;
+                  return "";
+               end Shown;
+
+               --  git's die for --no-undefined: what was asked echoed, then
+               --  the fatal line, and nothing after.
+               procedure Cannot_Describe (Spec : String; Hex : String) is
+               begin
+                  if not Name_Only then
+                     Version.Console.Put (Spec & " ");
+                  end if;
+                  Stderr_Line ("fatal: cannot describe '" & Hex & "'");
+                  Ada.Command_Line.Set_Exit_Status (Fatal_Exit);
+                  Died := True;
+               end Cannot_Describe;
             begin
                for I in 2 .. Count loop
                   if Arg (I) = "--tags" then
@@ -44905,9 +44903,13 @@ package body Version.CLI is
                      --  asked about.
                      Name_Only := True;
                   elsif Arg (I) = "--always" then
-                     --  Fall back to the abbreviated id rather than saying
-                     --  "undefined" when nothing names the commit.
+                     --  With --no-undefined: the abbreviated id where
+                     --  nothing names the commit.
                      Always := True;
+                  elsif Arg (I) = "--no-undefined" then
+                     Undefined := False;
+                  elsif Arg (I) = "--undefined" then
+                     Undefined := True;
                   elsif Arg (I) = "--all" then
                      All_Refs := True;
                   elsif Has_Prefix (Arg (I), "--refs=") then
@@ -44982,6 +44984,11 @@ package body Version.CLI is
                               Name := To_Unbounded_String ("undefined");
                            end if;
                         end if;
+                        Name := To_Unbounded_String (Shown (Repo, Raw, To_String (Name)));
+                        if Length (Name) = 0 then
+                           Cannot_Describe (Spec, Version.Objects.To_String (Raw));
+                           return;
+                        end if;
                         if Name_Only then
                            Success_Line (To_String (Name));
                         else
@@ -45015,11 +45022,16 @@ package body Version.CLI is
 
                            for C of Version.History.Rev_List (Repo, Tips) loop
                               declare
-                                 Hex : constant String :=
+                                 Hex  : constant String :=
                                    Version.Objects.To_String (C);
+                                 Name : constant String :=
+                                   Shown (Repo, C, Best_Name (Repo, C));
                               begin
-                                 Success_Line
-                                   (Hex & " " & Best_Name (Repo, C));
+                                 if Name = "" then
+                                    Cannot_Describe (Hex, Hex);
+                                    exit;
+                                 end if;
+                                 Success_Line (Hex & " " & Name);
                               end;
                            end loop;
                         end;
@@ -45027,6 +45039,7 @@ package body Version.CLI is
                      end if;
 
                      for I in 2 .. Count loop
+                        exit when Died;
                         if Arg (I)'Length = 0
                           or else Arg (I) (Arg (I)'First) /= '-'
                         then
@@ -45036,7 +45049,7 @@ package body Version.CLI is
 
                      --  --stdin/--annotate-stdin names each whitespace-separated
                      --  token read from standard input.
-                     if Read_Stdin then
+                     if Read_Stdin and then not Died then
                         declare
                            Text : constant String := Read_All_Stdin;
                            P    : Natural := Text'First;
