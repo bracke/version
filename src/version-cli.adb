@@ -3674,7 +3674,7 @@ package body Version.CLI is
       function Abbrev (Id : String) return String is
          L : constant Natural :=
            Version.Revisions.Unique_Abbrev_Length
-             (Repo, Version.Objects.To_Object_Id (Id), 7);
+             (Repo, Version.Objects.To_Object_Id (Id), Version.Revisions.Auto_Abbrev);
       begin
          return Id (Id'First .. Id'First + L - 1);
       end Abbrev;
@@ -14704,7 +14704,7 @@ package body Version.CLI is
                                         .. Hex'First
                                            + Version.Revisions
                                                .Unique_Abbrev_Length
-                                                 (Repo, Tree, 7) - 1));
+                                                 (Repo, Tree, Version.Revisions.Auto_Abbrev) - 1));
                            end;
                         else
                            Stderr_Line
@@ -15578,7 +15578,7 @@ package body Version.CLI is
       Hex   : constant String := Version.Objects.To_String (Id);
       Short : constant String :=
         Hex (Hex'First .. Hex'First
-                          + Version.Revisions.Unique_Abbrev_Length (Repo, Id, 7)
+                          + Version.Revisions.Unique_Abbrev_Length (Repo, Id, Version.Revisions.Auto_Abbrev)
                           - 1);
       Subject : constant String :=
         Version.Objects.Commit_Message_First_Line
@@ -15617,7 +15617,7 @@ package body Version.CLI is
       Hex   : constant String := Version.Objects.To_String (Id);
       Short : constant String :=
         Hex (Hex'First .. Hex'First
-                          + Version.Revisions.Unique_Abbrev_Length (Repo, Id, 7)
+                          + Version.Revisions.Unique_Abbrev_Length (Repo, Id, Version.Revisions.Auto_Abbrev)
                           - 1);
    begin
       Stderr_Line
@@ -15637,7 +15637,7 @@ package body Version.CLI is
       Hex : constant String := Version.Objects.To_String (Id);
       Short : constant String :=
         Hex (Hex'First .. Hex'First
-                          + Version.Revisions.Unique_Abbrev_Length (Repo, Id, 7)
+                          + Version.Revisions.Unique_Abbrev_Length (Repo, Id, Version.Revisions.Auto_Abbrev)
                           - 1);
    begin
       Stderr_Line
@@ -18983,6 +18983,17 @@ package body Version.CLI is
                   Bad := True;
                end if;
 
+               --  No --date: log.date from the configuration, as git.
+               if not Bad and then Length (Date_Mode) = 0 then
+                  begin
+                     Date_Mode := To_Unbounded_String
+                       (Version.Config.Value_Or (Version.Repository.Open, "log.date"));
+                  exception
+                     when others =>
+                        null;
+                  end;
+               end if;
+
                --  --date=<mode>: git's modes, or "unknown date format".
                if not Bad and then Length (Date_Mode) > 0 then
                   declare
@@ -21686,7 +21697,7 @@ package body Version.CLI is
                      function Abbrev_Of (Id : String) return String is
                        (Id (Id'First .. Id'First
                             + Version.Revisions.Unique_Abbrev_Length
-                                (Repo, Version.Objects.To_Object_Id (Id), 7) - 1));
+                                (Repo, Version.Objects.To_Object_Id (Id), Version.Revisions.Auto_Abbrev) - 1));
 
                      Noncreate : Natural;
                   begin
@@ -22643,10 +22654,10 @@ package body Version.CLI is
                        Version.Objects.To_Object_Id (After_Text);
                      OL : constant Natural :=
                        Version.Revisions.Unique_Abbrev_Length
-                         (Repo, Before_Id, 7);
+                         (Repo, Before_Id, Version.Revisions.Auto_Abbrev);
                      NL : constant Natural :=
                        Version.Revisions.Unique_Abbrev_Length
-                         (Repo, After_Id, 7);
+                         (Repo, After_Id, Version.Revisions.Auto_Abbrev);
                   begin
                      Success_Line
                        ("Updating "
@@ -25165,7 +25176,7 @@ package body Version.CLI is
                  (if Hex'Length = 0 then Hex
                   else Hex (Hex'First .. Hex'First
                             + Version.Revisions.Unique_Abbrev_Length
-                                (Repo, Version.Objects.To_Object_Id (Hex), 7)
+                                (Repo, Version.Objects.To_Object_Id (Hex), Version.Revisions.Auto_Abbrev)
                             - 1));
 
                --  The worktree that has Branch checked out (the main one
@@ -32027,7 +32038,7 @@ package body Version.CLI is
                                             Natural'Min
                                               (Hex'Length,
                                                Version.Revisions.Unique_Abbrev_Length
-                                                 (Repo, Commit, 7));
+                                                 (Repo, Commit, Version.Revisions.Auto_Abbrev));
                                        begin
                                           Out_Line (Hex (Hex'First .. Hex'First + N - 1));
                                        end;
@@ -39649,10 +39660,10 @@ package body Version.CLI is
                               Ab : constant String := To_String (A);
                               OL : constant Natural :=
                                 Version.Revisions.Unique_Abbrev_Length
-                                  (Repo, B, 7);
+                                  (Repo, B, Version.Revisions.Auto_Abbrev);
                               AL : constant Natural :=
                                 Version.Revisions.Unique_Abbrev_Length
-                                  (Repo, A, 7);
+                                  (Repo, A, Version.Revisions.Auto_Abbrev);
                            begin
                               Success_Line
                                 ("Updating "
@@ -40273,7 +40284,7 @@ package body Version.CLI is
                         else "tag: tagging "
                              & Object (Object'First .. Object'First
                                        + Version.Revisions.Unique_Abbrev_Length
-                                           (Repo, Version.Objects.To_Object_Id (Object), 7)
+                                           (Repo, Version.Objects.To_Object_Id (Object), Version.Revisions.Auto_Abbrev)
                                        - 1));
                      Obj : constant Version.Objects.Git_Object :=
                        Version.Objects.Read_Object
@@ -40309,7 +40320,7 @@ package body Version.CLI is
                   function Abbrev (Id : String) return String is
                     (Id (Id'First .. Id'First
                          + Version.Revisions.Unique_Abbrev_Length
-                             (Repo, Version.Objects.To_Object_Id (Id), 7) - 1));
+                             (Repo, Version.Objects.To_Object_Id (Id), Version.Revisions.Auto_Abbrev) - 1));
 
                   Edit_Path : constant String :=
                     Version.Files.Join
